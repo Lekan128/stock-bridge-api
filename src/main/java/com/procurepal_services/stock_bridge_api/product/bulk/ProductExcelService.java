@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.CellType;
@@ -47,6 +48,16 @@ public class ProductExcelService {
     private static final List<String> REQUIRED_HEADERS = List.of("name", "sku", "unit_price");
     private static final List<Integer> COLUMN_WIDTHS_CHARS = List.of(28, 18, 42, 14, 14, 18, 20);
     static final String EXAMPLE_SKU_MARKER_PREFIX = "EXAMPLE-SKU-DELETE-ME";
+
+    /**
+     * Zero-width and non-breaking space characters that spreadsheet apps
+     * (Excel/Numbers/Sheets) commonly leave behind in "empty-looking" cells
+     * when formatting or a fill handle is dragged past the last real row.
+     * Java's String.isBlank()/trim() don't treat these as whitespace, so
+     * without stripping them such cells read as non-blank and get parsed as
+     * real data.
+     */
+    private static final Pattern INVISIBLE_CHARACTERS = Pattern.compile("[\\u200B\\u200C\\u200D\\u2060\\uFEFF\\u00A0]");
 
     public byte[] generateTemplate() {
         try (Workbook workbook = new XSSFWorkbook()) {
@@ -234,7 +245,7 @@ public class ProductExcelService {
         }
         if (cell.getCellType() == CellType.STRING) {
             try {
-                return Double.parseDouble(cell.getStringCellValue().trim());
+                return Double.parseDouble(cleanString(cell.getStringCellValue()));
             } catch (NumberFormatException e) {
                 return null;
             }
@@ -272,7 +283,11 @@ public class ProductExcelService {
 
     private boolean isCellBlank(Cell cell) {
         return cell.getCellType() == CellType.BLANK
-                || (cell.getCellType() == CellType.STRING && cell.getStringCellValue().isBlank());
+                || (cell.getCellType() == CellType.STRING && cleanString(cell.getStringCellValue()).isEmpty());
+    }
+
+    private String cleanString(String value) {
+        return INVISIBLE_CHARACTERS.matcher(value).replaceAll("").trim();
     }
 
     private String stringValue(Row row, Integer columnIndex) {
@@ -282,7 +297,7 @@ public class ProductExcelService {
 
     private String stringValue(Cell cell) {
         String value = switch (cell.getCellType()) {
-            case STRING -> cell.getStringCellValue();
+            case STRING -> cleanString(cell.getStringCellValue());
             case NUMERIC -> String.valueOf(cell.getNumericCellValue());
             default -> null;
         };

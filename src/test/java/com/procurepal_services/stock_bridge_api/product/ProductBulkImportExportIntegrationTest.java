@@ -158,6 +158,62 @@ class ProductBulkImportExportIntegrationTest {
     }
 
     @Test
+    void trailingRowsPaddedWithZeroWidthSpacesAreTreatedAsBlankAndSkipped() {
+        TenantLoginResponse admin = signup("Ghost Rows Co");
+        byte[] file = workbookWithGhostRows(
+                List.<Object[]>of(new Object[] {"Widget", "GHOST-1", "A widget", 9.99, 4.5, 10, 2}), 5);
+
+        ResponseEntity<BulkUploadResponse> response = upload(admin, file);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        BulkUploadResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.createdCount()).isEqualTo(1);
+        assertThat(body.products()).extracting(ProductResponse::sku).containsExactly("GHOST-1");
+    }
+
+    /**
+     * Mirrors the real-world file that motivated this test: a spreadsheet app
+     * dragged formatting/fill past the last real row, leaving trailing rows
+     * whose cells all contain a zero-width space (U+200B) instead of being
+     * truly empty.
+     */
+    private byte[] workbookWithGhostRows(List<Object[]> rows, int ghostRowCount) {
+        try (Workbook workbook = new XSSFWorkbook()) {
+            Sheet sheet = workbook.createSheet("Products");
+            Row header = sheet.createRow(0);
+            for (int i = 0; i < HEADERS.size(); i++) {
+                header.createCell(i).setCellValue(HEADERS.get(i));
+            }
+            int rowIndex = 1;
+            for (Object[] values : rows) {
+                Row row = sheet.createRow(rowIndex++);
+                for (int i = 0; i < values.length; i++) {
+                    if (values[i] == null) {
+                        continue;
+                    }
+                    if (values[i] instanceof Number number) {
+                        row.createCell(i).setCellValue(number.doubleValue());
+                    } else {
+                        row.createCell(i).setCellValue(values[i].toString());
+                    }
+                }
+            }
+            for (int g = 0; g < ghostRowCount; g++) {
+                Row row = sheet.createRow(rowIndex++);
+                for (int i = 0; i < HEADERS.size(); i++) {
+                    row.createCell(i).setCellValue("​");
+                }
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            workbook.write(out);
+            return out.toByteArray();
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    @Test
     void exportContainsOnlyCallersActiveProducts() {
         TenantLoginResponse tenantA = signup("Export Tenant A " + UUID.randomUUID());
         TenantLoginResponse tenantB = signup("Export Tenant B " + UUID.randomUUID());
