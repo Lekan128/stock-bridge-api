@@ -8,3 +8,12 @@ spring:
     show-sql: false
   flyway:
     enabled: true
+
+app:
+  cors:
+    # Must be set to the real deployed frontend origin(s), comma-separated if
+    # there's more than one (e.g. staging + prod frontend URLs). Unlike
+    # application.yml's local-dev default, this deliberately has no
+    # default/wildcard fallback: a missing FRONTEND_ORIGIN in production
+    # should fail startup loudly rather than silently allow the wrong origins.
+    allowed-origins: ${FRONTEND_ORIGIN}

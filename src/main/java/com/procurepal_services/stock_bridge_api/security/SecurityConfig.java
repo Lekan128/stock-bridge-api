@@ -2,6 +2,8 @@ package com.procurepal_services.stock_bridge_api.security;
 
 import com.procurepal_services.stock_bridge_api.config.CorsProperties;
 import com.procurepal_services.stock_bridge_api.tenant.TenantResolutionFilter;
+
+import java.util.Arrays;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -74,12 +76,20 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(corsProperties.allowedOrigins());
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("*"));
-        configuration.setAllowCredentials(true);
+//        configuration.setAllowedOrigins(corsProperties.allowedOrigins());
+        configuration.setAllowedOrigins(List.of("*"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+        // The frontend sends bearer tokens via the Authorization header and keeps
+        // them in memory/localStorage rather than cookies, so there's no
+        // cross-site cookie to protect and no reason to allow credentialed CORS
+        // requests. Only flip this to true if a future flow starts relying on
+        // cookies (e.g. an httpOnly refresh-token cookie).
+        configuration.setAllowCredentials(false);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
-        source.registerCorsConfiguration("/**", configuration);
+        // "/api/superadmin/**" is a prefix of "/api/**", so this one registration
+        // already applies the same CORS config to both consistently.
+        source.registerCorsConfiguration("/api/**", configuration);
         return source;
     }
 
