@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: stock-bridge-api
+  profiles:
+    active: local
+  jackson:
+    default-property-inclusion: non_null
+    time-zone: UTC
+  jpa:
+    # true: a single Hibernate Session spans the whole request, which is what
+    # lets TenantResolutionFilter enable the tenant filter once per request and
+    # have it apply to every repository call made later in that request. See
+    # TenantResolutionFilter for the full rationale and the tradeoff this accepts.
+    open-in-view: true
+    show-sql: false
+    hibernate:
+      ddl-auto: validate
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
+
+app:
+  jwt:
+    secret: ${JWT_SECRET}
+    access-token-expiration-ms: ${JWT_ACCESS_TOKEN_EXPIRATION_MS:900000}
+    refresh-token-expiration-ms: ${JWT_REFRESH_TOKEN_EXPIRATION_MS:604800000}
+  aws:
+    # No defaults for bucket/credentials: an unset value stays blank rather
+    # than failing placeholder resolution at startup. S3ImageService.isConfigured()
+    # treats a blank value as "S3 unavailable" instead of crashing the app - see
+    # that class for the graceful-degradation rationale.
+    region: ${AWS_REGION:us-east-1}
+    s3:
+      bucket-name: ${AWS_S3_BUCKET_NAME:}
+    access-key-id: ${AWS_ACCESS_KEY_ID:}
+    secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
+  # Optional: super admin bootstrap only runs (once) if both are set. See
+  # SuperAdminBootstrapRunner.
+  super-admin:
+    username: ${SUPERADMIN_USERNAME:admin}
+    password: ${SUPERADMIN_PASSWORD:Wordpass123.}
+  cors:
+    allowed-origins: ${FRONTEND_ORIGIN:http://localhost:3000,http://localhost:5173}

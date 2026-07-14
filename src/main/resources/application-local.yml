@@ -1,0 +1,15 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5433}/${POSTGRES_DB:stock_bridge}
+    username: ${POSTGRES_USER:stock_bridge}
+    password: ${POSTGRES_PASSWORD:stock_bridge_local_dev}
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    show-sql: true
+  flyway:
+    enabled: true
+
+app:
+  jwt:
+    # Dev-only placeholder, >=32 bytes (HS256 minimum). Never used outside local/docker.
+    secret: ${JWT_SECRET:local-dev-only-jwt-signing-secret-do-not-use-in-prod}
