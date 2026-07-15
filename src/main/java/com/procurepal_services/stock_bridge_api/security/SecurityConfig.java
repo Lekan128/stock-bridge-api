@@ -45,7 +45,12 @@ public class SecurityConfig {
         "/api/superadmin/auth/login",
         "/api/superadmin/auth/refresh",
         "/actuator/health",
-        "/actuator/health/**"
+        "/actuator/health/**",
+        // springdoc-openapi: browsable API docs, not a tenant/superadmin resource.
+        "/v3/api-docs",
+        "/v3/api-docs/**",
+        "/swagger-ui.html",
+        "/swagger-ui/**"
     };
 
     private final TenantResolutionFilter tenantResolutionFilter;
@@ -76,8 +81,7 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-//        configuration.setAllowedOrigins(corsProperties.allowedOrigins());
-        configuration.setAllowedOrigins(List.of("*"));
+        configuration.setAllowedOrigins(corsProperties.allowedOrigins());
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         // The frontend sends bearer tokens via the Authorization header and keeps

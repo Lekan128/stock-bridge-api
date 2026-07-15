@@ -8,8 +8,16 @@ spring:
     show-sql: false
   flyway:
     enabled: true
+    # db/seed holds demo/local-only data (not real schema changes) - never
+    # added to application-prod.yml, so it can never run in production.
+    locations: classpath:db/migration,classpath:db/seed
 
 app:
   jwt:
     # Dev-only placeholder, >=32 bytes (HS256 minimum). Never used outside local/docker.
     secret: ${JWT_SECRET:local-dev-only-jwt-signing-secret-do-not-use-in-prod}
+  # No override here - this profile deliberately falls through to
+  # application.yml's app.cors.allowed-origins default, which already reads
+  # FRONTEND_ORIGIN (see docker-compose.yml) with a localhost:5173 fallback.
+  # That fallback is what a frontend container will need to keep matching
+  # once one exists - see the FRONTEND_ORIGIN comment in docker-compose.yml.

@@ -8,6 +8,9 @@ spring:
     show-sql: true
   flyway:
     enabled: true
+    # db/seed holds demo/local-only data (not real schema changes) - never
+    # added to application-prod.yml, so it can never run in production.
+    locations: classpath:db/migration,classpath:db/seed
 
 app:
   jwt:
