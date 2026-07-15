@@ -6,8 +6,8 @@ movements, users, and analytics through a JWT-secured REST API. A separate super
 lets platform operators manage tenants across the whole system.
 
 See the root [`APP_TOUR.md`](../APP_TOUR.md) for a feature-by-feature walkthrough and demo login
-credentials, and [`ENVIRONMENT.md`](../ENVIRONMENT.md) for every environment variable this
-service reads.
+credentials, [`ENVIRONMENT.md`](../ENVIRONMENT.md) for every environment variable this service
+reads, and [`DEPLOYMENT.md`](DEPLOYMENT.md) for how it gets built, published, and deployed.
 
 ## Tech stack
 

@@ -1,0 +1,99 @@
+# Builds the backend, publishes it to Docker Hub, and triggers a Render
+# deploy of the new image on every push to main.
+#
+# Required repository secrets (Settings > Secrets and variables > Actions):
+#   DOCKERHUB_USERNAME  - Docker Hub username/namespace the image is pushed to
+#   DOCKERHUB_TOKEN     - Docker Hub access token (Account Settings > Security
+#                          > New Access Token) - not your account password
+#   RENDER_SERVICE_ID   - the Render web service to deploy (Render dashboard
+#                          > service > Settings, "srv-..." id in the URL)
+#   RENDER_API_KEY      - Render API key (Render dashboard > Account Settings
+#                          > API Keys)
+#
+# These four are only what this workflow needs to build/push an image and
+# tell Render to deploy it. The application itself (DB connection, JWT
+# secret, S3 credentials, super admin bootstrap, frontend origin/CORS) reads
+# its config from environment variables set directly on the Render service -
+# see ../ENVIRONMENT.md (one level up, alongside this repo) for what each one
+# does and whether it's required. Render is expected to already be configured
+# to pull the `latest` tag of this image; this workflow doesn't touch that
+# service-level config.
+name: Build and Deploy
+on:
+  push:
+    branches: [main]
+    # Docs-only changes don't affect the running application - skip the
+    # build/push/deploy cycle for them. Everything else in this repo is
+    # backend code, so there's no other subfolder worth filtering by.
+    paths-ignore:
+      - '**/*.md'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # Fail fast on a compile/test-setup error before paying for a Docker
+      # build. Yes, the Dockerfile's build stage repeats this build inside
+      # the container - that's intentional, since the container image must
+      # be self-contained (buildable without a host-built jar). This step
+      # exists purely for faster feedback and to use setup-java's Maven
+      # cache, which the isolated Docker build can't share.
+      - name: Build with Maven
+        run: ./mvnw clean package -DskipTests -B
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Single-arch (amd64) build: Render's infrastructure runs amd64, so a
+      # multi-arch manifest would only add build time (QEMU-emulated arm64
+      # compilation) for a platform nothing here ever deploys to. Revisit if
+      # this image is ever run somewhere arm64-only (e.g. local Apple
+      # Silicon dev via this same image, rather than `docker compose build`).
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/stock-bridge-api:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/stock-bridge-api:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      # Actively maintained (latest release v1.5.0, Feb 2026); chosen over a
+      # bare deploy-hook curl because wait_deploy polls Render until the
+      # deploy actually finishes and fails the job on a failed deploy - a
+      # plain webhook call only confirms the trigger was accepted, so the
+      # workflow would report green before knowing whether the deploy
+      # actually succeeded.
+      - name: Trigger Render deploy
+        uses: JorgeLNJunior/render-deploy@v1.5.0
+        with:
+          service_id: ${{ secrets.RENDER_SERVICE_ID }}
+          api_key: ${{ secrets.RENDER_API_KEY }}
+          wait_deploy: true
