@@ -11,6 +11,9 @@ spring:
     # db/seed holds demo/local-only data (not real schema changes) - never
     # added to application-prod.yml, so it can never run in production.
     locations: classpath:db/migration,classpath:db/seed
+    # See application-local.yml: the V9000 seed forces every later real
+    # migration to be out of order on an already-seeded database.
+    out-of-order: true
 
 app:
   jwt:

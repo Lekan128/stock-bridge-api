@@ -5,10 +5,31 @@ import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /** Never carries passwordHash. */
-public record UserSummaryResponse(UUID id, String username, String role, boolean active, OffsetDateTime createdAt) {
+public record UserSummaryResponse(
+        UUID id,
+        String username,
+        String firstName,
+        String lastName,
+        String email,
+        String phone,
+        String jobTitle,
+        String role,
+        boolean root,
+        boolean active,
+        OffsetDateTime createdAt) {
 
     public static UserSummaryResponse from(User user) {
         return new UserSummaryResponse(
-                user.getId(), user.getUsername(), user.getRole().getName(), user.isActive(), user.getCreatedAt());
+                user.getId(),
+                user.getUsername(),
+                user.getFirstName(),
+                user.getLastName(),
+                user.getEmail(),
+                user.getPhone(),
+                user.getJobTitle(),
+                user.getRole().getName(),
+                user.isRoot(),
+                user.isActive(),
+                user.getCreatedAt());
     }
 }

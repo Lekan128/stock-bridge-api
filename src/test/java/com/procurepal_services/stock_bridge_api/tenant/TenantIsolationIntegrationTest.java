@@ -51,14 +51,15 @@ class TenantIsolationIntegrationTest {
     @Test
     @Transactional
     void tenantScopedQueryNeverReturnsAnotherTenantsData() {
-        Role staffRole = roleRepository.findByName("STAFF")
-                .orElseThrow(() -> new IllegalStateException("STAFF role not seeded - run the Flyway migrations"));
+        Role storekeeperRole = roleRepository.findByName("STOREKEEPER")
+                .orElseThrow(
+                        () -> new IllegalStateException("STOREKEEPER role not seeded - run the Flyway migrations"));
 
         Client clientA = createClient("Client A");
         Client clientB = createClient("Client B");
 
-        User userA = createUser(clientA.getId(), "alice", staffRole);
-        User userB = createUser(clientB.getId(), "bob", staffRole);
+        User userA = createUser(clientA.getId(), "alice", storekeeperRole);
+        User userB = createUser(clientB.getId(), "bob", storekeeperRole);
 
         // Layer 1: enable the Hibernate filter for client A only, the same way
         // TenantResolutionFilter does for a real request.

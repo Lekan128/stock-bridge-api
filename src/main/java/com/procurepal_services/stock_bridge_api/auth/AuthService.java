@@ -5,7 +5,6 @@ import com.procurepal_services.stock_bridge_api.auth.dto.LoginRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantUserSummary;
 import com.procurepal_services.stock_bridge_api.entity.Client;
-import com.procurepal_services.stock_bridge_api.entity.Permission;
 import com.procurepal_services.stock_bridge_api.entity.RefreshToken;
 import com.procurepal_services.stock_bridge_api.entity.SubjectType;
 import com.procurepal_services.stock_bridge_api.entity.User;
@@ -64,7 +63,7 @@ public class AuthService {
      */
     @Transactional
     public TenantLoginResponse issueLoginResponse(User user, Client client) {
-        List<String> permissionCodes = permissionCodesOf(user);
+        List<String> permissionCodes = PermissionCodes.of(user);
         String accessToken = jwtService.issueTenantAccessToken(user, permissionCodes);
         String refreshToken = refreshTokenService.issue(SubjectType.USER, user.getId());
 
@@ -100,7 +99,7 @@ public class AuthService {
         // Rotate: the old refresh token is single-use, limiting replay if it leaked.
         refreshTokenService.revoke(existing);
         String newRefreshToken = refreshTokenService.issue(SubjectType.USER, user.getId());
-        String accessToken = jwtService.issueTenantAccessToken(user, permissionCodesOf(user));
+        String accessToken = jwtService.issueTenantAccessToken(user, PermissionCodes.of(user));
 
         return new AuthTokens(accessToken, newRefreshToken, jwtService.accessTokenExpirationSeconds());
     }
@@ -108,12 +107,5 @@ public class AuthService {
     @Transactional
     public void logout(String rawRefreshToken) {
         refreshTokenService.revoke(rawRefreshToken);
-    }
-
-    private List<String> permissionCodesOf(User user) {
-        return user.getRole().getPermissions().stream()
-                .map(Permission::getCode)
-                .sorted()
-                .toList();
     }
 }

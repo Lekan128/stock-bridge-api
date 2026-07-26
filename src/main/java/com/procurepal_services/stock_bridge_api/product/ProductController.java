@@ -28,32 +28,45 @@ import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
-/** Tenant-scoped product catalog - see ProductManagementService for isolation and image-upload handling. */
+/**
+ * Tenant-scoped product catalog - see ProductManagementService for isolation
+ * and image-upload handling.
+ *
+ * Authorized per method rather than per class because reading the catalog and
+ * changing it are separate permissions: VIEW_PRODUCTS is held by every role
+ * (a finance officer needs to see what things cost; a storekeeper needs to
+ * find the item they're counting), while MANAGE_PRODUCTS is what actually
+ * writes to it. The import template and bulk upload count as writing - the
+ * template exists only to be filled in and posted back.
+ */
 @RestController
 @RequestMapping("/api/products")
 @RequiredArgsConstructor
-@PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
 public class ProductController {
 
     private final ProductManagementService productManagementService;
     private final ProductExcelService productExcelService;
 
     @GetMapping("/template")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<byte[]> template() {
         return xlsxResponse(productExcelService.generateTemplate(), "product-import-template.xlsx");
     }
 
     @GetMapping("/export")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public ResponseEntity<byte[]> export() {
         return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
     }
 
     @PostMapping(value = "/bulk-upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<BulkUploadResponse> bulkUpload(@RequestPart("file") MultipartFile file) {
         return ResponseEntity.status(HttpStatus.CREATED).body(productManagementService.bulkUpload(file));
     }
 
     @GetMapping
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public Page<ProductResponse> list(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Boolean active,
@@ -62,16 +75,19 @@ public class ProductController {
     }
 
     @GetMapping("/low-stock")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public List<ProductResponse> lowStock() {
         return productManagementService.lowStock();
     }
 
     @GetMapping("/{id}")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public ProductResponse get(@PathVariable UUID id) {
         return productManagementService.get(id);
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<ProductResponse> create(
             @Valid @RequestPart("product") CreateProductRequest request,
             @RequestPart(value = "image", required = false) MultipartFile image) {
@@ -79,6 +95,7 @@ public class ProductController {
     }
 
     @PutMapping(value = "/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ProductResponse update(
             @PathVariable UUID id,
             @Valid @RequestPart("product") UpdateProductRequest request,
@@ -87,6 +104,7 @@ public class ProductController {
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<Void> deactivate(@PathVariable UUID id) {
         productManagementService.deactivate(id);
         return ResponseEntity.noContent().build();

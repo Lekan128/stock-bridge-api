@@ -57,6 +57,34 @@ public class User extends TenantAwareEntity {
     @Column(name = "is_active", nullable = false)
     private boolean active;
 
+    /**
+     * True for the tenant's account creator (the user ClientSignupService makes
+     * at signup), at most one per client - enforced by a partial unique index,
+     * not just here. This is deliberately not a role: it survives whatever role
+     * the account holder is on, and it exists only so another admin can't lock
+     * the account holder out or take over their credentials. See
+     * UserManagementService for the rules it drives.
+     */
+    @Column(name = "is_root", nullable = false)
+    private boolean root;
+
+    @Column(name = "first_name", length = 100)
+    private String firstName;
+
+    @Column(name = "last_name", length = 100)
+    private String lastName;
+
+    // Contact email, unrelated to username - a sub-user's username needn't be
+    // an email (only signup's admin username is required to be one).
+    @Column(name = "email", length = 255)
+    private String email;
+
+    @Column(name = "phone", length = 50)
+    private String phone;
+
+    @Column(name = "job_title", length = 100)
+    private String jobTitle;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
