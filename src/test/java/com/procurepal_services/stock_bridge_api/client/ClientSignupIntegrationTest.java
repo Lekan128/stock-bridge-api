@@ -47,10 +47,15 @@ class ClientSignupIntegrationTest {
         assertThat(body.tokens().accessToken()).isNotBlank();
         assertThat(body.tokens().refreshToken()).isNotBlank();
         assertThat(body.user().username()).isEqualTo("owner-" + unique + "@example.com");
-        assertThat(body.user().role()).isEqualTo("ADMIN");
+        assertThat(body.user().role()).isEqualTo("OWNER");
         assertThat(body.user().permissions())
                 .containsExactlyInAnyOrder(
-                        "MANAGE_USERS", "MANAGE_PRODUCTS", "MANAGE_INVENTORY", "VIEW_ANALYTICS", "MANAGE_ROLES");
+                        "MANAGE_USERS",
+                        "MANAGE_ROLES",
+                        "MANAGE_PRODUCTS",
+                        "VIEW_PRODUCTS",
+                        "MANAGE_INVENTORY",
+                        "VIEW_ANALYTICS");
         // auto-suggested from the name: lowercased, hyphenated
         assertThat(body.user().clientIdentifier()).startsWith("acme-corp-");
 

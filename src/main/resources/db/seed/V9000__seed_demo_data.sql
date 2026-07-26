@@ -6,17 +6,24 @@
 -- references db/seed, so this can never run against a production database
 -- even by accident. Both locations still share one Flyway schema history
 -- table, so the version prefix here (V9000) is deliberately far above the
--- real schema migrations (currently V1-V4) to guarantee it never collides
--- with a future one.
+-- real schema migrations (currently V1-V5) to guarantee it never collides
+-- with a future one. The flip side of that choice: once this file has been
+-- applied locally, every later real migration is "out of order" relative to
+-- it, which is why the local/docker profiles set spring.flyway.out-of-order.
+-- Editing this file after it has been applied also changes its checksum, so
+-- an existing local database needs a Flyway repair (or a fresh volume) before
+-- it will start again.
 --
 -- ============================================================================
 -- Demo login credentials (also documented in the root APP_TOUR.md "Try it
 -- out" section and stock-bridge-api/README.md):
 --
 --   Client identifier: demo
---   Username: admin    Password: Demo1234!   (role ADMIN)
---   Username: manager  Password: Demo1234!   (role MANAGER)
---   Username: staff    Password: Demo1234!   (role STAFF)
+--   Username: admin    Password: Demo1234!   (role OWNER, the root user)
+--   Username: manager  Password: Demo1234!   (role PROCUREMENT_MANAGER)
+--   Username: staff    Password: Demo1234!   (role STOREKEEPER)
+--   Username: stock    Password: Demo1234!   (role INVENTORY_OFFICER)
+--   Username: finance  Password: Demo1234!   (role FINANCE_OFFICER)
 --
 -- The password hash below is bcrypt("Demo1234!"), generated with the app's
 -- own BCryptPasswordEncoder and verified with encoder.matches(...) before
@@ -26,13 +33,19 @@
 INSERT INTO clients (name, slug, admin_contact_email) VALUES
     ('Demo Retail Co', 'demo', 'admin@demo.example');
 
-INSERT INTO users (client_id, username, password_hash, role_id)
-SELECT c.id, v.username, '$2a$10$kTBnKCWpk/bdB.G8xq5KK.MIhANye.rDwoXrlAQhF2sf9hrBjZqVm', r.id
+-- 'admin' is seeded as the root user (is_root) because it stands in for the
+-- account creator a real tenant would get from ClientSignupService - the demo
+-- tenant is created by this script instead, so the flag has to be set here.
+INSERT INTO users (client_id, username, password_hash, role_id, is_root, first_name, last_name, email, job_title)
+SELECT c.id, v.username, '$2a$10$kTBnKCWpk/bdB.G8xq5KK.MIhANye.rDwoXrlAQhF2sf9hrBjZqVm', r.id,
+       v.is_root, v.first_name, v.last_name, v.email, v.job_title
 FROM (VALUES
-    ('admin',   'ADMIN'),
-    ('manager', 'MANAGER'),
-    ('staff',   'STAFF')
-) AS v(username, role_name)
+    ('admin',   'OWNER',               TRUE,  'Ada',   'Okafor',   'admin@demo.example',   'Managing Director'),
+    ('manager', 'PROCUREMENT_MANAGER', FALSE, 'Bola',  'Adeyemi',  'manager@demo.example', 'Procurement Manager'),
+    ('staff',   'STOREKEEPER',         FALSE, 'Chidi', 'Nwosu',    'staff@demo.example',   'Storekeeper'),
+    ('stock',   'INVENTORY_OFFICER',   FALSE, 'Dayo',  'Ibrahim',  'stock@demo.example',   'Inventory Officer'),
+    ('finance', 'FINANCE_OFFICER',     FALSE, 'Ese',   'Uche',     'finance@demo.example', 'Finance Officer')
+) AS v(username, role_name, is_root, first_name, last_name, email, job_title)
 JOIN clients c ON c.slug = 'demo'
 JOIN roles r ON r.name = v.role_name;
 

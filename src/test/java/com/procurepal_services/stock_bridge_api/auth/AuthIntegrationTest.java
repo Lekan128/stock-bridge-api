@@ -65,8 +65,9 @@ class AuthIntegrationTest {
 
     @BeforeEach
     void setUp() {
-        Role staffRole = roleRepository.findByName("STAFF")
-                .orElseThrow(() -> new IllegalStateException("STAFF role not seeded - run the Flyway migrations"));
+        Role storekeeperRole = roleRepository.findByName("STOREKEEPER")
+                .orElseThrow(
+                        () -> new IllegalStateException("STOREKEEPER role not seeded - run the Flyway migrations"));
 
         String unique = UUID.randomUUID().toString();
         client = clientRepository.save(Client.builder()
@@ -81,7 +82,7 @@ class AuthIntegrationTest {
             userRepository.save(User.builder()
                     .username("alice")
                     .passwordHash(passwordEncoder.encode(RAW_PASSWORD))
-                    .role(staffRole)
+                    .role(storekeeperRole)
                     .active(true)
                     .build());
         } finally {
@@ -102,8 +103,8 @@ class AuthIntegrationTest {
         assertThat(body.tokens().accessToken()).isNotBlank();
         assertThat(body.tokens().refreshToken()).isNotBlank();
         assertThat(body.user().username()).isEqualTo("alice");
-        assertThat(body.user().role()).isEqualTo("STAFF");
-        assertThat(body.user().permissions()).containsExactly("MANAGE_INVENTORY");
+        assertThat(body.user().role()).isEqualTo("STOREKEEPER");
+        assertThat(body.user().permissions()).containsExactly("MANAGE_INVENTORY", "VIEW_PRODUCTS");
         assertThat(body.user().clientName()).isEqualTo(client.getName());
     }
 

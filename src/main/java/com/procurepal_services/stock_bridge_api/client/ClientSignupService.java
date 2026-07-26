@@ -10,6 +10,7 @@ import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
+import com.procurepal_services.stock_bridge_api.user.TenantRoles;
 import java.util.Locale;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -18,8 +19,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Self-service tenant signup: creates a client and its first (admin) user in
- * one transaction, then logs that user in immediately. The client-identifier
+ * Self-service tenant signup: creates a client and its first user - the OWNER,
+ * flagged as root - in one transaction, then logs that user in immediately. The client-identifier
  * uniqueness check is pre-checked (clean 409 for the common case) and also
  * backstopped by the DB's unique constraint via ClientSignupExceptionHandler
  * for the rare concurrent-signup race - see that class for why it isn't
@@ -48,8 +49,8 @@ public class ClientSignupService {
             throw new ClientIdentifierTakenException(slug);
         }
 
-        Role adminRole = roleRepository.findByName("ADMIN")
-                .orElseThrow(() -> new IllegalStateException("ADMIN role not seeded - run the Flyway migrations"));
+        Role ownerRole = roleRepository.findByName(TenantRoles.OWNER)
+                .orElseThrow(() -> new IllegalStateException("OWNER role not seeded - run the Flyway migrations"));
 
         Client client = clientRepository.save(Client.builder()
                 .name(request.name())
@@ -63,19 +64,24 @@ public class ClientSignupService {
         // for this one privileged, server-side write, same pattern as any other
         // system-initiated first-user creation. See User's class doc.
         TenantContext.set(client.getId());
-        User adminUser;
+        User ownerUser;
         try {
-            adminUser = userRepository.save(User.builder()
+            ownerUser = userRepository.save(User.builder()
                     .username(request.adminEmail())
                     .passwordHash(passwordEncoder.encode(request.password()))
-                    .role(adminRole)
+                    .role(ownerRole)
                     .active(true)
+                    // This is the one place a root user is ever created. Signup is
+                    // the only moment where "who owns this account" is unambiguous;
+                    // every later user is created by somebody else and is a sub-user.
+                    .root(true)
+                    .email(request.adminEmail())
                     .build());
         } finally {
             TenantContext.clear();
         }
 
-        return authService.issueLoginResponse(adminUser, client);
+        return authService.issueLoginResponse(ownerUser, client);
     }
 
     private String resolveSlug(ClientSignupRequest request) {
