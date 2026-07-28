@@ -95,9 +95,21 @@ public class ClientSignupService {
                     .passwordHash(passwordEncoder.encode(request.password()))
                     .role(ownerRole)
                     .active(true)
-                    // This is the one place a root user is ever created. Signup is
-                    // the only moment where "who owns this account" is unambiguous;
-                    // every later user is created by somebody else and is a sub-user.
+                    // Signup is the moment where "who owns this account" is
+                    // unambiguous, so the first user is the account holder and every
+                    // later one, created by somebody else, is a sub-user.
+                    //
+                    // Two other server-side flows also create a root user, under the
+                    // same condition - a client with no users yet needs an account
+                    // holder, and only privileged code can say who it is:
+                    // PlatformOwnerBootstrapRunner (from env vars, at startup) and
+                    // SuperAdminUserService.createPlatformOwnerUser (for ProcurePal's
+                    // first user). The rule none of them breaks is that root is never
+                    // something a CALLER can ask for: it is derived server-side, and
+                    // no request DTO in this codebase has a root component.
+                    // UserManagementService hardcodes root(false) for exactly that
+                    // reason - nothing created through the tenant-facing API is ever
+                    // the account holder.
                     .root(true)
                     .email(request.adminEmail())
                     .build());

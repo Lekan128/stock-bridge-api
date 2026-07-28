@@ -63,6 +63,7 @@ class ProfileIntegrationTest {
         assertThat(me.permissions())
                 .containsExactly(
                         "BROWSE_MARKETPLACE",
+                        "MANAGE_COMPANY_PROFILE",
                         "MANAGE_DELIVERY_ADDRESSES",
                         "MANAGE_INVENTORY",
                         "MANAGE_MARKETPLACE",

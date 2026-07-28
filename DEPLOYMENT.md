@@ -42,11 +42,21 @@ can do anything.
    - `JWT_SECRET`
    - AWS S3 credentials (`AWS_REGION`/`AWS_S3_BUCKET_NAME`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`)
    - Super admin bootstrap (`SUPERADMIN_USERNAME`/`SUPERADMIN_PASSWORD`)
+   - Platform owner bootstrap (`PLATFORM_OWNER_ADMIN_EMAIL`/`PLATFORM_OWNER_ADMIN_PASSWORD`, plus
+     the optional `PLATFORM_OWNER_NAME`/`SLUG`/`ADMIN_USERNAME`/`PHONE`/`PAYMENT_TERMS`)
    - `FRONTEND_ORIGIN` (the deployed frontend's actual URL)
    - `SPRING_PROFILES_ACTIVE=prod`
 
    `stock-bridge-api/.env.example` lists the same variables as a template if it's easier to work
    from a file than the table in `ENVIRONMENT.md`.
+
+   **The two bootstrap pairs are the ones to get right on the very first deploy.** Neither has a
+   default in `prod` — that is intentional, so a forgotten variable creates nothing rather than
+   creating something with a guessable password — which means a production database brought up
+   without them has no way to sign in as the platform operator and no marketplace seller. Both
+   bootstraps are no-ops on every boot after the first, so the usual sequence is: set all four,
+   deploy, log in, rotate both passwords in the app, then delete the four variables from Render.
+   Redeploying afterwards without them is expected and harmless.
 
 Once all of the above exists, every push to `main` (that isn't docs-only) rebuilds the image,
 pushes both a `latest` tag and a `:<git-sha>` tag (the SHA tag is what makes it possible to tell

@@ -21,3 +21,21 @@ app:
     # Vercel, Netlify, ...) - REPLACE with the actual deployed frontend URL:
     #   FRONTEND_ORIGIN=https://stock-bridge-ui.onrender.com
     allowed-origins: ${FRONTEND_ORIGIN}
+
+# No app.super-admin or app.platform-owner block here, on purpose, and this is
+# NOT an omission to be "fixed" later.
+#
+# Those two bootstraps take the opposite approach to FRONTEND_ORIGIN above.
+# CORS has no safe unset state - the app must not start without knowing which
+# origins to trust - so it has no default and fails startup loudly. A bootstrap
+# does have a safe unset state: create nothing. So the fail-safe behaviour is
+# "unset means the runner is never instantiated and no account exists", which
+# application.yml's empty defaults already give us. Declaring ${SUPERADMIN_PASSWORD}
+# with no default here would instead make the variable mandatory forever - every
+# redeploy of an already-bootstrapped production database would refuse to start
+# until someone re-supplied a credential that has done its job and should have
+# been rotated away by then.
+#
+# What must never come back is a DEFAULT value for either password. See the
+# comments in application.yml and ENVIRONMENT.md for the incident that shape
+# prevents.

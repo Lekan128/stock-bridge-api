@@ -64,7 +64,8 @@ class ClientSignupIntegrationTest {
                         "VIEW_ALL_BRANCHES",
                         "MANAGE_MARKETPLACE",
                         "MANAGE_MARKETPLACE_ORDERS",
-                        "VIEW_MARKETPLACE_ANALYTICS");
+                        "VIEW_MARKETPLACE_ANALYTICS",
+                        "MANAGE_COMPANY_PROFILE");
         // A self-service signup is never the marketplace operator - that flag is
         // seeded, never claimed.
         assertThat(body.user().platformOwner()).isFalse();
