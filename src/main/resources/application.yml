@@ -70,10 +70,40 @@ app:
       # enough that a dropped webhook is caught while they are still watching.
       pending-payment-grace: ${MONNIFY_PENDING_PAYMENT_GRACE:PT10M}
       abandoned-checkout-grace: ${MONNIFY_ABANDONED_CHECKOUT_GRACE:PT24H}
-  # Optional: super admin bootstrap only runs (once) if both are set. See
-  # SuperAdminBootstrapRunner.
+  # Optional: the super admin bootstrap only runs (once) when BOTH resolve to a
+  # non-blank value, and it is the bean condition on SuperAdminBootstrapRunner
+  # that decides - unset means the runner is never even instantiated, so an
+  # unconfigured deployment does no startup work and creates no account.
+  #
+  # NOTHING HERE MAY EVER GET A DEFAULT. This file applies to every profile,
+  # prod included, so a default credential written here is a default credential
+  # in production: it used to be 'admin' / a password that is public in this
+  # repository, which meant any deploy that forgot to set SUPERADMIN_PASSWORD
+  # silently came up with a well-known super admin login. The empty defaults
+  # below exist only so an unset env var resolves to blank instead of failing
+  # placeholder resolution - the same trick app.aws and app.monnify use, and the
+  # signal the runner's condition reads. Development convenience values live in
+  # application-local.yml / application-docker.yml, where they cannot reach prod.
   super-admin:
-    username: ${SUPERADMIN_USERNAME:admin}
-    password: ${SUPERADMIN_PASSWORD:Wordpass123.}
+    username: ${SUPERADMIN_USERNAME:}
+    password: ${SUPERADMIN_PASSWORD:}
+  # The marketplace operator's own tenant (clients.is_platform_owner = TRUE).
+  # Same discipline and same fail-safe direction as app.super-admin above:
+  # PLATFORM_OWNER_ADMIN_EMAIL and PLATFORM_OWNER_ADMIN_PASSWORD are the gate and
+  # have no defaults, so unset means PlatformOwnerBootstrapRunner is not
+  # instantiated at all. The rest do have defaults because they are not secrets
+  # and a wrong display name is a UI edit, not an incident - see
+  # PlatformOwnerBootstrapProperties. Locally the platform owner comes from
+  # db/seed/V9001 instead, which never runs in prod; this is what replaces it there.
+  platform-owner:
+    name: ${PLATFORM_OWNER_NAME:ProcurePal}
+    slug: ${PLATFORM_OWNER_SLUG:procurepal}
+    admin-email: ${PLATFORM_OWNER_ADMIN_EMAIL:}
+    # Defaults to admin-email when unset, mirroring ClientSignupService, where a
+    # tenant's first user logs in with the admin email it signed up with.
+    admin-username: ${PLATFORM_OWNER_ADMIN_USERNAME:}
+    admin-password: ${PLATFORM_OWNER_ADMIN_PASSWORD:}
+    phone: ${PLATFORM_OWNER_PHONE:}
+    payment-terms: ${PLATFORM_OWNER_PAYMENT_TERMS:PREPAID}
   cors:
     allowed-origins: ${FRONTEND_ORIGIN:http://localhost:3000,http://localhost:5173}

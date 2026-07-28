@@ -146,6 +146,9 @@ class RolePermissionMatrixIntegrationTest {
         assertThat(byRole.get("OWNER"))
                 .containsExactly(
                         "BROWSE_MARKETPLACE",
+                        // V7. OWNER alone: editing the company's name and contact of
+                        // record is an account-holder job, which is what OWNER is.
+                        "MANAGE_COMPANY_PROFILE",
                         "MANAGE_DELIVERY_ADDRESSES",
                         "MANAGE_INVENTORY",
                         "MANAGE_MARKETPLACE",

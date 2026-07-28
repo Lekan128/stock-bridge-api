@@ -6,6 +6,7 @@ import com.procurepal_services.stock_bridge_api.analytics.dto.MovementsOverTimeP
 import com.procurepal_services.stock_bridge_api.analytics.dto.TopProductEntry;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.SuperAdminClientDetail;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.SuperAdminClientSummary;
+import com.procurepal_services.stock_bridge_api.superadmin.dto.UpdateClientRequest;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.UpdateClientStatusRequest;
 import jakarta.validation.Valid;
 import java.time.OffsetDateTime;
@@ -54,6 +55,32 @@ public class SuperAdminClientController {
     @GetMapping("/{id}")
     public SuperAdminClientDetail get(@PathVariable UUID id) {
         return superAdminClientService.get(id);
+    }
+
+    /**
+     * Edits a tenant's clients row: name, admin contact email, phone, payment
+     * terms and - optionally, and loudly documented on UpdateClientRequest - the
+     * login slug.
+     *
+     * <h2>Why this is general rather than /platform-owner-only</h2>
+     * The user asked for ProcurePal's own row to be editable, and ProcurePal is a
+     * client, so a platform-owner-only endpoint would have answered the question.
+     * It is general anyway for two reasons. First, consistency: this controller is
+     * already a per-client surface addressed by id (list, detail, status, three
+     * analytics endpoints all take {id} and all accept ProcurePal's id like any
+     * other), so a second, differently-shaped path for one row would be the odd
+     * one out and would leave "how do I fix a customer's misspelled company name?"
+     * with no answer at all. Second, blast radius: everything writable here is
+     * account metadata a support agent would edit from a ticket - a name, a contact
+     * address, a phone number, and the credit decision that is explicitly ops's to
+     * make (Client.paymentTerms). None of it grants access to anything. Compare
+     * SuperAdminPlatformOwnerUserController, where the writes ARE credential-
+     * adjacent and are therefore narrowed to one tenant; that is the same judgement
+     * applied to a different risk, not an inconsistency.
+     */
+    @PutMapping("/{id}")
+    public SuperAdminClientDetail update(@PathVariable UUID id, @Valid @RequestBody UpdateClientRequest request) {
+        return superAdminClientService.update(id, request);
     }
 
     @PutMapping("/{id}/status")
