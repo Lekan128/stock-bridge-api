@@ -21,7 +21,12 @@ can do anything.
 2. **Render web service, pointed at that image.** Create a Render Web Service using "Existing
    Image" (not "Build from repo") pointing at `<your-dockerhub-username>/stock-bridge-api:latest`.
    Render redeploys whenever it's told to via the API (which is what the workflow's `deploy` job
-   does) - it doesn't need to watch the GitHub repo itself.
+   does) - it doesn't need to watch the GitHub repo itself. Leave the tag here as `:latest`:
+   the workflow overrides it per-deploy with the exact `:<commit-sha>` it just built, but that
+   override applies to that one deploy only and never rewrites this setting - so `:latest` is
+   what a *manual* redeploy from the Render dashboard falls back to. Render requires the
+   registry, repository and image name configured here to match the image the workflow pushes;
+   only the tag may differ.
 
 3. **Four GitHub Actions secrets**, on the `stock-bridge-api` repo (Settings > Secrets and
    variables > Actions > New repository secret):
