@@ -11,11 +11,25 @@ spring:
     # db/seed holds demo/local-only data (not real schema changes) - never
     # added to application-prod.yml, so it can never run in production.
     locations: classpath:db/migration,classpath:db/seed
+    # See application-local.yml: the V9000 seed forces every later real
+    # migration to be out of order on an already-seeded database.
+    out-of-order: true
 
 app:
   jwt:
     # Dev-only placeholder, >=32 bytes (HS256 minimum). Never used outside local/docker.
     secret: ${JWT_SECRET:local-dev-only-jwt-signing-secret-do-not-use-in-prod}
+  # Dev-only placeholder credentials, same reasoning as application-local.yml:
+  # application.yml has no default because it applies to prod, but a
+  # `docker compose up` on a fresh volume still has to yield a usable /admin
+  # login. docker-compose.yml passes SUPERADMIN_USERNAME/SUPERADMIN_PASSWORD with
+  # these same defaults, so this only matters when the image is run outside
+  # Compose. Confined to a profile prod never activates.
+  super-admin:
+    username: ${SUPERADMIN_USERNAME:admin}
+    password: ${SUPERADMIN_PASSWORD:changeme}
+  # No app.platform-owner default here either - see application-local.yml. This
+  # profile also loads db/seed, so the platform owner already exists.
   # No override here - this profile deliberately falls through to
   # application.yml's app.cors.allowed-origins default, which already reads
   # FRONTEND_ORIGIN (see docker-compose.yml) with a localhost:5173 fallback.

@@ -16,6 +16,7 @@ import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.RoleResponse;
 import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
 import java.util.List;
@@ -71,14 +72,20 @@ class UserManagementIntegrationTest {
         ResponseEntity<UserSummaryResponse> response = restTemplate.exchange(
                 "/api/users",
                 HttpMethod.POST,
-                new HttpEntity<>(new CreateUserRequest("bob", PASSWORD, "STAFF"), authHeaders(admin)),
+                new HttpEntity<>(new CreateUserRequest("bob", PASSWORD, "STOREKEEPER", "Bob", "Barker", "bob@example.com", "+2348012345678", "Storekeeper"), authHeaders(admin)),
                 UserSummaryResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         UserSummaryResponse created = response.getBody();
         assertThat(created).isNotNull();
         assertThat(created.username()).isEqualTo("bob");
-        assertThat(created.role()).isEqualTo("STAFF");
+        assertThat(created.role()).isEqualTo("STOREKEEPER");
+        assertThat(created.firstName()).isEqualTo("Bob");
+        assertThat(created.lastName()).isEqualTo("Barker");
+        assertThat(created.email()).isEqualTo("bob@example.com");
+        assertThat(created.phone()).isEqualTo("+2348012345678");
+        assertThat(created.jobTitle()).isEqualTo("Storekeeper");
+        assertThat(created.root()).isFalse();
         assertThat(created.active()).isTrue();
     }
 
@@ -102,17 +109,26 @@ class UserManagementIntegrationTest {
     }
 
     @Test
-    void staffTokenGets403OnEveryUserManagementEndpoint() {
-        TenantLoginResponse admin = signup("Staff Perms Co");
-        createUser(admin, "staffer");
-        TenantLoginResponse staff = login(admin.user().clientIdentifier(), "staffer");
+    void storekeeperTokenGets403OnEveryUserManagementEndpoint() {
+        TenantLoginResponse admin = signup("Storekeeper Perms Co");
+        createUser(admin, "storekeeper-user");
+        TenantLoginResponse staff = login(admin.user().clientIdentifier(), "storekeeper-user");
         HttpHeaders staffAuth = authHeaders(staff);
         UUID someUserId = admin.user().id();
 
         assertForbidden("/api/users", HttpMethod.GET, staffAuth, null);
         assertForbidden("/api/users/" + someUserId, HttpMethod.GET, staffAuth, null);
-        assertForbidden("/api/users", HttpMethod.POST, staffAuth, new CreateUserRequest("x", PASSWORD, "STAFF"));
-        assertForbidden("/api/users/" + someUserId, HttpMethod.PUT, staffAuth, new UpdateUserRequest("MANAGER", null));
+        assertForbidden("/api/roles", HttpMethod.GET, staffAuth, null);
+        assertForbidden(
+                "/api/users",
+                HttpMethod.POST,
+                staffAuth,
+                new CreateUserRequest("x", PASSWORD, "STOREKEEPER", null, null, null, null, null));
+        assertForbidden(
+                "/api/users/" + someUserId,
+                HttpMethod.PUT,
+                staffAuth,
+                new UpdateUserRequest("PROCUREMENT_MANAGER", null, null, null, null, null, null));
         assertForbidden(
                 "/api/users/" + someUserId + "/reset-password",
                 HttpMethod.POST,
@@ -122,7 +138,7 @@ class UserManagementIntegrationTest {
     }
 
     @Test
-    void adminCannotChangeOwnRoleOrDeactivateSelf() {
+    void ownerCannotChangeOwnRoleOrDeactivateSelf() {
         TenantLoginResponse admin = signup("Self Lockout Co");
         HttpHeaders auth = authHeaders(admin);
         UUID ownId = admin.user().id();
@@ -130,7 +146,7 @@ class UserManagementIntegrationTest {
         ResponseEntity<ApiError> roleChangeResponse = restTemplate.exchange(
                 "/api/users/" + ownId,
                 HttpMethod.PUT,
-                new HttpEntity<>(new UpdateUserRequest("MANAGER", null), auth),
+                new HttpEntity<>(new UpdateUserRequest("PROCUREMENT_MANAGER", null, null, null, null, null, null), auth),
                 ApiError.class);
         assertThat(roleChangeResponse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(roleChangeResponse.getBody().message()).contains("own role");
@@ -141,17 +157,18 @@ class UserManagementIntegrationTest {
     }
 
     /**
-     * Calls UserManagementService directly rather than through HTTP. With the
-     * current fixed roles, MANAGE_USERS is ADMIN-only, so the only way to reach
-     * "caller != target, target is the last active admin" over HTTP is a stale
-     * (but still unexpired) JWT from an admin who was demoted/deactivated after
-     * issuance - a real scenario given the stateless access-token design (see
-     * AuthenticatedUserPrincipal), but awkward to construct reliably in a test.
-     * Calling the service directly tests the rule itself without that plumbing.
+     * Calls UserManagementService directly rather than through HTTP. MANAGE_USERS
+     * is OWNER-only, so the only way to reach "caller != target, target is the
+     * last active owner" over HTTP is a stale (but still unexpired) JWT from an
+     * owner who was demoted/deactivated after issuance - a real scenario given
+     * the stateless access-token design (see AuthenticatedUserPrincipal), but
+     * awkward to construct reliably in a test. Calling the service directly
+     * tests the rule itself without that plumbing. Neither user here is root, so
+     * this exercises the headcount guard in isolation from root protection.
      */
     @Test
-    void lastActiveAdminCannotBeRemovedByAnotherCaller() {
-        Role adminRole = roleRepository.findByName("ADMIN").orElseThrow();
+    void lastActiveOwnerCannotBeRemovedByAnotherCaller() {
+        Role adminRole = roleRepository.findByName("OWNER").orElseThrow();
         Client client = clientRepository.save(Client.builder()
                 .name("Last Admin Co")
                 .slug("last-admin-co-" + UUID.randomUUID())
@@ -174,17 +191,92 @@ class UserManagementIntegrationTest {
                     .active(true)
                     .build());
 
-            // Two active admins: A deactivating B is fine, A remains.
+            // Two active owners: A deactivating B is fine, A remains.
             userManagementService.deactivate(adminB.getId(), adminA.getId());
 
-            // Now only A is an active admin. A different caller (B, even though B
-            // is no longer an active admin themselves - see method doc) attempts
+            // Now only A is an active owner. A different caller (B, even though B
+            // is no longer an active owner themselves - see method doc) attempts
             // to deactivate A, the last one - must be blocked.
             assertThatThrownBy(() -> userManagementService.deactivate(adminA.getId(), adminB.getId()))
-                    .isInstanceOf(LastActiveAdminException.class);
+                    .isInstanceOf(LastActiveOwnerException.class);
         } finally {
             TenantContext.clear();
         }
+    }
+
+    /**
+     * The partial-update contract that makes it safe for the users table to
+     * offer an inline "deactivate" toggle: touching one field must not blank
+     * out the fields it didn't mention.
+     */
+    @Test
+    void adminUpdateOfSubUserPatchesOnlyTheFieldsProvided() {
+        TenantLoginResponse admin = signup("Sub User Edit Co");
+        HttpHeaders auth = authHeaders(admin);
+
+        UserSummaryResponse created = restTemplate.exchange(
+                        "/api/users",
+                        HttpMethod.POST,
+                        new HttpEntity<>(
+                                new CreateUserRequest(
+                                        "sub-" + UUID.randomUUID(),
+                                        PASSWORD,
+                                        "STOREKEEPER",
+                                        "Original",
+                                        "Name",
+                                        "original@example.com",
+                                        "+2340000000000",
+                                        "Storekeeper"),
+                                auth),
+                        UserSummaryResponse.class)
+                .getBody();
+
+        UserSummaryResponse afterNameChange = restTemplate.exchange(
+                        "/api/users/" + created.id(),
+                        HttpMethod.PUT,
+                        new HttpEntity<>(
+                                new UpdateUserRequest(null, null, "Renamed", null, null, null, "Inventory Officer"),
+                                auth),
+                        UserSummaryResponse.class)
+                .getBody();
+        assertThat(afterNameChange.firstName()).isEqualTo("Renamed");
+        assertThat(afterNameChange.jobTitle()).isEqualTo("Inventory Officer");
+        assertThat(afterNameChange.lastName()).isEqualTo("Name");
+        assertThat(afterNameChange.email()).isEqualTo("original@example.com");
+        assertThat(afterNameChange.phone()).isEqualTo("+2340000000000");
+        assertThat(afterNameChange.role()).isEqualTo("STOREKEEPER");
+        assertThat(afterNameChange.active()).isTrue();
+
+        UserSummaryResponse afterRoleChange = restTemplate.exchange(
+                        "/api/users/" + created.id(),
+                        HttpMethod.PUT,
+                        new HttpEntity<>(
+                                new UpdateUserRequest("FINANCE_OFFICER", false, null, null, null, null, null), auth),
+                        UserSummaryResponse.class)
+                .getBody();
+        assertThat(afterRoleChange.role()).isEqualTo("FINANCE_OFFICER");
+        assertThat(afterRoleChange.active()).isFalse();
+        assertThat(afterRoleChange.firstName()).isEqualTo("Renamed");
+        assertThat(afterRoleChange.email()).isEqualTo("original@example.com");
+    }
+
+    @Test
+    void rolesEndpointServesTheSeededCatalogueWithItsPermissions() {
+        TenantLoginResponse admin = signup("Role Catalogue Co");
+
+        ResponseEntity<List<RoleResponse>> response = restTemplate.exchange(
+                "/api/roles", HttpMethod.GET, new HttpEntity<>(authHeaders(admin)), new ParameterizedTypeReference<>() {});
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        List<RoleResponse> roles = response.getBody();
+        assertThat(roles).extracting(RoleResponse::name)
+                .containsExactly(
+                        "FINANCE_OFFICER", "INVENTORY_OFFICER", "OWNER", "PROCUREMENT_MANAGER", "STOREKEEPER");
+        assertThat(roles).allSatisfy(role -> assertThat(role.description()).isNotBlank());
+
+        RoleResponse finance = roles.stream().filter(r -> r.name().equals("FINANCE_OFFICER")).findFirst().orElseThrow();
+        assertThat(finance.permissions())
+                .containsExactly("BROWSE_MARKETPLACE", "VIEW_ANALYTICS", "VIEW_ORDERS", "VIEW_PRODUCTS");
     }
 
     private void assertForbidden(String path, HttpMethod method, HttpHeaders auth, Object body) {
@@ -209,7 +301,9 @@ class UserManagementIntegrationTest {
         restTemplate.exchange(
                 "/api/users",
                 HttpMethod.POST,
-                new HttpEntity<>(new CreateUserRequest(username, PASSWORD, "STAFF"), authHeaders(asAdmin)),
+                new HttpEntity<>(
+                        new CreateUserRequest(username, PASSWORD, "STOREKEEPER", null, null, null, null, null),
+                        authHeaders(asAdmin)),
                 UserSummaryResponse.class);
     }
 

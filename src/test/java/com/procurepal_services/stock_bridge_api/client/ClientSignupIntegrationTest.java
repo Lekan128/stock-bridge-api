@@ -47,10 +47,28 @@ class ClientSignupIntegrationTest {
         assertThat(body.tokens().accessToken()).isNotBlank();
         assertThat(body.tokens().refreshToken()).isNotBlank();
         assertThat(body.user().username()).isEqualTo("owner-" + unique + "@example.com");
-        assertThat(body.user().role()).isEqualTo("ADMIN");
+        assertThat(body.user().role()).isEqualTo("OWNER");
         assertThat(body.user().permissions())
                 .containsExactlyInAnyOrder(
-                        "MANAGE_USERS", "MANAGE_PRODUCTS", "MANAGE_INVENTORY", "VIEW_ANALYTICS", "MANAGE_ROLES");
+                        "MANAGE_USERS",
+                        "MANAGE_ROLES",
+                        "MANAGE_PRODUCTS",
+                        "VIEW_PRODUCTS",
+                        "MANAGE_INVENTORY",
+                        "VIEW_ANALYTICS",
+                        "BROWSE_MARKETPLACE",
+                        "PLACE_ORDERS",
+                        "VIEW_ORDERS",
+                        "MANAGE_DELIVERY_ADDRESSES",
+                        "RECEIVE_DELIVERIES",
+                        "VIEW_ALL_BRANCHES",
+                        "MANAGE_MARKETPLACE",
+                        "MANAGE_MARKETPLACE_ORDERS",
+                        "VIEW_MARKETPLACE_ANALYTICS",
+                        "MANAGE_COMPANY_PROFILE");
+        // A self-service signup is never the marketplace operator - that flag is
+        // seeded, never claimed.
+        assertThat(body.user().platformOwner()).isFalse();
         // auto-suggested from the name: lowercased, hyphenated
         assertThat(body.user().clientIdentifier()).startsWith("acme-corp-");
 

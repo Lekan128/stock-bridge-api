@@ -11,8 +11,29 @@ spring:
     # db/seed holds demo/local-only data (not real schema changes) - never
     # added to application-prod.yml, so it can never run in production.
     locations: classpath:db/migration,classpath:db/seed
+    # The seed is versioned V9000 so it can never collide with a real
+    # migration, which means every real migration added after a local database
+    # was first seeded arrives "out of order" behind it. Only these two
+    # seed-carrying profiles need this; production never loads db/seed and so
+    # keeps strict in-order migration.
+    out-of-order: true
 
 app:
   jwt:
     # Dev-only placeholder, >=32 bytes (HS256 minimum). Never used outside local/docker.
     secret: ${JWT_SECRET:local-dev-only-jwt-signing-secret-do-not-use-in-prod}
+  # Dev-only placeholder credentials, exactly like the JWT secret above and for
+  # the same reason: application.yml deliberately has no default (it applies to
+  # prod too), but running `./mvnw` against an empty local database still has to
+  # produce a usable /admin login without anyone having to read a doc first.
+  # Confined to this profile, which prod never activates. Matches
+  # docker-compose.yml's defaults and APP_TOUR.md so the demo has one answer.
+  super-admin:
+    username: ${SUPERADMIN_USERNAME:admin}
+    password: ${SUPERADMIN_PASSWORD:changeme}
+  # No app.platform-owner default here on purpose. Locally the platform owner
+  # already comes from db/seed/V9001, complete with a demo catalog the bootstrap
+  # runner does not create - two mechanisms racing to insert the same tenant
+  # would just mean whichever ran first decided what the demo looks like. Set
+  # PLATFORM_OWNER_ADMIN_EMAIL/PLATFORM_OWNER_ADMIN_PASSWORD in a local .env if
+  # you specifically want to exercise the runner against an unseeded database.

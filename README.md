@@ -87,7 +87,9 @@ Base path `/api`, grouped by area:
 | `/api/superadmin/analytics` | Super admin: cross-tenant analytics |
 | `/api/products` | Product CRUD, image upload, Excel bulk import/export |
 | `/api/stock` | Stock in/out/adjustment movements |
-| `/api/users` | Tenant user & role management |
+| `/api/users` | Tenant user management (sub-user create/update/deactivate/password reset) |
+| `/api/roles` | Assignable roles and the permissions each one grants |
+| `/api/me` | Signed-in user's own profile and password |
 | `/api/analytics` | Per-tenant analytics: summary, movements over time, top products, low stock |
 
 For the full request/response shape of every endpoint, run the app and open the browsable,

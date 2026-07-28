@@ -3,7 +3,7 @@ package com.procurepal_services.stock_bridge_api.security;
 import com.procurepal_services.stock_bridge_api.config.CorsProperties;
 import com.procurepal_services.stock_bridge_api.tenant.TenantResolutionFilter;
 
-import java.util.Arrays;
+import jakarta.servlet.DispatcherType;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -46,6 +46,26 @@ public class SecurityConfig {
         "/api/superadmin/auth/refresh",
         "/actuator/health",
         "/actuator/health/**",
+        // ProcurePal storefront, browsable before signing in - a wholesale price
+        // list is the shop window, not a privilege.
+        //
+        // HAZARD: these run with NO authenticated principal, so
+        // TenantResolutionFilter leaves TenantContext empty and the Hibernate
+        // tenant filter (layer 1 of tenant isolation) DISABLED for the whole
+        // request. A query that would normally be scoped for free is not scoped at
+        // all here. Every handler behind these paths must therefore filter
+        // explicitly: on is_marketplace_listed = true AND is_active = true, and
+        // defensively on the platform owner's client_id
+        // (PlatformOwnerGuard.findPlatformOwner()). Do not add a path here whose
+        // handler relies on the tenant filter.
+        "/api/marketplace/catalog/**",
+        "/api/marketplace/categories",
+        "/api/marketplace/settings",
+        // Same hazard, plus one more: this is called by Monnify, not by a browser,
+        // so there is no token to authenticate and CSRF is disabled app-wide. Its
+        // only authentication is the provider signature, which the handler MUST
+        // verify before acting on the payload.
+        "/api/payments/monnify/webhook",
         // springdoc-openapi: browsable API docs, not a tenant/superadmin resource.
         "/v3/api-docs",
         "/v3/api-docs/**",
@@ -65,6 +85,17 @@ public class SecurityConfig {
                 .formLogin(AbstractHttpConfigurer::disable)
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // Spring Security filters every dispatcher type, so when the
+                        // container forwards a 404/400/500 to /error that forward is
+                        // authorized again - and /error belongs to nobody, so an
+                        // anonymous caller got 403 instead of the status the app
+                        // actually chose. That silently broke the public storefront:
+                        // an unknown product slug under the permitted
+                        // /api/marketplace/catalog/** would answer 403 rather than
+                        // 404. The error dispatch only renders a decision already
+                        // made, so re-authorizing it protects nothing. Must be first,
+                        // or the /api/** rules below match the forwarded URI first.
+                        .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                         .requestMatchers(PERMIT_ALL_PATHS).permitAll()
                         // Order matters: the superadmin rule must be checked before the
                         // general /api/** rule, or it would never be reached.

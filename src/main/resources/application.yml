@@ -35,10 +35,75 @@ app:
       bucket-name: ${AWS_S3_BUCKET_NAME:}
     access-key-id: ${AWS_ACCESS_KEY_ID:}
     secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
-  # Optional: super admin bootstrap only runs (once) if both are set. See
-  # SuperAdminBootstrapRunner.
+  monnify:
+    # Same rationale as app.aws above: unset credentials stay blank rather than
+    # failing placeholder resolution, and MonnifyProperties.isConfigured() treats
+    # blank as "card payment unavailable" instead of crashing the app. Card
+    # checkout then returns a clean 503 and pay-on-delivery keeps working - see
+    # MonnifyRestClient for the graceful-degradation rationale.
+    api-key: ${MONNIFY_API_KEY:}
+    secret-key: ${MONNIFY_SECRET_KEY:}
+    contract-code: ${MONNIFY_CONTRACT_CODE:}
+    # Sandbox by default. Production is https://api.monnify.com - see ENVIRONMENT.md.
+    base-url: ${MONNIFY_BASE_URL:https://sandbox.monnify.com}
+    # Where Monnify sends the buyer after the hosted checkout. Must match a route
+    # the frontend actually serves (/checkout/return).
+    redirect-url: ${MONNIFY_REDIRECT_URL:http://localhost:5173/checkout/return}
+    connect-timeout: ${MONNIFY_CONNECT_TIMEOUT:10s}
+    # Generous: init-transaction is not fast, and a timeout here costs a buyer
+    # their checkout. Anything that does time out is caught by the sweep below.
+    read-timeout: ${MONNIFY_READ_TIMEOUT:30s}
+    # Monnify tokens last 1 hour; discard ours 10 minutes early so no request
+    # starts with seconds left on the clock.
+    token-refresh-margin: ${MONNIFY_TOKEN_REFRESH_MARGIN:10m}
+    # MUST stay true in production. Monnify documents that monnify-signature is
+    # only sent in production and is absent in sandbox, so sandbox webhook testing
+    # needs this off. Doing so is survivable only because a callback is never
+    # evidence here - the payment is applied from a transaction status this server
+    # fetches itself. See MonnifyWebhookService.
+    require-webhook-signature: ${MONNIFY_REQUIRE_WEBHOOK_SIGNATURE:true}
+    reconciliation:
+      # Disabling this also removes @EnableScheduling - see PaymentSchedulingConfig.
+      enabled: ${MONNIFY_RECONCILIATION_ENABLED:true}
+      interval: ${MONNIFY_RECONCILIATION_INTERVAL:PT5M}
+      # Long enough not to race a buyer still on Monnify's checkout page, short
+      # enough that a dropped webhook is caught while they are still watching.
+      pending-payment-grace: ${MONNIFY_PENDING_PAYMENT_GRACE:PT10M}
+      abandoned-checkout-grace: ${MONNIFY_ABANDONED_CHECKOUT_GRACE:PT24H}
+  # Optional: the super admin bootstrap only runs (once) when BOTH resolve to a
+  # non-blank value, and it is the bean condition on SuperAdminBootstrapRunner
+  # that decides - unset means the runner is never even instantiated, so an
+  # unconfigured deployment does no startup work and creates no account.
+  #
+  # NOTHING HERE MAY EVER GET A DEFAULT. This file applies to every profile,
+  # prod included, so a default credential written here is a default credential
+  # in production: it used to be 'admin' / a password that is public in this
+  # repository, which meant any deploy that forgot to set SUPERADMIN_PASSWORD
+  # silently came up with a well-known super admin login. The empty defaults
+  # below exist only so an unset env var resolves to blank instead of failing
+  # placeholder resolution - the same trick app.aws and app.monnify use, and the
+  # signal the runner's condition reads. Development convenience values live in
+  # application-local.yml / application-docker.yml, where they cannot reach prod.
   super-admin:
-    username: ${SUPERADMIN_USERNAME:admin}
-    password: ${SUPERADMIN_PASSWORD:Wordpass123.}
+    username: ${SUPERADMIN_USERNAME:}
+    password: ${SUPERADMIN_PASSWORD:}
+  # The marketplace operator's own tenant (clients.is_platform_owner = TRUE).
+  # Same discipline and same fail-safe direction as app.super-admin above:
+  # PLATFORM_OWNER_ADMIN_EMAIL and PLATFORM_OWNER_ADMIN_PASSWORD are the gate and
+  # have no defaults, so unset means PlatformOwnerBootstrapRunner is not
+  # instantiated at all. The rest do have defaults because they are not secrets
+  # and a wrong display name is a UI edit, not an incident - see
+  # PlatformOwnerBootstrapProperties. Locally the platform owner comes from
+  # db/seed/V9001 instead, which never runs in prod; this is what replaces it there.
+  platform-owner:
+    name: ${PLATFORM_OWNER_NAME:ProcurePal}
+    slug: ${PLATFORM_OWNER_SLUG:procurepal}
+    admin-email: ${PLATFORM_OWNER_ADMIN_EMAIL:}
+    # Defaults to admin-email when unset, mirroring ClientSignupService, where a
+    # tenant's first user logs in with the admin email it signed up with.
+    admin-username: ${PLATFORM_OWNER_ADMIN_USERNAME:}
+    admin-password: ${PLATFORM_OWNER_ADMIN_PASSWORD:}
+    phone: ${PLATFORM_OWNER_PHONE:}
+    payment-terms: ${PLATFORM_OWNER_PAYMENT_TERMS:PREPAID}
   cors:
     allowed-origins: ${FRONTEND_ORIGIN:http://localhost:3000,http://localhost:5173}

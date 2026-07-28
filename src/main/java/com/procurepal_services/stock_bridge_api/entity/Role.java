@@ -20,8 +20,10 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * A fixed, system-defined role (ADMIN, MANAGER, STAFF for V1). Not tied to a
- * client_id - roles are global and not client-editable.
+ * A system-defined role: OWNER, PROCUREMENT_MANAGER, INVENTORY_OFFICER,
+ * FINANCE_OFFICER, STOREKEEPER. Not tied to a client_id - roles are global and
+ * not client-editable yet, though /api/roles serves them from this table
+ * precisely so tenant-defined roles can be added without a frontend change.
  */
 @Entity
 @Table(name = "roles")
