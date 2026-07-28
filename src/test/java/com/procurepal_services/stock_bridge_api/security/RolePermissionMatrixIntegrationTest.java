@@ -8,14 +8,19 @@ import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.RoleResponse;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
 import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -118,6 +123,72 @@ class RolePermissionMatrixIntegrationTest {
         assertStatus(HttpStatus.OK, "/api/products", HttpMethod.GET, owner, null);
         assertStatus(HttpStatus.OK, "/api/analytics/summary", HttpMethod.GET, owner, null);
         assertStatus(HttpStatus.CREATED, createProductRequest("OWN-" + UUID.randomUUID(), owner));
+    }
+
+    /**
+     * The one place the full seeded matrix is asserted row by row, including the
+     * marketplace permissions V6 adds. The endpoint tests above prove the filter
+     * chain honours the matrix; this proves the matrix itself is what §4.11 of the
+     * marketplace contract specifies, which the endpoint tests cannot show while
+     * the marketplace controllers live in other modules.
+     */
+    @Test
+    void everyRoleCarriesExactlyTheSeededPermissionSet() {
+        HttpHeaders owner = authHeaders(signup("Permission Matrix Co"));
+
+        ResponseEntity<List<RoleResponse>> response = restTemplate.exchange(
+                "/api/roles", HttpMethod.GET, new HttpEntity<>(owner), new ParameterizedTypeReference<>() {});
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        Map<String, List<String>> byRole = response.getBody().stream()
+                .collect(Collectors.toMap(RoleResponse::name, RoleResponse::permissions));
+
+        assertThat(byRole.get("OWNER"))
+                .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_DELIVERY_ADDRESSES",
+                        "MANAGE_INVENTORY",
+                        "MANAGE_MARKETPLACE",
+                        "MANAGE_MARKETPLACE_ORDERS",
+                        "MANAGE_PRODUCTS",
+                        "MANAGE_ROLES",
+                        "MANAGE_USERS",
+                        "PLACE_ORDERS",
+                        "RECEIVE_DELIVERIES",
+                        "VIEW_ALL_BRANCHES",
+                        "VIEW_ANALYTICS",
+                        "VIEW_MARKETPLACE_ANALYTICS",
+                        "VIEW_ORDERS",
+                        "VIEW_PRODUCTS");
+        assertThat(byRole.get("PROCUREMENT_MANAGER"))
+                .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_DELIVERY_ADDRESSES",
+                        "MANAGE_INVENTORY",
+                        "MANAGE_MARKETPLACE",
+                        "MANAGE_MARKETPLACE_ORDERS",
+                        "MANAGE_PRODUCTS",
+                        "PLACE_ORDERS",
+                        "RECEIVE_DELIVERIES",
+                        "VIEW_ANALYTICS",
+                        "VIEW_MARKETPLACE_ANALYTICS",
+                        "VIEW_ORDERS",
+                        "VIEW_PRODUCTS");
+        assertThat(byRole.get("INVENTORY_OFFICER"))
+                .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_INVENTORY",
+                        "RECEIVE_DELIVERIES",
+                        "VIEW_ANALYTICS",
+                        "VIEW_MARKETPLACE_ANALYTICS",
+                        "VIEW_ORDERS",
+                        "VIEW_PRODUCTS");
+        assertThat(byRole.get("FINANCE_OFFICER"))
+                .containsExactly("BROWSE_MARKETPLACE", "VIEW_ANALYTICS", "VIEW_ORDERS", "VIEW_PRODUCTS");
+        // The storekeeper signs for goods but never sees spend: RECEIVE_DELIVERIES
+        // without VIEW_ORDERS or PLACE_ORDERS is the whole point of the split.
+        assertThat(byRole.get("STOREKEEPER"))
+                .containsExactly("BROWSE_MARKETPLACE", "MANAGE_INVENTORY", "RECEIVE_DELIVERIES", "VIEW_PRODUCTS");
     }
 
     private void assertProductCreateForbidden(HttpHeaders auth) {

@@ -35,6 +35,41 @@ app:
       bucket-name: ${AWS_S3_BUCKET_NAME:}
     access-key-id: ${AWS_ACCESS_KEY_ID:}
     secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
+  monnify:
+    # Same rationale as app.aws above: unset credentials stay blank rather than
+    # failing placeholder resolution, and MonnifyProperties.isConfigured() treats
+    # blank as "card payment unavailable" instead of crashing the app. Card
+    # checkout then returns a clean 503 and pay-on-delivery keeps working - see
+    # MonnifyRestClient for the graceful-degradation rationale.
+    api-key: ${MONNIFY_API_KEY:}
+    secret-key: ${MONNIFY_SECRET_KEY:}
+    contract-code: ${MONNIFY_CONTRACT_CODE:}
+    # Sandbox by default. Production is https://api.monnify.com - see ENVIRONMENT.md.
+    base-url: ${MONNIFY_BASE_URL:https://sandbox.monnify.com}
+    # Where Monnify sends the buyer after the hosted checkout. Must match a route
+    # the frontend actually serves (/checkout/return).
+    redirect-url: ${MONNIFY_REDIRECT_URL:http://localhost:5173/checkout/return}
+    connect-timeout: ${MONNIFY_CONNECT_TIMEOUT:10s}
+    # Generous: init-transaction is not fast, and a timeout here costs a buyer
+    # their checkout. Anything that does time out is caught by the sweep below.
+    read-timeout: ${MONNIFY_READ_TIMEOUT:30s}
+    # Monnify tokens last 1 hour; discard ours 10 minutes early so no request
+    # starts with seconds left on the clock.
+    token-refresh-margin: ${MONNIFY_TOKEN_REFRESH_MARGIN:10m}
+    # MUST stay true in production. Monnify documents that monnify-signature is
+    # only sent in production and is absent in sandbox, so sandbox webhook testing
+    # needs this off. Doing so is survivable only because a callback is never
+    # evidence here - the payment is applied from a transaction status this server
+    # fetches itself. See MonnifyWebhookService.
+    require-webhook-signature: ${MONNIFY_REQUIRE_WEBHOOK_SIGNATURE:true}
+    reconciliation:
+      # Disabling this also removes @EnableScheduling - see PaymentSchedulingConfig.
+      enabled: ${MONNIFY_RECONCILIATION_ENABLED:true}
+      interval: ${MONNIFY_RECONCILIATION_INTERVAL:PT5M}
+      # Long enough not to race a buyer still on Monnify's checkout page, short
+      # enough that a dropped webhook is caught while they are still watching.
+      pending-payment-grace: ${MONNIFY_PENDING_PAYMENT_GRACE:PT10M}
+      abandoned-checkout-grace: ${MONNIFY_ABANDONED_CHECKOUT_GRACE:PT24H}
   # Optional: super admin bootstrap only runs (once) if both are set. See
   # SuperAdminBootstrapRunner.
   super-admin:

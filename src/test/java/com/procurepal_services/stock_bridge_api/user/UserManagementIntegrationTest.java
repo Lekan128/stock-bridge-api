@@ -275,7 +275,8 @@ class UserManagementIntegrationTest {
         assertThat(roles).allSatisfy(role -> assertThat(role.description()).isNotBlank());
 
         RoleResponse finance = roles.stream().filter(r -> r.name().equals("FINANCE_OFFICER")).findFirst().orElseThrow();
-        assertThat(finance.permissions()).containsExactly("VIEW_ANALYTICS", "VIEW_PRODUCTS");
+        assertThat(finance.permissions())
+                .containsExactly("BROWSE_MARKETPLACE", "VIEW_ANALYTICS", "VIEW_ORDERS", "VIEW_PRODUCTS");
     }
 
     private void assertForbidden(String path, HttpMethod method, HttpHeaders auth, Object body) {

@@ -3,9 +3,11 @@ package com.procurepal_services.stock_bridge_api.client;
 import com.procurepal_services.stock_bridge_api.auth.AuthService;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
+import com.procurepal_services.stock_bridge_api.entity.Branch;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
+import com.procurepal_services.stock_bridge_api.repository.BranchRepository;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
@@ -19,8 +21,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Self-service tenant signup: creates a client and its first user - the OWNER,
- * flagged as root - in one transaction, then logs that user in immediately. The client-identifier
+ * Self-service tenant signup: creates a client, its default 'Head Office' branch
+ * and its first user - the OWNER, flagged as root - in one transaction, then logs
+ * that user in immediately. The client-identifier
  * uniqueness check is pre-checked (clean 409 for the common case) and also
  * backstopped by the DB's unique constraint via ClientSignupExceptionHandler
  * for the rare concurrent-signup race - see that class for why it isn't
@@ -32,9 +35,13 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class ClientSignupService {
 
+    /** The one branch every client starts with. Also the name V6's backfill uses, deliberately. */
+    private static final String DEFAULT_BRANCH_NAME = "Head Office";
+
     private final ClientRepository clientRepository;
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
+    private final BranchRepository branchRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
 
@@ -56,6 +63,10 @@ public class ClientSignupService {
                 .name(request.name())
                 .slug(slug)
                 .adminContactEmail(request.adminEmail())
+                .phone(normalize(request.phone()))
+                // Not settable at signup on purpose: a self-service tenant cannot
+                // declare itself the marketplace operator, and it cannot grant
+                // itself credit terms. Both default appropriately (false / PREPAID).
                 .active(true)
                 .build());
 
@@ -66,6 +77,19 @@ public class ClientSignupService {
         TenantContext.set(client.getId());
         User ownerUser;
         try {
+            // Every client has exactly one default branch, created here in the same
+            // transaction as the client rather than lazily on first use. The
+            // alternative - "create it when something needs one" - means every
+            // caller has to handle the absent case, and the DB's
+            // one-default-per-client index means a lazy race could fail in a place
+            // that has nothing to do with branches. V6__marketplace.sql does the
+            // equivalent backfill for clients created before this existed.
+            branchRepository.save(Branch.builder()
+                    .name(DEFAULT_BRANCH_NAME)
+                    .defaultBranch(true)
+                    .active(true)
+                    .build());
+
             ownerUser = userRepository.save(User.builder()
                     .username(request.adminEmail())
                     .passwordHash(passwordEncoder.encode(request.password()))
@@ -89,6 +113,15 @@ public class ClientSignupService {
                 ? request.clientIdentifier()
                 : request.name();
         return slugify(source);
+    }
+
+    /** Blank is how a form says "empty"; the database should say NULL. */
+    private String normalize(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private String slugify(String input) {

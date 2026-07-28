@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.jwt;
 
+import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.SuperAdmin;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import io.jsonwebtoken.Claims;
@@ -27,7 +28,13 @@ public class JwtService {
         this.signingKey = Keys.hmacShaKeyFor(properties.secret().getBytes(StandardCharsets.UTF_8));
     }
 
-    public String issueTenantAccessToken(User user, List<String> permissionCodes) {
+    /**
+     * The client is taken as a parameter rather than looked up from the user so the
+     * platformOwner claim can never be minted from a stale or re-fetched row - the
+     * caller has already loaded and validated the client it is issuing the token
+     * for.
+     */
+    public String issueTenantAccessToken(User user, Client client, List<String> permissionCodes) {
         Instant now = Instant.now();
         return Jwts.builder()
                 .subject(user.getId().toString())
@@ -36,6 +43,7 @@ public class JwtService {
                 .claim(JwtClaims.USERNAME, user.getUsername())
                 .claim(JwtClaims.ROLE, user.getRole().getName())
                 .claim(JwtClaims.PERMISSIONS, permissionCodes)
+                .claim(JwtClaims.PLATFORM_OWNER, client.isPlatformOwner())
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plusMillis(properties.accessTokenExpirationMs())))
                 .signWith(signingKey)
