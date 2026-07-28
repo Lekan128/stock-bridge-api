@@ -62,12 +62,25 @@ class ProfileIntegrationTest {
         assertThat(me.permissions()).containsExactlyElementsOf(owner.user().permissions());
         assertThat(me.permissions())
                 .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_DELIVERY_ADDRESSES",
                         "MANAGE_INVENTORY",
+                        "MANAGE_MARKETPLACE",
+                        "MANAGE_MARKETPLACE_ORDERS",
                         "MANAGE_PRODUCTS",
                         "MANAGE_ROLES",
                         "MANAGE_USERS",
+                        "PLACE_ORDERS",
+                        "RECEIVE_DELIVERIES",
+                        "VIEW_ALL_BRANCHES",
                         "VIEW_ANALYTICS",
+                        "VIEW_MARKETPLACE_ANALYTICS",
+                        "VIEW_ORDERS",
                         "VIEW_PRODUCTS");
+        // Same value the login response and the access token carry - the three must
+        // never disagree, or the UI shows marketplace admin to someone the API will
+        // refuse.
+        assertThat(me.platformOwner()).isEqualTo(owner.user().platformOwner()).isFalse();
     }
 
     /** /api/me carries no permission requirement, so the least-privileged role must reach it. */
@@ -83,7 +96,8 @@ class ProfileIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody().role()).isEqualTo("STOREKEEPER");
         assertThat(response.getBody().root()).isFalse();
-        assertThat(response.getBody().permissions()).containsExactly("MANAGE_INVENTORY", "VIEW_PRODUCTS");
+        assertThat(response.getBody().permissions())
+                .containsExactly("BROWSE_MARKETPLACE", "MANAGE_INVENTORY", "RECEIVE_DELIVERIES", "VIEW_PRODUCTS");
     }
 
     @Test

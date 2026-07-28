@@ -64,7 +64,7 @@ public class AuthService {
     @Transactional
     public TenantLoginResponse issueLoginResponse(User user, Client client) {
         List<String> permissionCodes = PermissionCodes.of(user);
-        String accessToken = jwtService.issueTenantAccessToken(user, permissionCodes);
+        String accessToken = jwtService.issueTenantAccessToken(user, client, permissionCodes);
         String refreshToken = refreshTokenService.issue(SubjectType.USER, user.getId());
 
         AuthTokens tokens = new AuthTokens(accessToken, refreshToken, jwtService.accessTokenExpirationSeconds());
@@ -74,7 +74,8 @@ public class AuthService {
                 user.getRole().getName(),
                 permissionCodes,
                 client.getName(),
-                client.getSlug());
+                client.getSlug(),
+                client.isPlatformOwner());
         return new TenantLoginResponse(tokens, summary);
     }
 
@@ -92,14 +93,18 @@ public class AuthService {
         // able to keep minting fresh access tokens through it - same intent as
         // the active check in login(), just surfaced as a generic invalid-token
         // failure here since this isn't a credentials-entry flow.
-        clientRepository.findById(user.getClientId())
+        //
+        // The row is now kept rather than discarded: the refreshed token has to
+        // carry an up-to-date platformOwner claim, so a client whose flag changed
+        // picks it up on the next refresh instead of at the next full login.
+        Client client = clientRepository.findById(user.getClientId())
                 .filter(Client::isActive)
                 .orElseThrow(InvalidRefreshTokenException::new);
 
         // Rotate: the old refresh token is single-use, limiting replay if it leaked.
         refreshTokenService.revoke(existing);
         String newRefreshToken = refreshTokenService.issue(SubjectType.USER, user.getId());
-        String accessToken = jwtService.issueTenantAccessToken(user, PermissionCodes.of(user));
+        String accessToken = jwtService.issueTenantAccessToken(user, client, PermissionCodes.of(user));
 
         return new AuthTokens(accessToken, newRefreshToken, jwtService.accessTokenExpirationSeconds());
     }

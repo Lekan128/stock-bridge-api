@@ -14,6 +14,13 @@ public record ProductResponse(
         BigDecimal unitPrice,
         BigDecimal costPrice,
         int quantityOnHand,
+        // Bought from the marketplace and paid for, but not yet confirmed as received - so it is
+        // NOT part of quantityOnHand and must never be presented as usable stock. It becomes
+        // on-hand only when the buyer marks the order received, which writes a real IN movement.
+        int incomingQuantity,
+        // The ProcurePal catalog product this row was created from, when it was created by a
+        // marketplace purchase rather than by hand. Null for anything the tenant added themselves.
+        UUID sourceProductId,
         Integer lowStockThreshold,
         String imageUrl,
         boolean active,
@@ -37,6 +44,8 @@ public record ProductResponse(
                 product.getUnitPrice(),
                 product.getCostPrice(),
                 product.getQuantityOnHand(),
+                product.getIncomingQuantity(),
+                product.getSourceProductId(),
                 product.getLowStockThreshold(),
                 product.getImageUrl(),
                 product.isActive(),

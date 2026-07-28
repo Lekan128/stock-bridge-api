@@ -13,6 +13,12 @@ import java.util.UUID;
  * helper that mints the access token's claims, so a screen gating on this list
  * can never disagree with what the API will actually authorize.
  *
+ * platformOwner is here for the same reason and with the same discipline: it is
+ * read straight off the Client row, exactly like the JWT's platformOwner claim and
+ * the login response's TenantUserSummary.platformOwner, so a page reload can never
+ * decide differently from a fresh login about whether to show the marketplace-admin
+ * nav.
+ *
  * Never carries passwordHash.
  */
 public record ProfileResponse(
@@ -29,7 +35,8 @@ public record ProfileResponse(
         boolean active,
         OffsetDateTime createdAt,
         String clientName,
-        String clientIdentifier) {
+        String clientIdentifier,
+        boolean platformOwner) {
 
     public static ProfileResponse from(User user, Client client) {
         return new ProfileResponse(
@@ -46,6 +53,7 @@ public record ProfileResponse(
                 user.isActive(),
                 user.getCreatedAt(),
                 client.getName(),
-                client.getSlug());
+                client.getSlug(),
+                client.isPlatformOwner());
     }
 }

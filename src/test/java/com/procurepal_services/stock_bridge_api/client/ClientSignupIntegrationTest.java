@@ -55,7 +55,19 @@ class ClientSignupIntegrationTest {
                         "MANAGE_PRODUCTS",
                         "VIEW_PRODUCTS",
                         "MANAGE_INVENTORY",
-                        "VIEW_ANALYTICS");
+                        "VIEW_ANALYTICS",
+                        "BROWSE_MARKETPLACE",
+                        "PLACE_ORDERS",
+                        "VIEW_ORDERS",
+                        "MANAGE_DELIVERY_ADDRESSES",
+                        "RECEIVE_DELIVERIES",
+                        "VIEW_ALL_BRANCHES",
+                        "MANAGE_MARKETPLACE",
+                        "MANAGE_MARKETPLACE_ORDERS",
+                        "VIEW_MARKETPLACE_ANALYTICS");
+        // A self-service signup is never the marketplace operator - that flag is
+        // seeded, never claimed.
+        assertThat(body.user().platformOwner()).isFalse();
         // auto-suggested from the name: lowercased, hyphenated
         assertThat(body.user().clientIdentifier()).startsWith("acme-corp-");
 
