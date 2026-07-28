@@ -15,9 +15,11 @@
 # secret, S3 credentials, super admin bootstrap, frontend origin/CORS) reads
 # its config from environment variables set directly on the Render service -
 # see ../ENVIRONMENT.md (one level up, alongside this repo) for what each one
-# does and whether it's required. Render is expected to already be configured
-# to pull the `latest` tag of this image; this workflow doesn't touch that
-# service-level config.
+# does and whether it's required. This workflow doesn't touch that
+# service-level config: the deploy below names the exact `:<commit-sha>`
+# image to run, but Render treats that as a one-off override for that
+# deploy only - the service's own image setting (the `:latest` tag) is
+# unchanged, and is what a manual redeploy from the dashboard would use.
 name: Build and Deploy
 on:
   push:
@@ -85,15 +87,76 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     steps:
-      # Actively maintained (latest release v1.5.0, Feb 2026); chosen over a
-      # bare deploy-hook curl because wait_deploy polls Render until the
-      # deploy actually finishes and fails the job on a failed deploy - a
-      # plain webhook call only confirms the trigger was accepted, so the
-      # workflow would report green before knowing whether the deploy
-      # actually succeeded.
-      - name: Trigger Render deploy
-        uses: JorgeLNJunior/render-deploy@v1.5.0
-        with:
-          service_id: ${{ secrets.RENDER_SERVICE_ID }}
-          api_key: ${{ secrets.RENDER_API_KEY }}
-          wait_deploy: true
+      # Deliberately a raw API call rather than a marketplace action. The
+      # obvious candidate (JorgeLNJunior/render-deploy) always posts
+      # {"commitId": <github.sha>}, which only means something to a
+      # repo-backed Render service. This service deploys an image from
+      # Docker Hub, so Render has no notion of our commits and rejects that
+      # payload with `service ... does not have a commit <sha>` (HTTP 404).
+      # The image-service equivalent is `imageUrl`, which the action has no
+      # input for. A deploy hook would trigger fine but only redeploys
+      # whatever tag the service already points at (`latest`) and returns
+      # before the deploy resolves - so it can neither pin the exact image
+      # this run built nor fail the job on a failed deploy. Hence: POST the
+      # deploy ourselves, then poll it to a terminal status.
+      - name: Trigger Render deploy and wait
+        env:
+          RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
+          RENDER_SERVICE_ID: ${{ secrets.RENDER_SERVICE_ID }}
+          # The immutable per-commit tag, not `latest`: this pins the deploy
+          # to the image this run just built, so a concurrent push can't
+          # race us into shipping someone else's `latest`. The repository
+          # path must match the image configured on the Render service -
+          # only the tag changes.
+          IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/stock-bridge-api:${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          api="https://api.render.com/v1/services/$RENDER_SERVICE_ID"
+
+          response=$(curl -sS -w '\n%{http_code}' \
+            -X POST "$api/deploys" \
+            -H "Authorization: Bearer $RENDER_API_KEY" \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg image "$IMAGE" '{imageUrl: $image}')")
+          http_code=$(tail -n1 <<<"$response")
+          body=$(sed '$d' <<<"$response")
+
+          if [ "$http_code" != "201" ] && [ "$http_code" != "200" ]; then
+            echo "::error::Render refused the deploy (HTTP $http_code): $body"
+            exit 1
+          fi
+
+          deploy_id=$(jq -r '.id' <<<"$body")
+          echo "Triggered deploy $deploy_id for $IMAGE"
+
+          # Render's own build+release of an image is minutes, not tens of
+          # minutes (it pulls a prebuilt image rather than compiling), so a
+          # 30m ceiling only trips on something genuinely stuck - at which
+          # point failing is more useful than a workflow hanging until the
+          # job timeout.
+          deadline=$((SECONDS + 1800))
+          while true; do
+            sleep 15
+
+            status=$(curl -sS --retry 3 --retry-all-errors \
+              -H "Authorization: Bearer $RENDER_API_KEY" \
+              "$api/deploys/$deploy_id" | jq -r '.status')
+            echo "deploy $deploy_id: $status"
+
+            case "$status" in
+              live)
+                echo "Deploy succeeded."
+                exit 0
+                ;;
+              build_failed|update_failed|pre_deploy_failed|canceled|deactivated)
+                echo "::error::Render deploy $deploy_id ended with status '$status'"
+                exit 1
+                ;;
+            esac
+
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::Timed out after 30m waiting on deploy $deploy_id (last status: '$status')"
+              exit 1
+            fi
+          done
