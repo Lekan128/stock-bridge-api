@@ -19,7 +19,7 @@ app:
     #
     # Example value once the frontend is deployed (e.g. Render static site,
     # Vercel, Netlify, ...) - REPLACE with the actual deployed frontend URL:
-    #   FRONTEND_ORIGIN=https://stock-bridge-ui.onrender.com
+    #   FRONTEND_ORIGIN=https://procurepaddy.com
     allowed-origins: ${FRONTEND_ORIGIN}
 
 # No app.super-admin or app.platform-owner block here, on purpose, and this is

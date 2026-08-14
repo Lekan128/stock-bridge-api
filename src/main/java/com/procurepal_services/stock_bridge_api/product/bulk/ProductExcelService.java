@@ -355,7 +355,7 @@ public class ProductExcelService {
                 "Rows 2-3 are examples of the expected format. Delete them before uploading, "
                         + "or leave them - any row whose sku starts with '" + EXAMPLE_SKU_MARKER_PREFIX
                         + "' is skipped automatically."));
-        comment.setAuthor("Stock Bridge");
+        comment.setAuthor("Procure Paddy");
         sheet.getRow(0).getCell(1).setCellComment(comment);
     }
 

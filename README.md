@@ -1,6 +1,6 @@
-# Stock Bridge API
+# Procure Paddy API
 
-Multi-tenant inventory management backend for Stock Bridge. Tenants ("clients") sign up, get a
+Multi-tenant inventory management backend for Procure Paddy. Tenants ("clients") sign up, get a
 dedicated slice of data isolated by a Hibernate tenant filter, and manage products, stock
 movements, users, and analytics through a JWT-secured REST API. A separate super admin surface
 lets platform operators manage tenants across the whole system.
