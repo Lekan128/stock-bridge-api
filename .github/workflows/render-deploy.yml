@@ -1,29 +1,34 @@
 # Builds the backend, publishes it to Docker Hub, and triggers a Render
-# deploy of the new image on every push to main.
+# deploy of the new image - on every push to `main` (production) and to
+# `staging` (the staging environment).
 #
 # Required repository secrets (Settings > Secrets and variables > Actions):
 #   DOCKERHUB_USERNAME  - Docker Hub username/namespace the image is pushed to
 #   DOCKERHUB_TOKEN     - Docker Hub access token (Account Settings > Security
 #                          > New Access Token) - not your account password
-#   RENDER_SERVICE_ID   - the Render web service to deploy (Render dashboard
-#                          > service > Settings, "srv-..." id in the URL)
+#   RENDER_SERVICE_ID   - the *production* Render web service to deploy (Render
+#                          dashboard > service > Settings, "srv-..." id in the URL)
 #   RENDER_API_KEY      - Render API key (Render dashboard > Account Settings
 #                          > API Keys)
+#   RENDER_STAGING_DEPLOY_HOOK - the *staging* Render web service's deploy hook
+#                          URL (Render dashboard > staging service > Settings >
+#                          Deploy Hook). Already contains its own `?key=...`,
+#                          so treat the whole URL as the secret.
 #
-# These four are only what this workflow needs to build/push an image and
-# tell Render to deploy it. The application itself (DB connection, JWT
-# secret, S3 credentials, super admin bootstrap, frontend origin/CORS) reads
-# its config from environment variables set directly on the Render service -
-# see ../ENVIRONMENT.md (one level up, alongside this repo) for what each one
-# does and whether it's required. This workflow doesn't touch that
-# service-level config: the deploy below names the exact `:<commit-sha>`
-# image to run, but Render treats that as a one-off override for that
-# deploy only - the service's own image setting (the `:latest` tag) is
-# unchanged, and is what a manual redeploy from the dashboard would use.
+# These are only what this workflow needs to build/push an image and tell
+# Render to deploy it. The application itself (DB connection, JWT secret, S3
+# credentials, super admin bootstrap, frontend origin/CORS) reads its config
+# from environment variables set directly on each Render service - see
+# ../ENVIRONMENT.md (one level up, alongside this repo) for what each one does
+# and whether it's required. This workflow doesn't touch that service-level
+# config: the deploys below name the exact `:<commit-sha>` image to run, but
+# Render treats that as a one-off override for that deploy only - each
+# service's own image setting (the `:latest` / `:staging` tag) is unchanged,
+# and is what a manual redeploy from the dashboard would use.
 name: Build and Deploy
 on:
   push:
-    branches: [main]
+    branches: [main, staging]
     # Docs-only changes don't affect the running application - skip the
     # build/push/deploy cycle for them. Everything else in this repo is
     # backend code, so there's no other subfolder worth filtering by.
@@ -32,6 +37,15 @@ on:
 
 permissions:
   contents: read
+
+# Serialize per branch: two pushes in quick succession would otherwise race
+# each other into the same Render service, and the deploy that lands last
+# isn't necessarily the newer commit. Queue rather than cancel - cancelling
+# mid-deploy would leave Render half-way through a release with no job left
+# watching it.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -70,6 +84,15 @@ jobs:
       # compilation) for a platform nothing here ever deploys to. Revisit if
       # this image is ever run somewhere arm64-only (e.g. local Apple
       # Silicon dev via this same image, rather than `docker compose build`).
+      #
+      # Two tags per build. The `:<commit-sha>` one is immutable and is what
+      # the deploy jobs below actually pin - it's how you tell which commit a
+      # service is running, and how you roll back to a specific prior image.
+      # The moving tag (`:latest` on main, `:staging` on staging) is the
+      # fallback each Render service is configured with, so a manual redeploy
+      # from the dashboard picks up that environment's newest image rather
+      # than production's. Both branches only ever trigger this workflow, so
+      # the ternary below has no third case to handle.
       - name: Build and push
         uses: docker/build-push-action@v7
         with:
@@ -77,12 +100,16 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/stock-bridge-api:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/stock-bridge-api:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/stock-bridge-api:${{ github.ref_name == 'main' && 'latest' || 'staging' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  deploy:
+  # Production: deploy via the Render API and block until the deploy reaches
+  # a terminal status, so a red workflow run means "production did not ship",
+  # not merely "we sent the request".
+  deploy-production:
+    if: github.ref_name == 'main'
     needs: build
     runs-on: ubuntu-latest
     environment: production
@@ -94,11 +121,11 @@ jobs:
       # Docker Hub, so Render has no notion of our commits and rejects that
       # payload with `service ... does not have a commit <sha>` (HTTP 404).
       # The image-service equivalent is `imageUrl`, which the action has no
-      # input for. A deploy hook would trigger fine but only redeploys
-      # whatever tag the service already points at (`latest`) and returns
-      # before the deploy resolves - so it can neither pin the exact image
-      # this run built nor fail the job on a failed deploy. Hence: POST the
-      # deploy ourselves, then poll it to a terminal status.
+      # input for. A deploy hook (what the staging job below uses) can pin
+      # the image via `imgURL`, but it returns as soon as the deploy is
+      # queued - so it can't fail this job on a failed deploy, which is the
+      # whole point of gating production on it. Hence: POST the deploy
+      # ourselves, then poll it to a terminal status.
       - name: Trigger Render deploy and wait
         env:
           RENDER_API_KEY: ${{ secrets.RENDER_API_KEY }}
@@ -160,3 +187,65 @@ jobs:
               exit 1
             fi
           done
+
+  # Staging: deploy via the service's deploy hook. The hook URL carries its
+  # own key, so staging needs exactly one secret and no account-wide Render
+  # API key - a deliberately smaller blast radius for the environment that
+  # gets pushed to most often. The trade-off is that the hook responds as
+  # soon as the deploy is *queued*, so a green job here means "Render
+  # accepted the deploy", not "staging is live" - watch the deploy itself in
+  # the Render dashboard. Production gets the stricter treatment above.
+  deploy-staging:
+    if: github.ref_name == 'staging'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Trigger Render staging deploy
+        env:
+          RENDER_STAGING_DEPLOY_HOOK: ${{ secrets.RENDER_STAGING_DEPLOY_HOOK }}
+          # Same reasoning as production: pin the immutable per-commit tag
+          # rather than the moving `:staging` one, so this deploy runs the
+          # image this run built even if another push lands mid-deploy.
+          # Render requires every component of imgURL except the tag to
+          # match the staging service's configured image.
+          IMAGE: docker.io/${{ secrets.DOCKERHUB_USERNAME }}/stock-bridge-api:${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${RENDER_STAGING_DEPLOY_HOOK:-}" ]; then
+            echo "::error::RENDER_STAGING_DEPLOY_HOOK is not set - see DEPLOYMENT.md"
+            exit 1
+          fi
+
+          # imgURL has to be URL-encoded: the value contains `/` and `:`,
+          # which would otherwise be read as URL structure rather than as
+          # part of the image reference.
+          encoded_image=$(jq -rn --arg image "$IMAGE" '$image|@uri')
+
+          # The hook URL already carries `?key=...`, but don't assume it -
+          # pick the right separator instead of producing a URL with two `?`.
+          case "$RENDER_STAGING_DEPLOY_HOOK" in
+            *\?*) separator='&' ;;
+            *)    separator='?' ;;
+          esac
+
+          response=$(curl -sS -w '\n%{http_code}' \
+            -X POST "${RENDER_STAGING_DEPLOY_HOOK}${separator}imgURL=${encoded_image}")
+          http_code=$(tail -n1 <<<"$response")
+          body=$(sed '$d' <<<"$response")
+
+          if [ "$http_code" != "201" ] && [ "$http_code" != "200" ]; then
+            # The URL is a secret, so report the status and Render's own
+            # message rather than the request that produced them. A 400 here
+            # is usually imgURL naming a different repository than the one
+            # the staging service is configured with.
+            echo "::error::Render refused the staging deploy (HTTP $http_code): $body"
+            exit 1
+          fi
+
+          # Documented response shape is {"deploy": {"id": "dep-..."}}; fall
+          # back gracefully rather than failing a deploy that was accepted.
+          deploy_id=$(jq -r '.deploy.id // .id // "unknown"' <<<"$body" 2>/dev/null || echo unknown)
+          echo "Queued staging deploy $deploy_id for $IMAGE"
+          echo "Track it in the Render dashboard - this job does not wait for it to go live."
