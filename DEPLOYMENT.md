@@ -88,7 +88,8 @@ can do anything.
      Postgres the production deploy uses - not the local Docker Compose one)
    - `JWT_SECRET`
    - AWS S3 (`AWS_REGION`/`AWS_S3_BUCKET_NAME`/`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, plus
-     `AWS_S3_KEY_PREFIX=prod`) - see [One-time setup - S3 buckets](#one-time-setup---s3-buckets-product-images)
+     `AWS_S3_KEY_PREFIX=prod` and `AWS_ROLE_ARN`) - see
+     [One-time setup - S3 buckets](#one-time-setup---s3-buckets-product-images)
    - Super admin bootstrap (`SUPERADMIN_USERNAME`/`SUPERADMIN_PASSWORD`)
    - Platform owner bootstrap (`PLATFORM_OWNER_ADMIN_EMAIL`/`PLATFORM_OWNER_ADMIN_PASSWORD`, plus
      the optional `PLATFORM_OWNER_NAME`/`SLUG`/`ADMIN_USERNAME`/`PHONE`/`PAYMENT_TERMS`)
@@ -146,8 +147,8 @@ Staging reuses the Docker Hub repository and credentials above. What it needs of
      [`../stock-bridge-ui/DEPLOYMENT.md`](../stock-bridge-ui/DEPLOYMENT.md).
    - A **different** `JWT_SECRET` from production, so a token minted by one environment is not
      accepted by the other.
-   - S3: the non-prod bucket with `AWS_S3_KEY_PREFIX=staging`, and the staging access key -
-     never production's. Staging uploads are real S3 operations. See
+   - S3: the non-prod bucket with `AWS_S3_KEY_PREFIX=staging`, and staging's own access key and
+     `AWS_ROLE_ARN` - never production's. Staging uploads are real S3 operations. See
      [One-time setup - S3 buckets](#one-time-setup---s3-buckets-product-images).
    - The bootstrap pairs (`SUPERADMIN_*`, `PLATFORM_OWNER_ADMIN_*`) behave exactly as described
      above - required for the first boot against an empty staging database, no-ops afterwards.
@@ -257,23 +258,48 @@ aws s3api put-bucket-policy --bucket procurepal-images-nonprod --policy '{
 to S3. A CORS rule would only become necessary if the frontend started uploading directly to S3
 with presigned URLs, or reading image pixels through a `<canvas>`.
 
-### One IAM user per environment
+### One role per environment, assumed by one user
 
-Three users - `procurepal-s3-prod`, `procurepal-s3-staging`, `procurepal-s3-local` - each with an
-inline policy naming only its own bucket and prefix. This is what makes the shared non-prod
-bucket safe, and what keeps a leaked key from being interesting.
+The application does not hold credentials that can write to S3. It holds credentials that can ask
+for credentials that can, which is a meaningfully smaller thing to leak. Per environment:
+
+- a **role** (`procurepal-s3-prod`, `procurepal-s3-staging`, `procurepal-s3-local`) whose
+  permission policy grants S3 access to that environment's bucket and prefix, and whose trust
+  policy names the matching user as principal;
+- a **user** of the same name whose only permission is `sts:AssumeRole` on that one role — no S3
+  permissions whatsoever.
+
+The user's long-lived access key is then worth nothing on its own: presented to S3 directly it is
+refused, and the only thing it can do is request a session that expires within the hour. The
+prefix scoping still does the work of keeping environments apart; the role is what stops a leaked
+key from being immediately useful.
 
 ```bash
-# Repeat per environment, substituting BUCKET/PREFIX/USER:
+# Repeat per environment, substituting NAME/BUCKET/PREFIX:
 #   procurepal-s3-prod     procurepal-images-prod     prod
 #   procurepal-s3-staging  procurepal-images-nonprod  staging
 #   procurepal-s3-local    procurepal-images-nonprod  local
-USER=procurepal-s3-staging
+NAME=procurepal-s3-staging
 BUCKET=procurepal-images-nonprod
 PREFIX=staging
+ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
 
-aws iam create-user --user-name "$USER"
-aws iam put-user-policy --user-name "$USER" --policy-name s3-product-images \
+# 1. The user. It gets no S3 permissions - only the right to assume the role.
+aws iam create-user --user-name "$NAME"
+
+# 2. The role, trusting that user and nothing else.
+aws iam create-role --role-name "$NAME" \
+  --assume-role-policy-document "$(jq -nc --arg principal "arn:aws:iam::$ACCOUNT:user/$NAME" '{
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Principal: { AWS: $principal },
+      Action: "sts:AssumeRole"
+    }]
+  }')"
+
+# 3. The S3 permissions live on the ROLE, scoped to one bucket and one prefix.
+aws iam put-role-policy --role-name "$NAME" --policy-name s3-product-images \
   --policy-document "$(jq -nc --arg arn "arn:aws:s3:::$BUCKET/$PREFIX/*" '{
     Version: "2012-10-17",
     Statement: [{
@@ -282,17 +308,52 @@ aws iam put-user-policy --user-name "$USER" --policy-name s3-product-images \
       Resource: $arn
     }]
   }')"
-aws iam create-access-key --user-name "$USER"
+
+# 4. The user's only permission: assume that one role.
+aws iam put-user-policy --user-name "$NAME" --policy-name assume-s3-role \
+  --policy-document "$(jq -nc --arg arn "arn:aws:iam::$ACCOUNT:role/$NAME" '{
+    Version: "2012-10-17",
+    Statement: [{
+      Effect: "Allow",
+      Action: "sts:AssumeRole",
+      Resource: $arn
+    }]
+  }')"
+
+aws iam create-access-key --user-name "$NAME"
 ```
 
 `create-access-key` prints the secret exactly once. Paste it straight into the Render service's
-environment variables (or your local `.env`) - it is a credential and belongs in neither this
+environment variables (or your local `.env`) — it is a credential and belongs in neither this
 repository nor a chat window.
 
-The policy has no `s3:ListBucket`: the application only ever writes a key it just generated and
-reads one it stored, so listing would be a capability with no caller. `s3:DeleteObject` is
-included because image replacement is the obvious next change to this code, and re-issuing keys
-to add it later is more disruptive than granting it now within a prefix that only holds images.
+The role policy has no `s3:ListBucket`: the application only ever writes a key it just generated
+and reads one it stored, so listing would be a capability with no caller. `s3:DeleteObject` is
+included because image replacement is the obvious next change to this code, and re-issuing
+permissions later is more disruptive than granting it now within a prefix that only holds images.
+
+### The 1-hour session is not a performance concern
+
+A role's default (and here, maximum) session duration is one hour, and `S3ClientConfig` builds an
+`StsAssumeRoleCredentialsProvider` with `asyncCredentialUpdateEnabled(true)`. That provider caches
+the session and refreshes it **on a background thread 5 minutes before it expires** (the SDK's
+`DEFAULT_PREFETCH_TIME`), treating credentials as stale only in the final minute
+(`DEFAULT_STALE_TIME`). So:
+
+- the STS call happens roughly once every 55 minutes, not once per upload;
+- no image upload ever blocks on it, because the replacement session is in place long before any
+  request could find the old one expired;
+- `sts:AssumeRole` is not billed.
+
+Left on the default (`asyncCredentialUpdateEnabled` unset), the same refresh still happens on the
+same schedule, but on the calling thread — one unlucky upload per hour would pay a single STS
+round trip. Enabling async removes even that. Raising the role's `MaxSessionDuration` would reduce
+how often the refresh happens, which is not a problem worth solving: a shorter session is the part
+of this design that limits the damage of a leak.
+
+The one thing that *would* hurt is building a fresh credentials provider per request instead of
+holding the bean — that would mean an STS call on every upload. The provider is a singleton bean
+precisely so it isn't.
 
 ### Then set, per environment
 
@@ -300,8 +361,14 @@ to add it later is more disruptive than granting it now within a prefix that onl
 |---|---|---|---|
 | `AWS_S3_BUCKET_NAME` | `procurepal-images-prod` | `procurepal-images-nonprod` | `procurepal-images-nonprod` |
 | `AWS_S3_KEY_PREFIX` | `prod` | `staging` | `local` |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `procurepal-s3-prod`'s | `procurepal-s3-staging`'s | `procurepal-s3-local`'s |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | user `procurepal-s3-prod`'s | user `procurepal-s3-staging`'s | user `procurepal-s3-local`'s |
+| `AWS_ROLE_ARN` | `arn:aws:iam::<account>:role/procurepal-s3-prod` | `…/procurepal-s3-staging` | `…/procurepal-s3-local` |
+| `AWS_ROLE_SESSION_NAME` | `stock-bridge-api-prod` | `stock-bridge-api-staging` | `stock-bridge-api-local` |
 | `AWS_REGION` | same in all three, and must match the bucket's actual region | | |
+
+Leaving `AWS_ROLE_ARN` blank is still supported and falls back to using the access key against S3
+directly — but then the key needs the S3 policy on it, and it is a long-lived credential that can
+write to your bucket. Use it only if a role genuinely isn't available.
 
 ### Why there is no `application-staging.yml`
 

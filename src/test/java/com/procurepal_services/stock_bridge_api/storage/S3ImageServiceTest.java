@@ -27,9 +27,10 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 class S3ImageServiceTest {
 
     private static final AwsProperties CONFIGURED =
-            new AwsProperties("us-east-1", new AwsProperties.S3("test-bucket", "staging"), "AKIAEXAMPLE", "secret");
+            new AwsProperties(
+                    "us-east-1", new AwsProperties.S3("test-bucket", "staging"), "AKIAEXAMPLE", "secret", null, null);
     private static final AwsProperties UNCONFIGURED =
-            new AwsProperties(null, new AwsProperties.S3(null, null), null, null);
+            new AwsProperties(null, new AwsProperties.S3(null, null), null, null, null, null);
 
     private S3Client s3Client;
 
@@ -80,7 +81,9 @@ class S3ImageServiceTest {
         UUID tenantId = UUID.randomUUID();
         TenantContext.set(tenantId);
         S3ImageService service = new S3ImageService(
-                new AwsProperties("us-east-1", new AwsProperties.S3("test-bucket", "  "), "AKIAEXAMPLE", "secret"),
+                new AwsProperties(
+                        "us-east-1", new AwsProperties.S3("test-bucket", "  "), "AKIAEXAMPLE", "secret", null,
+                        null),
                 s3Client);
         MockMultipartFile file = new MockMultipartFile("image", "photo.jpg", "image/jpeg", new byte[] {1, 2, 3});
 
@@ -97,8 +100,9 @@ class S3ImageServiceTest {
         UUID tenantId = UUID.randomUUID();
         TenantContext.set(tenantId);
         S3ImageService service = new S3ImageService(
-                new AwsProperties("us-east-1", new AwsProperties.S3("test-bucket", "/staging/"), "AKIAEXAMPLE",
-                        "secret"),
+                new AwsProperties(
+                        "us-east-1", new AwsProperties.S3("test-bucket", "/staging/"), "AKIAEXAMPLE", "secret",
+                        null, null),
                 s3Client);
         MockMultipartFile file = new MockMultipartFile("image", "photo.jpg", "image/jpeg", new byte[] {1, 2, 3});
 

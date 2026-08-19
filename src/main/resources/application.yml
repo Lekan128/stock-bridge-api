@@ -42,6 +42,16 @@ app:
       key-prefix: ${AWS_S3_KEY_PREFIX:}
     access-key-id: ${AWS_ACCESS_KEY_ID:}
     secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
+    # Optional. Blank means the access key above is used against S3 directly
+    # and must carry the S3 permissions itself. Set means that key is only good
+    # for sts:AssumeRole, the role carries the S3 permissions, and what this
+    # application actually holds is a session that expires on its own. Prefer
+    # the role - see S3ClientConfig and DEPLOYMENT.md.
+    role-arn: ${AWS_ROLE_ARN:}
+    # Names the session in CloudTrail, so "who deleted this object" has an
+    # answer per environment rather than one shared name. Ignored when
+    # role-arn is blank.
+    role-session-name: ${AWS_ROLE_SESSION_NAME:stock-bridge-api}
   monnify:
     # Same rationale as app.aws above: unset credentials stay blank rather than
     # failing placeholder resolution, and MonnifyProperties.isConfigured() treats
