@@ -137,6 +137,16 @@
 			<artifactId>s3</artifactId>
 		</dependency>
 
+		<!--
+			STS, for assuming the S3 role rather than giving the application
+			long-lived keys that carry the S3 permissions themselves. Version
+			comes from the AWS BOM above. See S3ClientConfig.
+		-->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>sts</artifactId>
+		</dependency>
+
 		<!-- Browsable API docs at /swagger-ui.html, generated from the controllers/DTOs already in place. -->
 		<dependency>
 			<groupId>org.springdoc</groupId>

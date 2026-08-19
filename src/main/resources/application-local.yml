@@ -17,6 +17,8 @@ spring:
     # seed-carrying profiles need this; production never loads db/seed and so
     # keeps strict in-order migration.
     out-of-order: true
+  config:
+    import: optional:file:.env[.properties]
 
 app:
   jwt:

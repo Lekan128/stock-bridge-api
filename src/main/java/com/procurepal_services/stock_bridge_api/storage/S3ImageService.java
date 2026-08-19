@@ -96,8 +96,31 @@ public class S3ImageService {
         return filename.substring(filename.lastIndexOf('.') + 1).toLowerCase();
     }
 
+    /**
+     * Everything this application writes lives under app.aws.s3.key-prefix, so a
+     * single bucket can hold more than one environment (staging and local share
+     * one - see DEPLOYMENT.md) without either being able to see the other's
+     * objects as bucket-root clutter. The prefix is also the unit the IAM policy
+     * for each environment's access key is scoped to, which is what actually
+     * keeps them apart; the tenant segment below is what keeps two sellers'
+     * images apart within one environment.
+     *
+     * A blank prefix is allowed and simply writes at the root - that is the
+     * unconfigured-but-working case, not an error.
+     */
     private String buildObjectKey(UUID tenantId, String originalFilename) {
-        return tenantId + "/products/" + UUID.randomUUID() + "-" + sanitizeFilename(originalFilename);
+        return normalizedKeyPrefix() + tenantId + "/products/" + UUID.randomUUID() + "-"
+                + sanitizeFilename(originalFilename);
+    }
+
+    /** Blank, or exactly one trailing slash and no leading one, whatever was configured. */
+    private String normalizedKeyPrefix() {
+        String prefix = awsProperties.s3().keyPrefix();
+        if (prefix == null) {
+            return "";
+        }
+        String trimmed = prefix.trim().replaceAll("^/+", "").replaceAll("/+$", "");
+        return trimmed.isEmpty() ? "" : trimmed + "/";
     }
 
     private String sanitizeFilename(String filename) {
