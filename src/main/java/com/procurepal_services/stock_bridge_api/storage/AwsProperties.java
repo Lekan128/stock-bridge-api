@@ -11,7 +11,13 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "app.aws")
 public record AwsProperties(String region, S3 s3, String accessKeyId, String secretAccessKey) {
 
-    public record S3(String bucketName) {
+    /**
+     * keyPrefix is deliberately NOT part of isConfigured(): it is a namespace,
+     * not a credential, and a blank one is a perfectly valid (if untidy)
+     * setup that writes to the root of the bucket. See
+     * S3ImageService.buildObjectKey for how it is applied.
+     */
+    public record S3(String bucketName, String keyPrefix) {
     }
 
     public boolean isConfigured() {

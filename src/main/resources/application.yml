@@ -33,6 +33,13 @@ app:
     region: ${AWS_REGION:us-east-1}
     s3:
       bucket-name: ${AWS_S3_BUCKET_NAME:}
+      # Namespace every object this deploy writes, so one bucket can serve more
+      # than one environment (staging and local share a bucket - see
+      # DEPLOYMENT.md) and nothing lands at the bucket root. Blank is allowed
+      # and means "write at the root", which is why there is no default here:
+      # a default would silently file production's images under someone else's
+      # environment name. Set it per environment (staging / local / prod).
+      key-prefix: ${AWS_S3_KEY_PREFIX:}
     access-key-id: ${AWS_ACCESS_KEY_ID:}
     secret-access-key: ${AWS_SECRET_ACCESS_KEY:}
   monnify:
