@@ -1,5 +1,8 @@
 package com.procurepal_services.stock_bridge_api.user;
 
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
@@ -37,6 +40,8 @@ public class UserManagementService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
+    private final EmailNotificationService emailNotificationService;
+    private final EmailVerificationService emailVerificationService;
 
     @Transactional(readOnly = true)
     public Page<UserSummaryResponse> list(Pageable pageable) {
@@ -72,6 +77,22 @@ public class UserManagementService {
                 .phone(normalize(request.phone()))
                 .jobTitle(normalize(request.jobTitle()))
                 .build());
+
+        // Tells the new user their account exists and what to sign in as. It cannot
+        // tell them the password the admin just typed - see AccountEmails for why
+        // that convenience is not worth what it costs.
+        //
+        // It DOES carry a verification link, and a sub-user needs one at least as
+        // much as an account holder does. The address on this row was typed by an
+        // administrator, about somebody else, so it is the population most likely to
+        // be wrong - and an unverified user receives no order mail at all under V8,
+        // silently and permanently. Without this, "our warehouse lead never gets
+        // delivery notifications" becomes a support ticket with no visible cause,
+        // and the only escape is the user happening to find the resend button. The
+        // link goes ON this email rather than in a second one for the same reason it
+        // does at signup; see AccountEmails.userInvited.
+        VerificationLink verificationLink = emailVerificationService.issueLink(user);
+        emailNotificationService.userInvited(user, role.getName(), verificationLink);
 
         return UserSummaryResponse.from(user);
     }
@@ -122,6 +143,10 @@ public class UserManagementService {
             throw new RootPasswordResetNotAllowedException();
         }
         user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+        // An alert, not a delivery. Its whole value is reaching a user whose password
+        // was changed without their knowledge, so it names the account and says to
+        // raise it - and carries no credential of any kind.
+        emailNotificationService.passwordResetByAdmin(user);
     }
 
     @Transactional

@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
 import com.procurepal_services.stock_bridge_api.entity.Order;
@@ -39,6 +40,7 @@ public class OrderLifecycleService {
     private final IncomingStockService incomingStockService;
     private final CatalogStockService catalogStockService;
     private final NotificationService notificationService;
+    private final EmailNotificationService emailNotificationService;
     private final PlatformOwnerGuard platformOwnerGuard;
     private final ClientRepository clientRepository;
 
@@ -65,6 +67,12 @@ public class OrderLifecycleService {
 
         incomingStockService.materialize(order);
         notifyNewOrder(order);
+        // The buyer's own receipt. Deliberately has no bell counterpart - see
+        // EmailNotificationService.orderConfirmedForBuyer - and deliberately lives
+        // here rather than in the two callers, for the same reason every other
+        // consequence of reaching PLACED does: there are two ways in and a receipt
+        // that only one of them sends is a bug waiting for the other path.
+        emailNotificationService.orderConfirmedForBuyer(order);
     }
 
     /**
@@ -128,10 +136,12 @@ public class OrderLifecycleService {
     }
 
     /**
-     * TODO(future): this only writes an in-app notification that the bell polls for.
-     * When ProcurePal has dispatch riders, a new order should also push to ProcurePal
-     * staff and to the assigned rider (FCM/SMS/WhatsApp) rather than waiting for a
-     * poll.
+     * Both channels, from one place: the bell ProcurePal staff poll, and an email to
+     * the operator so a night-time order is not waiting for somebody to open the tab.
+     *
+     * TODO(future): when ProcurePal has dispatch riders, a new order should also
+     * push to the assigned rider (FCM/SMS/WhatsApp), which is a channel neither of
+     * these two covers.
      */
     @Transactional
     public void notifyNewOrder(Order order) {
@@ -147,6 +157,7 @@ public class OrderLifecycleService {
                 buyerName + " placed an order worth " + order.getCurrency() + " " + order.getTotal() + ".",
                 "/app/marketplace/orders/" + order.getId(),
                 order);
+        emailNotificationService.newOrderPlaced(order);
     }
 
     @Transactional
@@ -170,6 +181,7 @@ public class OrderLifecycleService {
                 "We have your payment. ProcurePal will start preparing your order.",
                 "/app/orders/" + order.getId(),
                 order);
+        emailNotificationService.paymentReceived(order);
     }
 
     @Transactional
@@ -182,6 +194,7 @@ public class OrderLifecycleService {
                         + " Your order is still waiting - you can try paying again.",
                 "/app/orders/" + order.getId(),
                 order);
+        emailNotificationService.paymentFailed(order, reason);
     }
 
     private void notifyBuyerOfStatus(Order order, OrderStatus target, String note) {
@@ -200,6 +213,7 @@ public class OrderLifecycleService {
 
         notificationService.notifyAboutOrder(
                 order.getClientId(), type, title, body, "/app/orders/" + order.getId(), order);
+        emailNotificationService.orderStatusChanged(order, target, note);
     }
 
     private static void requireTransition(OrderStatus from, OrderStatus to) {

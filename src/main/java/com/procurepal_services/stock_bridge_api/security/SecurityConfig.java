@@ -66,6 +66,46 @@ public class SecurityConfig {
         // only authentication is the provider signature, which the handler MUST
         // verify before acting on the payload.
         "/api/payments/monnify/webhook",
+        // ====================================================================
+        // Email eligibility (see the email package). All three are registered
+        // here ahead of the controllers that will serve them, because three
+        // separate pieces of work each needed a line in this array and editing
+        // one shared file three ways is how merges go wrong. Until a controller
+        // exists a permitted path with no handler simply 404s, which is exactly
+        // what an unimplemented route should do and is harmless in the meantime.
+        //
+        // All three carry the same HAZARD as the storefront paths above: no
+        // authenticated principal, so TenantContext is empty and the Hibernate
+        // tenant filter is DISABLED for the whole request. Every handler behind
+        // them must scope its own queries explicitly and must treat its request
+        // body as hostile - the token or signature in the payload is the only
+        // authentication any of them will ever have.
+        //
+        // CSRF: disabled application-wide (see the filter chain below), so none
+        // of these needs an exemption and none should add one. That is a
+        // deliberate property of a stateless bearer-token API with no cookies -
+        // there is no ambient credential for a cross-site POST to borrow - and
+        // it is what already lets the Monnify webhook above work at all.
+        //
+        // Confirms a token emailed to an address, flipping users.is_email_
+        // verified. Unauthenticated by necessity: the whole point is that the
+        // recipient may not have an account they can sign into yet, and the
+        // token in the body is the credential.
+        "/api/email/verify",
+        // RFC 8058 one-click unsubscribe. Unauthenticated by necessity in a
+        // stronger sense than the others: the caller is the MAIL CLIENT, POSTing
+        // the List-Unsubscribe URL on the reader's behalf with no browser
+        // session, no token of ours and no user interaction. It must succeed on
+        // the first POST or the mail provider treats the unsubscribe as broken,
+        // so it can never redirect to a login.
+        "/api/email/unsubscribe",
+        // AWS SNS delivering SES bounce and complaint notifications, which flip
+        // the same two flags off. Same shape as the Monnify webhook above: no
+        // token to authenticate, so the handler MUST verify the SNS message
+        // signature before acting on anything in the payload, and must handle
+        // SubscriptionConfirmation as well as Notification.
+        "/api/webhooks/ses/notifications",
+        // ====================================================================
         // springdoc-openapi: browsable API docs, not a tenant/superadmin resource.
         "/v3/api-docs",
         "/v3/api-docs/**",
