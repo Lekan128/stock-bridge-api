@@ -1,5 +1,8 @@
 package com.procurepal_services.stock_bridge_api.superadmin;
 
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
@@ -119,6 +122,8 @@ public class SuperAdminUserService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
+    private final EmailNotificationService emailNotificationService;
+    private final EmailVerificationService emailVerificationService;
     private final PlatformOwnerGuard platformOwnerGuard;
     private final TenantScopeExecutor tenantScopeExecutor;
 
@@ -225,6 +230,15 @@ public class SuperAdminUserService {
                     .jobTitle(normalize(request.jobTitle()))
                     .build());
 
+            // Same reasoning as UserManagementService.create - see there. Note this
+            // one runs inside TenantScopeExecutor.callAs, which is harmless for the
+            // token: email_verification_tokens is not tenant-scoped, so the borrowed
+            // filter neither helps nor hinders the insert. It matters for the EMAIL,
+            // which reads the user and the client while that scope is still open -
+            // exactly as the userInvited call below it already did.
+            VerificationLink verificationLink = emailVerificationService.issueLink(user);
+            emailNotificationService.userInvited(user, role.getName(), verificationLink);
+
             return UserSummaryResponse.from(user);
         });
     }
@@ -283,6 +297,11 @@ public class SuperAdminUserService {
         tenantScopeExecutor.runAs(clientId, () -> {
             User user = findUserOrThrow(clientId, userId);
             user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+            // Doubly worth sending here: this is the one reset path that can target a
+            // root user, by a caller from outside the tenant entirely. The account
+            // holder learning by email that somebody reset their password is the only
+            // check on that power the tenant itself has.
+            emailNotificationService.passwordResetByAdmin(user);
         });
     }
 

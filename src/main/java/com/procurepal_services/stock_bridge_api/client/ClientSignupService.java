@@ -3,6 +3,9 @@ package com.procurepal_services.stock_bridge_api.client;
 import com.procurepal_services.stock_bridge_api.auth.AuthService;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.entity.Branch;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Role;
@@ -44,6 +47,8 @@ public class ClientSignupService {
     private final BranchRepository branchRepository;
     private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
+    private final EmailNotificationService emailNotificationService;
+    private final EmailVerificationService emailVerificationService;
 
     @Transactional
     public TenantLoginResponse signup(ClientSignupRequest request) {
@@ -116,6 +121,30 @@ public class ClientSignupService {
         } finally {
             TenantContext.clear();
         }
+
+        // After the TenantContext finally-block, not inside it: rendering this reads
+        // the client and the user, and doing that under a tenant context set purely
+        // to permit one privileged insert would tie the email to a scope it has no
+        // business depending on. It is dispatched, not sent - the actual send waits
+        // for this transaction to commit, so a signup that fails at the last hurdle
+        // does not welcome anybody to an account that does not exist.
+        //
+        // The verification token is minted here for the SAME two reasons, which is
+        // why it sits inside the same block rather than up beside the user insert.
+        // email_verification_tokens is not a tenant-scoped table - it deliberately
+        // has no client_id, so that the unauthenticated redemption endpoint can read
+        // it at all - so writing it under a borrowed tenant context would suggest a
+        // dependency that does not exist. And it is written in THIS transaction, so
+        // a signup that rolls back takes the token with it: a live link to an
+        // account that was never created would be a link that can only ever fail.
+        //
+        // One email, not two. The link rides on the welcome rather than arriving as
+        // a separate "confirm your address" message seconds later - see
+        // AccountEmails.welcome for why that matters more than it looks like it
+        // should. A null link (no plausible address, or no configured base URL)
+        // renders the welcome exactly as it was before this flow existed.
+        VerificationLink verificationLink = emailVerificationService.issueLink(ownerUser);
+        emailNotificationService.welcomeNewClient(client, ownerUser, verificationLink);
 
         return authService.issueLoginResponse(ownerUser, client);
     }

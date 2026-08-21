@@ -3,6 +3,7 @@ package com.procurepal_services.stock_bridge_api.superadmin;
 import com.procurepal_services.stock_bridge_api.analytics.AnalyticsService;
 import com.procurepal_services.stock_bridge_api.analytics.dto.AnalyticsSummaryResponse;
 import com.procurepal_services.stock_bridge_api.client.ClientIdentifierTakenException;
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
@@ -32,6 +33,7 @@ public class SuperAdminClientService {
     private final UserRepository userRepository;
     private final ProductRepository productRepository;
     private final AnalyticsService analyticsService;
+    private final EmailNotificationService emailNotificationService;
 
     @Transactional(readOnly = true)
     public Page<SuperAdminClientSummary> list(String search, Boolean active, Pageable pageable) {
@@ -43,10 +45,19 @@ public class SuperAdminClientService {
         return toDetail(findOrThrow(clientId));
     }
 
+    /**
+     * Suspension is the one action this class takes that a tenant cannot see the
+     * reason for from inside the app: a suspended company's users are turned away at
+     * login by ClientSuspendedException, which by design tells them nothing. The
+     * email is therefore not a courtesy here, it is the only channel the decision
+     * has - which is why it is sent for reactivation too, so the same inbox that
+     * carried the bad news carries the good.
+     */
     @Transactional
     public SuperAdminClientDetail updateStatus(UUID clientId, boolean active) {
         Client client = findOrThrow(clientId);
         client.setActive(active);
+        emailNotificationService.clientStatusChanged(client);
         return toDetail(client);
     }
 

@@ -92,6 +92,18 @@ Base path `/api`, grouped by area:
 | `/api/me` | Signed-in user's own profile and password |
 | `/api/analytics` | Per-tenant analytics: summary, movements over time, top products, low stock |
 
+## Email (Amazon SES) and webhooks
+
+- [`SES_ENVIRONMENT_VARIABLES.md`](./SES_ENVIRONMENT_VARIABLES.md) — every email/SES variable, what
+  it does, and how to obtain its value
+- [`SES_LOCAL_TESTING.md`](./SES_LOCAL_TESTING.md) — send a real email from your machine while the
+  AWS account is still in the SES sandbox
+- [`SES_PRODUCTION_TESTING.md`](./SES_PRODUCTION_TESTING.md) — rollout order and smoke tests once
+  production access is approved
+- [`WEBHOOKS.md`](./WEBHOOKS.md) — every URL an outside system calls (Monnify payments, SES
+  bounce/complaint notifications via SNS), and which dashboard to paste each into
+- [`DEPLOYMENT.md`](./DEPLOYMENT.md) — the AWS/Render account setup behind all of the above
+
 For the full request/response shape of every endpoint, run the app and open the browsable,
 always-up-to-date API docs (springdoc-openapi):
 

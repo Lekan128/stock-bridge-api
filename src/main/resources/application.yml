@@ -52,6 +52,167 @@ app:
     # answer per environment rather than one shared name. Ignored when
     # role-arn is blank.
     role-session-name: ${AWS_ROLE_SESSION_NAME:stock-bridge-api}
+  email:
+    # Transactional email via Amazon SES: order receipts, fulfilment updates,
+    # payment outcomes and account mail. Same graceful-degradation contract as
+    # app.aws and app.monnify above - a blank from-address means "email
+    # unavailable", and EmailSender logs the message it would have sent instead
+    # of failing the request that triggered it. Nothing in the application
+    # depends on an email having been delivered.
+    #
+    # The deliberate off switch, distinct from "not configured". Set false on a
+    # deploy that HAS working SES credentials but must not send - a production
+    # database restored into staging would otherwise email real customers about
+    # orders being replayed.
+    enabled: ${EMAIL_ENABLED:true}
+    # Optional. Blank means "use app.aws.region": the usual setup runs SES and
+    # S3 in one region. Set it when the verified sending identity lives
+    # somewhere else, or when the bucket's region has no SES endpoint.
+    region: ${EMAIL_REGION:}
+    # No default, on purpose: SES rejects a send from an unverified identity, so
+    # a made-up default would turn every send into a remote failure instead of a
+    # locally-obvious "not configured". This address (or its domain) must be a
+    # verified identity in the SES account.
+    from-address: ${EMAIL_FROM_ADDRESS:}
+    from-name: ${EMAIL_FROM_NAME:ProcurePal}
+    # Optional. Where a customer's reply goes - usually a real, monitored inbox,
+    # while from-address is a no-reply. Blank means replies go to from-address.
+    reply-to-address: ${EMAIL_REPLY_TO_ADDRESS:}
+    # Optional SES configuration set, which is how bounces and complaints get
+    # tracked. Strongly recommended in production - see DEPLOYMENT.md - but a
+    # message sends fine without one, so it is not part of isConfigured().
+    configuration-set: ${EMAIL_CONFIGURATION_SET:}
+    # Every link in every template is a FRONTEND route, so this is the frontend's
+    # public URL, not this API's. Blank degrades to plain text with no links
+    # rather than to links that 404. Defaults to the local dev frontend for the
+    # same reason FRONTEND_ORIGIN does.
+    app-base-url: ${EMAIL_APP_BASE_URL:http://localhost:5173}
+    # Optional ops inbox, copied on operator-facing mail (a new order, a payment
+    # received). Blank means that mail goes only to the platform owner tenant's
+    # own admin contact email, which is always a valid destination - this exists
+    # for teams who would rather it reached a shared alias.
+    operator-address: ${EMAIL_OPERATOR_ADDRESS:}
+    # SES's OWN IAM role, separate from the S3 one, assumed from the SAME IAM user
+    # keys configured under app.aws above. Optional: blank keeps the previous
+    # behaviour exactly, which is that SES borrows whatever credentials S3 uses
+    # (a direct access key, or the app.aws.role-arn session).
+    #
+    # Setting it is the better shape. Adding ses:SendEmail to the S3 role works,
+    # but it means any principal that can write product images can also send mail
+    # as the company - two unrelated blast radii fused into one credential. Two
+    # roles keep a compromised upload path from mailing your customers, and a
+    # compromised mail path from overwriting your catalog. Only the ROLE differs:
+    # the IAM user keys stay the single long-lived secret, used for nothing but
+    # sts:AssumeRole. See SesClientConfig and DEPLOYMENT.md.
+    role:
+      arn: ${EMAIL_ROLE_ARN:}
+      # Names the session in CloudTrail. Defaults to a value distinct from S3's so
+      # the two roles are told apart at a glance. Ignored when arn is blank.
+      session-name: ${EMAIL_ROLE_SESSION_NAME:stock-bridge-api-ses}
+    # RFC 8058 one-click unsubscribe (module C). Both keys gate PROMOTIONAL
+    # mail only: unset them and order receipts, verification and security mail
+    # all keep working exactly as before, while promotional mail is DROPPED
+    # rather than sent without a working List-Unsubscribe header. That is a
+    # deliberate exception to the graceful degradation everything else here
+    # practises - marketing nobody can opt out of is spam, and the cost lands on
+    # the sending domain's reputation, which every tenant shares. See EmailSender.
+    unsubscribe:
+      # NO DEFAULT, EVER - the same rule, and the same reasoning, as
+      # app.super-admin below: this file applies to every profile including
+      # prod, so a default written here is a production signing key published in
+      # this repository, and a key everyone can read signs nothing. The blank
+      # default exists only so an unset env var resolves to empty instead of
+      # failing placeholder resolution; blank means "unconfigured", which is a
+      # state this feature handles rather than one it crashes on.
+      #
+      # Must be identical across every instance of a deploy, and must be treated
+      # as long-lived: rotating it invalidates every unsubscribe link ProcurePal
+      # has ever mailed, and those links have to keep working for years. See
+      # UnsubscribeTokenService for why they cannot be given an expiry.
+      secret: ${EMAIL_UNSUBSCRIBE_SECRET:}
+      # The public origin of THIS API, not the frontend - the only URL in the
+      # email package that is not a frontend route. Gmail's servers POST this
+      # link with no browser involved, so it has to resolve to the endpoint that
+      # does the work rather than to a React page. Contrast app-base-url above.
+      api-base-url: ${EMAIL_UNSUBSCRIBE_API_BASE_URL:}
+    # Email address verification (module B). Every key here is OPTIONAL and has a
+    # working default in EmailVerificationProperties, which is where each one is
+    # justified at length - unlike app.email.unsubscribe above, nothing in this
+    # block gates the feature and a deploy that never sets any of it behaves
+    # correctly. They are exposed only because an operator investigating "users
+    # say the link had expired by the time they clicked it" or "somebody is
+    # pumping mail through the resend button" needs to be able to move them
+    # without a release.
+    verification:
+      # How long an emailed confirmation link stays redeemable. 24 hours by
+      # default: long enough that a link sent on a Friday evening still works on
+      # Saturday morning, short enough that a forwarded or archived one is dead.
+      # Do not raise this beyond a few days - past that the address the token was
+      # bound to has drifted from the address on the account, and the binding
+      # check starts rejecting more links than the expiry does.
+      token-ttl: ${EMAIL_VERIFICATION_TOKEN_TTL:24h}
+      # How many verification emails one account may request per window through
+      # POST /api/me/email-verification. This is the only bound on an endpoint
+      # that makes this server send mail to a caller-chosen address, and bounces
+      # from that mail are scored against a sending domain every tenant shares.
+      # In-process and therefore per-instance - see EmailVerificationRateLimiter
+      # for what that does and does not cover.
+      resend-limit: ${EMAIL_VERIFICATION_RESEND_LIMIT:3}
+      # The rolling window the limit above applies over.
+      resend-window: ${EMAIL_VERIFICATION_RESEND_WINDOW:1h}
+    # SES bounce and complaint handling via SNS (module D). This is the REACTIVE
+    # half of email eligibility: the verified/consent flags above say who we
+    # believe can receive mail, and this is how the mail provider tells us we
+    # were wrong. A permanent bounce suppresses the address and unverifies every
+    # account holding it; a complaint stops marketing and, by default, all mail.
+    # A TRANSIENT bounce does nothing at all - a full mailbox must never kill a
+    # customer's order receipts. See SesNotificationService.
+    #
+    # Nothing here gates the feature: an unconfigured deploy still starts, still
+    # sends mail, and simply never receives notifications. The endpoint is
+    # POST /api/webhooks/ses/notifications and is permit-all by necessity - AWS
+    # has no bearer token of ours - so the two security keys below are the only
+    # things protecting it. Both default to the SAFE value in
+    # SesWebhookProperties rather than here, so that a config file which omits
+    # them fails secure. See stock-bridge-api/DEPLOYMENT.md for the setup.
+    sns:
+      # MUST stay true everywhere except a developer's laptop. Unlike
+      # MONNIFY_REQUIRE_WEBHOOK_SIGNATURE below, relaxing this has no safety net:
+      # there is no "ask SES again whether that address bounced" API, so the
+      # notification body IS the evidence and a forged one is acted on directly.
+      # With this false, anyone who finds the URL can suppress any address and
+      # unverify every customer on the platform with a loop and a word list.
+      require-signature: ${SES_SNS_REQUIRE_SIGNATURE:true}
+      # STRONGLY RECOMMENDED in every deployed environment, and blank is a real
+      # weakness rather than a neutral default. A valid AWS signature proves only
+      # that SOME SNS topic sent the message - anybody with an AWS account can
+      # create a topic, hand-write a bounce notification and point it here, and it
+      # will be signed by the same AWS infrastructure. Pinning the ARN is what
+      # makes the signature mean "our topic". Blank logs a startup warning.
+      topic-arn: ${SES_SNS_TOPIC_ARN:}
+      # Optional. Narrows the SSRF allow-list on SigningCertURL and SubscribeURL
+      # from "any sns.<region>.amazonaws.com" to exactly one host. Blank still
+      # enforces the pattern - see SnsEndpointGuard, which is a hard check with no
+      # bypass flag - so this is a tightening, not the control itself.
+      region: ${SES_SNS_REGION:}
+      # Whether a spam complaint stops ALL mail to the address or only marketing.
+      # Defaults to true - all mail - which is the safer-for-reputation option and
+      # what AWS asks for: a complaint is scored against a sending domain every
+      # tenant shares, and mailing someone who already reported us is how the next
+      # complaint is earned. Set false only as a deliberate decision that
+      # delivering receipts to a complainant is worth that. EmailSuppressionService
+      # carries the argument on both sides.
+      complaints-suppress-all-mail: ${SES_SNS_COMPLAINTS_SUPPRESS_ALL_MAIL:true}
+      # Whether a SubscriptionConfirmation is confirmed automatically by fetching
+      # its SubscribeURL (host-validated first). Defaults true; the alternative is
+      # an operator pasting a URL out of a log within the one hour AWS allows
+      # before the token expires.
+      confirm-subscriptions: ${SES_SNS_CONFIRM_SUBSCRIPTIONS:true}
+      # Bounds on the two outbound calls this module makes - fetching a signing
+      # certificate and confirming a subscription. Both run on the request thread,
+      # and SNS gives up on us after 15 seconds regardless.
+      connect-timeout: ${SES_SNS_CONNECT_TIMEOUT:5s}
+      read-timeout: ${SES_SNS_READ_TIMEOUT:10s}
   monnify:
     # Same rationale as app.aws above: unset credentials stay blank rather than
     # failing placeholder resolution, and MonnifyProperties.isConfigured() treats

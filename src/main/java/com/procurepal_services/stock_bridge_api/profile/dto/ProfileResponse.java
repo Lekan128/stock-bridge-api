@@ -13,6 +13,16 @@ import java.util.UUID;
  * helper that mints the access token's claims, so a screen gating on this list
  * can never disagree with what the API will actually authorize.
  *
+ * emailVerified and receivePromotionalEmail are read-only here on purpose, and the
+ * asymmetry between them is worth knowing. emailVerified has exactly one writer in
+ * the whole application - redeeming a token at POST /api/email/verify - because a
+ * field the holder of an account can set for themselves is not evidence about an
+ * inbox, it is just a preference with a misleading name. receivePromotionalEmail
+ * IS writable, but through PUT /api/me/email-preferences, which is module C's
+ * endpoint; it is surfaced here so the profile screen can render its current state
+ * without a second call, not so it can be written through PUT /api/me. Neither
+ * appears in UpdateProfileRequest, and neither should.
+ *
  * platformOwner is here for the same reason and with the same discipline: it is
  * read straight off the Client row, exactly like the JWT's platformOwner claim and
  * the login response's TenantUserSummary.platformOwner, so a page reload can never
@@ -27,6 +37,8 @@ public record ProfileResponse(
         String firstName,
         String lastName,
         String email,
+        boolean emailVerified,
+        boolean receivePromotionalEmail,
         String phone,
         String jobTitle,
         String role,
@@ -45,6 +57,8 @@ public record ProfileResponse(
                 user.getFirstName(),
                 user.getLastName(),
                 user.getEmail(),
+                user.isEmailVerified(),
+                user.isReceivePromotionalEmail(),
                 user.getPhone(),
                 user.getJobTitle(),
                 user.getRole().getName(),
