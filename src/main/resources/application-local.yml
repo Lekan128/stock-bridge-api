@@ -64,6 +64,3 @@ app:
   # would just mean whichever ran first decided what the demo looks like. Set
   # PLATFORM_OWNER_ADMIN_EMAIL/PLATFORM_OWNER_ADMIN_PASSWORD in a local .env if
   # you specifically want to exercise the runner against an unseeded database.
-
-server:
-  port: ${SERVER_PORT:8081}
