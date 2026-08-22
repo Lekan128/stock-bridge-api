@@ -13,6 +13,13 @@ import java.util.UUID;
  * same one with empty collections, because a 50-row fulfilment queue that carried
  * every line item and status event of every order would be an N+1 in two directions
  * for data no list renders.
+ *
+ * <p>{@code seller} and {@code checkoutGroupId} are here because a buyer's order
+ * history stopped being a flat list when checkout started splitting: three rows from
+ * one basket need to say who each is from and that they belong together. The sibling
+ * orders themselves are NOT here - see OrderResponseAssembler for why resolving them
+ * per row would turn one list into N queries for information the row has no room to
+ * show.
  */
 public record OrderSummaryResponse(
         UUID id,
@@ -28,10 +35,15 @@ public record OrderSummaryResponse(
         String deliveryCity,
         String deliveryState,
         OrderCustomerResponse customer,
+        /** Who is fulfilling this one - name and logo only. */
+        OrderSellerResponse seller,
+        /** Rows sharing this value came out of one checkout. */
+        UUID checkoutGroupId,
         OffsetDateTime placedAt,
         OffsetDateTime createdAt) {
 
-    public static OrderSummaryResponse of(Order order, int itemCount, OrderCustomerResponse customer) {
+    public static OrderSummaryResponse of(
+            Order order, int itemCount, OrderCustomerResponse customer, OrderSellerResponse seller) {
         return new OrderSummaryResponse(
                 order.getId(),
                 order.getOrderNumber(),
@@ -46,6 +58,8 @@ public record OrderSummaryResponse(
                 order.getDeliveryCity(),
                 order.getDeliveryState(),
                 customer,
+                seller,
+                order.getCheckoutGroupId(),
                 order.getPlacedAt(),
                 order.getCreatedAt());
     }

@@ -217,7 +217,7 @@ class StockManagementIntegrationTest {
         body.add(
                 "product",
                 new HttpEntity<>(
-                        new CreateProductRequest("Product " + sku, sku, null, new BigDecimal("9.99"), null, null),
+                        new CreateProductRequest("Product " + sku, sku, null, new BigDecimal("9.99"), null, null, null),
                         productPartHeaders));
 
         HttpHeaders headers = authHeaders(asAdmin);

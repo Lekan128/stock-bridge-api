@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.marketplace.catalog;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.auth.ValidationErrors;
+import com.procurepal_services.stock_bridge_api.vendor.catalogue.VendorCatalogueController;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -11,17 +12,32 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
- * Scoped to the two catalog controllers - see ClientSignupExceptionHandler for why these
+ * Scoped to the three catalog controllers - see ClientSignupExceptionHandler for why these
  * are per-feature rather than global, and MarketplaceAccessExceptionHandler for the one
  * deliberate exception to that rule (the 403 from PlatformOwnerGuard, which is handled
- * globally and therefore does not appear here).
+ * globally and therefore does not appear here; VendorAccessExceptionHandler is global for
+ * the same reason and covers the seller 403).
+ *
+ * <p>{@code VendorCatalogueController} is listed because it runs the same service methods
+ * over a vendor's own products and therefore raises the same exceptions - a product id
+ * belonging to somebody else has to be a 404 there too, not a 500. The list is an
+ * allow-list: a fourth caller of MarketplaceCatalogAdminService needs adding here.
  */
 @RestControllerAdvice(
-        assignableTypes = {MarketplaceCatalogController.class, MarketplaceCatalogAdminController.class})
+        assignableTypes = {
+            MarketplaceCatalogController.class,
+            MarketplaceCatalogAdminController.class,
+            VendorCatalogueController.class
+        })
 public class MarketplaceCatalogExceptionHandler {
 
     @ExceptionHandler(CatalogProductNotFoundException.class)
     public ResponseEntity<ApiError> handleProductNotFound(CatalogProductNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SellerNotFoundException.class)
+    public ResponseEntity<ApiError> handleSellerNotFound(SellerNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
     }
 

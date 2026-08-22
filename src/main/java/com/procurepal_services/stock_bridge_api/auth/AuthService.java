@@ -5,6 +5,7 @@ import com.procurepal_services.stock_bridge_api.auth.dto.LoginRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantUserSummary;
 import com.procurepal_services.stock_bridge_api.entity.Client;
+import com.procurepal_services.stock_bridge_api.entity.ClientType;
 import com.procurepal_services.stock_bridge_api.entity.RefreshToken;
 import com.procurepal_services.stock_bridge_api.entity.SubjectType;
 import com.procurepal_services.stock_bridge_api.entity.User;
@@ -75,7 +76,8 @@ public class AuthService {
                 permissionCodes,
                 client.getName(),
                 client.getSlug(),
-                client.isPlatformOwner());
+                client.isPlatformOwner(),
+                ClientType.orDefault(client.getClientType()));
         return new TenantLoginResponse(tokens, summary);
     }
 
@@ -95,8 +97,9 @@ public class AuthService {
         // failure here since this isn't a credentials-entry flow.
         //
         // The row is now kept rather than discarded: the refreshed token has to
-        // carry an up-to-date platformOwner claim, so a client whose flag changed
-        // picks it up on the next refresh instead of at the next full login.
+        // carry up-to-date platformOwner and clientType claims, so a client whose
+        // flag or kind changed picks it up on the next refresh instead of at the
+        // next full login.
         Client client = clientRepository.findById(user.getClientId())
                 .filter(Client::isActive)
                 .orElseThrow(InvalidRefreshTokenException::new);

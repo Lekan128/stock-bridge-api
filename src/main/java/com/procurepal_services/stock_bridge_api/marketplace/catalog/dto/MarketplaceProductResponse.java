@@ -50,15 +50,27 @@ public record MarketplaceProductResponse(
         int quantityOnHand,
         boolean inStock,
         UUID categoryId,
-        String categoryName) {
+        String categoryName,
+        /**
+         * Who sells it - name and logo only; see {@link MarketplaceSellerResponse} for
+         * the fields deliberately withheld. Null only if the seller row vanished
+         * between the product query and this projection, which renders as an
+         * unattributed tile rather than failing the page.
+         */
+        MarketplaceSellerResponse seller) {
 
     /**
      * @param availableToSell sellable units, from CatalogStockService's batch lookup.
      *     There is no single-argument overload on purpose: the only way to build this
      *     record is to have gone and asked, so a new call site cannot quietly fall back to
      *     the raw column and reintroduce the phantom-stock bug.
+     * @param seller resolved from SellerDirectory's batch map. Required for the same
+     *     reason: with several sellers on one grid, "who sells this" is a question every
+     *     tile has to answer, and a convenience overload that omitted it would produce
+     *     unattributed listings on whichever surface forgot.
      */
-    public static MarketplaceProductResponse from(Product product, int availableToSell) {
+    public static MarketplaceProductResponse from(
+            Product product, int availableToSell, MarketplaceSellerResponse seller) {
         ProductCategory category = product.getCategory();
         return new MarketplaceProductResponse(
                 product.getId(),
@@ -79,6 +91,7 @@ public record MarketplaceProductResponse(
                 // not have the product vanish from the grid.
                 availableToSell > 0,
                 category == null ? null : category.getId(),
-                category == null ? null : category.getName());
+                category == null ? null : category.getName(),
+                seller);
     }
 }

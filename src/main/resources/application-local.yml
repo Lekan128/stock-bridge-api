@@ -4,6 +4,21 @@ spring:
     username: ${POSTGRES_USER:stock_bridge}
     password: ${POSTGRES_PASSWORD:stock_bridge_local_dev}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      # Sized for the TEST SUITE rather than for a running app, which is why it
+      # lives in the profile the tests activate. A @SpringBootTest run keeps every
+      # distinct application context it has built alive in Spring's context cache
+      # for the whole JVM, and each of those holds its own Hikari pool. At the
+      # default of 10 the suite's contexts collectively reserve more connections
+      # than Postgres's default max_connections=100 allows, and the failure
+      # surfaces as an unrelated test dying with "too many clients" - typically
+      # whichever context happens to build last, which is almost never the one
+      # that caused it.
+      #
+      # Three is ample either way: local development is one developer against one
+      # app, and a test asserts on one request at a time. Raise it only if a real
+      # concurrency test needs it, and raise Postgres's max_connections with it.
+      maximum-pool-size: ${DB_MAX_POOL_SIZE:3}
   jpa:
     show-sql: true
   flyway:
@@ -17,11 +32,23 @@ spring:
     # seed-carrying profiles need this; production never loads db/seed and so
     # keeps strict in-order migration.
     out-of-order: true
+  config:
+    import: optional:file:.env[.properties]
 
 app:
   jwt:
     # Dev-only placeholder, >=32 bytes (HS256 minimum). Never used outside local/docker.
     secret: ${JWT_SECRET:local-dev-only-jwt-signing-secret-do-not-use-in-prod}
+  email:
+    # Dev-only placeholders, exactly like the JWT secret above and confined to
+    # this profile for the same reason: application.yml deliberately has no
+    # default (it applies to prod too), but a developer should still be able to
+    # see a List-Unsubscribe header get built without first reading a doc. The
+    # api-base-url is this API's local origin, NOT the frontend's - see the
+    # comment on app.email.unsubscribe in application.yml.
+    unsubscribe:
+      secret: ${EMAIL_UNSUBSCRIBE_SECRET:local-dev-only-unsubscribe-signing-secret-do-not-use-in-prod}
+      api-base-url: ${EMAIL_UNSUBSCRIBE_API_BASE_URL:http://localhost:8080}
   # Dev-only placeholder credentials, exactly like the JWT secret above and for
   # the same reason: application.yml deliberately has no default (it applies to
   # prod too), but running `./mvnw` against an empty local database still has to

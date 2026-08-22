@@ -24,6 +24,11 @@ public class ProductManagementExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(InvalidProductVendorException.class)
+    public ResponseEntity<ApiError> handleInvalidVendor(InvalidProductVendorException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
     /** Safety net for a concurrent create()/update() racing the SKU pre-check. */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> handleDataIntegrityViolation(DataIntegrityViolationException ex) {

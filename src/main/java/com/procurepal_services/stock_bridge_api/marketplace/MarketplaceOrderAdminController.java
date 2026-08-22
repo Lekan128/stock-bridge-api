@@ -26,14 +26,28 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * ProcurePal's fulfilment queue. Two independent gates on every route (contract §6):
- * {@code @PreAuthorize} proves the caller has the right job, and
- * {@code PlatformOwnerGuard} - invoked inside the service, and again inside
- * {@code readAcrossTenants} - proves they work for the right company. The permission
- * alone is not enough, because MANAGE_MARKETPLACE_ORDERS is held by every tenant's
- * OWNER: permissions hang off global roles and cannot be granted to one tenant only.
+ * A SELLER's fulfilment queue - ProcurePal's own, or a vendor's. Same routes, same
+ * shapes; who is asking decides which orders exist.
  *
- * The 403 needs no advice here - MarketplaceAccessExceptionHandler is global.
+ * <h2>Three gates on every route, not two</h2>
+ * <ol>
+ *   <li>{@code @PreAuthorize("hasAuthority('MANAGE_MARKETPLACE_ORDERS')")} - does this
+ *       person do fulfilment work.</li>
+ *   <li>{@code VendorGuard.requireSeller()}, inside the service - does their company
+ *       sell at all.</li>
+ *   <li>A {@code seller_client_id} predicate on every query - which rows are theirs.</li>
+ * </ol>
+ * The permission is the weakest of the three and proves the least: it hangs off global
+ * roles, so every tenant's OWNER holds it, and since V11 the VENDOR role holds it too
+ * by design. Gate 3 is what actually keeps one vendor out of another's orders, and it
+ * is the one to check first when reviewing a change here.
+ *
+ * <p>Note the guard is {@code requireSeller()} and NOT {@code requireVendor()}:
+ * ProcurePal sells too, and refusing it here would lock the operator out of its own
+ * marketplace. Nor is being the platform owner a widening - ProcurePal sees the orders
+ * it sold and no others, exactly as before. See MarketplaceOrderAdminService.
+ *
+ * <p>The 403 needs no advice here - VendorAccessExceptionHandler is global.
  */
 @RestController
 @RequestMapping("/api/marketplace/admin")

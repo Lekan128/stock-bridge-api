@@ -65,7 +65,12 @@ class ClientSignupIntegrationTest {
                         "MANAGE_MARKETPLACE",
                         "MANAGE_MARKETPLACE_ORDERS",
                         "VIEW_MARKETPLACE_ANALYTICS",
-                        "MANAGE_COMPANY_PROFILE");
+                        "MANAGE_COMPANY_PROFILE",
+                        // V11. The buyer-side vendor directory: procurement's record
+                        // of who the company buys from. Nothing to do with being a
+                        // seller - see V11__vendors.sql on the two "vendor"s.
+                        "MANAGE_VENDORS",
+                        "VIEW_VENDORS");
         // A self-service signup is never the marketplace operator - that flag is
         // seeded, never claimed.
         assertThat(body.user().platformOwner()).isFalse();

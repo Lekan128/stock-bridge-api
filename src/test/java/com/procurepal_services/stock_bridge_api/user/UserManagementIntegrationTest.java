@@ -269,6 +269,11 @@ class UserManagementIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<RoleResponse> roles = response.getBody();
+        // Exactly five, and VENDOR is deliberately not among them even though V11
+        // seeds it into the roles table: this endpoint serves ASSIGNABLE roles
+        // (TenantRoles.ALL), and a vendor's single account is provisioned by a
+        // super admin, never picked from here. Offering an option that the very
+        // next request rejects with a 400 would be worse than not offering it.
         assertThat(roles).extracting(RoleResponse::name)
                 .containsExactly(
                         "FINANCE_OFFICER", "INVENTORY_OFFICER", "OWNER", "PROCUREMENT_MANAGER", "STOREKEEPER");
@@ -276,7 +281,8 @@ class UserManagementIntegrationTest {
 
         RoleResponse finance = roles.stream().filter(r -> r.name().equals("FINANCE_OFFICER")).findFirst().orElseThrow();
         assertThat(finance.permissions())
-                .containsExactly("BROWSE_MARKETPLACE", "VIEW_ANALYTICS", "VIEW_ORDERS", "VIEW_PRODUCTS");
+                .containsExactly(
+                        "BROWSE_MARKETPLACE", "VIEW_ANALYTICS", "VIEW_ORDERS", "VIEW_PRODUCTS", "VIEW_VENDORS");
     }
 
     private void assertForbidden(String path, HttpMethod method, HttpHeaders auth, Object body) {

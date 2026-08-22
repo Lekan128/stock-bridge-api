@@ -3,6 +3,8 @@ package com.procurepal_services.stock_bridge_api.entity;
 import com.procurepal_services.stock_bridge_api.tenant.TenantAwareEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -12,6 +14,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -20,7 +23,14 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 /**
- * Where a company wants goods delivered. Tenant-scoped.
+ * A physical location this company keeps in its address book - either somewhere
+ * it wants goods delivered TO, or, for a seller, somewhere its goods are
+ * COLLECTED FROM. Tenant-scoped, and {@link AddressPurpose} says which.
+ *
+ * The class name predates the second meaning and is kept because the table,
+ * {@code orders.delivery_address_id} and every existing caller are named for it;
+ * see {@link AddressPurpose} for why the two kinds share one table and what that
+ * obliges every query here to carry.
  *
  * Deliberately separate from {@link Branch}: a single-branch company still ships
  * to a main kitchen and a warehouse, and forcing them to invent branches for
@@ -50,6 +60,18 @@ public class DeliveryAddress extends TenantAwareEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "branch_id")
     private Branch branch;
+
+    /**
+     * Delivery address or pickup point. Defaults to {@link AddressPurpose#DELIVERY}
+     * so a caller that predates the column - or a future one that forgets it -
+     * creates a buyer address, which is the harmless answer on a pickup screen and
+     * the correct one at checkout. Matches the column default V13 backfilled every
+     * existing row with.
+     */
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "address_purpose", nullable = false, length = 20)
+    private AddressPurpose purpose = AddressPurpose.DELIVERY;
 
     @Column(nullable = false, length = 100)
     private String label;

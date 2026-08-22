@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.cart.dto;
 
 import com.procurepal_services.stock_bridge_api.entity.CartItem;
+import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import java.math.BigDecimal;
@@ -26,6 +27,13 @@ import java.util.UUID;
  * see CatalogStockService - which is the number both "Only N left" and the MOQ stepper
  * have to respect.
  *
+ * <h2>The seller is carried per line, because a cart can hold several</h2>
+ * A basket may mix sellers, and at checkout it splits into one order per seller. The
+ * cart page therefore has to group its lines by seller and show each group's subtotal,
+ * which it cannot do without knowing whose each line is. Name and logo only, matching
+ * every other buyer-facing seller projection - see MarketplaceSellerResponse for the
+ * argument about contact details.
+ *
  * Field names mirror {@code stock-bridge-ui/src/features/cart/types.ts} exactly.
  */
 public record CartItemResponse(
@@ -43,9 +51,15 @@ public record CartItemResponse(
         int quantity,
         BigDecimal lineTotal,
         UUID addedByUserId,
-        String addedByUsername) {
+        String addedByUsername,
+        /** Who sells this line. Null only when the catalog row itself has vanished. */
+        UUID sellerId,
+        String sellerName,
+        String sellerLogoUrl,
+        boolean sellerIsPlatformOwner) {
 
-    public static CartItemResponse of(CartItem item, Product catalogProduct, int availableToSell) {
+    public static CartItemResponse of(
+            CartItem item, Product catalogProduct, int availableToSell, Client seller) {
         User addedBy = item.getAddedBy();
         boolean available = catalogProduct != null
                 && catalogProduct.isMarketplaceListed()
@@ -71,7 +85,11 @@ public record CartItemResponse(
                     item.getQuantity(),
                     BigDecimal.ZERO,
                     addedBy == null ? null : addedBy.getId(),
-                    addedBy == null ? null : addedBy.getUsername());
+                    addedBy == null ? null : addedBy.getUsername(),
+                    null,
+                    null,
+                    null,
+                    false);
         }
 
         return new CartItemResponse(
@@ -89,6 +107,10 @@ public record CartItemResponse(
                 item.getQuantity(),
                 catalogProduct.getUnitPrice().multiply(BigDecimal.valueOf(item.getQuantity())),
                 addedBy == null ? null : addedBy.getId(),
-                addedBy == null ? null : addedBy.getUsername());
+                addedBy == null ? null : addedBy.getUsername(),
+                seller == null ? catalogProduct.getClientId() : seller.getId(),
+                seller == null ? null : seller.getName(),
+                seller == null ? null : seller.getLogoUrl(),
+                seller != null && seller.isPlatformOwner());
     }
 }

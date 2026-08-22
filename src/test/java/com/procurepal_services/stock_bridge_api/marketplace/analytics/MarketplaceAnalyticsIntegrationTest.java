@@ -57,6 +57,15 @@ import org.springframework.test.context.ActiveProfiles;
  * The suite's other order tests all work in "now". Anchoring this class to a fixed
  * historical month means their fixtures cannot drift into these assertions, and these
  * cannot drift into theirs.
+ *
+ * <h2>The vendor fixture, and why every metric is asserted against it</h2>
+ * Since M6 these endpoints report ProcurePal's OWN sales rather than the marketplace's.
+ * The failure mode for that is not an exception - it is a 200 with somebody else's money
+ * in it - so section (h) plants a third-party VENDOR's orders in the SAME window, on the
+ * same days, from the same buyers, and asserts each metric is unmoved. The vendor's
+ * figures are deliberately far larger than ProcurePal's, so an unscoped query would not
+ * merely be wrong, it would be quotably wrong. A test that only checked ProcurePal's own
+ * numbers were present would pass just as happily against the pre-M6 code.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureTestRestTemplate
@@ -65,6 +74,9 @@ class MarketplaceAnalyticsIntegrationTest {
 
     private static final String BASE = "/api/marketplace/admin/analytics";
     private static final String FIXTURE_PREFIX = "PP-ANLZ-";
+
+    /** Names the vendor client and its product, so @AfterEach can remove exactly those rows. */
+    private static final String VENDOR_FIXTURE_PREFIX = "PPANLZVEND-";
     private static final String PASSWORD = "correct-horse-battery-staple";
 
     /** March 2019: safely before anything else the suite writes, and a clean 31-day month. */
@@ -88,6 +100,9 @@ class MarketplaceAnalyticsIntegrationTest {
     private UUID categoryB;
     /** name/sku per product id, so order lines can be inserted without a parameterised SELECT. */
     private Map<UUID, Map<String, Object>> productRows;
+    /** A third-party seller whose sales must never appear in any of these responses. */
+    private UUID vendorSellerId;
+    private UUID vendorProductId;
 
     @BeforeEach
     void setUp() {
@@ -117,7 +132,11 @@ class MarketplaceAnalyticsIntegrationTest {
                 .orElseThrow(() -> new IllegalStateException("seed must have at least two categories with products"));
         productB = (UUID) otherCategory.get("id");
         categoryB = (UUID) otherCategory.get("category_id");
-        productRows = Map.of(productA, products.getFirst(), productB, otherCategory);
+        productRows = new java.util.HashMap<>();
+        productRows.put(productA, products.getFirst());
+        productRows.put(productB, otherCategory);
+
+        createVendorSeller();
     }
 
     @AfterEach
@@ -545,6 +564,156 @@ class MarketplaceAnalyticsIntegrationTest {
     }
 
     // ---------------------------------------------------------------------------------
+    // (h) M6: these numbers are ProcurePal's OWN sales, not the marketplace's.
+    //
+    //     Every test below plants a third-party vendor's orders in the SAME window, on
+    //     the same days, from the same buyers, and asserts the response is unmoved. The
+    //     vendor's figures are an order of magnitude larger than ProcurePal's on purpose:
+    //     an unscoped query would not be subtly wrong, it would be quotably wrong.
+    // ---------------------------------------------------------------------------------
+
+    /**
+     * The headline test. Before M6 this endpoint summed every seller's orders, so
+     * ProcurePal's revenue card included money it does not receive.
+     */
+    @Test
+    void theSummaryCountsProcurePalsOwnSalesAndNoVendorsAtAll() {
+        plantOrder(buyerA, OrderStatus.DELIVERED, "PAID", "MONNIFY", day(4), "100000.00", "5000.00", 10, 0);
+        plantVendorOrder(buyerA, OrderStatus.DELIVERED, day(4), "900000.00", "40000.00", 90);
+        plantVendorOrder(buyerB, OrderStatus.RECEIVED, day(6), "500000.00", "0.00", 50);
+
+        MarketplacePeriodMetrics current = summary().current();
+
+        assertThat(current.grossRevenue()).isEqualByComparingTo("105000.00");
+        assertThat(current.merchandiseRevenue()).isEqualByComparingTo("100000.00");
+        assertThat(current.deliveryFeeRevenue()).isEqualByComparingTo("5000.00");
+        assertThat(current.collectedRevenue()).isEqualByComparingTo("105000.00");
+        assertThat(current.orderCount()).isEqualTo(1);
+        assertThat(current.averageOrderValue()).isEqualByComparingTo("105000.00");
+        assertThat(current.unitsSold()).isEqualTo(10);
+        // buyerB bought only from the vendor in this window, so ProcurePal has one active
+        // company, not two. A leak here would be silent - the number would just be bigger.
+        assertThat(current.activeBuyingCompanies()).isEqualTo(1);
+    }
+
+    /**
+     * "New to ProcurePal", not "new to the platform". A company whose first ever order
+     * anywhere was with a VENDOR, and whose first ProcurePal order lands in this window,
+     * is new to ProcurePal - and the pre-M6 query, which took the all-time MIN across
+     * every seller, would have said otherwise.
+     */
+    @Test
+    void newBuyingCompaniesMeansNewToProcurePalRatherThanNewToTheMarketplace() {
+        // buyerA has been buying from the vendor since long before the window.
+        plantVendorOrder(buyerA, OrderStatus.RECEIVED, day(4).minusDays(200), "80000.00", "0.00", 8);
+        // ...and buys from ProcurePal for the first time inside it.
+        plantOrder(buyerA, OrderStatus.DELIVERED, "PAID", "MONNIFY", day(5), "20000.00", "0.00", 2, 0);
+
+        MarketplacePeriodMetrics current = summary().current();
+
+        assertThat(current.newBuyingCompanies()).isEqualTo(1);
+        // Same reasoning from the other side: their vendor history is not a prior
+        // ProcurePal order, so this is not a repeat ProcurePal order.
+        assertThat(current.repeatOrderRate()).isEqualByComparingTo("0.0000");
+    }
+
+    @Test
+    void theRevenueSeriesExcludesVendorSalesBucketByBucket() {
+        plantOrder(buyerA, OrderStatus.DELIVERED, "PAID", "MONNIFY", day(4), "30000.00", "0.00", 3, 0);
+        plantVendorOrder(buyerA, OrderStatus.DELIVERED, day(4), "300000.00", "0.00", 30);
+        // A day ProcurePal did not trade at all but the vendor did. It must still be a
+        // zero bucket, not the vendor's revenue - the seller pin lives in the LEFT JOIN
+        // condition, and this is the assertion that notices if it moves to a WHERE.
+        plantVendorOrder(buyerB, OrderStatus.DELIVERED, day(7), "700000.00", "0.00", 70);
+
+        List<RevenuePoint> points = revenueOverTime("DAY");
+
+        assertThat(pointOn(points, "2019-03-04").revenue()).isEqualByComparingTo("30000.00");
+        assertThat(pointOn(points, "2019-03-04").orderCount()).isEqualTo(1);
+        assertThat(pointOn(points, "2019-03-07").revenue()).isEqualByComparingTo("0.00");
+        assertThat(pointOn(points, "2019-03-07").orderCount()).isZero();
+        // Nothing anywhere in the series carries vendor money: the whole month sums to
+        // ProcurePal's single order, so a leak cannot hide in a bucket this test does not
+        // name explicitly.
+        assertThat(points.stream().map(RevenuePoint::revenue).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo("30000.00");
+    }
+
+    /**
+     * A ranking is a revenue statement about a named company, so it narrows - unlike the
+     * customers ROSTER at /api/marketplace/admin/customers, which is an ops list and
+     * deliberately stays wide. Both halves of that decision are asserted here: the
+     * vendor's much bigger buyer must not outrank ProcurePal's, and lifetime spend must
+     * count ProcurePal's sales only.
+     */
+    @Test
+    void theCustomerRankingCountsSpendWithProcurePalOnlyInWindowAndLifetime() {
+        plantOrder(buyerA, OrderStatus.DELIVERED, "PAID", "MONNIFY", day(4), "40000.00", "0.00", 4, 0);
+        plantOrder(buyerB, OrderStatus.DELIVERED, "PAID", "MONNIFY", day(5), "10000.00", "0.00", 1, 0);
+        // buyerB is the vendor's biggest customer, in window and historically.
+        plantVendorOrder(buyerB, OrderStatus.DELIVERED, day(5), "900000.00", "0.00", 90);
+        plantVendorOrder(buyerB, OrderStatus.RECEIVED, day(5).minusDays(300), "900000.00", "0.00", 90);
+
+        List<TopCustomerEntry> ranking = topCustomers("REVENUE");
+
+        TopCustomerEntry first = ranking.stream()
+                .filter(entry -> entry.clientId().equals(buyerA) || entry.clientId().equals(buyerB))
+                .findFirst()
+                .orElseThrow();
+        assertThat(first.clientId()).as("buyerA outspends buyerB WITH PROCUREPAL").isEqualTo(buyerA);
+
+        TopCustomerEntry b = ranking.stream()
+                .filter(entry -> entry.clientId().equals(buyerB))
+                .findFirst()
+                .orElseThrow();
+        assertThat(b.revenue()).isEqualByComparingTo("10000.00");
+        assertThat(b.lifetimeSpend()).isEqualByComparingTo("10000.00");
+        assertThat(b.lifetimeOrderCount()).isEqualTo(1);
+    }
+
+    @Test
+    void topProductsAndCategoryMixNeverShowAVendorsGoods() {
+        plantOrder(buyerA, OrderStatus.DELIVERED, "PAID", "MONNIFY", day(4), "50000.00", "0.00", 5, 0);
+        plantVendorOrder(buyerA, OrderStatus.DELIVERED, day(4), "800000.00", "0.00", 80);
+
+        List<TopSellingProductEntry> products = topProducts("REVENUE");
+        assertThat(products).extracting(TopSellingProductEntry::productId).doesNotContain(vendorProductId);
+        assertThat(totalOf(products)).isEqualByComparingTo("50000.00");
+
+        // The vendor's product is filed under categoryA, the same category productA is in,
+        // so a leak would show as an inflated figure on a category ProcurePal really sells
+        // in - the version of this bug hardest to spot by eye.
+        CategoryMixResponse mix = categoryMix();
+        assertThat(mix.totalRevenue()).isEqualByComparingTo("50000.00");
+        CategoryMixEntry categoryAEntry = mix.categories().stream()
+                .filter(entry -> categoryA.equals(entry.categoryId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(categoryAEntry.revenue()).isEqualByComparingTo("50000.00");
+        assertThat(categoryAEntry.share()).isEqualByComparingTo("1.0000");
+    }
+
+    /**
+     * The funnel is the report on ProcurePal's own fulfilment queue, and that queue has
+     * been seller-scoped since V11. If the two disagreed, the same app would show two
+     * different numbers for "orders awaiting dispatch".
+     */
+    @Test
+    void theFulfilmentFunnelCountsOnlyOrdersProcurePalHasToFulfil() {
+        plantOrder(buyerA, OrderStatus.CONFIRMED, "PAID", "MONNIFY", day(4), "10000.00", "0.00", 1, 0);
+        plantVendorOrder(buyerA, OrderStatus.CONFIRMED, day(4), "600000.00", "0.00", 60);
+        plantVendorOrder(buyerB, OrderStatus.CANCELLED, day(5), "70000.00", "0.00", 7);
+
+        FulfilmentFunnelResponse funnel = fulfilmentFunnel();
+
+        assertThat(funnel.totalOrders()).isEqualTo(1);
+        assertThat(statusCount(funnel, OrderStatus.CONFIRMED)).isEqualTo(1);
+        // The one endpoint that counts cancellations still counts only ProcurePal's.
+        assertThat(statusCount(funnel, OrderStatus.CANCELLED)).isZero();
+        assertThat(stage(funnel, "PLACED").orderCount()).isEqualTo(1);
+    }
+
+    // ---------------------------------------------------------------------------------
     // Fixtures
     // ---------------------------------------------------------------------------------
 
@@ -569,18 +738,64 @@ class MarketplaceAnalyticsIntegrationTest {
             String deliveryFee,
             int quantityA,
             int quantityB) {
+        return plantOrder(
+                platformOwnerId(),
+                clientId,
+                status,
+                paymentStatus,
+                paymentMethod,
+                at,
+                subtotal,
+                deliveryFee,
+                quantityA,
+                quantityB,
+                productA,
+                productB);
+    }
+
+    /**
+     * The general form: any seller, any two products. The two-argument-per-line shape is
+     * inherited from the ProcurePal overload above rather than redesigned, so a reader
+     * comparing a vendor fixture with a ProcurePal one is comparing like with like.
+     */
+    private UUID plantOrder(
+            UUID sellerClientId,
+            UUID clientId,
+            OrderStatus status,
+            String paymentStatus,
+            String paymentMethod,
+            OffsetDateTime at,
+            String subtotal,
+            String deliveryFee,
+            int quantityA,
+            int quantityB,
+            UUID lineProductA,
+            UUID lineProductB) {
         UUID id = UUID.randomUUID();
         BigDecimal goods = new BigDecimal(subtotal);
         BigDecimal total = goods.add(new BigDecimal(deliveryFee));
         boolean placed = status != OrderStatus.PENDING_PAYMENT;
 
         jdbc.update(
-                "INSERT INTO orders (id, order_number, client_id, status, payment_status, payment_method, currency, "
+                "INSERT INTO orders (id, order_number, client_id, seller_client_id, checkout_group_id, "
+                        + "status, payment_status, payment_method, currency, "
                         + "subtotal, delivery_fee, total, placed_at, created_at, updated_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, 'NGN', ?, ?, ?, ?, ?, ?)",
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NGN', ?, ?, ?, ?, ?, ?)",
                 id,
                 FIXTURE_PREFIX + UUID.randomUUID().toString().substring(0, 12),
                 clientId,
+                // NOT NULL since V11. client_id above is the BUYER; this names who SOLD.
+                // Since M6 it is the column every query in the module filters on, which
+                // is why it is a parameter here rather than a hard-coded platform owner
+                // id: section (h) plants vendor sales through the same helper and
+                // asserts they are excluded.
+                sellerClientId,
+                // NOT NULL since V12. Each fixture order is its own checkout - a group
+                // of one - which is exactly what V12's backfill made every historical
+                // row, and what a single-seller basket still produces. Set to the
+                // order's own id for the same reason the backfill uses it: it is a
+                // value guaranteed unique and already to hand.
+                id,
                 status.name(),
                 paymentStatus,
                 paymentMethod,
@@ -597,13 +812,74 @@ class MarketplaceAnalyticsIntegrationTest {
         if (totalUnits > 0) {
             BigDecimal perUnit = goods.divide(BigDecimal.valueOf(totalUnits), 2, java.math.RoundingMode.HALF_UP);
             if (quantityA > 0) {
-                plantItem(id, productA, quantityA, perUnit, goods, quantityB == 0);
+                plantItem(id, lineProductA, quantityA, perUnit, goods, quantityB == 0);
             }
             if (quantityB > 0) {
-                plantItem(id, productB, quantityB, perUnit, goods, quantityA == 0);
+                plantItem(id, lineProductB, quantityB, perUnit, goods, quantityA == 0);
             }
         }
         return id;
+    }
+
+    /**
+     * One vendor account with one listed product, filed under the SAME category as
+     * ProcurePal's productA.
+     *
+     * <p>The shared category is the point: if category-mix ever stopped filtering on
+     * seller, the leak would show up as an inflated figure on a category ProcurePal really
+     * does sell in, which is the version of the bug an operator would be least likely to
+     * notice. Giving the vendor its own category would have made the same test pass
+     * against a much weaker query.
+     *
+     * <p>Straight through JDBC and with no user account: nothing here logs in as the
+     * vendor, it only needs to be a valid {@code seller_client_id} with a products row for
+     * the top-products join to reach.
+     */
+    private void createVendorSeller() {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        vendorSellerId = UUID.randomUUID();
+        jdbc.update(
+                "INSERT INTO clients (id, name, slug, admin_contact_email, client_type, is_active) "
+                        + "VALUES (?, ?, ?, ?, 'VENDOR', TRUE)",
+                vendorSellerId,
+                VENDOR_FIXTURE_PREFIX + suffix,
+                VENDOR_FIXTURE_PREFIX.toLowerCase() + suffix,
+                "vendor-" + suffix + "@example.com");
+
+        vendorProductId = UUID.randomUUID();
+        String sku = VENDOR_FIXTURE_PREFIX + suffix;
+        String name = "Competitor Rice " + suffix;
+        jdbc.update(
+                "INSERT INTO products (id, client_id, name, sku, unit_price, quantity_on_hand, category_id, "
+                        + "is_active, is_marketplace_listed, approval_status, min_order_quantity) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, TRUE, TRUE, 'APPROVED', 1)",
+                vendorProductId,
+                vendorSellerId,
+                name,
+                sku,
+                new BigDecimal("10000.00"),
+                500,
+                categoryA);
+
+        productRows.put(vendorProductId, Map.of("name", name, "sku", sku));
+    }
+
+    /** A sale by the third-party vendor, on the vendor's own product. */
+    private UUID plantVendorOrder(
+            UUID buyerId, OrderStatus status, OffsetDateTime at, String subtotal, String deliveryFee, int quantity) {
+        return plantOrder(
+                vendorSellerId,
+                buyerId,
+                status,
+                "PAID",
+                "MONNIFY",
+                at,
+                subtotal,
+                deliveryFee,
+                quantity,
+                0,
+                vendorProductId,
+                vendorProductId);
     }
 
     /** {@code takesRemainder} keeps the two lines summing exactly to the order subtotal. */
@@ -636,9 +912,17 @@ class MarketplaceAnalyticsIntegrationTest {
                 java.sql.Timestamp.from(at.toInstant()));
     }
 
-    /** ON DELETE CASCADE on order_items and order_status_events takes the children with it. */
+    /**
+     * ON DELETE CASCADE on order_items and order_status_events takes the children with it.
+     *
+     * <p>Order matters for the vendor fixture: {@code orders.seller_client_id} is ON DELETE
+     * RESTRICT, so the orders have to go before the clients row that sold them, and the
+     * products row before its owner for the same reason.
+     */
     private void cleanFixtures() {
         jdbc.update("DELETE FROM orders WHERE order_number LIKE ?", FIXTURE_PREFIX + "%");
+        jdbc.update("DELETE FROM products WHERE sku LIKE ?", VENDOR_FIXTURE_PREFIX + "%");
+        jdbc.update("DELETE FROM clients WHERE name LIKE ?", VENDOR_FIXTURE_PREFIX + "%");
     }
 
     // ---------------------------------------------------------------------------------
@@ -723,6 +1007,11 @@ class MarketplaceAnalyticsIntegrationTest {
     // ---------------------------------------------------------------------------------
     // Auth
     // ---------------------------------------------------------------------------------
+
+    /** Read straight from the table: these fixtures are planted with raw SQL, below the entity layer. */
+    private UUID platformOwnerId() {
+        return jdbc.queryForObject("SELECT id FROM clients WHERE is_platform_owner LIMIT 1", UUID.class);
+    }
 
     private TenantLoginResponse loginAsPlatformOwner() {
         TenantLoginResponse response = restTemplate.postForObject(

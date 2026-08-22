@@ -1,6 +1,11 @@
 package com.procurepal_services.stock_bridge_api.product;
 
+import com.procurepal_services.stock_bridge_api.companyvendor.CompanyVendorLookup;
+import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
+import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
+import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationService;
 import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
 import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadValidationException;
 import com.procurepal_services.stock_bridge_api.product.bulk.ParsedProductRow;
@@ -27,6 +32,14 @@ import org.springframework.web.multipart.MultipartFile;
  * All reads/writes go through ProductRepository's tenant-scoped methods (or
  * ProductSpecifications, which adds an explicit client_id predicate) - see
  * UserManagementService for the same principle applied to users.
+ *
+ * <h2>This is also a SELLER's catalogue editor</h2>
+ * The same endpoints serve a buying company managing its private stock list and a
+ * vendor managing the products it sells, because to the tenant they are the same
+ * screen. Moderation therefore has to be applied here rather than on a separate
+ * vendor-only surface, and it has to be applied CONDITIONALLY - a buying company must
+ * never be dragged into a review queue for editing its own napkin count. The condition
+ * lives in {@link ProductModerationRules}; this class only calls it.
  */
 @Service
 @RequiredArgsConstructor
@@ -35,6 +48,16 @@ public class ProductManagementService {
     private final ProductRepository productRepository;
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
+    private final SellerDirectory sellerDirectory;
+    private final ProductModerationService productModerationService;
+    /**
+     * Resolves a supplier id from a request against the caller's OWN directory.
+     * Goes through the shared lookup rather than the repository directly so the
+     * "active, and belongs to this tenant" check has one implementation - a vendor
+     * id arriving in a request body is exactly where a slightly-wrong copy of it
+     * would file another company's supplier against this company's stock.
+     */
+    private final CompanyVendorLookup companyVendorLookup;
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
@@ -67,7 +90,15 @@ public class ProductManagementService {
                 .unitPrice(request.unitPrice())
                 .costPrice(request.costPrice())
                 .lowStockThreshold(request.lowStockThreshold())
+                .companyVendor(resolveVendor(request.companyVendorId()))
                 .active(true)
+                // Stated rather than left to the column's PENDING default, so the
+                // platform owner's auto-approval is a rule somebody can find. For a
+                // vendor this is PENDING and the product enters the moderation queue;
+                // for an ordinary buying company it is also PENDING and is never read
+                // by anything - see ProductModerationRules.
+                .approvalStatus(ProductModerationRules.initialStatusFor(
+                        sellerDirectory.findSellerOfRecord(tenantId).orElse(null)))
                 .build();
 
         List<String> warnings = new ArrayList<>();
@@ -82,6 +113,17 @@ public class ProductManagementService {
     @Transactional
     public ProductResponse update(UUID id, UpdateProductRequest request, MultipartFile image) {
         Product product = findTenantProductOrThrow(id);
+
+        // Snapshot the identity fields BEFORE any mutation, so the moderation check at
+        // the bottom compares what the listing was against what it became. Captured
+        // even for tenants that are not sellers - it is six string reads, and making it
+        // conditional would mean two code paths through this method.
+        String beforeName = product.getName();
+        String beforeSku = product.getSku();
+        String beforeDescription = product.getDescription();
+        String beforeBrand = product.getBrand();
+        String beforeImageUrl = product.getImageUrl();
+        String beforeUnitOfMeasure = product.getUnitOfMeasure();
 
         if (request.sku() != null && !request.sku().equals(product.getSku())) {
             assertSkuAvailable(product.getClientId(), request.sku(), id);
@@ -105,12 +147,34 @@ public class ProductManagementService {
         if (request.active() != null) {
             product.setActive(request.active());
         }
+        // Unlink wins over relink: two contradictory instructions in one body, and
+        // "clear it" is the unambiguous one. See UpdateProductRequest for why a bare
+        // null companyVendorId cannot mean this.
+        if (Boolean.TRUE.equals(request.clearCompanyVendor())) {
+            product.setCompanyVendor(null);
+        } else if (request.companyVendorId() != null) {
+            product.setCompanyVendor(resolveVendor(request.companyVendorId()));
+        }
 
         List<String> warnings = new ArrayList<>();
         if (hasContent(image)) {
             applyImage(product, image, warnings);
         } else if (Boolean.TRUE.equals(request.removeImage())) {
             product.setImageUrl(null);
+        }
+
+        // Last, after the image has been applied, because a swapped photo is one of the
+        // edits that most obviously invalidates a review. Price, cost, stock threshold
+        // and the active flag are all changed above and deliberately do NOT reach this
+        // check - see ProductModerationRules for the ruling and its reasoning.
+        if (ProductModerationRules.invalidatesApproval(
+                beforeName, product.getName(),
+                beforeSku, product.getSku(),
+                beforeDescription, product.getDescription(),
+                beforeBrand, product.getBrand(),
+                beforeImageUrl, product.getImageUrl(),
+                beforeUnitOfMeasure, product.getUnitOfMeasure())) {
+            productModerationService.onListingContentChanged(product);
         }
 
         return ProductResponse.from(product, warnings.isEmpty() ? null : warnings);
@@ -166,6 +230,13 @@ public class ProductManagementService {
                 saved.size(), saved.stream().map(ProductResponse::from).toList());
     }
 
+    /**
+     * Same moderation stamp as {@link #create}. Bulk upload is exactly the path a vendor
+     * with a large catalogue uses, so leaving it on the column default would be the one
+     * way to get several hundred unmoderated listings in at once - and, conversely, it
+     * is why ProcurePal's own bulk imports must still come out APPROVED rather than
+     * filling the operator's queue with its own spreadsheet.
+     */
     private Product toNewProduct(ParsedProductRow row) {
         return Product.builder()
                 .name(row.name())
@@ -176,6 +247,8 @@ public class ProductManagementService {
                 .quantityOnHand(row.quantityOnHand())
                 .lowStockThreshold(row.lowStockThreshold())
                 .active(true)
+                .approvalStatus(ProductModerationRules.initialStatusFor(
+                        sellerDirectory.findSellerOfRecord(requireTenantId()).orElse(null)))
                 .build();
     }
 
@@ -198,6 +271,26 @@ public class ProductManagementService {
 
     private boolean hasContent(MultipartFile file) {
         return file != null && !file.isEmpty();
+    }
+
+    /**
+     * The supplier a buyer picked, checked against their own directory.
+     *
+     * <p>Nothing stops a caller sending a well-formed UUID belonging to another
+     * company, and {@code products.company_vendor_id} has no CHECK that could catch
+     * it - a foreign key alone is satisfied by any real vendor row. This lookup IS
+     * the constraint, and it is why the id is resolved rather than assigned.
+     *
+     * <p>A VERIFIED entry is a legitimate manual choice, not just an automatic one:
+     * a company that buys rice from a marketplace seller may also want a product
+     * they added by hand filed under that seller. What they may not do is EDIT the
+     * entry, which is a different question and is refused elsewhere.
+     */
+    private CompanyVendor resolveVendor(UUID companyVendorId) {
+        if (companyVendorId == null) {
+            return null;
+        }
+        return companyVendorLookup.find(companyVendorId).orElseThrow(InvalidProductVendorException::new);
     }
 
     private Product findTenantProductOrThrow(UUID id) {

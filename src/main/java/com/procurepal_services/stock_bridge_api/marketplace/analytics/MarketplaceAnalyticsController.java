@@ -20,10 +20,27 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The marketplace operator's reporting surface. Two independent gates on every route, the
- * same arrangement the fulfilment queue uses: {@code @PreAuthorize} proves the caller has
- * the right job, and {@code PlatformOwnerGuard.requirePlatformOwner()} - called at the top
- * of every service method - proves they work for the right company. The permission alone
+ * ProcurePal's own sales reporting - the platform owner reading its numbers as a SELLER,
+ * not as the marketplace.
+ *
+ * <h2>What every route on this controller reports since M6</h2>
+ * Orders whose {@code seller_client_id} is ProcurePal's, and only those. Third-party
+ * vendors' sales are excluded from every metric here: revenue, orders, AOV, units, top
+ * products, top customers, category mix and the fulfilment funnel alike. Before M6 these
+ * routes aggregated every seller, which meant the operator's revenue card included money
+ * it does not receive. The per-metric ruling - including the two that could plausibly have
+ * stayed marketplace-wide, and the one nearby surface that deliberately did - is written
+ * out in {@link MarketplaceAnalyticsService}'s class doc.
+ *
+ * <p><b>Cross-seller revenue lives elsewhere.</b> Total marketplace revenue, the per-seller
+ * breakdown and its growth are a super admin surface: {@code /api/superadmin/analytics/revenue/**},
+ * behind the super admin principal. No tenant token reaches it, including ProcurePal's.
+ *
+ * <h2>Three gates on every route</h2>
+ * The same arrangement the fulfilment queue uses. {@code @PreAuthorize} proves the caller
+ * has the right job; {@code PlatformOwnerGuard.requirePlatformOwner()} - called at the top
+ * of every service method - proves they work for the right company; and the
+ * {@code seller_client_id} predicate decides which rows are theirs. The permission alone
  * proves nothing, because VIEW_MARKETPLACE_ANALYTICS hangs off a global role and every
  * tenant's OWNER therefore holds it. The 403 needs no advice here:
  * {@code MarketplaceAccessExceptionHandler} is global.
@@ -49,7 +66,7 @@ public class MarketplaceAnalyticsController {
 
     private final MarketplaceAnalyticsService marketplaceAnalyticsService;
 
-    /** Headline figures for the window plus the preceding window of the same length. */
+    /** ProcurePal's headline figures for the window plus the preceding window of the same length. */
     @GetMapping("/summary")
     public MarketplaceAnalyticsSummaryResponse summary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
@@ -65,6 +82,14 @@ public class MarketplaceAnalyticsController {
         return marketplaceAnalyticsService.revenueOverTime(from, to, granularity);
     }
 
+    /**
+     * ProcurePal's best customers, ranked by what they spent WITH PROCUREPAL. Not to be
+     * confused with {@code /api/marketplace/admin/customers}, which is a roster of every
+     * buying company on the platform - prospects included - and deliberately stays that
+     * wide. This one is a revenue ranking, so it narrows; that one is an ops list, so it
+     * does not. See MarketplaceOrderAdminService.customers for the older half of that
+     * decision.
+     */
     @GetMapping("/top-customers")
     public List<TopCustomerEntry> topCustomers(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
@@ -83,6 +108,11 @@ public class MarketplaceAnalyticsController {
         return marketplaceAnalyticsService.topProducts(from, to, limit, metric);
     }
 
+    /**
+     * Share of ProcurePal's own goods revenue by category - a revenue split, not
+     * marketplace-wide category demand. See CategoryMixResponse for why those are
+     * different questions and why only the first one belongs on this page.
+     */
     @GetMapping("/category-mix")
     public CategoryMixResponse categoryMix(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
@@ -90,6 +120,7 @@ public class MarketplaceAnalyticsController {
         return marketplaceAnalyticsService.categoryMix(from, to);
     }
 
+    /** ProcurePal's own fulfilment queue, as a funnel. Matches the queue's own scope exactly. */
     @GetMapping("/fulfilment-funnel")
     public FulfilmentFunnelResponse fulfilmentFunnel(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,

@@ -3,7 +3,8 @@ package com.procurepal_services.stock_bridge_api.marketplace.analytics.dto;
 import java.math.BigDecimal;
 
 /**
- * One bucket of the revenue-over-time series.
+ * One bucket of ProcurePal's own revenue-over-time series. Every figure counts only
+ * orders ProcurePal sold - see MarketplacePeriodMetrics.
  *
  * Buckets are zero-filled by the query (a generate_series LEFT JOINed to orders), so a
  * quiet week comes back as a real zero rather than a missing point - a line chart that

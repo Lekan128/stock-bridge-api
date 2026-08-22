@@ -239,6 +239,14 @@ class MarketplaceFoundationIntegrationTest {
         try {
             buyerOrder = orderRepository.saveAndFlush(Order.builder()
                     .orderNumber("PP-GUARDTEST-" + UUID.randomUUID().toString().substring(0, 8))
+                    // NOT NULL since V11: every order names its seller. ProcurePal
+                    // here, which is what every order in this database means.
+                    .sellerClientId(operatorId)
+                    // NOT NULL since V12: every order names the checkout it came
+                    // out of. A fixture order is its own checkout - a group of one -
+                    // which is what V12's backfill made every pre-split row and what a
+                    // single-seller basket still produces today.
+                    .checkoutGroupId(UUID.randomUUID())
                     .status(OrderStatus.PLACED)
                     .paymentStatus(PaymentStatus.ON_DELIVERY)
                     .paymentMethod(PaymentMethod.PAY_ON_DELIVERY)

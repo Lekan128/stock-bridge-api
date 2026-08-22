@@ -1,11 +1,9 @@
 package com.procurepal_services.stock_bridge_api.order;
 
 import com.procurepal_services.stock_bridge_api.cart.InsufficientCatalogStockException;
-import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Order;
 import com.procurepal_services.stock_bridge_api.entity.OrderItem;
 import com.procurepal_services.stock_bridge_api.entity.Product;
-import com.procurepal_services.stock_bridge_api.marketplace.PlatformOwnerGuard;
 import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
@@ -78,7 +76,6 @@ public class CatalogStockService {
     private final StockManagementService stockManagementService;
     private final OrderItemRepository orderItemRepository;
     private final ProductRepository productRepository;
-    private final PlatformOwnerGuard platformOwnerGuard;
     private final TenantScopeExecutor tenantScopeExecutor;
 
     @PersistenceContext
@@ -131,7 +128,7 @@ public class CatalogStockService {
                     + "      JOIN orders o ON o.id = oi.order_id "
                     + "      WHERE o.status IN ('PLACED', 'CONFIRMED', 'PROCESSING') "
                     + "      GROUP BY oi.product_id) c ON c.product_id = p.id "
-                    + "WHERE p.client_id = :sellerId AND p.quantity_on_hand - c.committed <= 0";
+                    + "WHERE p.client_id IN (:sellerIds) AND p.quantity_on_hand - c.committed <= 0";
 
     /** Units of this catalog product owed to orders that have not left the warehouse yet. */
     @Transactional(readOnly = true)
@@ -196,10 +193,30 @@ public class CatalogStockService {
     /** See {@link #FULLY_COMMITTED_SQL} - the exclusion set behind the storefront's in-stock filter. */
     @Transactional(readOnly = true)
     public Set<UUID> fullyCommittedProductIds(UUID sellerClientId) {
+        return fullyCommittedProductIds(Set.of(sellerClientId));
+    }
+
+    /**
+     * The same exclusion set across SEVERAL sellers at once - what the storefront
+     * grid needs now that it spans every active seller rather than the platform
+     * owner alone.
+     *
+     * One query for the whole page rather than one per seller: the grid is a
+     * single query and its in-stock filter has to be too, or the count query
+     * behind {@code totalElements} and the page contents would be assembled from
+     * different snapshots.
+     */
+    @Transactional(readOnly = true)
+    public Set<UUID> fullyCommittedProductIds(Collection<UUID> sellerClientIds) {
+        if (sellerClientIds == null || sellerClientIds.isEmpty()) {
+            // An empty IN list is a SQL syntax error, not an empty result - and with
+            // no sellers there is nothing that could be sold out anyway.
+            return Set.of();
+        }
         @SuppressWarnings("unchecked")
         List<Object> ids = entityManager
                 .createNativeQuery(FULLY_COMMITTED_SQL)
-                .setParameter("sellerId", sellerClientId)
+                .setParameter("sellerIds", sellerClientIds)
                 .getResultList();
         return ids.stream().map(CatalogStockService::toUuid).collect(Collectors.toSet());
     }
@@ -246,9 +263,14 @@ public class CatalogStockService {
     }
 
     /**
-     * The goods have left the building. Writes one OUT movement per line against
-     * ProcurePal's own product, priced at what it sold for, so their inventory, their
+     * The goods have left the building. Writes one OUT movement per line against the
+     * SELLER's own product, priced at what it sold for, so their inventory, their
      * stock ledger and their analytics all reflect the sale.
+     *
+     * <p>The seller is read off the order, not assumed to be ProcurePal. Because an
+     * order has exactly one seller (V11) and a multi-seller basket splits into one
+     * order each (V12), every line here belongs to the same warehouse by
+     * construction - which is what lets this run as one tenant-scoped block.
      *
      * <h2>Idempotency</h2>
      * Two layers. The caller reaches this only through
@@ -263,14 +285,20 @@ public class CatalogStockService {
      */
     @Transactional
     public void dispatch(Order order, UUID actingUserId) {
-        UUID operatorId = platformOwnerGuard.findPlatformOwner().map(Client::getId).orElse(null);
-        if (operatorId == null) {
+        // The SELLER's warehouse, not the platform owner's. Before vendors these
+        // were always the same client and reading the platform owner here was
+        // harmless shorthand; with third-party sellers it would deduct a vendor's
+        // dispatch from ProcurePal's stock and leave the vendor's count untouched -
+        // silently, because findByIdAndClientIdForUpdate would simply miss and the
+        // loop below treats a miss as "hard-deleted, nothing to decrement".
+        UUID sellerId = order.getSellerClientId();
+        if (sellerId == null) {
             return;
         }
-        tenantScopeExecutor.runAs(operatorId, () -> {
+        tenantScopeExecutor.runAs(sellerId, () -> {
             for (OrderItem item : orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(order.getId())) {
                 Product catalogProduct = productRepository
-                        .findByIdAndClientIdForUpdate(item.getProductId(), operatorId)
+                        .findByIdAndClientIdForUpdate(item.getProductId(), sellerId)
                         .orElse(null);
                 if (catalogProduct == null) {
                     // The catalog row was hard-deleted after the sale. Nothing to
@@ -288,7 +316,7 @@ public class CatalogStockService {
                 int quantity = Math.min(item.getQuantity(), catalogProduct.getQuantityOnHand());
                 if (quantity < item.getQuantity()) {
                     log.warn(
-                            "Order {} dispatched {} of {} units of {} - ProcurePal's recorded stock was short",
+                            "Order {} dispatched {} of {} units of {} - the seller's recorded stock was short",
                             order.getOrderNumber(),
                             quantity,
                             item.getQuantity(),
