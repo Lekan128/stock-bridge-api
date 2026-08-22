@@ -42,6 +42,23 @@ public class SecurityConfig {
         "/api/auth/login",
         "/api/auth/refresh",
         "/api/clients/signup",
+        // The public "apply to sell on ProcurePaddy" form. Unauthenticated by
+        // necessity: an applicant has no account and, if we reject them, never
+        // will - a login wall in front of it would mean asking businesses to sign
+        // up as a buyer in order to ask to be a seller.
+        //
+        // Same HAZARD as every path in this list: no principal, so TenantContext
+        // is empty and the Hibernate tenant filter is DISABLED for the whole
+        // request. The handler behind it does not depend on that filter and must
+        // not start to - vendor_waitlist_applications is deliberately not
+        // tenant-scoped (an applicant has no clients row to be scoped to), so
+        // there is nothing for the filter to do. See VendorWaitlistService.
+        //
+        // It also creates a row and sends two emails, one to a caller-chosen
+        // address, which is the abuse shape POST /api/me/email-verification
+        // already has. It is rate limited the same way, by the same mechanism -
+        // see VendorWaitlistRateLimiter.
+        "/api/vendor-waitlist",
         "/api/superadmin/auth/login",
         "/api/superadmin/auth/refresh",
         "/actuator/health",
@@ -54,12 +71,23 @@ public class SecurityConfig {
         // tenant filter (layer 1 of tenant isolation) DISABLED for the whole
         // request. A query that would normally be scoped for free is not scoped at
         // all here. Every handler behind these paths must therefore filter
-        // explicitly: on is_marketplace_listed = true AND is_active = true, and
-        // defensively on the platform owner's client_id
-        // (PlatformOwnerGuard.findPlatformOwner()). Do not add a path here whose
-        // handler relies on the tenant filter.
+        // explicitly: on is_marketplace_listed = true AND is_active = true AND
+        // approval_status = 'APPROVED', and on client_id being one of the ACTIVE
+        // SELLERS (SellerDirectory.activeSellerIds() - the platform owner plus
+        // active vendors). Do not add a path here whose handler relies on the
+        // tenant filter.
+        //
+        // The seller pin widened from one id to a set when selling opened up to
+        // vendors; it did not go away, and it must not. Every buying company on
+        // the platform keeps its private inventory in the same products table, so
+        // an unpinned query here publishes all of it.
         "/api/marketplace/catalog/**",
         "/api/marketplace/categories",
+        // The seller directory and per-vendor storefront headers. Same hazard, and
+        // one specific to them: they read `clients`, which holds every buying
+        // company too, so the handler must return active SELLERS only - never a
+        // filtered view of the whole tenant list. See SellerNotFoundException.
+        "/api/marketplace/sellers/**",
         "/api/marketplace/settings",
         // Same hazard, plus one more: this is called by Monnify, not by a browser,
         // so there is no token to authenticate and CSRF is disabled app-wide. Its

@@ -12,13 +12,17 @@ import com.procurepal_services.stock_bridge_api.cart.dto.CartResponse;
 import com.procurepal_services.stock_bridge_api.cart.dto.MergeCartRequest;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.entity.Client;
+import com.procurepal_services.stock_bridge_api.entity.ClientType;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
+import com.procurepal_services.stock_bridge_api.entity.Order;
+import com.procurepal_services.stock_bridge_api.entity.OrderItem;
 import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.PaymentMethod;
 import com.procurepal_services.stock_bridge_api.entity.PaymentStatus;
 import com.procurepal_services.stock_bridge_api.entity.PaymentTerms;
 import com.procurepal_services.stock_bridge_api.entity.PaymentVerificationSource;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
 import com.procurepal_services.stock_bridge_api.marketplace.dto.AdvanceOrderStatusRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.CheckoutQuoteRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.CheckoutQuoteResponse;
@@ -30,6 +34,7 @@ import com.procurepal_services.stock_bridge_api.order.dto.ReceiveOrderRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.ReorderResponse;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
+import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
@@ -90,6 +95,9 @@ class MarketplaceOrderIntegrationTest {
 
     @Autowired
     private OrderRepository orderRepository;
+
+    @Autowired
+    private OrderItemRepository orderItemRepository;
 
     @Autowired
     private OrderPaymentApplication orderPaymentApplication;
@@ -975,6 +983,373 @@ class MarketplaceOrderIntegrationTest {
         assertThat(unreadNotificationsOf(buyer)).noneMatch(n -> n.id().equals(notificationId));
     }
 
+
+    // ------------------------------------------------------------------------
+    // (h) MULTI-SELLER: the split, the shared payment, and seller isolation
+    // ------------------------------------------------------------------------
+
+    /**
+     * The core of the module. One basket holding two sellers' goods becomes TWO orders,
+     * each with its own number, seller, subtotal, delivery fee and total.
+     *
+     * <p>Totals are asserted relationally rather than against hard-coded naira, because
+     * the delivery fee and the free-delivery threshold are operator settings this test
+     * has no business pinning: what must hold is that each order's arithmetic closes on
+     * its own lines, and that nothing is lost or double-counted across the split.
+     */
+    @Test
+    void aMixedSellerCartSplitsIntoOneOrderPerSellerWithItsOwnTotals() {
+        Buyer buyer = signupBuyer("Split Basket Co");
+        Buyer vendor = signupVendorSeller("Split Vendor Co", "0.0750");
+
+        Product procurePalItem = plantCatalogProduct(40, 1);
+        Product vendorItem = plantSellerProduct(vendor.clientId(), "5000.00", 40);
+
+        addToCart(buyer, procurePalItem, 2);
+        addToCart(buyer, vendorItem, 3);
+
+        // The quote must show the split BEFORE the buyer commits - a buyer who only saw
+        // one combined figure would discover the second delivery fee after paying.
+        CheckoutQuoteResponse quote = quote(buyer);
+        assertThat(quote.sellerGroups()).hasSize(2);
+        assertThat(quote.sellerGroups())
+                .extracting(CheckoutQuoteResponse.SellerGroup::sellerId)
+                .containsExactlyInAnyOrder(platformOwner().getId(), vendor.clientId());
+
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.MONNIFY, createAddress(buyer).id());
+
+        List<Order> group = ordersInGroupOf(placed.id());
+        assertThat(group).hasSize(2);
+        // One checkout id across both, and two distinct order numbers.
+        assertThat(group).extracting(Order::getCheckoutGroupId).containsOnly(placed.checkoutGroupId());
+        assertThat(group).extracting(Order::getOrderNumber).doesNotHaveDuplicates();
+        assertThat(group)
+                .extracting(Order::getSellerClientId)
+                .containsExactlyInAnyOrder(platformOwner().getId(), vendor.clientId());
+
+        for (Order order : group) {
+            List<OrderItem> lines = linesOf(order.getId());
+            assertThat(lines).isNotEmpty();
+
+            // Each order's subtotal closes on its OWN lines...
+            BigDecimal lineSum = lines.stream()
+                    .map(OrderItem::getLineTotal)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            assertThat(order.getSubtotal()).isEqualByComparingTo(lineSum);
+            // ...and its total closes on its own subtotal plus its own delivery fee.
+            assertThat(order.getTotal())
+                    .isEqualByComparingTo(order.getSubtotal().add(order.getDeliveryFee()));
+        }
+
+        // Nothing lost across the split: the goods add up to the quote's subtotal, and
+        // the per-seller fees add up to the quote's delivery fee.
+        assertThat(group.stream().map(Order::getSubtotal).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo(quote.subtotal());
+        assertThat(group.stream().map(Order::getDeliveryFee).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo(quote.deliveryFee());
+        assertThat(group.stream().map(Order::getTotal).reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo(quote.total());
+
+        // The cart is emptied once, not once per order.
+        assertThat(getCart(buyer).items()).isEmpty();
+    }
+
+    /**
+     * The buyer's order history has to read as one shopping trip, not three coincidences.
+     */
+    @Test
+    void theBuyerCanSeeThatOneCheckoutProducedSeveralOrders() {
+        Buyer buyer = signupBuyer("Grouped History Co");
+        Buyer vendor = signupVendorSeller("History Vendor Co", "0.0500");
+
+        addToCart(buyer, plantCatalogProduct(20, 1), 1);
+        addToCart(buyer, plantSellerProduct(vendor.clientId(), "9000.00", 20), 1);
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.MONNIFY, createAddress(buyer).id());
+
+        OrderResponse detail = getOrder(buyer, placed.id());
+        assertThat(detail.checkoutGroupId()).isNotNull();
+        assertThat(detail.siblingOrders()).hasSize(1);
+        assertThat(detail.siblingOrders().getFirst().orderNumber()).isNotEqualTo(detail.orderNumber());
+        // Each order names who is fulfilling it, so a three-order history is readable.
+        assertThat(detail.seller()).isNotNull();
+        assertThat(detail.siblingOrders().getFirst().seller()).isNotNull();
+
+        // The list projection carries the group id so the history can badge the trip,
+        // and the seller so each row says who it is from.
+        List<OrderSummaryResponse> history = listOrders(buyer);
+        assertThat(history)
+                .filteredOn(row -> detail.checkoutGroupId().equals(row.checkoutGroupId()))
+                .hasSize(2)
+                .allSatisfy(row -> assertThat(row.seller()).isNotNull());
+    }
+
+    /**
+     * ONE payment settles EVERY order in the checkout group, atomically - and a replay
+     * changes nothing.
+     *
+     * <p>Driven through {@code applyPaymentSuccess}, which is the exact seam the Monnify
+     * webhook, the browser return-verify and the reconciliation sweep all funnel into
+     * (see PaymentApplicationService). The amount is the GROUP total: settling on the
+     * anchor order's total alone would accept a payment covering half the basket, which
+     * is the failure this fan-out exists to prevent.
+     */
+    @Test
+    void oneWebhookSettlesEveryOrderInTheCheckoutGroupAndAReplayChangesNothing() {
+        Buyer buyer = signupBuyer("One Payment Many Orders Co");
+        Buyer vendor = signupVendorSeller("Settled Vendor Co", "0.1000");
+
+        Product procurePalItem = plantCatalogProduct(30, 1);
+        Product vendorItem = plantSellerProduct(vendor.clientId(), "7000.00", 30);
+        addToCart(buyer, procurePalItem, 2);
+        addToCart(buyer, vendorItem, 2);
+
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.MONNIFY, createAddress(buyer).id());
+        List<Order> group = ordersInGroupOf(placed.id());
+        assertThat(group).hasSize(2);
+        assertThat(group).allSatisfy(order -> {
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+            assertThat(order.getPaymentStatus()).isEqualTo(PaymentStatus.PENDING);
+        });
+
+        BigDecimal groupTotal = group.stream().map(Order::getTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // The payment module asks the order module what this payment covers; it must
+        // answer with the whole group and its summed total, not the anchor's.
+        OrderPaymentContext context = orderPaymentApplication.loadPaymentContext(placed.id());
+        assertThat(context.orderIds()).hasSize(2);
+        assertThat(context.isSplit()).isTrue();
+        assertThat(context.total()).isEqualByComparingTo(groupTotal);
+
+        PaymentSuccess success = new PaymentSuccess(
+                "PP-SPLIT-" + UUID.randomUUID().toString().substring(0, 8),
+                "MNFY-" + UUID.randomUUID().toString().substring(0, 8),
+                groupTotal,
+                OffsetDateTime.now(),
+                "CARD",
+                PaymentVerificationSource.WEBHOOK);
+
+        orderPaymentApplication.applyPaymentSuccess(placed.id(), success);
+
+        assertThat(ordersInGroupOf(placed.id())).allSatisfy(order -> {
+            assertThat(order.getPaymentStatus()).isEqualTo(PaymentStatus.PAID);
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PLACED);
+        });
+
+        // Incoming stock landed once per line.
+        int procurePalIncoming = buyerProductFor(buyer, procurePalItem).getIncomingQuantity();
+        int vendorIncoming = buyerProductFor(buyer, vendorItem).getIncomingQuantity();
+        assertThat(procurePalIncoming).isEqualTo(2);
+        assertThat(vendorIncoming).isEqualTo(2);
+
+        // THE REPLAY. Monnify retries, and the sweep arrives late; both land here.
+        orderPaymentApplication.applyPaymentSuccess(placed.id(), success);
+        orderPaymentApplication.applyPaymentSuccess(placed.id(), success);
+
+        assertThat(buyerProductFor(buyer, procurePalItem).getIncomingQuantity()).isEqualTo(procurePalIncoming);
+        assertThat(buyerProductFor(buyer, vendorItem).getIncomingQuantity()).isEqualTo(vendorIncoming);
+        assertThat(ordersInGroupOf(placed.id()))
+                .allSatisfy(order -> assertThat(order.getPaymentStatus()).isEqualTo(PaymentStatus.PAID));
+    }
+
+    /**
+     * The commission rate is frozen on the line at sale time, from the SELLER's rate -
+     * and is null for ProcurePal's own lines, because commission is a fact about a
+     * third-party sale and ProcurePal is not a third party to itself.
+     *
+     * <p>The rate is then changed and the stamp re-read: renegotiating a vendor's terms
+     * must not retroactively rewrite what the platform earned on orders they have
+     * already shipped.
+     */
+    @Test
+    void commissionRateIsStampedFromTheSellerAtSaleTimeAndNeverRewritten() {
+        Buyer buyer = signupBuyer("Commission Stamp Co");
+        Buyer vendor = signupVendorSeller("Rate Vendor Co", "0.0750");
+
+        addToCart(buyer, plantCatalogProduct(20, 1), 1);
+        addToCart(buyer, plantSellerProduct(vendor.clientId(), "6000.00", 20), 1);
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.MONNIFY, createAddress(buyer).id());
+
+        for (Order order : ordersInGroupOf(placed.id())) {
+            List<OrderItem> lines = linesOf(order.getId());
+            if (order.getSellerClientId().equals(vendor.clientId())) {
+                assertThat(lines)
+                        .allSatisfy(line -> assertThat(line.getCommissionRate())
+                                .isEqualByComparingTo(new BigDecimal("0.0750")));
+            } else {
+                // Null, never 0.0000: "no commission applies" is not "a 0% deal".
+                assertThat(lines).allSatisfy(line -> assertThat(line.getCommissionRate()).isNull());
+            }
+        }
+
+        // Renegotiate, and confirm history did not move.
+        Client vendorClient = clientRepository.findById(vendor.clientId()).orElseThrow();
+        vendorClient.setCommissionRate(new BigDecimal("0.2000"));
+        clientRepository.saveAndFlush(vendorClient);
+
+        for (Order order : ordersInGroupOf(placed.id())) {
+            if (order.getSellerClientId().equals(vendor.clientId())) {
+                assertThat(linesOf(order.getId()))
+                        .allSatisfy(line -> assertThat(line.getCommissionRate())
+                                .isEqualByComparingTo(new BigDecimal("0.0750")));
+            }
+        }
+    }
+
+    /**
+     * THE CROSS-VENDOR LEAK TEST. A vendor sees and advances only their own orders.
+     *
+     * <p>Every caller here holds MANAGE_MARKETPLACE_ORDERS, so nothing below is decided
+     * by {@code @PreAuthorize} - it is decided by VendorGuard plus the seller_client_id
+     * predicate, which is the claim worth testing.
+     */
+    @Test
+    void aVendorSeesAndAdvancesOnlyTheirOwnOrdersAndIsDeniedAnotherSellers() {
+        Buyer buyer = signupBuyer("Two Vendor Basket Co");
+        Buyer vendorA = signupVendorSeller("Vendor A Co", "0.0500");
+        Buyer vendorB = signupVendorSeller("Vendor B Co", "0.0500");
+
+        addToCart(buyer, plantSellerProduct(vendorA.clientId(), "4000.00", 20), 2);
+        addToCart(buyer, plantSellerProduct(vendorB.clientId(), "4000.00", 20), 2);
+        addToCart(buyer, plantCatalogProduct(20, 1), 1);
+
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.MONNIFY, createAddress(buyer).id());
+        List<Order> group = ordersInGroupOf(placed.id());
+        assertThat(group).hasSize(3);
+
+        UUID orderOfA = orderFor(group, vendorA.clientId());
+        UUID orderOfB = orderFor(group, vendorB.clientId());
+        UUID orderOfProcurePal = orderFor(group, platformOwner().getId());
+
+        // (1) The queue shows only your own.
+        assertThat(fulfilmentQueueOf(vendorA))
+                .extracting(OrderSummaryResponse::id)
+                .contains(orderOfA)
+                .doesNotContain(orderOfB, orderOfProcurePal);
+        assertThat(fulfilmentQueueOf(vendorB))
+                .extracting(OrderSummaryResponse::id)
+                .contains(orderOfB)
+                .doesNotContain(orderOfA, orderOfProcurePal);
+
+        // (2) Reading another seller's order by id is a 404, not somebody else's
+        // customer and delivery address.
+        assertThat(restTemplate
+                        .exchange(
+                                "/api/marketplace/admin/orders/" + orderOfB,
+                                HttpMethod.GET,
+                                new HttpEntity<>(vendorA.headers()),
+                                ApiError.class)
+                        .getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+
+        // (3) Advancing another seller's order is refused.
+        assertThat(advanceExpectingFailure(vendorA, orderOfB, OrderStatus.CONFIRMED).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(orderRepository.findById(orderOfB).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.PENDING_PAYMENT);
+
+
+        // (4) But a vendor CAN advance their own, once it is paid. Paid through the
+        // shared checkout, which settles all three at once - so this also confirms the
+        // fan-out reaches a vendor's order and not just the anchor.
+        BigDecimal groupTotal = group.stream().map(Order::getTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
+        orderPaymentApplication.applyPaymentSuccess(
+                placed.id(),
+                new PaymentSuccess(
+                        "PP-ISO-" + UUID.randomUUID().toString().substring(0, 8),
+                        null,
+                        groupTotal,
+                        OffsetDateTime.now(),
+                        "CARD",
+                        PaymentVerificationSource.WEBHOOK));
+        assertThat(orderRepository.findById(orderOfA).orElseThrow().getStatus()).isEqualTo(OrderStatus.PLACED);
+
+        assertThat(advance(vendorA, orderOfA, OrderStatus.CONFIRMED).status())
+                .isEqualTo(OrderStatus.CONFIRMED);
+        // ...and still cannot touch B's, which the same payment also moved to PLACED.
+        assertThat(advanceExpectingFailure(vendorA, orderOfB, OrderStatus.CONFIRMED).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    /**
+     * ProcurePal is the platform owner, and that confers NO ability to advance a
+     * vendor's order through the fulfilment endpoints.
+     *
+     * <p>Dispatching another company's goods is not an operator capability - it is a
+     * fulfilment action only the party holding the stock can honestly take. An operator
+     * override, if ever needed, belongs on a super-admin surface with its own audit
+     * trail rather than folded into the normal queue.
+     */
+    @Test
+    void procurePalCannotAdvanceAVendorsOrder() {
+        Buyer buyer = signupBuyer("Operator Overreach Co");
+        Buyer vendor = signupVendorSeller("Untouchable Vendor Co", "0.0500");
+        Buyer operator = loginAsPlatformOwner();
+
+        addToCart(buyer, plantSellerProduct(vendor.clientId(), "8000.00", 20), 1);
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.MONNIFY, createAddress(buyer).id());
+
+        assertThat(orderRepository.findById(placed.id()).orElseThrow().getSellerClientId())
+                .isEqualTo(vendor.clientId());
+
+        assertThat(advanceExpectingFailure(operator, placed.id(), OrderStatus.CONFIRMED).getStatusCode())
+                .isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(orderRepository.findById(placed.id()).orElseThrow().getStatus())
+                .isEqualTo(OrderStatus.PENDING_PAYMENT);
+
+        // Nor does it appear in ProcurePal's own queue.
+        assertThat(fulfilmentQueueOf(operator))
+                .extracting(OrderSummaryResponse::id)
+                .doesNotContain(placed.id());
+    }
+
+    /**
+     * Pay on delivery is refused as soon as a vendor's goods are in the basket, and is
+     * untouched for ProcurePal's own.
+     *
+     * <p>The v1 ruling, with its reasoning and its removal condition, is on
+     * CheckoutService.payOnDeliveryReasons: the platform's rider collecting cash for a
+     * third party's goods creates a same-day liability that needs the vendor ledger to
+     * record, and that ledger is a later module.
+     */
+    @Test
+    void payOnDeliveryIsRefusedWhenTheBasketHoldsAVendorsGoodsButNotForProcurePalsOwn() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("POD Split Co");
+        Buyer vendor = signupVendorSeller("POD Vendor Co", "0.0500");
+
+        // ProcurePal only: pay on delivery still works exactly as it always has.
+        Product procurePalItem = plantCatalogProduct(30, 1);
+        addToCart(buyer, procurePalItem, 1);
+        assertThat(quote(buyer).payOnDeliveryEligible()).isTrue();
+
+        // Add a vendor line, and the option closes with an explanation.
+        addToCart(buyer, plantSellerProduct(vendor.clientId(), "5000.00", 30), 1);
+        CheckoutQuoteResponse mixed = quote(buyer);
+        assertThat(mixed.payOnDeliveryEligible()).isFalse();
+        assertThat(mixed.payOnDeliveryReasons()).anyMatch(reason -> reason.contains("marketplace vendors"));
+
+        // And the server refuses it, rather than relying on the UI to grey a button out.
+        ResponseEntity<ApiError> refused = restTemplate.exchange(
+                "/api/orders",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        new PlaceOrderRequest(
+                                PaymentMethod.PAY_ON_DELIVERY, createAddress(buyer).id(), null, null, null),
+                        buyer.headers()),
+                ApiError.class);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(refused.getBody()).isNotNull();
+        assertThat(refused.getBody().message()).contains("marketplace vendors");
+    }
+
+    /** The seller of an order in a group, for the isolation tests. */
+    private static UUID orderFor(List<Order> group, UUID sellerClientId) {
+        return group.stream()
+                .filter(order -> order.getSellerClientId().equals(sellerClientId))
+                .map(Order::getId)
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no order for seller " + sellerClientId));
+    }
+
     // ------------------------------------------------------------------------
     // helpers
     // ------------------------------------------------------------------------
@@ -1095,6 +1470,12 @@ class MarketplaceOrderIntegrationTest {
                 .quantityOnHand(quantityOnHand)
                 .active(true)
                 .marketplaceListed(true)
+                // ProcurePal's own catalogue is auto-approved (ProductModerationRules),
+                // and these fixtures stand in for exactly that. Set explicitly because
+                // this bypasses the service that would otherwise stamp it: the entity
+                // default is PENDING, which fails closed and would make every product
+                // planted here invisible to the storefront.
+                .approvalStatus(ProductApprovalStatus.APPROVED)
                 .unitOfMeasure("bag (25kg)")
                 .minOrderQuantity(minOrderQuantity)
                 .build();
@@ -1282,6 +1663,94 @@ class MarketplaceOrderIntegrationTest {
                         HttpMethod.GET,
                         new HttpEntity<>(buyer.headers()),
                         new ParameterizedTypeReference<TestPage<TestNotification>>() {})
+                .getBody()
+                .content();
+    }
+
+
+    // ------------------------------------------------------------------------
+    // multi-seller fixtures
+    // ------------------------------------------------------------------------
+
+    /**
+     * A vendor seller: an ordinary signup whose clients row is then flipped to
+     * client_type = VENDOR with a commission rate agreed.
+     *
+     * <p>Flipped rather than onboarded through the waitlist because vendor onboarding
+     * belongs to another module, and because this shape exercises a property worth
+     * pinning down: the user keeps the OWNER role, which already holds
+     * MANAGE_MARKETPLACE_ORDERS. So every authorization assertion below passes the
+     * {@code @PreAuthorize} gate and is decided by VendorGuard plus the
+     * seller_client_id predicate - which is exactly the claim the fulfilment module
+     * makes about why the permission alone is not sufficient.
+     */
+    private Buyer signupVendorSeller(String name, String commissionRate) {
+        Buyer seller = signupBuyer(name);
+        Client client = clientRepository.findById(seller.clientId()).orElseThrow();
+        client.setClientType(ClientType.VENDOR);
+        client.setCommissionRate(new BigDecimal(commissionRate));
+        clientRepository.saveAndFlush(client);
+        return seller;
+    }
+
+    /**
+     * A listed, approved catalog product owned by an arbitrary seller.
+     *
+     * <p>approvalStatus is set explicitly because this writes through the repository and
+     * so takes the entity's PENDING default; a real vendor product would reach APPROVED
+     * only after moderation, which is that module's test, not this one's.
+     */
+    private Product plantSellerProduct(UUID sellerClientId, String unitPrice, int quantityOnHand) {
+        String unique = UUID.randomUUID().toString().substring(0, 8);
+        Product product = Product.builder()
+                .name("Seller Item " + unique)
+                .sku("SELL-" + unique)
+                .slug("sell-" + unique)
+                .description("Planted by MarketplaceOrderIntegrationTest.")
+                .unitPrice(new BigDecimal(unitPrice))
+                .quantityOnHand(quantityOnHand)
+                .active(true)
+                .marketplaceListed(true)
+                .approvalStatus(ProductApprovalStatus.APPROVED)
+                .unitOfMeasure("carton")
+                .minOrderQuantity(1)
+                .build();
+        TenantContext.set(sellerClientId);
+        try {
+            Product saved = productRepository.saveAndFlush(product);
+            plantedCatalogProductIds.add(saved.getId());
+            return saved;
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    /** Every order one checkout produced, order-number ascending. */
+    private List<Order> ordersInGroupOf(UUID orderId) {
+        Order anchor = orderRepository.findById(orderId).orElseThrow();
+        return orderRepository.findAllByCheckoutGroupIdOrderByOrderNumberAsc(anchor.getCheckoutGroupId());
+    }
+
+    private List<OrderItem> linesOf(UUID orderId) {
+        return orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(orderId);
+    }
+
+    private ResponseEntity<ApiError> advanceExpectingFailure(Buyer caller, UUID orderId, OrderStatus status) {
+        return restTemplate.exchange(
+                "/api/marketplace/admin/orders/" + orderId + "/status",
+                HttpMethod.POST,
+                new HttpEntity<>(new AdvanceOrderStatusRequest(status, "Attempted by " + caller.clientId()),
+                        caller.headers()),
+                ApiError.class);
+    }
+
+    private List<OrderSummaryResponse> fulfilmentQueueOf(Buyer seller) {
+        return restTemplate
+                .exchange(
+                        "/api/marketplace/admin/orders?size=200",
+                        HttpMethod.GET,
+                        new HttpEntity<>(seller.headers()),
+                        new ParameterizedTypeReference<TestPage<OrderSummaryResponse>>() {})
                 .getBody()
                 .content();
     }

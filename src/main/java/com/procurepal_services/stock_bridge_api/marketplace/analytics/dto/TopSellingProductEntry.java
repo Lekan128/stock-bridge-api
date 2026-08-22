@@ -4,7 +4,9 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * One row of the top-products ranking, aggregated over order_items.
+ * One row of ProcurePal's top-products ranking, aggregated over order_items across
+ * ProcurePal's OWN sales. A third-party vendor's best seller is not a merchandising
+ * signal ProcurePal can act on and never appears here.
  *
  * Named TopSellingProductEntry rather than TopProductEntry to stay distinguishable from
  * {@code analytics.dto.TopProductEntry}, which ranks a tenant's own stock MOVEMENTS. The

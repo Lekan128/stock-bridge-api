@@ -23,6 +23,7 @@ import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
+import com.procurepal_services.stock_bridge_api.vendor.VendorSingleAccountRule;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -57,6 +58,19 @@ import org.springframework.transaction.annotation.Transactional;
  *       (UserManagementService) or, in the last resort, by a DBA who leaves an
  *       audit trail.</li>
  * </ul>
+ *
+ * <h2>The one exception, and why it does not weaken the argument above</h2>
+ * {@code SuperAdminVendorService.resetVendorAccountPassword} can set the password
+ * of a VENDOR's single account, and nothing else about it. It was added because
+ * the "served by that customer's own OWNER" escape hatch does not exist for a
+ * vendor: a vendor has exactly one user, cannot create staff, and there is no
+ * self-service reset anywhere in this codebase, so one lost password ends that
+ * business's ability to trade (VENDOR_RESEARCH.md Section C item 9). It is bounded
+ * three ways - vendors only ({@code findByIdAndClientType}), that vendor's one
+ * account resolved server-side, and no user id in the path - which is what keeps it
+ * from being the unbounded capability this class declines to build. Read its
+ * Javadoc before widening anything here; the buying-company case is untouched and
+ * should stay that way, because a buying company HAS colleagues.
  *
  * <h2>Why the reads need no TenantScopeExecutor and the writes do</h2>
  * A super admin has no TenantContext at all (SuperAdminPrincipal is not a
@@ -126,6 +140,7 @@ public class SuperAdminUserService {
     private final EmailVerificationService emailVerificationService;
     private final PlatformOwnerGuard platformOwnerGuard;
     private final TenantScopeExecutor tenantScopeExecutor;
+    private final VendorSingleAccountRule vendorSingleAccountRule;
 
     // ------------------------------------------------------------------------
     // Cross-tenant reads. Any client, including the platform owner.
@@ -208,6 +223,14 @@ public class SuperAdminUserService {
     public UserSummaryResponse createPlatformOwnerUser(CreateUserRequest request) {
         Client platformOwner = requirePlatformOwner();
         UUID clientId = platformOwner.getId();
+
+        // ProcurePal is a COMPANY, so this can never fire today - and it is here for
+        // that reason rather than in spite of it. "Every path that creates a user
+        // asserts the vendor single-account rule" is a property somebody can check by
+        // grepping; "every path except the ones we reasoned could not need it" is a
+        // property that decays the first time the reasoning changes. Costs one indexed
+        // lookup on a super-admin write.
+        vendorSingleAccountRule.assertMayAddUser(clientId);
 
         return tenantScopeExecutor.callAs(clientId, () -> {
             if (userRepository.findByClientIdAndUsername(clientId, request.username()).isPresent()) {

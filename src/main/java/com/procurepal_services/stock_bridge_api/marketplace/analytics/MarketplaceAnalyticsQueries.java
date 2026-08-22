@@ -3,26 +3,48 @@ package com.procurepal_services.stock_bridge_api.marketplace.analytics;
 /**
  * Every SQL statement the module runs, in one place.
  *
- * <h2>Why native SQL, and why that is the isolation story rather than a hole in it</h2>
- * {@code orders.client_id} is the BUYER. Under ProcurePal's own Hibernate tenant filter,
- * a JPQL aggregate over orders matches nothing at all - not an error, just a marketplace
- * that appears to have never sold anything. Native SQL is not subject to that filter,
- * which is the same reasoning (and the same shape) as
- * {@code order.CatalogStockService}: the numbers being computed are properties of the
- * MARKETPLACE, not of any one tenant, so a per-tenant predicate would be wrong rather
- * than merely inconvenient. Authorization is carried entirely by
- * {@code PlatformOwnerGuard.requirePlatformOwner()}, called before every one of these
- * runs. Nothing here touches {@code Session.disableFilter}.
+ * <h2>The seller predicate is not optional and is not a filter</h2>
+ * Read {@link #OWN_SALES} first. Every statement below splices it in, and it is what makes
+ * this module ProcurePal's OWN sales rather than the marketplace's takings.
+ *
+ * <p>It was not always here. Until M6 these queries were deliberately unscoped, because
+ * ProcurePal was the only seller and "the marketplace's revenue" and "ProcurePal's revenue"
+ * named the same money. Opening selling to third-party vendors broke that identity without
+ * changing a line of SQL: the same statements silently began adding other companies'
+ * takings to the operator's own revenue card. So the predicate is a spliced constant rather
+ * than something each query writes out, {@code :sellerId} is bound on every call from
+ * {@link MarketplaceAnalyticsService}, and there is no constant here that lacks it. A new
+ * statement that does not concatenate {@link #OWN_SALES} is a bug.
+ *
+ * <p>This is now the same arrangement {@code VendorSalesAnalyticsQueries} uses, and
+ * deliberately so - the two modules had drifted into opposite postures on the one question
+ * that matters. What still differs is DEPTH, not scope: see
+ * {@link MarketplaceAnalyticsService} for the per-metric ruling.
+ *
+ * <h2>Why native SQL, given the queries are now scoped</h2>
+ * {@code orders.client_id} is the BUYER, and these aggregates span every company that
+ * bought FROM ProcurePal. Under ProcurePal's own Hibernate tenant filter a JPQL version
+ * would match only orders ProcurePal itself placed - which is none - so the screen would
+ * report a seller that had never sold anything, with no error to explain it. Native SQL is
+ * not subject to that filter, the same reasoning (and the same shape) as
+ * {@code order.CatalogStockService}. Authorization is carried by
+ * {@code PlatformOwnerGuard.requirePlatformOwner()}, called before every one of these runs,
+ * and row scoping is carried by {@link #OWN_SALES}. Nothing here touches
+ * {@code Session.disableFilter}.
  *
  * <h2>The two definitions every statement shares</h2>
  * {@link #REVENUE_BEARING} - status NOT IN (CANCELLED, PENDING_PAYMENT) - and
  * {@link #ORDER_AT} - COALESCE(placed_at, created_at). They are string constants spliced
  * into these queries rather than repeated by hand precisely so that "what counts as
- * revenue" cannot drift between the summary card and the chart under it.
+ * revenue" cannot drift between the summary card and the chart under it. They are also
+ * identical to {@code VendorSalesAnalyticsQueries}' copies and to the super admin's
+ * {@code PlatformRevenueQueries}: three screens quoting the same month have to agree about
+ * what a sale is, or the first commission dispute starts with three numbers and no way to
+ * tell which is right.
  *
  * <h2>Bind parameters only</h2>
- * Windows and limits are bound. The only values that reach the SQL text as text are
- * {@code date_trunc}/{@code generate_series} arguments taken from
+ * The seller id, windows and limits are bound. The only values that reach the SQL text as
+ * text are {@code date_trunc}/{@code generate_series} arguments taken from
  * {@link AnalyticsGranularity}, and even those are bound as parameters - a closed enum
  * means no caller string can reach a function name.
  */
@@ -30,6 +52,22 @@ final class MarketplaceAnalyticsQueries {
 
     private MarketplaceAnalyticsQueries() {
     }
+
+    /**
+     * The one predicate that makes this module ProcurePal's own view rather than every
+     * seller's.
+     *
+     * <p>{@code orders.seller_client_id} (V11, NOT NULL) names who SOLD; {@code client_id}
+     * names who bought. Every historical row was backfilled to the platform owner and every
+     * new one is stamped at checkout by the splitter, so this is total: there is no order
+     * this predicate cannot classify, and no need for a fallback that would have to guess.
+     *
+     * <p>Because of that backfill, narrowing these queries does not rewrite history.
+     * Every order placed before vendors existed was ProcurePal's, so the operator's
+     * pre-M6 numbers are identical either side of this change - only new vendor rows
+     * are excluded, which is the entire point.
+     */
+    private static final String OWN_SALES = "o.seller_client_id = :sellerId";
 
     /** Money that exists. CANCELLED never happened; PENDING_PAYMENT was never paid for. */
     static final String REVENUE_BEARING = "o.status NOT IN ('CANCELLED', 'PENDING_PAYMENT')";
@@ -77,6 +115,10 @@ final class MarketplaceAnalyticsQueries {
                     // Pay-on-delivery exposure: promised on credit, cash not yet reconciled.
                     // payment_status is the axis that matters here, not fulfilment status -
                     // a COD order is routinely DELIVERED days before the float comes in.
+                    // Scoped to ProcurePal's own sales like everything else, and note that
+                    // pay-on-delivery is disabled for baskets containing vendor goods
+                    // anyway (CheckoutService.payOnDeliveryReasons), so this column would
+                    // have been ProcurePal's even unscoped.
                     + "  COUNT(*) FILTER (WHERE " + REVENUE_BEARING
                     + "        AND o.payment_method = 'PAY_ON_DELIVERY' AND o.payment_status = 'ON_DELIVERY'), "
                     + "  COALESCE(SUM(o.total) FILTER (WHERE " + REVENUE_BEARING
@@ -85,30 +127,43 @@ final class MarketplaceAnalyticsQueries {
                     + "  COALESCE(SUM(o.total) FILTER (WHERE o.status = 'CANCELLED'), 0), "
                     + "  COUNT(*) FILTER (WHERE o.status = 'PENDING_PAYMENT') "
                     + "FROM orders o "
-                    + "WHERE " + IN_WINDOW;
+                    + "WHERE " + OWN_SALES + " AND " + IN_WINDOW;
 
     /** Units are on the lines, not the order, so they need the join the aggregate above deliberately avoids. */
     static final String SUMMARY_UNITS_SOLD =
             "SELECT COALESCE(SUM(oi.quantity), 0) "
                     + "FROM order_items oi JOIN orders o ON o.id = oi.order_id "
-                    + "WHERE " + REVENUE_BEARING + " AND " + IN_WINDOW;
+                    + "WHERE " + OWN_SALES + " AND " + REVENUE_BEARING + " AND " + IN_WINDOW;
 
     /**
-     * Companies whose FIRST EVER revenue-bearing order lands in the window. The MIN is
-     * taken over all time and then filtered, not taken within the window - otherwise every
-     * returning customer would look new every month.
+     * Companies whose FIRST EVER revenue-bearing order FROM PROCUREPAL lands in the window.
+     * The MIN is taken over all of that company's ProcurePal history and then filtered, not
+     * taken within the window - otherwise every returning customer would look new every
+     * month.
+     *
+     * <p>The seller pin sits inside the grouped subquery, which is what makes "new" mean
+     * "new to ProcurePal". Leaving it off the inner query and pinning only the outer one
+     * would produce a subtler wrong answer than an unscoped query does: a company that had
+     * been buying from a vendor for a year would never count as new to ProcurePal on its
+     * first ProcurePal order. This is the metric where the two readings genuinely differ,
+     * and "new to me" is the one a seller's own page has to mean.
      */
     static final String SUMMARY_NEW_COMPANIES =
             "SELECT COUNT(*) FROM ("
                     + "  SELECT o.client_id, MIN(" + ORDER_AT + ") AS first_at "
-                    + "  FROM orders o WHERE " + REVENUE_BEARING + " GROUP BY o.client_id"
+                    + "  FROM orders o WHERE " + OWN_SALES + " AND " + REVENUE_BEARING + " GROUP BY o.client_id"
                     + ") f WHERE f.first_at >= :from AND f.first_at < :to";
 
     /**
-     * Repeat-ORDER rate, not repeat-customer rate: of the window's orders, how many came
-     * from a company that had already bought before. "Before" means strictly earlier than
-     * that order, at any time in history - so a company's first-ever order is never
-     * counted as repeat even if their second lands the same afternoon.
+     * Repeat-ORDER rate, not repeat-customer rate: of the window's ProcurePal orders, how
+     * many came from a company that had already bought FROM PROCUREPAL before. "Before"
+     * means strictly earlier than that order, at any time in history - so a company's first
+     * ever ProcurePal order is never counted as repeat even if their second lands the same
+     * afternoon.
+     *
+     * <p>The correlated lookback carries the seller pin too, for the same reason
+     * {@link #SUMMARY_NEW_COMPANIES} does: loyalty to a vendor is not loyalty to ProcurePal,
+     * and counting it as such would flatter this number with somebody else's customers.
      *
      * Row: [ordersInWindow, ordersFromReturningBuyers].
      */
@@ -117,10 +172,11 @@ final class MarketplaceAnalyticsQueries {
                     + "  SELECT ("
                     + "    SELECT COUNT(*) FROM orders p "
                     + "    WHERE p.client_id = o.client_id "
+                    + "      AND p.seller_client_id = :sellerId "
                     + "      AND p.status NOT IN ('CANCELLED', 'PENDING_PAYMENT') "
                     + "      AND COALESCE(p.placed_at, p.created_at) < " + ORDER_AT
                     + "  ) AS prior_orders "
-                    + "  FROM orders o WHERE " + REVENUE_BEARING + " AND " + IN_WINDOW
+                    + "  FROM orders o WHERE " + OWN_SALES + " AND " + REVENUE_BEARING + " AND " + IN_WINDOW
                     + ") x";
 
     // ---------------------------------------------------------------------------------
@@ -133,8 +189,11 @@ final class MarketplaceAnalyticsQueries {
      * empty buckets draws a rise that never happened, and the client cannot reconstruct
      * the gaps without re-implementing Postgres's week/month boundaries.
      *
-     * The order predicates sit in the JOIN condition, not in a WHERE - moving them out
-     * would turn the outer join back into an inner one and throw the zeros away again.
+     * <p>The order predicates - the seller pin included - sit in the JOIN condition, not in
+     * a WHERE. Moving any of them out would turn the outer join back into an inner one and
+     * throw the zeros away; moving the SELLER one out would do that AND make the join match
+     * every seller's orders first, so it is the predicate to check hardest when editing
+     * this statement.
      *
      * The upper bound is nudged back a microsecond so a {@code to} that lands exactly on a
      * boundary does not emit a trailing empty bucket for a period the window excludes.
@@ -152,7 +211,7 @@ final class MarketplaceAnalyticsQueries {
                     + "    date_trunc(CAST(:granularity AS text), CAST(:to AS timestamptz) - INTERVAL '1 microsecond'), "
                     + "    CAST(:step AS interval)) AS b(bucket) "
                     + "LEFT JOIN orders o "
-                    + "  ON " + REVENUE_BEARING + " AND " + IN_WINDOW
+                    + "  ON " + OWN_SALES + " AND " + REVENUE_BEARING + " AND " + IN_WINDOW
                     + "  AND date_trunc(CAST(:granularity AS text), " + ORDER_AT + ") = b.bucket "
                     + "LEFT JOIN (SELECT order_id, SUM(quantity) AS units FROM order_items GROUP BY order_id) u "
                     + "  ON u.order_id = o.id "
@@ -163,13 +222,21 @@ final class MarketplaceAnalyticsQueries {
     // ---------------------------------------------------------------------------------
 
     /**
-     * In-window spend and all-time standing on one row. The lifetime CTE is unbounded by
-     * design - it is what makes "big customer, hasn't ordered since March" visible, which
-     * the in-window columns alone can never show.
+     * In-window spend WITH PROCUREPAL and all-time standing WITH PROCUREPAL on one row. The
+     * lifetime CTE is unbounded in time by design - it is what makes "big customer, hasn't
+     * ordered since March" visible, which the in-window columns alone can never show - but
+     * it is not unbounded in SELLER: "lifetime spend" on ProcurePal's own page means what
+     * they have spent with ProcurePal, not what they have spent on the platform. A company
+     * that buys ten times as much from a vendor is not ProcurePal's best customer.
+     *
+     * <p>Both CTEs therefore carry the pin. This is also what stops the ranking becoming a
+     * cross-seller disclosure: without it, ProcurePal's screen would rank companies partly
+     * on money that went to its competitors, and the vendor's own customer list is
+     * precisely what {@code MarketplaceOrderAdminService} is careful never to leak.
      *
      * {@code is_platform_owner = FALSE} is belt-and-braces: ProcurePal cannot be its own
-     * buyer today, but a marketplace analytic that could ever count the operator's own
-     * name as its best customer is not one anybody would trust again.
+     * buyer today, but a sales analytic that could ever count the seller's own name as its
+     * best customer is not one anybody would trust again.
      *
      * Row: [clientId, name, slug, revenue, orderCount, units, lifetimeSpend,
      * lifetimeOrders, firstOrderAt, lastOrderAt].
@@ -177,7 +244,7 @@ final class MarketplaceAnalyticsQueries {
     private static final String TOP_CUSTOMERS_BODY =
             "WITH scoped AS ("
                     + "  SELECT o.id, o.client_id, o.total FROM orders o "
-                    + "  WHERE " + REVENUE_BEARING + " AND " + IN_WINDOW
+                    + "  WHERE " + OWN_SALES + " AND " + REVENUE_BEARING + " AND " + IN_WINDOW
                     + "), "
                     + "period AS ("
                     + "  SELECT client_id, SUM(total) AS revenue, COUNT(*) AS orders FROM scoped GROUP BY client_id"
@@ -189,7 +256,7 @@ final class MarketplaceAnalyticsQueries {
                     + "lifetime AS ("
                     + "  SELECT o.client_id, SUM(o.total) AS spend, COUNT(*) AS orders, "
                     + "         MIN(" + ORDER_AT + ") AS first_at, MAX(" + ORDER_AT + ") AS last_at "
-                    + "  FROM orders o WHERE " + REVENUE_BEARING + " GROUP BY o.client_id"
+                    + "  FROM orders o WHERE " + OWN_SALES + " AND " + REVENUE_BEARING + " GROUP BY o.client_id"
                     + ") "
                     + "SELECT c.id, c.name, c.slug, p.revenue, p.orders, COALESCE(u.units, 0), "
                     + "       COALESCE(l.spend, 0), COALESCE(l.orders, 0), l.first_at, l.last_at "
@@ -221,6 +288,11 @@ final class MarketplaceAnalyticsQueries {
      *
      * Names come from the live catalog row (JOIN products), not from the order-line
      * snapshot, so renaming a product merges its history instead of splitting it in two.
+     * That join is scoped by the seller predicate on {@code orders}, not by one on
+     * {@code products}: an order line can only reference a product ProcurePal sold, so
+     * pinning both would be redundant - but note the consequence, which is that removing
+     * the seller pin from the WHERE clause would silently start listing vendors' catalogue
+     * rows on ProcurePal's own best-sellers chart.
      *
      * Row: [productId, name, sku, categoryName, revenue, quantity, orderCount, companies].
      */
@@ -234,7 +306,7 @@ final class MarketplaceAnalyticsQueries {
                     + "JOIN orders o ON o.id = oi.order_id "
                     + "JOIN products p ON p.id = oi.product_id "
                     + "LEFT JOIN product_categories pc ON pc.id = p.category_id "
-                    + "WHERE " + REVENUE_BEARING + " AND " + IN_WINDOW + " "
+                    + "WHERE " + OWN_SALES + " AND " + REVENUE_BEARING + " AND " + IN_WINDOW + " "
                     + "GROUP BY p.id, p.name, p.sku, pc.name ";
 
     static final String TOP_PRODUCTS_BY_REVENUE = TOP_PRODUCTS_BODY
@@ -248,10 +320,15 @@ final class MarketplaceAnalyticsQueries {
     // ---------------------------------------------------------------------------------
 
     /**
-     * Same line-level basis as top products, grouped one level up. Products with no
-     * category collapse into a single null-id row the service labels explicitly, rather
-     * than being dropped - hiding them would make the shares add up to less than the
-     * revenue actually taken.
+     * Same line-level basis as top products, grouped one level up, and scoped to
+     * ProcurePal's own sales for the same reason: the response carries a TOTAL REVENUE
+     * figure alongside the shares, and an unscoped total is exactly the number the operator
+     * objected to seeing on its own page. This is a revenue split, not a demand signal -
+     * marketplace-wide category demand is a super admin question, and lives there.
+     *
+     * <p>Products with no category collapse into a single null-id row the service labels
+     * explicitly, rather than being dropped - hiding them would make the shares add up to
+     * less than the revenue actually taken.
      *
      * Row: [categoryId, categoryName, revenue, quantity, orderCount].
      */
@@ -264,7 +341,7 @@ final class MarketplaceAnalyticsQueries {
                     + "JOIN orders o ON o.id = oi.order_id "
                     + "JOIN products p ON p.id = oi.product_id "
                     + "LEFT JOIN product_categories pc ON pc.id = p.category_id "
-                    + "WHERE " + REVENUE_BEARING + " AND " + IN_WINDOW + " "
+                    + "WHERE " + OWN_SALES + " AND " + REVENUE_BEARING + " AND " + IN_WINDOW + " "
                     + "GROUP BY pc.id, pc.name "
                     + "ORDER BY 3 DESC, 2 ASC";
 
@@ -275,7 +352,16 @@ final class MarketplaceAnalyticsQueries {
     /**
      * The funnel's population and its milestone timestamps. Unlike everywhere else in this
      * class the window is NOT restricted to revenue-bearing orders: a funnel that hides the
-     * orders that dropped out is not a funnel.
+     * orders that dropped out is not a funnel. It IS restricted to ProcurePal's own sales,
+     * because this is the report on ProcurePal's own fulfilment queue - and that queue has
+     * been seller-scoped since V11 (see {@code MarketplaceOrderAdminService}: "ProcurePal is
+     * not privileged HERE"). A funnel measuring a wider set of orders than the queue it
+     * describes would put two numbers for "orders awaiting dispatch" on two screens of the
+     * same app.
+     *
+     * <p>The stronger argument is that the numbers would not be actionable: a vendor's
+     * dispatch time is not something ProcurePal's operations can fix, and averaging it into
+     * ProcurePal's own hop durations hides the thing the chart exists to show.
      *
      * Each milestone is the first order_status_events row for that status, falling back to
      * the denormalised column on orders. The audit trail is the source of truth per the
@@ -296,13 +382,13 @@ final class MarketplaceAnalyticsQueries {
                     + "              WHERE e.order_id = o.id AND e.to_status = 'DELIVERED'), o.delivered_at) AS delivered_at, "
                     + "    COALESCE((SELECT MIN(e.created_at) FROM order_status_events e "
                     + "              WHERE e.order_id = o.id AND e.to_status = 'RECEIVED'), o.received_at) AS received_at "
-                    + "  FROM orders o WHERE " + IN_WINDOW
+                    + "  FROM orders o WHERE " + OWN_SALES + " AND " + IN_WINDOW
                     + ") ";
 
     /** Row: [status(text), orderCount, orderValue]. Statuses with no orders are absent; the service zero-fills. */
     static final String FUNNEL_STATUS_COUNTS =
             "SELECT o.status, COUNT(*), COALESCE(SUM(o.total), 0) "
-                    + "FROM orders o WHERE " + IN_WINDOW + " GROUP BY o.status";
+                    + "FROM orders o WHERE " + OWN_SALES + " AND " + IN_WINDOW + " GROUP BY o.status";
 
     /** Row: [placed, confirmed, dispatched, delivered, received] - orders that EVER reached each milestone. */
     static final String FUNNEL_STAGES = FUNNEL_SCOPED

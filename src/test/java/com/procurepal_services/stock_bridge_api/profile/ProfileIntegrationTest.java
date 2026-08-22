@@ -71,13 +71,15 @@ class ProfileIntegrationTest {
                         "MANAGE_PRODUCTS",
                         "MANAGE_ROLES",
                         "MANAGE_USERS",
+                        "MANAGE_VENDORS",
                         "PLACE_ORDERS",
                         "RECEIVE_DELIVERIES",
                         "VIEW_ALL_BRANCHES",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
                         "VIEW_ORDERS",
-                        "VIEW_PRODUCTS");
+                        "VIEW_PRODUCTS",
+                        "VIEW_VENDORS");
         // Same value the login response and the access token carry - the three must
         // never disagree, or the UI shows marketplace admin to someone the API will
         // refuse.

@@ -216,7 +216,7 @@ class AnalyticsIntegrationTest {
         body.add(
                 "product",
                 new HttpEntity<>(
-                        new UpdateProductRequest(null, null, null, null, null, threshold, null, null), productPartHeaders));
+                        new UpdateProductRequest(null, null, null, null, null, threshold, null, null, null, null), productPartHeaders));
         HttpHeaders headers = authHeaders(admin);
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
         restTemplate.exchange(
@@ -230,7 +230,7 @@ class AnalyticsIntegrationTest {
         body.add(
                 "product",
                 new HttpEntity<>(
-                        new CreateProductRequest("Product " + sku, sku, null, new BigDecimal("9.99"), null, lowStockThreshold),
+                        new CreateProductRequest("Product " + sku, sku, null, new BigDecimal("9.99"), null, lowStockThreshold, null),
                         productPartHeaders));
 
         HttpHeaders headers = authHeaders(asAdmin);

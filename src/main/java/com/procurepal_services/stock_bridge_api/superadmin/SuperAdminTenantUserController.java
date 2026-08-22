@@ -24,6 +24,14 @@ import org.springframework.web.bind.annotation.RestController;
  * (SuperAdminPlatformOwnerUserController) means the distinction is visible in the
  * URL and in the file listing, not buried in a conditional.
  *
+ * <p>One narrow exception exists elsewhere and is worth knowing about so nobody
+ * concludes this rule has quietly eroded: POST
+ * /api/superadmin/vendors/{id}/account/password resets a VENDOR's single login. It
+ * is not on this controller and cannot be reached from these paths - a vendor has
+ * no colleagues to be recovered by, which is the specific reason it exists and the
+ * reason it does not generalise to the tenants served here. See
+ * SuperAdminVendorService.resetVendorAccountPassword.
+ *
  * <p>Sitting under /api/superadmin/clients/{clientId}/ rather than on a flat
  * /api/superadmin/users?clientId= is deliberate too: a tenant's users are a
  * sub-collection of that tenant, the client id is mandatory (there is no

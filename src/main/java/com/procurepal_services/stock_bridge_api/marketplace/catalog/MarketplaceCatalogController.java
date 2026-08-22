@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.marketplace.catalog;
 
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.MarketplaceCategoryResponse;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.MarketplaceProductResponse;
+import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.MarketplaceSellerResponse;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.PublicMarketplaceSettingsResponse;
 import java.math.BigDecimal;
 import java.util.List;
@@ -15,10 +16,14 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * ProcurePal's public shop window. Every path here is in SecurityConfig.PERMIT_ALL_PATHS
- * and is served to anonymous visitors, so there is no @PreAuthorize on anything - and,
- * critically, no tenant context either. See MarketplaceCatalogService for how these reads
- * are scoped without one.
+ * The marketplace's public shop window. Every path here is in
+ * SecurityConfig.PERMIT_ALL_PATHS and is served to anonymous visitors, so there is no
+ * @PreAuthorize on anything - and, critically, no tenant context either. See
+ * MarketplaceCatalogService for how these reads are scoped without one.
+ *
+ * <p>It is no longer ProcurePal's shop window alone: since the multi-vendor module,
+ * every route here spans ProcurePal AND every active vendor, and each product carries
+ * the seller who is selling it.
  *
  * <h2>Why pagination is hand-rolled instead of using Pageable</h2>
  * Spring's PageableHandlerMethodArgumentResolver claims the {@code sort} request
@@ -49,6 +54,7 @@ public class MarketplaceCatalogController {
             @RequestParam(required = false) List<UUID> ids,
             @RequestParam(required = false) String q,
             @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) UUID sellerId,
             @RequestParam(required = false) BigDecimal minPrice,
             @RequestParam(required = false) BigDecimal maxPrice,
             @RequestParam(required = false, defaultValue = "false") boolean inStockOnly,
@@ -58,7 +64,35 @@ public class MarketplaceCatalogController {
         if (ids != null && !ids.isEmpty()) {
             return marketplaceCatalogService.findByIds(ids);
         }
-        return marketplaceCatalogService.browse(q, categoryId, minPrice, maxPrice, inStockOnly, sort, page, size);
+        return marketplaceCatalogService.browse(
+                q, categoryId, sellerId, minPrice, maxPrice, inStockOnly, sort, page, size);
+    }
+
+    /**
+     * The seller directory: everyone a buyer can currently buy from. Powers the
+     * storefront's "Sold by" filter and the vendor index.
+     *
+     * <p>Not a general client listing, and the distinction is the security property:
+     * it returns active SELLERS only, so no amount of paging reveals the buying
+     * companies that also live in {@code clients}.
+     */
+    @GetMapping("/sellers")
+    public List<MarketplaceSellerResponse> sellers() {
+        return marketplaceCatalogService.sellers();
+    }
+
+    /**
+     * One seller's storefront header. {@code idOrSlug} takes either, matching the
+     * product route.
+     *
+     * <p>The seller's PRODUCTS are not returned here - the grid is
+     * {@code GET /api/marketplace/catalog?sellerId=...}, which reuses every filter,
+     * sort and pagination rule the main grid already has rather than growing a second,
+     * subtly different catalog endpoint that would drift from it.
+     */
+    @GetMapping("/sellers/{idOrSlug}")
+    public MarketplaceSellerResponse seller(@PathVariable String idOrSlug) {
+        return marketplaceCatalogService.seller(idOrSlug);
     }
 
     /** {@code idOrSlug} takes either - storefront links carry the slug, the cart carries the id. */

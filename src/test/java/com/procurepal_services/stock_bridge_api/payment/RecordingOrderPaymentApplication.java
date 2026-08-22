@@ -9,6 +9,7 @@ import com.procurepal_services.stock_bridge_api.order.OrderPaymentContext;
 import com.procurepal_services.stock_bridge_api.order.PaymentSuccess;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -129,10 +130,19 @@ public class RecordingOrderPaymentApplication implements OrderPaymentApplication
     @Transactional(readOnly = true)
     public OrderPaymentContext loadPaymentContext(UUID orderId) {
         Order order = orderRepository.findById(orderId).orElseThrow();
+        // Mirrors OrderPaymentApplicationService: the context describes the whole
+        // checkout group, not just the anchor, so a split checkout is asked for one
+        // total once. A group of one - every pre-split order - collapses to the
+        // previous behaviour.
+        List<Order> group = order.getCheckoutGroupId() == null
+                ? List.of(order)
+                : orderRepository.findAllByCheckoutGroupIdOrderByOrderNumberAsc(order.getCheckoutGroupId());
         return new OrderPaymentContext(
                 order.getId(),
                 order.getOrderNumber(),
-                order.getTotal(),
+                order.getCheckoutGroupId(),
+                group.stream().map(Order::getId).toList(),
+                group.stream().map(Order::getTotal).reduce(BigDecimal.ZERO, BigDecimal::add),
                 order.getCurrency(),
                 order.getStatus(),
                 order.getPaymentStatus(),

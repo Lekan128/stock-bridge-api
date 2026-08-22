@@ -12,7 +12,9 @@ import com.procurepal_services.stock_bridge_api.entity.OrderItem;
 import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.PaymentMethod;
 import com.procurepal_services.stock_bridge_api.entity.PaymentStatus;
+import com.procurepal_services.stock_bridge_api.entity.ClientType;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.AdminCatalogProductResponse;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.AdminMarketplaceSettingsResponse;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.BulkListingRequest;
@@ -127,6 +129,14 @@ class MarketplaceCatalogIntegrationTest {
                         .quantityOnHand(50)
                         .active(true)
                         .marketplaceListed(true)
+                        // APPROVED deliberately, even though nothing would ever approve
+                        // a buying company's product: it makes this test prove the thing
+                        // it claims to. With every OTHER gate satisfied - listed, active,
+                        // approved - the only predicate left that can exclude this row is
+                        // the seller pin, so a green assertion below is evidence about
+                        // client_id specifically and not about moderation happening to
+                        // catch it first.
+                        .approvalStatus(ProductApprovalStatus.APPROVED)
                         .build());
         try {
             // The grid, with a query that would find it if it were visible at all.
@@ -858,6 +868,197 @@ class MarketplaceCatalogIntegrationTest {
         }
     }
 
+
+    // ------------------------------------------------------------------------
+    // Multi-seller catalog: who may appear, and what a buyer learns about them
+    // ------------------------------------------------------------------------
+
+    /**
+     * The four gates that together make a row public, tested one at a time by failing
+     * exactly one of them and leaving the other three satisfied.
+     *
+     * <p>Doing it this way is the point: an assertion that a PENDING product is absent
+     * proves nothing if the product would also have been excluded for not being listed.
+     * Each fixture below is public in every respect except the one under test.
+     */
+    @Test
+    void unapprovedAndNonSellerProductsNeverAppearInThePublicCatalog() {
+        UUID operatorId = clientRepository.findByPlatformOwnerTrue().orElseThrow().getId();
+
+        // (a) A VENDOR's product that is listed and active but NOT approved.
+        TenantLoginResponse vendorSignup = signup("Unapproved Vendor Co");
+        UUID vendorId = clientIdOf(vendorSignup);
+        makeVendor(vendorId);
+        Product pending = saveAs(vendorId, sellableProduct("PENDING-", ProductApprovalStatus.PENDING));
+        Product rejected = saveAs(vendorId, sellableProduct("REJECTED-", ProductApprovalStatus.REJECTED));
+
+        // (b) An ordinary BUYING COMPANY's product that passes every other gate,
+        // including approval. Only the seller pin can exclude it.
+        TenantLoginResponse companySignup = signup("Not A Seller Co");
+        UUID companyId = clientIdOf(companySignup);
+        Product notASeller = saveAs(companyId, sellableProduct("NOTSELLER-", ProductApprovalStatus.APPROVED));
+
+        // (c) The control: an APPROVED vendor product, which MUST appear. Without it a
+        // green test could simply mean the vendor catalog is broken entirely.
+        Product approved = saveAs(vendorId, sellableProduct("APPROVED-", ProductApprovalStatus.APPROVED));
+
+        try {
+            List<String> grid = skusIn(getCatalog("?size=200"));
+            assertThat(grid).contains(approved.getSku());
+            assertThat(grid).doesNotContain(pending.getSku(), rejected.getSku(), notASeller.getSku());
+
+            // Direct addressing, by id and by slug - the doors a grid filter does not cover.
+            for (Product hidden : List.of(pending, rejected, notASeller)) {
+                assertThat(getStatus(CATALOG + "/" + hidden.getId()))
+                        .as("by id: %s", hidden.getSku())
+                        .isEqualTo(HttpStatus.NOT_FOUND);
+                assertThat(getStatus(CATALOG + "/" + hidden.getSlug()))
+                        .as("by slug: %s", hidden.getSku())
+                        .isEqualTo(HttpStatus.NOT_FOUND);
+                // The batch cart-hydration form is the newest door and the easiest to forget.
+                assertThat(skusIn(getCatalog("?ids=" + hidden.getId())))
+                        .as("by ids: %s", hidden.getSku())
+                        .isEmpty();
+            }
+            assertThat(getStatus(CATALOG + "/" + approved.getId())).isEqualTo(HttpStatus.OK);
+        } finally {
+            deleteAs(vendorId, pending);
+            deleteAs(vendorId, rejected);
+            deleteAs(vendorId, approved);
+            deleteAs(companyId, notASeller);
+        }
+    }
+
+    /**
+     * A deactivated vendor's listings leave the catalog, without anything being unlisted
+     * or rejected. Deactivating the account is how an operator pulls a seller.
+     */
+    @Test
+    void deactivatingAVendorRemovesTheirListingsFromTheCatalog() {
+        TenantLoginResponse vendorSignup = signup("Suspendable Vendor Co");
+        UUID vendorId = clientIdOf(vendorSignup);
+        makeVendor(vendorId);
+        Product product = saveAs(vendorId, sellableProduct("SUSPEND-", ProductApprovalStatus.APPROVED));
+        try {
+            assertThat(skusIn(getCatalog("?size=200"))).contains(product.getSku());
+
+            Client vendor = clientRepository.findById(vendorId).orElseThrow();
+            vendor.setActive(false);
+            clientRepository.saveAndFlush(vendor);
+
+            assertThat(skusIn(getCatalog("?size=200"))).doesNotContain(product.getSku());
+            assertThat(getStatus(CATALOG + "/" + product.getId())).isEqualTo(HttpStatus.NOT_FOUND);
+        } finally {
+            Client vendor = clientRepository.findById(vendorId).orElseThrow();
+            vendor.setActive(true);
+            clientRepository.saveAndFlush(vendor);
+            deleteAs(vendorId, product);
+        }
+    }
+
+    /**
+     * Buyers learn the seller's NAME and LOGO, and nothing else about them.
+     *
+     * <p>The negative half matters more than the positive half: a vendor agreed to sell
+     * through the marketplace, not to publish their contact details to anonymous
+     * visitors. Asserted against the raw JSON rather than the DTO so that a field ADDED
+     * to MarketplaceSellerResponse later would fail this test rather than sail through a
+     * typed projection that ignores unknown keys.
+     */
+    @Test
+    void theCatalogPublishesTheSellersNameAndLogoAndNoContactDetails() {
+        TenantLoginResponse vendorSignup = signup("Identified Vendor Co");
+        UUID vendorId = clientIdOf(vendorSignup);
+        makeVendor(vendorId);
+        Client vendor = clientRepository.findById(vendorId).orElseThrow();
+        vendor.setLogoUrl("https://example.test/logo.png");
+        vendor.setPhone("+2348012345678");
+        vendor.setAddressLine1("12 Secret Warehouse Road");
+        vendor.setCity("Ibadan");
+        clientRepository.saveAndFlush(vendor);
+
+        Product product = saveAs(vendorId, sellableProduct("IDENT-", ProductApprovalStatus.APPROVED));
+        try {
+            JsonNode seller = getJson(CATALOG + "/" + product.getId()).get("seller");
+            assertThat(seller).isNotNull();
+            assertThat(seller.get("name").asText()).isEqualTo(vendor.getName());
+            assertThat(seller.get("logoUrl").asText()).isEqualTo("https://example.test/logo.png");
+            assertThat(seller.get("platformOwner").asBoolean()).isFalse();
+
+            // The allowlist, stated as a denylist assertion.
+            assertThat(seller.has("adminContactEmail")).isFalse();
+            assertThat(seller.has("email")).isFalse();
+            assertThat(seller.has("phone")).isFalse();
+            assertThat(seller.has("addressLine1")).isFalse();
+            assertThat(seller.has("city")).isFalse();
+            assertThat(seller.has("commissionRate")).isFalse();
+            assertThat(seller.has("paymentTerms")).isFalse();
+        } finally {
+            deleteAs(vendorId, product);
+        }
+    }
+
+    /**
+     * The seller directory and the per-vendor storefront, including the property that
+     * makes them safe: {@code clients} holds every buying company, and neither endpoint
+     * may become a way to enumerate them.
+     */
+    @Test
+    void theSellerDirectoryListsOnlySellersAndNeverBuyingCompanies() {
+        TenantLoginResponse vendorSignup = signup("Directory Vendor Co");
+        UUID vendorId = clientIdOf(vendorSignup);
+        makeVendor(vendorId);
+        TenantLoginResponse companySignup = signup("Directory Buyer Co");
+        UUID companyId = clientIdOf(companySignup);
+
+        Product product = saveAs(vendorId, sellableProduct("DIR-", ProductApprovalStatus.APPROVED));
+        try {
+            JsonNode sellers = getJson("/api/marketplace/sellers");
+            List<String> ids = new java.util.ArrayList<>();
+            sellers.forEach(node -> ids.add(node.get("id").asText()));
+
+            assertThat(ids).contains(vendorId.toString());
+            // The buying company is absent, and so is any other tenant.
+            assertThat(ids).doesNotContain(companyId.toString());
+
+            // The per-vendor storefront resolves by id and by slug...
+            Client vendor = clientRepository.findById(vendorId).orElseThrow();
+            assertThat(getStatus("/api/marketplace/sellers/" + vendorId)).isEqualTo(HttpStatus.OK);
+            assertThat(getStatus("/api/marketplace/sellers/" + vendor.getSlug())).isEqualTo(HttpStatus.OK);
+            // ...and refuses to confirm that a buying company exists at all.
+            assertThat(getStatus("/api/marketplace/sellers/" + companyId)).isEqualTo(HttpStatus.NOT_FOUND);
+
+            // Filtering the grid by seller returns that seller's products only.
+            assertThat(skusIn(getCatalog("?size=200&sellerId=" + vendorId))).containsExactly(product.getSku());
+            // And a non-seller id narrows to nothing rather than exposing their stock.
+            assertThat(getCatalog("?size=200&sellerId=" + companyId)).isEmpty();
+        } finally {
+            deleteAs(vendorId, product);
+        }
+    }
+
+    /** Flips a signed-up tenant to a vendor seller - onboarding proper is another module's. */
+    private void makeVendor(UUID clientId) {
+        Client client = clientRepository.findById(clientId).orElseThrow();
+        client.setClientType(ClientType.VENDOR);
+        clientRepository.saveAndFlush(client);
+    }
+
+    /** Listed, active and in stock; only the approval status varies. */
+    private Product sellableProduct(String skuPrefix, ProductApprovalStatus approvalStatus) {
+        String unique = skuPrefix + UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        return Product.builder()
+                .name("Multi Seller Probe " + unique)
+                .sku(unique)
+                .slug(unique.toLowerCase())
+                .unitPrice(new BigDecimal("4200.00"))
+                .quantityOnHand(25)
+                .active(true)
+                .marketplaceListed(true)
+                .approvalStatus(approvalStatus)
+                .build();
+    }
+
     // ------------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------------
@@ -961,6 +1162,13 @@ class MarketplaceCatalogIntegrationTest {
                         .unitPrice(new BigDecimal("7500.00"))
                         .quantityOnHand(quantityOnHand)
                         .active(true)
+                        // ProcurePal's own catalogue is auto-approved by
+                        // ProductModerationRules, but this fixture bypasses the service
+                        // that applies that rule and so takes the entity's PENDING
+                        // default. Stamped explicitly: what these tests are about is
+                        // LISTING, and leaving them PENDING would make every assertion
+                        // below fail for a moderation reason rather than a listing one.
+                        .approvalStatus(ProductApprovalStatus.APPROVED)
                         .build());
     }
 
@@ -1001,6 +1209,14 @@ class MarketplaceCatalogIntegrationTest {
             BigDecimal lineTotal = catalogProduct.getUnitPrice().multiply(BigDecimal.valueOf(quantity));
             Order order = orderRepository.saveAndFlush(Order.builder()
                     .orderNumber("PP-STOCKTEST-" + UUID.randomUUID().toString().substring(0, 8))
+                    // NOT NULL since V11: every order names its seller. The catalog
+                    // product's owner is who is actually selling it.
+                    .sellerClientId(catalogProduct.getClientId())
+                    // NOT NULL since V12: every order names the checkout it came
+                    // out of. A fixture order is its own checkout - a group of one -
+                    // which is what V12's backfill made every pre-split row and what a
+                    // single-seller basket still produces today.
+                    .checkoutGroupId(UUID.randomUUID())
                     .status(status)
                     .paymentStatus(
                             status == OrderStatus.PENDING_PAYMENT ? PaymentStatus.PENDING : PaymentStatus.ON_DELIVERY)

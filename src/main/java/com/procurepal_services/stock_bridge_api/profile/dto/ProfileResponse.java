@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.profile.dto;
 
 import com.procurepal_services.stock_bridge_api.auth.PermissionCodes;
 import com.procurepal_services.stock_bridge_api.entity.Client;
+import com.procurepal_services.stock_bridge_api.entity.ClientType;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -29,6 +30,14 @@ import java.util.UUID;
  * decide differently from a fresh login about whether to show the marketplace-admin
  * nav.
  *
+ * clientType is the same arrangement for the vendor half of the product, added by
+ * V11: same value, same three places (JWT claim, login response, here), serialized
+ * as the enum's name - "COMPANY" or "VENDOR". It is ORTHOGONAL to platformOwner,
+ * not an alternative to it: ProcurePal is a COMPANY that owns the platform. Like
+ * platformOwner it decides what the app RENDERS and never what the API allows -
+ * VendorGuard re-reads the clients row per request, so a change of kind takes
+ * effect on the next call rather than at the next token expiry.
+ *
  * Never carries passwordHash.
  */
 public record ProfileResponse(
@@ -48,7 +57,8 @@ public record ProfileResponse(
         OffsetDateTime createdAt,
         String clientName,
         String clientIdentifier,
-        boolean platformOwner) {
+        boolean platformOwner,
+        ClientType clientType) {
 
     public static ProfileResponse from(User user, Client client) {
         return new ProfileResponse(
@@ -68,6 +78,7 @@ public record ProfileResponse(
                 user.getCreatedAt(),
                 client.getName(),
                 client.getSlug(),
-                client.isPlatformOwner());
+                client.isPlatformOwner(),
+                ClientType.orDefault(client.getClientType()));
     }
 }

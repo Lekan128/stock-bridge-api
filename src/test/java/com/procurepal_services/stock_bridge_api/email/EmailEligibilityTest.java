@@ -35,10 +35,17 @@ class EmailEligibilityTest {
 
     private static final String ADDRESS = "buyer@acme.test";
     private static final String OPERATOR_ADDRESS = "ops@procurepal.test";
+    private static final String VENDOR_WAITLIST_ADDRESS = "vendors@procurepal.test";
 
     private static final EmailProperties PROPERTIES = new EmailProperties(
             true, "us-east-1", "no-reply@procurepal.test", "ProcurePal",
-            null, null, "https://app.procurepal.test", OPERATOR_ADDRESS);
+            null, null, "https://app.procurepal.test", OPERATOR_ADDRESS,
+            // The vendor-waitlist inbox, which rule 6 treats exactly like the
+            // operator alias beside it. Given an explicit value here rather than
+            // left null, because null would take EmailProperties' real default
+            // (support@procurepaddy.com) and quietly make one production address
+            // eligible in every test in this class.
+            VENDOR_WAITLIST_ADDRESS);
 
     private UserRepository userRepository;
     private ClientRepository clientRepository;

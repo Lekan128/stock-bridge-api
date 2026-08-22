@@ -12,6 +12,7 @@ import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
+import com.procurepal_services.stock_bridge_api.vendor.VendorSingleAccountRule;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -25,6 +26,12 @@ import org.springframework.transaction.annotation.Transactional;
  * methods (or an explicit client_id from TenantContext), so a caller can
  * never see or touch another tenant's users - enforced at the query, not by
  * filtering a response afterward.
+ *
+ * A third guard is about the tenant's KIND rather than its integrity: a VENDOR
+ * client has exactly one user and cannot gain a second here. Today the VENDOR
+ * role also lacks MANAGE_USERS, so no vendor can reach this method at all - but
+ * that is a permission, and a permission is a decision somebody can revisit. The
+ * check below is the rule itself; see {@link VendorSingleAccountRule}.
  *
  * Two independent guards keep a tenant from losing control of itself:
  * "there must always be an active OWNER" (a headcount rule, satisfiable by
@@ -42,6 +49,7 @@ public class UserManagementService {
     private final PasswordEncoder passwordEncoder;
     private final EmailNotificationService emailNotificationService;
     private final EmailVerificationService emailVerificationService;
+    private final VendorSingleAccountRule vendorSingleAccountRule;
 
     @Transactional(readOnly = true)
     public Page<UserSummaryResponse> list(Pageable pageable) {
@@ -56,6 +64,10 @@ public class UserManagementService {
     @Transactional
     public UserSummaryResponse create(CreateUserRequest request) {
         UUID tenantId = requireTenantId();
+
+        // Before the username check and before anything is built: a refusal here must
+        // leave no user row, no verification token and no invitation email behind.
+        vendorSingleAccountRule.assertMayAddUser(tenantId);
 
         if (userRepository.findByClientIdAndUsername(tenantId, request.username()).isPresent()) {
             throw new UsernameTakenException(request.username());

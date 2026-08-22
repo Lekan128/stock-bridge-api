@@ -12,13 +12,21 @@ import java.util.UUID;
 import org.springframework.data.jpa.domain.Specification;
 
 /**
- * Filters for ProcurePal's fulfilment queue.
+ * Filters for a SELLER's fulfilment queue.
  *
- * Note the deliberate absence of a tenant predicate - the opposite of
+ * <h2>sellerClientId is the isolation, and that is why it is not optional</h2>
+ * Note the deliberate absence of a TENANT predicate - the opposite of
  * {@code ProductSpecifications.forTenant}. This queue exists to read EVERY buyer's
- * orders, so it must run inside {@code PlatformOwnerGuard.readAcrossTenants(...)},
- * which proves platform ownership before it lifts the Hibernate filter. A client_id
- * predicate here would only ever be the operator's own id, and would return nothing.
+ * orders, so it runs inside {@code VendorGuard.readOwnSales(...)}, which lifts the
+ * Hibernate filter after proving the caller may sell. A client_id predicate here would
+ * only ever be the seller's own id, and would return nothing.
+ *
+ * <p>With the tenant filter lifted, {@code seller_client_id} is the ONLY thing standing
+ * between one vendor and every other vendor's orders. It is therefore the FIRST and a
+ * REQUIRED parameter, not one of the optional filters below it - a null seller id
+ * cannot silently mean "all sellers" the way a null status means "all statuses". It is
+ * rejected outright rather than defaulted, because the safe default does not exist:
+ * every possible fallback here is either an empty queue or a data leak.
  *
  * {@code q} searches the order number and the delivery contact/city, plus - via
  * clientIdsMatchingQuery, resolved by the caller - the buyer's company name. The
@@ -30,7 +38,14 @@ final class MarketplaceOrderSpecifications {
     private MarketplaceOrderSpecifications() {
     }
 
+    /**
+     * @param sellerClientId whose queue this is. Required.
+     * @throws IllegalArgumentException if null - see the class javadoc. Failing loudly
+     *     at the call site beats returning a Specification that quietly matches every
+     *     seller's orders.
+     */
     static Specification<Order> forQueue(
+            UUID sellerClientId,
             OrderStatus status,
             PaymentStatus paymentStatus,
             UUID clientId,
@@ -38,8 +53,13 @@ final class MarketplaceOrderSpecifications {
             Collection<UUID> clientIdsMatchingQuery,
             OffsetDateTime from,
             OffsetDateTime to) {
+        if (sellerClientId == null) {
+            throw new IllegalArgumentException("A fulfilment queue must be scoped to a seller");
+        }
         return (root, criteriaQuery, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
+            // First, and unconditional.
+            predicates.add(cb.equal(root.get("sellerClientId"), sellerClientId));
             if (status != null) {
                 predicates.add(cb.equal(root.get("status"), status));
             }
