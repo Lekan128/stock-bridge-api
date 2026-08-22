@@ -15,6 +15,17 @@ import org.springframework.transaction.annotation.Transactional;
  * database is that the product intends to grow tenant-defined roles, and a
  * frontend that renders whatever the API returns needs no change when that
  * lands.
+ *
+ * <h2>Assignable, not "every row in the table"</h2>
+ * Since V11 the roles table also holds VENDOR, which a marketplace seller's
+ * single account carries and which nobody may be given through user management -
+ * see {@link TenantRoles#VENDOR}. This endpoint feeds a role picker, so it serves
+ * {@link TenantRoles#ALL}: offering an option that the very next request rejects
+ * with a 400 is worse than not offering it.
+ *
+ * <p>The filter is applied here rather than by asking the database for specific
+ * names, so the tenant-defined-roles direction above still works - a future
+ * tenant role is added to the allow-list, not to a hardcoded query.
  */
 @Service
 @RequiredArgsConstructor
@@ -26,6 +37,7 @@ public class RoleCatalogService {
     @Transactional(readOnly = true)
     public List<RoleResponse> list() {
         return roleRepository.findAll().stream()
+                .filter(role -> TenantRoles.ALL.contains(role.getName()))
                 .sorted(Comparator.comparing(role -> role.getName()))
                 .map(RoleResponse::from)
                 .toList();

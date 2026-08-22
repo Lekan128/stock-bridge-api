@@ -58,6 +58,20 @@ public class MonnifyPaymentService {
      * intact: an abandoned first attempt stays visible instead of being overwritten
      * by the retry.
      *
+     * <h2>One checkout, one Monnify transaction, however many orders</h2>
+     * A multi-seller basket produced several orders (V12) and the buyer pays for all of
+     * them at once. Two consequences here:
+     * <ul>
+     *   <li>The amount sent to Monnify is {@code context.total()}, the sum across the
+     *       whole checkout group - never the named order's own total.</li>
+     *   <li>The {@code payments} row is anchored on the group's FIRST order, whichever
+     *       member the caller named. That is what stops two tabs - one opened on order
+     *       A, one on order B of the same basket - producing two payment rows that each
+     *       charge the full basket. It does not stop deliberate retries producing new
+     *       attempts on the same anchor, which is intended (see above) and is what the
+     *       PAID check below guards.</li>
+     * </ul>
+     *
      * <h2>Transaction boundary</h2>
      * The provider call sits inside the transaction on purpose. If Monnify fails,
      * the Payment row rolls back with it and no orphan PENDING attempt is left for
@@ -86,11 +100,26 @@ public class MonnifyPaymentService {
 
         OrderPaymentContext context = orderPaymentApplication.loadPaymentContext(orderId);
 
-        String paymentReference = nextPaymentReference(order.getOrderNumber());
+        // Anchor on the group's first order regardless of which member was named, so a
+        // basket has one payment lineage rather than one per order the buyer happened
+        // to click. Ownership was proven on `order` above, and every member of a group
+        // shares that buyer by construction, so re-resolving here cannot cross tenants.
+        Order anchor = context.orderIds().isEmpty() || context.orderIds().getFirst().equals(orderId)
+                ? order
+                : orderRepository.findById(context.orderIds().getFirst()).orElse(order);
+        for (UUID memberId : context.orderIds()) {
+            // Every order in the basket has to be payable, not just the one clicked: a
+            // group with one already-PAID member would otherwise be charged in full
+            // again. Loaded by id, which is unfiltered - the ownership proof above
+            // covers the group.
+            orderRepository.findById(memberId).ifPresent(MonnifyPaymentService::assertPayable);
+        }
+
+        String paymentReference = nextPaymentReference(anchor.getOrderNumber());
         String currency = context.currency() != null ? context.currency() : DEFAULT_CURRENCY;
 
         Payment payment = paymentRepository.save(Payment.builder()
-                .order(order)
+                .order(anchor)
                 .provider(PROVIDER)
                 .paymentReference(paymentReference)
                 .status(PaymentProviderStatus.PENDING)
@@ -107,20 +136,29 @@ public class MonnifyPaymentService {
                 // the buyer cannot complete.
                 blankToDefault(context.customerName(), "ProcurePal customer"),
                 blankToDefault(context.customerEmail(), "orders@procurepal.ng"),
-                "ProcurePal order " + order.getOrderNumber()));
+                // Names the basket, not one of its orders, when there are several - a
+                // Monnify dashboard row and a bank statement line reading "ProcurePal
+                // order PP-2026-000042" for a payment covering three order numbers is
+                // exactly the kind of thing that makes a dispute unanswerable.
+                context.isSplit()
+                        ? "ProcurePal orders " + context.orderIds().size() + " (" + anchor.getOrderNumber() + " +"
+                                + (context.orderIds().size() - 1) + ")"
+                        : "ProcurePal order " + anchor.getOrderNumber()));
 
         payment.setTransactionReference(result.transactionReference());
         payment.setCheckoutUrl(result.checkoutUrl());
         paymentRepository.save(payment);
 
-        log.info("Opened Monnify checkout paymentReference={} transactionReference={} for order={} client={}",
-                paymentReference, result.transactionReference(), order.getOrderNumber(), callerClientId);
+        log.info("Opened Monnify checkout paymentReference={} transactionReference={} for {} order(s) "
+                        + "anchored on {} client={}",
+                paymentReference, result.transactionReference(), context.orderIds().size(),
+                anchor.getOrderNumber(), callerClientId);
 
         return new InitializePaymentResponse(
                 result.checkoutUrl(), paymentReference, result.transactionReference());
     }
 
-    private void assertPayable(Order order) {
+    private static void assertPayable(Order order) {
         if (order.getPaymentStatus() == PaymentStatus.PAID) {
             // The double-click guard. Without it a second checkout opens against a
             // settled order and the buyer pays twice for goods they already own.

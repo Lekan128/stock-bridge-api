@@ -29,11 +29,15 @@ class EmailSenderTest {
 
     private static final EmailProperties CONFIGURED = new EmailProperties(
             true, "us-east-1", "no-reply@procurepal.test", "ProcurePal",
-            "support@procurepal.test", "primary-config-set", "https://app.procurepal.test", null);
+            "support@procurepal.test", "primary-config-set", "https://app.procurepal.test", null,
+            // vendorWaitlistAddress. Null here means "take the default" - see
+            // EmailProperties' compact constructor. Nothing in this class reads it;
+            // it is the ninth component and has to be supplied.
+            null);
     private static final EmailProperties DISABLED = new EmailProperties(
-            false, null, "no-reply@procurepal.test", null, null, null, null, null);
+            false, null, "no-reply@procurepal.test", null, null, null, null, null, null);
     private static final EmailProperties NO_FROM_ADDRESS = new EmailProperties(
-            true, null, "  ", null, null, null, null, null);
+            true, null, "  ", null, null, null, null, null, null);
 
     /**
      * A real UnsubscribeTokenService rather than a mock, on purpose: these tests
@@ -90,7 +94,7 @@ class EmailSenderTest {
     @Test
     void omitsOptionalHeadersWhenTheyAreNotConfigured() {
         EmailProperties minimal = new EmailProperties(
-                true, null, "no-reply@procurepal.test", null, "  ", "  ", null, null);
+                true, null, "no-reply@procurepal.test", null, "  ", "  ", null, null, null);
 
         sender(minimal).send(MESSAGE);
 

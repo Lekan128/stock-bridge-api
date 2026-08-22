@@ -42,15 +42,38 @@ import java.util.UUID;
  * rolls the payment write back with them, which is deliberate: an order that
  * could not be advanced must not be left recorded as paid, and the
  * reconciliation sweep will retry it.
+ *
+ * <h2>ONE PAYMENT, N ORDERS</h2>
+ * Since checkout began splitting a multi-seller basket into one order per seller
+ * (V12), the unit a payment settles is the CHECKOUT GROUP, not the order. The
+ * signatures below still take a {@code UUID orderId} - deliberately, because the
+ * payment module holds a {@code payments.order_id} and should not have to learn
+ * what a checkout group is - but their CONTRACT changed: the named order is an
+ * ANCHOR, and an implementation must apply the outcome to EVERY order in that
+ * order's checkout group, atomically, inside the caller's transaction.
+ *
+ * <p>For the ordinary single-seller checkout the group is that one order and the
+ * behaviour is byte-for-byte what it was, which is why no caller had to change.
+ * For a split basket, settling only the anchor would leave the buyer having paid
+ * for three orders and received one - the worst outcome this feature can produce,
+ * and the reason the fan-out lives behind this interface rather than in the
+ * payment module where it would have to be repeated on the success, failure and
+ * reconciliation paths.
  */
 public interface OrderPaymentApplication {
 
     /**
-     * Money confirmed. Move the order to PLACED/PAID, materialise incoming stock,
-     * write the status event and notify. Called exactly once per successful
-     * payment attempt.
+     * Money confirmed. Move the order(s) to PLACED/PAID, materialise incoming stock,
+     * write the status events and notify. Called exactly once per successful payment
+     * attempt.
+     *
+     * @param anchorOrderId any order in the checkout group being settled - in practice
+     *     the one the {@code payments} row points at. The implementation settles the
+     *     WHOLE group; see the ONE PAYMENT, N ORDERS section above.
+     * @param success carries {@code amountPaid} for the ENTIRE group. An implementation
+     *     must not compare it against a single order's total.
      */
-    void applyPaymentSuccess(UUID orderId, PaymentSuccess success);
+    void applyPaymentSuccess(UUID anchorOrderId, PaymentSuccess success);
 
     /**
      * The attempt did not result in money: declined, abandoned, expired, reversed,
@@ -60,18 +83,26 @@ public interface OrderPaymentApplication {
      * a buyer may retry payment on the same PENDING_PAYMENT order. {@code reason}
      * carries the distinction the implementation needs to decide.
      *
+     * @param anchorOrderId any order in the checkout group; the whole group is
+     *     notified, for the same reason the success path settles the whole group.
      * @param paymentReference our reference for the failed attempt, or {@code null}
      *     when there was no attempt at all (an order abandoned before checkout was
      *     ever initialized).
      */
-    void applyPaymentFailure(UUID orderId, String paymentReference, String reason);
+    void applyPaymentFailure(UUID anchorOrderId, String paymentReference, String reason);
 
     /**
-     * Everything the payment module needs to open a Monnify checkout for an order,
-     * without giving it a reason to query {@code orders} itself.
+     * Everything the payment module needs to open a Monnify checkout, without giving
+     * it a reason to query {@code orders} itself.
+     *
+     * <p>Returns the whole CHECKOUT GROUP the named order belongs to: its member ids
+     * and, critically, its summed {@code total}. That total is what gets charged and
+     * what the amount check runs against, so an implementation that returned only the
+     * anchor order's total would under-charge a split basket by the value of every
+     * other seller's goods.
      *
      * @throws RuntimeException (implementation-specific, mapped by the order
      *     module's advice) if no such order exists
      */
-    OrderPaymentContext loadPaymentContext(UUID orderId);
+    OrderPaymentContext loadPaymentContext(UUID anchorOrderId);
 }

@@ -602,11 +602,123 @@ class MonnifyPaymentIntegrationTest {
         assertThat(payment(checkout.paymentReference()).getStatus()).isEqualTo(PaymentProviderStatus.PENDING);
     }
 
+
+    // ------------------------------------------------------------------------
+    // (D6) ONE CHECKOUT, SEVERAL ORDERS, ONE MONNIFY TRANSACTION
+    // ------------------------------------------------------------------------
+
+    /**
+     * A multi-seller basket splits into one order per seller (V12) but is paid for ONCE.
+     *
+     * <p>The property this pins down is the one that costs real money if it breaks: the
+     * amount sent to Monnify, and frozen on the payments row, is the GROUP total. If it
+     * were the anchor order's own total, a buyer with three sellers in their basket would
+     * be charged for one of them and fulfilled for all three.
+     *
+     * <p>It also pins the anchoring rule. Whichever member of the group the caller names,
+     * the payment hangs off the group's FIRST order - so two tabs opened on two different
+     * orders of one basket cannot produce two payment rows that each charge the full
+     * basket.
+     */
+    @Test
+    void oneCheckoutGroupOpensOneMonnifyTransactionForTheWholeGroupTotal() {
+        SplitFixture split = newPayableCheckoutGroup();
+        BigDecimal groupTotal = ORDER_TOTAL.add(ORDER_TOTAL);
+
+        // Deliberately initialised against the SECOND order, not the first.
+        InitializePaymentResponse checkout =
+                initialize(split.secondOrderId(), buyer, HttpStatus.OK).orElseThrow();
+
+        Payment opened = payment(checkout.paymentReference());
+        assertThat(opened.getAmount())
+                .as("the payment must cover the whole checkout, not just the order that was clicked")
+                .isEqualByComparingTo(groupTotal);
+        // Anchored on the group's first order regardless of which one was named.
+        assertThat(opened.getOrder().getId()).isEqualTo(split.firstOrderId());
+        assertThat(checkout.paymentReference()).startsWith(split.firstOrderNumber());
+
+        // And the whole group settles off that single transaction.
+        monnify.settle(checkout.transactionReference(), MonnifyTransactionStatus.PAID, groupTotal);
+        assertThat(postWebhook(splitSuccessBody(checkout, groupTotal), true).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        assertThat(payment(checkout.paymentReference()).getStatus()).isEqualTo(PaymentProviderStatus.PAID);
+        assertThat(orderPaymentApplication.successesFor(checkout.paymentReference())).hasSize(1);
+        assertThat(orderPaymentApplication.successesFor(checkout.paymentReference()).getFirst().amountPaid())
+                .isEqualByComparingTo(groupTotal);
+
+        // Replayed, exactly as Monnify retries: still one application.
+        assertThat(postWebhook(splitSuccessBody(checkout, groupTotal), true).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+        assertThat(orderPaymentApplication.successesFor(checkout.paymentReference())).hasSize(1);
+    }
+
     // ------------------------------------------------------------------------
     // Fixtures and helpers
     // ------------------------------------------------------------------------
 
     private record Fixture(UUID orderId, String orderNumber, UUID productId) {
+    }
+
+    /** Two orders from ONE checkout - what a two-seller basket produces. */
+    private record SplitFixture(UUID firstOrderId, String firstOrderNumber, UUID secondOrderId) {
+    }
+
+    /**
+     * A two-order checkout group, both awaiting payment, each for ORDER_TOTAL.
+     *
+     * <p>Written straight through the repositories because order creation - and the split
+     * itself - belongs to the order module; this test is about what the PAYMENT module
+     * does with a group that already exists. The two order numbers are minted in a fixed
+     * lexical order so "the group's first order" is deterministic and the anchoring
+     * assertion means something.
+     */
+    private SplitFixture newPayableCheckoutGroup() {
+        String unique = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        UUID checkoutGroupId = UUID.randomUUID();
+        UUID sellerId = clientRepository.findByPlatformOwnerTrue().orElseThrow().getId();
+
+        TenantContext.set(buyerClientId);
+        try {
+            Order first = orderRepository.saveAndFlush(payableOrder("PP-SPLITA-" + unique, checkoutGroupId, sellerId));
+            Order second = orderRepository.saveAndFlush(payableOrder("PP-SPLITB-" + unique, checkoutGroupId, sellerId));
+            return new SplitFixture(first.getId(), first.getOrderNumber(), second.getId());
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private Order payableOrder(String orderNumber, UUID checkoutGroupId, UUID sellerId) {
+        return Order.builder()
+                .orderNumber(orderNumber)
+                .sellerClientId(sellerId)
+                .checkoutGroupId(checkoutGroupId)
+                .status(OrderStatus.PENDING_PAYMENT)
+                .paymentStatus(PaymentStatus.PENDING)
+                .paymentMethod(PaymentMethod.MONNIFY)
+                .currency("NGN")
+                .subtotal(ORDER_TOTAL)
+                .deliveryFee(BigDecimal.ZERO)
+                .total(ORDER_TOTAL)
+                .deliveryContactName("Demo Buyer")
+                .deliveryContactPhone("+2348000000000")
+                .build();
+    }
+
+    /** {@link #successBody} with an explicit amount, for the group total. */
+    private String splitSuccessBody(InitializePaymentResponse checkout, BigDecimal amount) {
+        return """
+                {"eventType":"SUCCESSFUL_TRANSACTION","eventData":{"product":{"type":"WEB_SDK",\
+                "reference":"%s"},"transactionReference":"%s","paymentReference":"%s",\
+                "paidOn":"26/02/2020 09:38:13 AM","amountPaid":%s,"totalPayable":%s,\
+                "paymentStatus":"PAID","paymentMethod":"CARD","currency":"NGN",\
+                "customer":{"email":"buyer@example.com","name":"Demo Buyer"}}}"""
+                .formatted(
+                        checkout.paymentReference(),
+                        checkout.transactionReference(),
+                        checkout.paymentReference(),
+                        amount,
+                        amount);
     }
 
     /**
@@ -625,6 +737,14 @@ class MonnifyPaymentIntegrationTest {
         try {
             Order order = orderRepository.saveAndFlush(Order.builder()
                     .orderNumber(orderNumber)
+                    // NOT NULL since V11: every order names its seller. ProcurePal
+                    // here, which is what these rows have always meant.
+                    .sellerClientId(clientRepository.findByPlatformOwnerTrue().orElseThrow().getId())
+                    // NOT NULL since V12: every order names the checkout it came
+                    // out of. A fixture order is its own checkout - a group of one -
+                    // which is what V12's backfill made every pre-split row and what a
+                    // single-seller basket still produces today.
+                    .checkoutGroupId(UUID.randomUUID())
                     .status(OrderStatus.PENDING_PAYMENT)
                     .paymentStatus(PaymentStatus.PENDING)
                     .paymentMethod(PaymentMethod.MONNIFY)

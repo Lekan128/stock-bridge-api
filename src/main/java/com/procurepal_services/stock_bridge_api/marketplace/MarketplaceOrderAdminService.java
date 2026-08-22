@@ -14,11 +14,14 @@ import com.procurepal_services.stock_bridge_api.order.dto.OrderResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderSummaryResponse;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
+import com.procurepal_services.stock_bridge_api.vendor.VendorGuard;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.LockModeType;
 import jakarta.persistence.PersistenceContext;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -29,23 +32,50 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * ProcurePal's fulfilment queue and customer list.
+ * A SELLER's fulfilment queue and customer list - ProcurePal's, or a vendor's.
  *
  * <h2>The single most likely bug in this module, and what prevents it</h2>
- * {@code orders.client_id} is the BUYER. Under ProcurePal's own tenant filter, every
+ * {@code orders.client_id} is the BUYER. Under the seller's own tenant filter, every
  * query in this class returns zero rows - not an error, just an empty queue that
  * looks like "no orders today". Every read therefore runs inside
- * {@link PlatformOwnerGuard#readAcrossTenants}, which asserts platform ownership,
- * lifts the Hibernate filter and restores it in a finally block. Nothing here calls
+ * {@link VendorGuard#readOwnSales}, which asserts the caller may sell, lifts the
+ * Hibernate filter and restores it in a finally block. Nothing here calls
  * {@code Session.disableFilter} directly, and nothing here should.
+ *
+ * <h2>THE OTHER MOST LIKELY BUG: lifting the filter without replacing it</h2>
+ * {@code readOwnSales} lifts tenant isolation and puts NOTHING in its place. That is
+ * safe only because every query below adds {@code seller_client_id = <me>} by hand.
+ * A single read inside that block without the predicate would hand one vendor every
+ * other vendor's orders - customers, delivery addresses, revenue - which is the worst
+ * failure this feature can produce and would be completely silent. The predicate is
+ * therefore built in exactly one place, {@link MarketplaceOrderSpecifications#forQueue},
+ * which takes the seller id as a REQUIRED first argument rather than an optional
+ * filter, and every mutating path re-resolves its order through
+ * {@link #requireOwnOrder}.
  *
  * <h2>Two gates, not one</h2>
  * The controller carries {@code @PreAuthorize("hasAuthority('MANAGE_MARKETPLACE_ORDERS')")}
- * AND calls {@code requirePlatformOwner()}. The permission alone proves nothing:
- * permissions hang off global roles, so every tenant's OWNER holds it. Note that
- * readAcrossTenants performs the ownership check itself, so the two are not merely
- * belt-and-braces - the escape hatch cannot be opened by a non-operator even if a
- * controller forgets.
+ * AND this service calls {@code requireSeller()}. The permission alone proves nothing,
+ * and proves LESS than it used to: it hangs off global roles, so every tenant's OWNER
+ * holds it - and the VENDOR role now holds it too, by design. The permission answers
+ * "does this person do fulfilment"; the guard answers "for which company"; and the
+ * {@code seller_client_id} predicate answers "which rows are theirs". All three are
+ * required and none is redundant.
+ *
+ * <h2>requireSeller, not requireVendor - and not requirePlatformOwner</h2>
+ * This surface belongs to everyone who sells. Using {@code requireVendor()} would lock
+ * ProcurePal out of its own fulfilment queue; keeping {@code requirePlatformOwner()}
+ * would mean vendors could never see the orders placed with them, which is the entire
+ * point of the module.
+ *
+ * <h2>ProcurePal is not privileged HERE</h2>
+ * Being the platform owner does not widen this queue. ProcurePal sees orders where it
+ * is the seller, exactly as before, and cannot advance a vendor's order through these
+ * endpoints - the predicate is the same predicate. That is deliberate: dispatching
+ * another company's goods is not an operator capability, it is a fulfilment action
+ * that only the party holding the stock can honestly take. An operator override, if
+ * one is ever needed, belongs on a super-admin surface with its own audit trail, not
+ * quietly folded into the normal queue.
  */
 @Service
 @RequiredArgsConstructor
@@ -53,7 +83,7 @@ public class MarketplaceOrderAdminService {
 
     private final OrderRepository orderRepository;
     private final ClientRepository clientRepository;
-    private final PlatformOwnerGuard platformOwnerGuard;
+    private final VendorGuard vendorGuard;
     private final OrderLifecycleService orderLifecycleService;
     private final OrderResponseAssembler orderResponseAssembler;
 
@@ -69,7 +99,7 @@ public class MarketplaceOrderAdminService {
             OffsetDateTime from,
             OffsetDateTime to,
             Pageable pageable) {
-        platformOwnerGuard.requirePlatformOwner();
+        UUID sellerId = vendorGuard.requireSeller().getId();
 
         // Company names live on clients, which Order has no association to (client_id
         // is a raw column, deliberately - see the Order entity). Resolving matching
@@ -83,17 +113,17 @@ public class MarketplaceOrderAdminService {
                         .toList();
 
         Specification<Order> specification = MarketplaceOrderSpecifications.forQueue(
-                status, paymentStatus, clientId, query, matchingClientIds, from, to);
+                sellerId, status, paymentStatus, clientId, query, matchingClientIds, from, to);
 
-        return platformOwnerGuard.readAcrossTenants(() -> orderRepository
+        return vendorGuard.readOwnSales(() -> orderRepository
                 .findAll(specification, pageable)
                 .map(order -> orderResponseAssembler.summary(order, true)));
     }
 
     @Transactional(readOnly = true)
     public OrderResponse get(UUID orderId) {
-        Order order = requireOrder(orderId);
-        return orderResponseAssembler.detail(order, true);
+        UUID sellerId = vendorGuard.requireSeller().getId();
+        return orderResponseAssembler.detail(requireOwnOrder(orderId, sellerId), true);
     }
 
     /**
@@ -112,7 +142,7 @@ public class MarketplaceOrderAdminService {
      */
     @Transactional
     public OrderResponse advanceStatus(UUID orderId, AdvanceOrderStatusRequest request, UUID actingUserId) {
-        Order order = lockOrder(orderId);
+        Order order = lockOwnOrder(orderId);
 
         if (order.getStatus().isBuyerDriven()) {
             throw new InvalidOrderTransitionException(
@@ -133,7 +163,7 @@ public class MarketplaceOrderAdminService {
      */
     @Transactional
     public OrderResponse recordPaymentReceived(UUID orderId, UUID actingUserId) {
-        Order order = lockOrder(orderId);
+        Order order = lockOwnOrder(orderId);
 
         if (order.getPaymentStatus() == PaymentStatus.PAID) {
             // Idempotent: two staff pressing the same button must not double-count
@@ -156,14 +186,71 @@ public class MarketplaceOrderAdminService {
      * projection query that would have to be kept in step with the order state
      * machine, for a screen ops opens a few times a day.
      */
+    /**
+     * The seller's customer list.
+     *
+     * <h2>Who appears depends on who is asking, and deliberately so</h2>
+     * <ul>
+     *   <li><b>A vendor</b> sees only the companies that have actually placed an order
+     *       with THEM. Anything wider would hand a third party the platform's entire
+     *       client list - names, contact emails, phone numbers and payment terms - which
+     *       is a competitor intelligence feed, not a customer list. This is the
+     *       cross-seller leak this module exists to prevent, and it is not hypothetical:
+     *       the previous implementation was a bare {@code clientRepository.findAll()}.</li>
+     *   <li><b>The platform owner</b> keeps exactly the list it had before vendors
+     *       existed: every buying COMPANY on the platform, whether or not they have
+     *       ordered yet. ProcurePal runs the marketplace and legitimately administers
+     *       its tenants, and narrowing this would have silently emptied an operations
+     *       screen that has always shown prospects alongside customers.</li>
+     * </ul>
+     *
+     * <p>Note that VENDOR accounts are excluded from the platform owner's list. That is
+     * what PRESERVES the old behaviour rather than departing from it: before V11 every
+     * clients row was a buying company, so "every client but me" and "every buying
+     * company but me" named the same set. Vendors cannot buy at all, so a vendor in a
+     * customer list would be new noise, not continuity.
+     *
+     * <h2>The aggregates are scoped to the seller for everyone</h2>
+     * Order count, revenue and last-order date are measured over the CALLER's own sales,
+     * including for ProcurePal. That both prevents a vendor's revenue being disclosed
+     * through another seller's screen and preserves ProcurePal's historical numbers
+     * exactly - every order placed before this module existed was ProcurePal's, so
+     * "their orders with me" and "all their orders" agree on every pre-vendor row.
+     *
+     * <h2>M6 re-examined this and left it alone, on purpose</h2>
+     * M6 narrowed every metric on {@code /api/marketplace/admin/analytics/**} to
+     * ProcurePal's own sales, the top-customers RANKING included. This roster was
+     * deliberately not narrowed with it, and the two decisions are consistent rather than
+     * in tension: a ranking is a revenue statement about named companies, so it must be
+     * scoped to the money the reader actually took; a roster is an ops list of who exists
+     * to sell to. Narrowing the roster would delete a working screen - the prospects
+     * ProcurePal has never sold to would vanish - to fix a disclosure problem it does not
+     * have, because the money columns beside each name were already seller-scoped, as the
+     * section above says. See {@code MarketplaceAnalyticsService} for the per-metric ruling
+     * this one is quoted in.
+     */
     @Transactional(readOnly = true)
     public Page<MarketplaceCustomerResponse> customers(String query, Pageable pageable) {
-        platformOwnerGuard.requirePlatformOwner();
+        Client seller = vendorGuard.requireSeller();
+        UUID sellerId = seller.getId();
+        boolean isPlatformOwner = seller.isPlatformOwner();
 
-        return platformOwnerGuard.readAcrossTenants(() -> {
+        return vendorGuard.readOwnSales(() -> {
+            Set<UUID> buyerIds = orderRepository
+                    .findAllBySellerClientIdOrderByCreatedAtDesc(sellerId, Pageable.unpaged())
+                    .stream()
+                    .map(Order::getClientId)
+                    .collect(java.util.stream.Collectors.toSet());
+
             List<Client> matches = clientRepository.findAll().stream()
-                    // The operator is not its own customer.
-                    .filter(client -> !client.isPlatformOwner())
+                    .filter(client -> isPlatformOwner
+                            // Every buying company, as before - but never another
+                            // seller, and never itself.
+                            ? !client.isPlatformOwner() && !client.isVendor()
+                            // A vendor sees only companies that bought from them.
+                            : buyerIds.contains(client.getId()))
+                    // A seller is never its own customer, on either branch.
+                    .filter(client -> !client.getId().equals(sellerId))
                     .filter(client -> query == null
                             || query.isBlank()
                             || matches(client, query.trim().toLowerCase()))
@@ -173,18 +260,37 @@ public class MarketplaceOrderAdminService {
             int from = (int) Math.min(pageable.getOffset(), matches.size());
             int to = Math.min(from + pageable.getPageSize(), matches.size());
             List<MarketplaceCustomerResponse> page =
-                    matches.subList(from, to).stream().map(this::toCustomer).toList();
+                    matches.subList(from, to).stream().map(client -> toCustomer(client, sellerId)).toList();
             return new org.springframework.data.domain.PageImpl<>(page, pageable, matches.size());
         });
     }
 
-    private MarketplaceCustomerResponse toCustomer(Client client) {
-        OffsetDateTime lastOrderAt = orderRepository
-                .findAllByClientIdOrderByCreatedAtDesc(client.getId(), PageRequest.of(0, 1))
+    /**
+     * One customer row, with the aggregates measured against THIS SELLER's orders only.
+     *
+     * <p>The counts and revenue used to be {@code countByClientId} - every order that
+     * buyer ever placed, with anyone. Left alone, a vendor would be shown a buying
+     * company's total spend across the whole marketplace, including with their
+     * competitors. Filtered in memory over the seller's own orders rather than by adding
+     * two more repository methods, because this screen is already documented as an
+     * accepted N+1 over a page of 20 and the seller's order list is loaded once above.
+     */
+    private MarketplaceCustomerResponse toCustomer(Client client, UUID sellerId) {
+        List<Order> ordersWithThisSeller = orderRepository
+                .findAllBySellerClientIdOrderByCreatedAtDesc(sellerId, Pageable.unpaged())
                 .stream()
-                .findFirst()
+                .filter(order -> order.getClientId().equals(client.getId()))
+                .toList();
+
+        OffsetDateTime lastOrderAt = ordersWithThisSeller.stream()
                 .map(Order::getCreatedAt)
+                .max(OffsetDateTime::compareTo)
                 .orElse(null);
+
+        BigDecimal paidRevenue = ordersWithThisSeller.stream()
+                .filter(order -> order.getPaymentStatus() == PaymentStatus.PAID)
+                .map(Order::getTotal)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         return new MarketplaceCustomerResponse(
                 client.getId(),
@@ -194,21 +300,28 @@ public class MarketplaceOrderAdminService {
                 client.getAdminContactEmail(),
                 client.getPaymentTerms(),
                 client.isActive(),
-                orderRepository.countByClientId(client.getId()),
-                orderRepository.sumTotalByClientIdAndPaymentStatus(client.getId(), PaymentStatus.PAID),
+                ordersWithThisSeller.size(),
+                paidRevenue,
                 lastOrderAt,
                 client.getCreatedAt());
     }
 
     /**
-     * Loaded inside readAcrossTenants because the order belongs to a buyer. Note that
-     * a by-id load would technically bypass the tenant filter anyway - it goes through
-     * the guard regardless, so every cross-tenant read in this class is visible in one
-     * place rather than depending on a Hibernate subtlety the next reader has to know.
+     * One order, proven to belong to the CALLING SELLER.
+     *
+     * <p>{@code findByIdAndSellerClientId} rather than {@code findById} plus a check
+     * afterwards: the predicate is in the query, so there is no window in which the
+     * wrong row is in memory and no way for a later edit to drop the comparison. A
+     * vendor asking for another seller's order id gets the same 404 as a nonexistent
+     * one, so this cannot be used to probe which order numbers are real.
+     *
+     * <p>Runs inside readOwnSales because the order belongs to a BUYER, so the seller's
+     * own tenant filter would exclude it. The seller predicate is what replaces that
+     * isolation - see the class javadoc.
      */
-    private Order requireOrder(UUID orderId) {
-        return platformOwnerGuard
-                .readAcrossTenants(() -> orderRepository.findById(orderId))
+    private Order requireOwnOrder(UUID orderId, UUID sellerId) {
+        return vendorGuard
+                .readOwnSales(() -> orderRepository.findByIdAndSellerClientId(orderId, sellerId))
                 .orElseThrow(OrderNotFoundException::new);
     }
 
@@ -223,10 +336,21 @@ public class MarketplaceOrderAdminService {
      * lock is taken - and the load itself is by id, which Hibernate does not apply the
      * tenant filter to, so it reaches the buyer's row the same way requireOrder does.
      */
-    private Order lockOrder(UUID orderId) {
-        platformOwnerGuard.requirePlatformOwner();
+    private Order lockOwnOrder(UUID orderId) {
+        UUID sellerId = vendorGuard.requireSeller().getId();
+        // Ownership BEFORE the lock, and through the seller-scoped finder, so a caller
+        // cannot even take a row lock on another seller's order - let alone read it.
+        requireOwnOrder(orderId, sellerId);
+
         Order order = entityManager.find(Order.class, orderId, LockModeType.PESSIMISTIC_WRITE);
         if (order == null) {
+            throw new OrderNotFoundException();
+        }
+        // Re-checked after the lock, not merely before it. The check above proves the
+        // row was ours a moment ago; this proves it is ours now, on the instance the
+        // mutation is about to be applied to. Cheap, and it closes the gap between the
+        // two loads by hand rather than by argument.
+        if (!sellerId.equals(order.getSellerClientId())) {
             throw new OrderNotFoundException();
         }
         return order;

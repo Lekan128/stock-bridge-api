@@ -92,6 +92,15 @@ app:
     # own admin contact email, which is always a valid destination - this exists
     # for teams who would rather it reached a shared alias.
     operator-address: ${EMAIL_OPERATOR_ADDRESS:}
+    # Where a new vendor waitlist application is announced. Unlike every other
+    # address here this one has a REAL default (support@procurepaddy.com, in
+    # EmailProperties next to the paragraph justifying it) rather than a blank:
+    # a blank From cannot be sent at all, but a blank ops inbox sends perfectly
+    # and reaches nobody, so applications would pile up unread while the
+    # applicant has already been told we are reviewing them. Kept separate from
+    # operator-address above because that one is fulfilment and this one is
+    # partner recruitment - the same inbox today, not for long.
+    vendor-waitlist-address: ${EMAIL_VENDOR_WAITLIST_ADDRESS:}
     # SES's OWN IAM role, separate from the S3 one, assumed from the SAME IAM user
     # keys configured under app.aws above. Optional: blank keeps the previous
     # behaviour exactly, which is that SES borrows whatever credentials S3 uses
@@ -213,6 +222,24 @@ app:
       # and SNS gives up on us after 15 seconds regardless.
       connect-timeout: ${SES_SNS_CONNECT_TIMEOUT:5s}
       read-timeout: ${SES_SNS_READ_TIMEOUT:10s}
+  # The public "apply to sell on ProcurePaddy" form. Both keys are OPTIONAL and
+  # both have working defaults in VendorWaitlistProperties, which is where each is
+  # justified at length - same arrangement as app.email.verification above, and for
+  # the same reason: nothing here gates the feature, and a deploy that never sets
+  # either behaves correctly. They exist so an operator watching somebody pump an
+  # unauthenticated, mail-sending, row-creating endpoint can tighten it without a
+  # release.
+  vendor-waitlist:
+    # How many applications one caller may submit per window. Checked against TWO
+    # keys per submission - the caller's source address and the submitted email -
+    # because the endpoint has no principal to key on. Matches
+    # app.email.verification.resend-limit deliberately: both bound "how many
+    # emails may one party make this server send", and two different numbers for
+    # one question is two numbers to reason about during an incident.
+    submit-limit: ${VENDOR_WAITLIST_SUBMIT_LIMIT:3}
+    # The rolling window the limit above applies over. Rolling, not a calendar
+    # bucket - see VendorWaitlistRateLimiter.
+    submit-window: ${VENDOR_WAITLIST_SUBMIT_WINDOW:1h}
   monnify:
     # Same rationale as app.aws above: unset credentials stay blank rather than
     # failing placeholder resolution, and MonnifyProperties.isConfigured() treats
@@ -248,6 +275,50 @@ app:
       # enough that a dropped webhook is caught while they are still watching.
       pending-payment-grace: ${MONNIFY_PENDING_PAYMENT_GRACE:PT10M}
       abandoned-checkout-grace: ${MONNIFY_ABANDONED_CHECKOUT_GRACE:PT24H}
+  # Vendor settlement (M7): commission, escrow and biweekly payout batches.
+  #
+  # There is only one switch here, and it is the ESCROW RELEASE SWEEP - the job
+  # that accrues a vendor's money when a buyer never confirms receipt. The payout
+  # run itself is not on a timer at all and has nothing to configure: it is an
+  # operator action (POST /api/superadmin/settlement/runs), because no transfer in
+  # this system is automated and a scheduler would only build a queue of payment
+  # instructions nobody had asked for. The biweekly cadence is a constant in
+  # PayoutCadence rather than a property, deliberately: every batch ever created
+  # names its own period, and a deployment able to move the anchor would renumber
+  # the fortnights under documents that have already been sent to vendors.
+  vendor-settlement:
+    escrow-release:
+      # OFF by default, unlike app.monnify.reconciliation which is on. The
+      # asymmetry is deliberate: that one is a repair job and it is dangerous NOT
+      # to run it, whereas this one WRITES MONEY ROWS, and the right default for
+      # that is "somebody turned it on". Disabling it removes this module's
+      # @EnableScheduling - see VendorSettlementSchedulingConfig, which is separate
+      # from PaymentSchedulingConfig so the two jobs do not share an off switch.
+      #
+      # Nothing is lost while it is off: the same sweep is reachable on demand at
+      # POST /api/superadmin/settlement/escrow/release, and money only waits, it
+      # never disappears - the sweep dates each accrual to the moment escrow
+      # actually matured rather than to when it ran.
+      enabled: ${VENDOR_ESCROW_RELEASE_ENABLED:false}
+      interval: ${VENDOR_ESCROW_RELEASE_INTERVAL:PT1H}
+    # THE ESCROW HOLD (M9) IS DELIBERATELY NOT A PROPERTY, and its absence here is
+    # the note worth reading. "How many days after a buyer confirms before a
+    # vendor's money can be paid" lives in the single-row vendor_settlement_settings
+    # table, defaulting to 7, changed only by a super admin who re-enters their
+    # password and explicitly acknowledges the consequence, at
+    # PUT /api/superadmin/settlement/settings/escrow-hold - every change audited and
+    # emailed to all super admins.
+    #
+    # A property was considered and is insufficient on its own terms: it needs a
+    # deploy to change, cannot record WHO changed it, and has nowhere to hang the
+    # audit trail the first payment dispute will need. Nor is there a property that
+    # can override the row, because two sources of truth for a money rule is how
+    # they come to disagree - so if you are looking for VENDOR_ESCROW_HOLD_DAYS,
+    # there is none, and that is the answer rather than an omission.
+    #
+    # Note also that a change applies to FUTURE accruals only: the hold is stamped
+    # onto each ledger entry when it accrues, on an append-only row, so money a
+    # buyer has already confirmed keeps the terms it was confirmed under.
   # Optional: the super admin bootstrap only runs (once) when BOTH resolve to a
   # non-blank value, and it is the bean condition on SuperAdminBootstrapRunner
   # that decides - unset means the runner is never even instantiated, so an

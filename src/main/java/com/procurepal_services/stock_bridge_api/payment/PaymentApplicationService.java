@@ -48,6 +48,21 @@ import org.springframework.transaction.annotation.Transactional;
  * The check-then-act is safe only because the lock is taken first. Reading the
  * payment without the lock and then updating it would let two threads both
  * observe PENDING and both apply.
+ *
+ * <h2>One payment can settle several orders, and idempotency is unchanged by that</h2>
+ * A multi-seller basket becomes one order per seller (V12) but is paid for once, so
+ * this may settle N orders. The guard above did NOT have to change to accommodate
+ * that, which is the reason the design was chosen: there is still exactly one
+ * {@code payments} row per attempt, so there is still exactly one row to lock and one
+ * final status to re-check. The fan-out happens on the other side of
+ * {@link OrderPaymentApplication#applyPaymentSuccess}, inside this transaction - so
+ * all N orders and the payment row commit together or not at all, and a replayed
+ * webhook stops at {@code ALREADY_FINAL} before reaching any of them.
+ *
+ * <p>The AMOUNT is checked against the whole group's total, obtained from
+ * {@link OrderPaymentApplication#loadPaymentContext}. Checking against the anchor
+ * order's total alone would accept a payment covering one seller's share of a
+ * three-seller basket and then fulfil all three.
  */
 @Service
 @RequiredArgsConstructor
@@ -84,6 +99,7 @@ public class PaymentApplicationService {
             return PaymentApplicationOutcome.ALREADY_FINAL;
         }
 
+        // The ANCHOR order - the payment covers its whole checkout group. See Payment.
         Order order = payment.getOrder();
 
         if (status.indicatesMoneyReceived()) {
@@ -113,16 +129,22 @@ public class PaymentApplicationService {
             return PaymentApplicationOutcome.UNVERIFIABLE_AMOUNT;
         }
 
+        // What this payment actually owes: the sum across every order in the anchor's
+        // checkout group, not the anchor's own total. For a single-seller basket the
+        // two are identical, which is why nothing about this path changed for
+        // ProcurePal's existing orders.
+        BigDecimal amountDue = amountDueFor(order);
+
         // compareTo, not equals: BigDecimal.equals("100.00", "100.0") is false
         // because it compares scale as well as value, which would reject a perfectly
         // good payment purely over trailing-zero formatting.
-        int comparison = amountPaid.compareTo(order.getTotal());
+        int comparison = amountPaid.compareTo(amountDue);
 
         if (comparison < 0) {
             // Underpayment is not payment. Recorded in full, flagged, not fulfilled.
-            log.error("UNDERPAYMENT on paymentReference={} order={}: paid {} against a total of {} - "
+            log.error("UNDERPAYMENT on paymentReference={} order={}: paid {} against a checkout total of {} - "
                             + "recording as FAILED and NOT fulfilling",
-                    payment.getPaymentReference(), order.getOrderNumber(), amountPaid, order.getTotal());
+                    payment.getPaymentReference(), order.getOrderNumber(), amountPaid, amountDue);
 
             recordProviderFacts(payment, status, source);
             payment.setStatus(PaymentProviderStatus.FAILED);
@@ -131,7 +153,7 @@ public class PaymentApplicationService {
             orderPaymentApplication.applyPaymentFailure(
                     order.getId(),
                     payment.getPaymentReference(),
-                    "Underpaid: received " + amountPaid + " against a total of " + order.getTotal());
+                    "Underpaid: received " + amountPaid + " against a total of " + amountDue);
             return PaymentApplicationOutcome.UNDERPAID;
         }
 
@@ -142,9 +164,9 @@ public class PaymentApplicationService {
             // which is strictly worse than fulfilling and reconciling the difference
             // manually. Logged at warn so finance sees it. Flagged in the report as a
             // deliberate deviation.
-            log.warn("OVERPAYMENT on paymentReference={} order={}: paid {} against a total of {} - fulfilling "
-                            + "and flagging for manual reconciliation",
-                    payment.getPaymentReference(), order.getOrderNumber(), amountPaid, order.getTotal());
+            log.warn("OVERPAYMENT on paymentReference={} order={}: paid {} against a checkout total of {} - "
+                            + "fulfilling and flagging for manual reconciliation",
+                    payment.getPaymentReference(), order.getOrderNumber(), amountPaid, amountDue);
         }
 
         recordProviderFacts(payment, status, source);
@@ -170,6 +192,26 @@ public class PaymentApplicationService {
                         source));
 
         return PaymentApplicationOutcome.APPLIED_PAID;
+    }
+
+    /**
+     * The total across the anchor order's whole checkout group.
+     *
+     * <p>Asked of the order module rather than computed here: what a checkout group is,
+     * and which orders are in one, is the order module's business - the payment module
+     * holds a {@code payments.order_id} and nothing else. Falls back to the anchor's own
+     * total if the context cannot be loaded, which is the pre-split behaviour and the
+     * conservative direction (it can only ever make the amount check STRICTER for a
+     * single order, never laxer for a group).
+     */
+    private BigDecimal amountDueFor(Order order) {
+        try {
+            return orderPaymentApplication.loadPaymentContext(order.getId()).total();
+        } catch (RuntimeException e) {
+            log.error("Could not load the checkout context for order {} - falling back to its own total",
+                    order.getOrderNumber(), e);
+            return order.getTotal();
+        }
     }
 
     private PaymentApplicationOutcome applyFailure(

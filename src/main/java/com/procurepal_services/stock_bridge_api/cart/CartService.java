@@ -6,8 +6,10 @@ import com.procurepal_services.stock_bridge_api.cart.dto.CartResponse;
 import com.procurepal_services.stock_bridge_api.cart.dto.MergeCartRequest;
 import com.procurepal_services.stock_bridge_api.entity.Cart;
 import com.procurepal_services.stock_bridge_api.entity.CartItem;
+import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.marketplace.BuyerCatalogLookup;
+import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.order.CatalogStockService;
 import com.procurepal_services.stock_bridge_api.repository.CartItemRepository;
 import com.procurepal_services.stock_bridge_api.repository.CartRepository;
@@ -48,6 +50,7 @@ public class CartService {
     private final UserRepository userRepository;
     private final BuyerCatalogLookup buyerCatalogLookup;
     private final CatalogStockService catalogStockService;
+    private final SellerDirectory sellerDirectory;
 
     @Transactional
     public CartResponse getCart() {
@@ -226,12 +229,18 @@ public class CartService {
         List<CartItem> items = cartItemRepository.findAllByCartIdOrderByCreatedAtAsc(cart.getId());
         Map<UUID, Product> catalog = buyerCatalogLookup.findAllByIds(
                 items.stream().map(CartItem::getProductId).toList());
+        // One lookup for the whole cart rather than one per line: the seller list is a
+        // handful of rows and every line resolves against the same map.
+        Map<UUID, Client> sellers = sellerDirectory.activeSellersById();
 
         List<CartItemResponse> lines = new ArrayList<>(items.size());
         for (CartItem item : items) {
             Product product = catalog.get(item.getProductId());
             lines.add(CartItemResponse.of(
-                    item, product, product == null ? 0 : catalogStockService.availableToSell(product)));
+                    item,
+                    product,
+                    product == null ? 0 : catalogStockService.availableToSell(product),
+                    product == null ? null : sellers.get(product.getClientId())));
         }
         return CartResponse.of(cart.getId(), lines, cart.getUpdatedAt());
     }

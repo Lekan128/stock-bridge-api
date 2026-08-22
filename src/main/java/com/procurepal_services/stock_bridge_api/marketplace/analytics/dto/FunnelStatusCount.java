@@ -4,7 +4,7 @@ import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import java.math.BigDecimal;
 
 /**
- * Current-status census of the orders dated in the window.
+ * Current-status census of the orders PROCUREPAL SOLD that are dated in the window.
  *
  * @param orderValue sum of total, INCLUDING the CANCELLED and PENDING_PAYMENT rows -
  *     which is the one place in this module those two are given a naira figure, because

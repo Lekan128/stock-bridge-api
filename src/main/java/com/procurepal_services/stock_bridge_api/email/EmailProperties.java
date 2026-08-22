@@ -26,7 +26,49 @@ public record EmailProperties(
         String replyToAddress,
         String configurationSet,
         String appBaseUrl,
-        String operatorAddress) {
+        String operatorAddress,
+        String vendorWaitlistAddress) {
+
+    /**
+     * Where a new vendor waitlist application is announced. ProcurePaddy's support
+     * inbox, and a real default rather than a blank one - which is the opposite of
+     * the rule {@link #fromAddress} follows, so the difference is worth stating.
+     *
+     * <p>A blank From is a send that cannot be attempted, so guessing one would
+     * turn a local misconfiguration into a remote failure. A blank ops inbox is
+     * different in kind: the mail can be sent perfectly well, it just would not
+     * reach anybody, and the failure is silent - applications pile up in a table
+     * nobody is watching while the applicant has already been told we are
+     * reviewing them. There is exactly one right answer for a deploy that never
+     * thinks about this (the address on the marketing site), so it is the default,
+     * on the same reasoning {@code EmailVerificationProperties} gives for keeping
+     * its three defaults in code rather than in a YAML comment nobody reads.
+     *
+     * <p>Set {@code EMAIL_VENDOR_WAITLIST_ADDRESS} to redirect it. Deliberately
+     * NOT folded into {@link #operatorAddress}: that one is copied on order and
+     * payment mail and belongs to whoever runs fulfilment, whereas this is
+     * partner recruitment. They are the same inbox at ProcurePaddy's current size
+     * and will not stay that way, and splitting them later would mean finding
+     * every send site again.
+     */
+    private static final String DEFAULT_VENDOR_WAITLIST_ADDRESS = "support@procurepaddy.com";
+
+    /**
+     * Falls the vendor-waitlist inbox back to its default. A compact constructor
+     * rather than a {@code :default} in application.yml so the value sits next to
+     * the paragraph above explaining it, and so an environment variable that is
+     * present but empty - which is how a blank line in a {@code .env} file arrives
+     * - is treated as "unset" rather than as "send this nowhere".
+     *
+     * <p>Nothing else is defaulted here on purpose. Every other component is
+     * either part of {@link #isConfigured()}, where a made-up value would hide a
+     * broken deploy, or a refinement whose absence is already correct.
+     */
+    public EmailProperties {
+        vendorWaitlistAddress = notBlank(vendorWaitlistAddress)
+                ? vendorWaitlistAddress.trim()
+                : DEFAULT_VENDOR_WAITLIST_ADDRESS;
+    }
 
     /**
      * Both conditions matter, and they fail for different reasons.
@@ -43,9 +85,9 @@ public record EmailProperties(
      * instead of an error is what lets the whole application run locally with no
      * AWS account at all.
      *
-     * <p>configurationSet, replyToAddress, fromName and operatorAddress are
-     * deliberately excluded: each is a refinement of a message that would send
-     * correctly without it.
+     * <p>configurationSet, replyToAddress, fromName, operatorAddress and
+     * vendorWaitlistAddress are deliberately excluded: each is a refinement of a
+     * message that would send correctly without it.
      */
     public boolean isConfigured() {
         return enabled && notBlank(fromAddress);

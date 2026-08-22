@@ -1,0 +1,37 @@
+-- Marks the seeded demo products as approved for listing.
+--
+-- WHY THIS IS A NEW FILE RATHER THAN AN EDIT TO V9000/V9001
+-- Exactly V9002's reason, which is worth reading in full: those two have already
+-- run on every existing local and docker database, and Flyway validates an
+-- applied migration by checksum. Editing either would fail startup for every
+-- developer whose database predates the change, with an error about a checksum
+-- mismatch that has nothing to do with what they were doing.
+--
+-- WHY IT IS NEEDED AT ALL
+-- V11 added products.approval_status with DEFAULT 'PENDING' and backfilled
+-- 'APPROVED' for the rows that existed when it ran. Both halves of that are
+-- deliberate - the default fails closed because the failure it exists to prevent
+-- is an unmoderated vendor listing becoming a real company's purchase order, and
+-- the backfill is simply true of rows that predate third-party selling. But the
+-- combination makes the DEMO data land differently depending on the age of the
+-- database, in precisely the way V9002 describes for email verification:
+--
+--   * A database seeded BEFORE V11 (any developer already running the project)
+--     had its demo catalogue caught by the backfill and is APPROVED.
+--   * A FRESH database - `docker compose down -v`, a new machine, CI - applies
+--     V1..V11 first and only then the V9000-series seeds, so the demo products
+--     are inserted after the column exists and take its DEFAULT of 'PENDING'.
+--
+-- The V11 header states that both orderings must produce the same rows, and
+-- without this file they do not. The symptom would also be a quiet one rather
+-- than an error: nothing reads approval_status today, so the divergence is
+-- invisible until the product-moderation module lands - at which point a freshly
+-- seeded ProcurePal storefront renders an empty catalogue, on a database where
+-- every other developer's works, and the cause is three migrations away from the
+-- code that surfaced it.
+--
+-- Unconditional and idempotent: on a pre-V11 database every row is already
+-- APPROVED and this changes nothing, and on a fresh one it approves exactly the
+-- rows the seed just inserted. Scoped to db/seed, which production never loads,
+-- so it can never approve a real vendor's product.
+UPDATE products SET approval_status = 'APPROVED' WHERE approval_status <> 'APPROVED';

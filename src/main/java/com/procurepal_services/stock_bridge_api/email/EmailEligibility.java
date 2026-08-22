@@ -54,9 +54,9 @@ import org.springframework.stereotype.Component;
  *   <li><strong>A client's {@code admin_contact_email} owns it.</strong> Eligible
  *       for TRANSACTIONAL, never for PROMOTIONAL. This is the interesting case and
  *       it has its own section below.</li>
- *   <li><strong>The configured operator address.</strong> {@code
- *       app.email.operator-address} is eligible for TRANSACTIONAL, never for
- *       PROMOTIONAL.</li>
+ *   <li><strong>A configured operator address.</strong> {@code
+ *       app.email.operator-address} and {@code app.email.vendor-waitlist-address}
+ *       are eligible for TRANSACTIONAL, never for PROMOTIONAL.</li>
  *   <li><strong>Anything else is ineligible</strong>, for every gated kind.</li>
  * </ol>
  *
@@ -387,8 +387,16 @@ public class EmailEligibility {
             return true;
         }
 
-        // Rule 6: the operator alias from configuration.
-        if (address.equals(normalize(emailProperties.operatorAddress()))) {
+        // Rule 6: an operator alias from configuration. Two of them now - the
+        // fulfilment inbox copied on order and payment mail, and the vendor
+        // waitlist inbox that new applications are announced to. Neither has a
+        // users row or a clients row, so without this they would fall through to
+        // rule 7 and ProcurePal would silently stop mailing itself. The waitlist
+        // one matters more than it looks: it always has a value (see
+        // EmailProperties), so omitting it here would drop every application
+        // notification on every deploy rather than only on a misconfigured one.
+        if (address.equals(normalize(emailProperties.operatorAddress()))
+                || address.equals(normalize(emailProperties.vendorWaitlistAddress()))) {
             return true;
         }
 

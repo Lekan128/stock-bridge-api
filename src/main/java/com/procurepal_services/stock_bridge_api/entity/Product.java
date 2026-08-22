@@ -3,6 +3,8 @@ package com.procurepal_services.stock_bridge_api.entity;
 import com.procurepal_services.stock_bridge_api.tenant.TenantAwareEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -79,11 +81,20 @@ public class Product extends TenantAwareEntity {
     private ProductCategory category;
 
     /**
-     * Listed on the public marketplace catalog. Only ever true on the PLATFORM
-     * OWNER's products - a CHECK constraint cannot express that (it needs a join
-     * to clients.is_platform_owner), so it is enforced by the listing endpoint's
-     * platform-owner guard and, defensively, by every public catalog query also
-     * filtering on the platform owner's client_id.
+     * Listed on the public marketplace catalog.
+     *
+     * <p>Only ever true on the products of a client that may SELL - since V11 that
+     * means the platform owner OR any {@link Client} with
+     * {@link ClientType#VENDOR}, not the platform owner alone as it did before. A
+     * CHECK constraint still cannot express it (it needs a join to clients), so it
+     * is enforced by the listing endpoint's guards - {@code PlatformOwnerGuard}
+     * and {@code VendorGuard}, whose {@code requireSeller()} is exactly this
+     * question - and defensively by catalog queries filtering on a seller's
+     * client_id rather than trusting this flag alone.
+     *
+     * <p>Note what changed for readers: a listed product's client_id is no longer
+     * a synonym for "the platform owner". Code that used the two
+     * interchangeably - and there was no reason not to before V11 - is now wrong.
      */
     @Column(name = "is_marketplace_listed", nullable = false)
     private boolean marketplaceListed;
@@ -131,6 +142,75 @@ public class Product extends TenantAwareEntity {
      */
     @Column(name = "source_product_id")
     private UUID sourceProductId;
+
+    /**
+     * Which supplier this inventory item came from, as an entry in THIS company's
+     * own vendor directory. Set automatically to the VERIFIED entry for the seller
+     * when goods arrive from a marketplace order, and settable by hand to an
+     * EXTERNAL entry for stock sourced off-platform. It is what makes "last
+     * purchase price" and "purchase history per vendor" answerable from the
+     * buyer's own catalog.
+     *
+     * <p>Unlike {@link #sourceProductId} this IS a mapped association, and the
+     * difference is the reason: sourceProductId points at the SELLER's product row
+     * and therefore crosses tenants, where a filtered association would be hidden
+     * from under the caller. A CompanyVendor belongs to the same tenant as the
+     * product referencing it, by construction, so navigating it is safe - the same
+     * case as DeliveryAddress.branch.
+     *
+     * <p>Nullable, and permanently so: most inventory rows have no supplier
+     * attached, and a product whose supplier was removed from the directory is
+     * still a product.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "company_vendor_id")
+    private CompanyVendor companyVendor;
+
+    /**
+     * Where this product stands with listing moderation.
+     *
+     * <h2>What reads it</h2>
+     * V11 added the column ahead of any code touching it, so that retrofitting
+     * moderation onto a live third-party catalogue would never be necessary. The
+     * workflow has since landed: {@code marketplace.moderation} owns the super
+     * admin's review queue and the approve/reject decisions,
+     * {@code ProductManagementService} stamps it at creation and returns an
+     * APPROVED listing to PENDING when its identity fields change (which is also
+     * the resubmission path), {@code MarketplaceProductSpecifications.listedBy}
+     * requires APPROVED before a row reaches the public catalogue, and
+     * {@code AdminCatalogProductResponse} publishes it so a seller can see why a
+     * listing they switched on is still invisible.
+     *
+     * <p>Defaults to PENDING - fail closed, because the failure this exists to
+     * prevent is an unmoderated vendor listing becoming a real company's purchase
+     * order. Every row that predates V11 was backfilled to APPROVED. See
+     * {@link ProductApprovalStatus} for why a buying company's own inventory rows
+     * being PENDING is noise rather than a bug.
+     */
+    @Builder.Default
+    @Enumerated(EnumType.STRING)
+    @Column(name = "approval_status", nullable = false, length = 20)
+    private ProductApprovalStatus approvalStatus = ProductApprovalStatus.PENDING;
+
+    /**
+     * Why a reviewer refused this listing, shown to the vendor so they can fix it
+     * and resubmit. Kept after a later approval rather than cleared: the history of
+     * a contested listing is the first thing anyone asks for when it is disputed.
+     */
+    @Column(name = "rejection_reason", length = 1000)
+    private String rejectionReason;
+
+    @Column(name = "reviewed_at")
+    private OffsetDateTime reviewedAt;
+
+    /**
+     * The {@code super_admins} row that decided - not a {@code users} row.
+     * Moderating a listing is a platform-operator action, and super admins are an
+     * entirely separate identity from tenant users. A raw UUID for the same reason
+     * {@link #sourceProductId} is one: it points outside this tenant.
+     */
+    @Column(name = "reviewed_by")
+    private UUID reviewedBy;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

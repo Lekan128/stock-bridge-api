@@ -6,18 +6,14 @@ import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
 import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
 import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
-import com.procurepal_services.stock_bridge_api.entity.Branch;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
-import com.procurepal_services.stock_bridge_api.repository.BranchRepository;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.user.TenantRoles;
-import java.util.Locale;
-import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -38,13 +34,15 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class ClientSignupService {
 
-    /** The one branch every client starts with. Also the name V6's backfill uses, deliberately. */
-    private static final String DEFAULT_BRANCH_NAME = "Head Office";
-
     private final ClientRepository clientRepository;
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
-    private final BranchRepository branchRepository;
+    /**
+     * Slug derivation and the default branch, shared with the super-admin vendor
+     * creation path so the two cannot produce differently-shaped clients. See
+     * {@link ClientProvisioning} for what it deliberately does NOT share.
+     */
+    private final ClientProvisioning clientProvisioning;
     private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
     private final EmailNotificationService emailNotificationService;
@@ -56,10 +54,7 @@ public class ClientSignupService {
             throw new PasswordMismatchException();
         }
 
-        String slug = resolveSlug(request);
-        if (clientRepository.findBySlug(slug).isPresent()) {
-            throw new ClientIdentifierTakenException(slug);
-        }
+        String slug = clientProvisioning.requireAvailableSlug(request.clientIdentifier(), request.name());
 
         Role ownerRole = roleRepository.findByName(TenantRoles.OWNER)
                 .orElseThrow(() -> new IllegalStateException("OWNER role not seeded - run the Flyway migrations"));
@@ -89,11 +84,7 @@ public class ClientSignupService {
             // one-default-per-client index means a lazy race could fail in a place
             // that has nothing to do with branches. V6__marketplace.sql does the
             // equivalent backfill for clients created before this existed.
-            branchRepository.save(Branch.builder()
-                    .name(DEFAULT_BRANCH_NAME)
-                    .defaultBranch(true)
-                    .active(true)
-                    .build());
+            clientProvisioning.createDefaultBranch();
 
             ownerUser = userRepository.save(User.builder()
                     .username(request.adminEmail())
@@ -149,13 +140,6 @@ public class ClientSignupService {
         return authService.issueLoginResponse(ownerUser, client);
     }
 
-    private String resolveSlug(ClientSignupRequest request) {
-        String source = (request.clientIdentifier() != null && !request.clientIdentifier().isBlank())
-                ? request.clientIdentifier()
-                : request.name();
-        return slugify(source);
-    }
-
     /** Blank is how a form says "empty"; the database should say NULL. */
     private String normalize(String value) {
         if (value == null) {
@@ -163,12 +147,5 @@ public class ClientSignupService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    private String slugify(String input) {
-        String normalized = input.trim().toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]+", "-")
-                .replaceAll("^-+|-+$", "");
-        return normalized.isBlank() ? "client-" + UUID.randomUUID() : normalized;
     }
 }

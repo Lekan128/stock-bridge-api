@@ -81,4 +81,44 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT p FROM Product p WHERE p.id = :id")
     Optional<Product> findByIdForUpdate(@Param("id") UUID id);
+
+    // ------------------------------------------------------------------------
+    // The buyer-side vendor directory (M5).
+    //
+    // products.company_vendor_id and the product both belong to the same tenant
+    // by construction, so these are ordinary in-tenant reads - no guard, no
+    // filter lifting. The explicit clientId predicate is here for the usual
+    // reason: it holds even if the Hibernate filter is ever left disabled.
+    //
+    // V11 deliberately added no finders for this column. These are the ones the
+    // vendor detail screen and product<->vendor linking actually use, added at
+    // the point of use rather than speculatively.
+    // ------------------------------------------------------------------------
+
+    /**
+     * "What we buy from this supplier" - the products a company has filed under one
+     * directory entry, alphabetical, which is the order the vendor detail screen
+     * renders them in.
+     */
+    List<Product> findAllByClientIdAndCompanyVendorIdAndActiveTrueOrderByNameAsc(UUID clientId, UUID companyVendorId);
+
+    /**
+     * How many products would lose their supplier link if this vendor row went
+     * away. Read before deactivating one, so the confirmation can say what the
+     * consequence is instead of asking the buyer to guess.
+     */
+    long countByClientIdAndCompanyVendorIdAndActiveTrue(UUID clientId, UUID companyVendorId);
+
+    /**
+     * A seller's whole live catalogue, alphabetical - the population behind the
+     * vendor stock-out report.
+     *
+     * <p>Inactive rows are excluded because a deactivated product is not a
+     * stock-out, it is a withdrawn product, and reporting it would bury the ones the
+     * seller can still do something about. Not paged: the caller has to compute
+     * available-to-sell for every row (one batched commitment query over the whole
+     * set) before it knows which rows qualify, so a page boundary applied before
+     * that filter would be a page of the wrong things.
+     */
+    List<Product> findAllByClientIdAndActiveTrueOrderByNameAsc(UUID clientId);
 }

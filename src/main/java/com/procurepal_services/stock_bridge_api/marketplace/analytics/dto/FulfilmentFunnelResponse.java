@@ -5,9 +5,17 @@ import java.util.List;
 /**
  * Where orders are, how many got through, and how long each hop took.
  *
- * Three views of the same population - every order DATED in the window, including
- * cancelled and never-paid ones, because a funnel that hides its drop-outs is not a
- * funnel:
+ * Three views of the same population - every order PROCUREPAL SOLD that is dated in the
+ * window, including cancelled and never-paid ones, because a funnel that hides its
+ * drop-outs is not a funnel.
+ *
+ * <p>Seller-scoped since M6, and it has to be: this is the report on ProcurePal's own
+ * fulfilment queue, which has been seller-scoped since V11
+ * ({@code MarketplaceOrderAdminService}). A funnel counting more orders than the queue it
+ * describes would put two different numbers for "awaiting dispatch" on two screens of the
+ * same app - and a third party's dispatch time is not something ProcurePal's operations
+ * can act on, so averaging it in hides the bottleneck this chart exists to find.
+ *
  *
  * <ul>
  *   <li>{@code statusCounts} - where those orders sit RIGHT NOW. One row per

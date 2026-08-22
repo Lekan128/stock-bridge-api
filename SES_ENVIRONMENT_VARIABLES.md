@@ -75,6 +75,28 @@ Blank is fine: operator mail already goes to the platform-owner tenant's own `ad
 Set it if you would rather it reached a shared alias like `ops@yourdomain.com`. **In the sandbox
 this address must be verified too**, or those sends fail.
 
+### `EMAIL_VENDOR_WAITLIST_ADDRESS`
+Default **`support@procurepaddy.com`** — the only address in this file with a real default rather
+than a blank. Where a new vendor waitlist application is announced, carrying the business name,
+email, phone, address, notes and submitted-at that a reviewer needs to research the applicant,
+plus a link into `/admin/vendor-waitlist`.
+
+Why this one has a default when `EMAIL_FROM_ADDRESS` deliberately does not: a blank From is a send
+that *cannot be attempted*, so a guessed value would turn a local misconfiguration into a remote
+failure. A blank ops inbox is a different kind of wrong — the mail sends perfectly well and reaches
+nobody. Applications would pile up unread in `vendor_waitlist_applications` while every applicant
+has already been emailed "we are reviewing your application", and nothing would log an error. A
+silent failure is the worse of the two, so this one guesses.
+
+Kept separate from `EMAIL_OPERATOR_ADDRESS` on purpose: that one is fulfilment (new orders,
+payments received) and belongs to whoever runs it; this is partner recruitment. They are the same
+inbox at ProcurePaddy's current size and will not stay that way, and splitting them later would
+mean finding every send site again.
+
+Set it to redirect applications to a different alias. **In the sandbox this address must be
+verified too**, or those sends fail — and note that the default points at a `procurepaddy.com`
+mailbox, so a fork or a non-production AWS account almost certainly needs to override it.
+
 ---
 
 ## Group 2 — The SES IAM role

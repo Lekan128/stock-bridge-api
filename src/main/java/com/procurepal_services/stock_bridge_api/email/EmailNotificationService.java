@@ -3,13 +3,17 @@ package com.procurepal_services.stock_bridge_api.email;
 import com.procurepal_services.stock_bridge_api.email.template.AccountEmails;
 import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.email.template.OrderEmails;
+import com.procurepal_services.stock_bridge_api.email.template.SettlementEmails;
+import com.procurepal_services.stock_bridge_api.email.template.VendorEmails;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Order;
 import com.procurepal_services.stock_bridge_api.entity.OrderItem;
 import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.User;
+import com.procurepal_services.stock_bridge_api.entity.VendorWaitlistApplication;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -157,6 +161,79 @@ public class EmailNotificationService {
                 recipients.forClient(client.getId()), client.getName(), client.isActive(), baseUrl()));
     }
 
+    // ------------------------------------------------------------------------
+    // Vendor waitlist. Four messages, three of which go to somebody who has no
+    // account and may never have one - see VendorEmails for why that decides
+    // their EmailKind, and why getting it wrong means silence rather than an
+    // error anybody would notice.
+    // ------------------------------------------------------------------------
+
+    /**
+     * To ProcurePal: a business has applied to sell. One argument rather than the
+     * nine fields the template needs, because this one is called from a public
+     * endpoint where the entity has just been saved and is certainly attached - and
+     * because a nine-argument call at the dispatch site is where a field gets
+     * transposed with the one beside it.
+     */
+    public void vendorApplicationReceivedForOperator(VendorWaitlistApplication application) {
+        dispatcher.dispatchQuietly(() -> VendorEmails.newApplicationForOperator(
+                recipients.forVendorWaitlist(),
+                application.getBusinessName(),
+                application.getEmail(),
+                application.getContactPhone(),
+                application.getAddressLine1(),
+                application.getAddressLine2(),
+                application.getCity(),
+                application.getState(),
+                application.getNotes(),
+                application.getCreatedAt(),
+                baseUrl()));
+    }
+
+    /**
+     * To the applicant: we have it.
+     *
+     * <p>Note what the recipient list is - {@code List.of(application.getEmail())},
+     * built here rather than by an {@code EmailRecipients} method. That class
+     * resolves audiences from rows the platform owns (a client's contact of record,
+     * a user's address); an applicant's address is neither, it is a string a
+     * stranger typed into a public form thirty seconds ago. Giving it a method
+     * there would imply a lookup that does not exist. {@link EmailMessage}'s own
+     * plausibility filter is what stops a malformed one reaching SES.
+     */
+    public void vendorApplicationReceivedForApplicant(VendorWaitlistApplication application) {
+        dispatcher.dispatchQuietly(() -> VendorEmails.applicationReceived(
+                List.of(application.getEmail()), application.getBusinessName()));
+    }
+
+    /**
+     * To the applicant: approved, and here is the account.
+     *
+     * <p>{@code link} is nullable on exactly the terms {@link #welcomeNewClient}
+     * describes - null means no link could be issued (no plausible address, no
+     * configured base URL) and renders the approval without a confirm block rather
+     * than failing.
+     */
+    public void vendorApplicationApproved(
+            VendorWaitlistApplication application, Client vendor, User vendorUser, VerificationLink link) {
+        dispatcher.dispatchQuietly(() -> VendorEmails.applicationApproved(
+                List.of(application.getEmail()),
+                vendor.getName(),
+                vendorUser.getUsername(),
+                application.getReviewNote(),
+                baseUrl(),
+                urlOf(link),
+                expiresInOf(link)));
+    }
+
+    /** To the applicant: not this time, and the reviewer's note is the reason. */
+    public void vendorApplicationRejected(VendorWaitlistApplication application) {
+        dispatcher.dispatchQuietly(() -> VendorEmails.applicationRejected(
+                List.of(application.getEmail()),
+                application.getBusinessName(),
+                application.getReviewNote()));
+    }
+
     private List<OrderItem> itemsOf(Order order) {
         return orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(order.getId());
     }
@@ -166,6 +243,46 @@ public class EmailNotificationService {
      * to the same wording OrderLifecycleService uses for the bell, so the two
      * channels do not describe one deleted client differently.
      */
+    /**
+     * To every super admin: a super admin changed the vendor escrow hold (M9).
+     *
+     * <p>Fire-and-forget like everything else here, and that property is
+     * load-bearing rather than incidental on this one: the caller has already
+     * written the settings row and its audit row, and a failing email must not
+     * unwind a money-policy change that has been made and recorded. See
+     * {@code VendorSettlementSettingsService}, which additionally wraps this call -
+     * belt and braces on top of this class's own never-throws contract, because the
+     * cost of being wrong here is a rolled-back audit trail.
+     *
+     * <p>Recipients come from {@code EmailRecipients.forSuperAdmins()} INSIDE the
+     * supplier, not outside it. That is the convention every method in this class
+     * follows and it matters: {@code dispatchQuietly} only absorbs what happens
+     * within the lambda, so a recipient lookup evaluated eagerly as an argument
+     * would throw past it.
+     *
+     * @param changedByUsername the actor, already resolved by the caller - not read
+     *     from a principal here, because this class is handed values rather than
+     *     identities and because the caller has just written the same string onto
+     *     the audit row it must agree with.
+     */
+    public void escrowHoldChanged(
+            int previousHoldDays,
+            int newHoldDays,
+            String changedByUsername,
+            OffsetDateTime changedAt,
+            String reason,
+            int payoutPeriodDays) {
+        dispatcher.dispatchQuietly(() -> SettlementEmails.escrowHoldChanged(
+                recipients.forSuperAdmins(),
+                previousHoldDays,
+                newHoldDays,
+                changedByUsername,
+                changedAt,
+                reason,
+                payoutPeriodDays,
+                baseUrl()));
+    }
+
     private String buyerNameOf(Order order) {
         return clientRepository.findById(order.getClientId())
                 .map(Client::getName)

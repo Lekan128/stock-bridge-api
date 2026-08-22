@@ -74,7 +74,7 @@ class ProductManagementIntegrationTest {
         when(s3ImageService.uploadProductImage(any())).thenReturn(UploadResult.success("https://cdn.example.com/x.jpg"));
 
         ResponseEntity<ProductResponse> response = createProduct(
-                admin, new CreateProductRequest("Widget", "WID-1", "A widget", new BigDecimal("9.99"), null, 5), true);
+                admin, new CreateProductRequest("Widget", "WID-1", "A widget", new BigDecimal("9.99"), null, 5, null), true);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         ProductResponse body = response.getBody();
@@ -89,7 +89,7 @@ class ProductManagementIntegrationTest {
         when(s3ImageService.uploadProductImage(any())).thenReturn(UploadResult.failure("S3 is not configured"));
 
         ResponseEntity<ProductResponse> response = createProduct(
-                admin, new CreateProductRequest("Gadget", "GAD-1", "A gadget", new BigDecimal("14.99"), null, 5), true);
+                admin, new CreateProductRequest("Gadget", "GAD-1", "A gadget", new BigDecimal("14.99"), null, 5, null), true);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         ProductResponse body = response.getBody();
@@ -102,13 +102,13 @@ class ProductManagementIntegrationTest {
     void skuMustBeUniqueWithinTenant() {
         TenantLoginResponse admin = signup("Sku Uniqueness Co");
         CreateProductRequest request =
-                new CreateProductRequest("First", "DUP-1", null, new BigDecimal("1.00"), null, null);
+                new CreateProductRequest("First", "DUP-1", null, new BigDecimal("1.00"), null, null, null);
         assertThat(createProduct(admin, request, false).getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
         ResponseEntity<ApiError> secondResponse = restTemplate.exchange(
                 "/api/products",
                 HttpMethod.POST,
-                multipartEntity(admin, new CreateProductRequest("Second", "DUP-1", null, new BigDecimal("2.00"), null, null), false),
+                multipartEntity(admin, new CreateProductRequest("Second", "DUP-1", null, new BigDecimal("2.00"), null, null, null), false),
                 ApiError.class);
 
         assertThat(secondResponse.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -164,9 +164,9 @@ class ProductManagementIntegrationTest {
     void listAndDetailAreScopedToCallersTenantOnly() {
         TenantLoginResponse tenantA = signup("Tenant A " + UUID.randomUUID());
         TenantLoginResponse tenantB = signup("Tenant B " + UUID.randomUUID());
-        createProduct(tenantA, new CreateProductRequest("A Product", "A-SKU", null, BigDecimal.ONE, null, null), false);
+        createProduct(tenantA, new CreateProductRequest("A Product", "A-SKU", null, BigDecimal.ONE, null, null, null), false);
         ResponseEntity<ProductResponse> bProductResponse = createProduct(
-                tenantB, new CreateProductRequest("B Product", "B-SKU", null, BigDecimal.ONE, null, null), false);
+                tenantB, new CreateProductRequest("B Product", "B-SKU", null, BigDecimal.ONE, null, null, null), false);
         UUID bProductId = bProductResponse.getBody().id();
 
         ResponseEntity<TestPage<ProductResponse>> listAsA = restTemplate.exchange(
