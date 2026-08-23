@@ -554,6 +554,7 @@ class VendorOnboardingIntegrationTest {
         assertThat(summary.userCount())
                 .as("a vendor has exactly one user; anything else here is the rule having broken")
                 .isEqualTo(1);
+        assertThat(summary.username()).isEqualTo("direct-" + unique);
         assertThat(summary.fromWaitlist()).isFalse();
 
         ResponseEntity<ApiError> buyerLookup = restTemplate.exchange(

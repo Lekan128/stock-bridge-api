@@ -30,6 +30,8 @@ public record SuperAdminVendorSummary(
         /** Nullable for a vendor - see Client.adminContactEmail and the V11 CHECK. */
         String email,
         String phone,
+        /** The vendor's single login. Null only in a state that should not happen - see toSummary. */
+        String username,
         /** Null unless a rate has been agreed. A fraction in 0..1, not a percentage. */
         BigDecimal commissionRate,
         long userCount,
