@@ -550,6 +550,10 @@ public class SuperAdminVendorService {
     }
 
     private SuperAdminVendorSummary toSummary(Client vendor) {
+        // "The first of its users", same reasoning as toDetail: the one-account rule is
+        // enforced by the VENDOR role, not a constraint, so this must not throw on a second row.
+        Optional<User> account = userRepository.findAllByClientId(vendor.getId()).stream().findFirst();
+
         return new SuperAdminVendorSummary(
                 vendor.getId(),
                 vendor.getName(),
@@ -557,6 +561,7 @@ public class SuperAdminVendorService {
                 vendor.isActive(),
                 vendor.getAdminContactEmail(),
                 vendor.getPhone(),
+                account.map(User::getUsername).orElse(null),
                 vendor.getCommissionRate(),
                 userRepository.countByClientId(vendor.getId()),
                 productRepository.countByClientId(vendor.getId()),
