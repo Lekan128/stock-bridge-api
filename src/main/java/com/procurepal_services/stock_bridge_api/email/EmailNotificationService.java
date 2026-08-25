@@ -3,6 +3,7 @@ package com.procurepal_services.stock_bridge_api.email;
 import com.procurepal_services.stock_bridge_api.email.template.AccountEmails;
 import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.email.template.OrderEmails;
+import com.procurepal_services.stock_bridge_api.email.template.ProductEmails;
 import com.procurepal_services.stock_bridge_api.email.template.SettlementEmails;
 import com.procurepal_services.stock_bridge_api.email.template.VendorEmails;
 import com.procurepal_services.stock_bridge_api.entity.Client;
@@ -232,6 +233,57 @@ public class EmailNotificationService {
                 List.of(application.getEmail()),
                 application.getBusinessName(),
                 application.getReviewNote()));
+    }
+
+    // ------------------------------------------------------------------------
+    // Product catalog: "can't find your unit? tell us". See ProductEmails for
+    // why this is TRANSACTIONAL rather than following VendorEmails' applicant
+    // pattern.
+    // ------------------------------------------------------------------------
+
+    /**
+     * To ProcurePal: a tenant has asked for a unit of measure that is not on
+     * {@code UnitOfMeasure}'s fixed list.
+     *
+     * <h2>dispatch, not dispatchQuietly - unlike every other method above</h2>
+     * Every method above this one is a courtesy fired off the side of some
+     * other transaction that has already done its real work - an order
+     * placed, a password reset - and that work must not be undone because a
+     * template dereferenced something it should not have. This call site has
+     * no such "real work": sending this email <em>is</em> the entire purpose
+     * of the request that triggers it - {@code POST
+     * /api/products/unit-of-measure-requests} does nothing else. Swallowing a
+     * rendering failure here would let the endpoint answer 202 "request
+     * received" for a request that was, in fact, silently dropped, which is
+     * worse than surfacing the failure as the 500 an honest error should be.
+     * See {@link EmailDispatcher#dispatchQuietly} for the failure mode this
+     * deliberately does not adopt, and confirm with its Javadoc why plain
+     * {@link EmailDispatcher#dispatch} is the right call here: this is not
+     * nested inside a transaction that must survive a rendering bug in an
+     * unrelated template.
+     *
+     * @param companyName the requester's tenant, for a reviewer to search by
+     * @param requesterName who asked, already resolved by the caller (falls
+     *     back to a username when no first/last name is on file)
+     * @param requesterEmail nullable - see {@link ProductEmails#unitOfMeasureRequested}
+     * @param requestedUnit what they typed, e.g. "50L Jerry Can"
+     * @param note optional context; blank renders no note block
+     */
+    public void unitOfMeasureRequested(
+            String companyName,
+            String requesterName,
+            String requesterEmail,
+            String requestedUnit,
+            String note,
+            OffsetDateTime submittedAt) {
+        dispatcher.dispatch(ProductEmails.unitOfMeasureRequested(
+                recipients.forUnitOfMeasureRequests(),
+                companyName,
+                requesterName,
+                requesterEmail,
+                requestedUnit,
+                note,
+                submittedAt));
     }
 
     private List<OrderItem> itemsOf(Order order) {

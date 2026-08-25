@@ -35,17 +35,26 @@ public record ProductResponse(
         String companyVendorName,
         CompanyVendorKind companyVendorKind,
         Integer lowStockThreshold,
-        // The two marketplace identity facets, READ-ONLY here. /api/products has never
-        // written either and still does not - a seller sets them through the
-        // marketplace-details route (their own at /api/vendor/catalogue/**, ProcurePal's at
-        // /api/marketplace/admin/**), which is where the moderation re-trigger lives.
-        // They are reported here because the product FORM is one screen: a vendor editing a
-        // listing has to see the brand and unit they already have before deciding whether to
-        // change them, and the alternative was a second fetch of the catalogue page to
-        // render one text box. Null on most rows and permanently so for a buying company's
-        // private stock, which has no marketplace facets at all.
+        // brand is READ-ONLY here: /api/products has never written it and still does not - a
+        // seller sets it through the marketplace-details route (their own at
+        // /api/vendor/catalogue/**, ProcurePal's at /api/marketplace/admin/**), which is
+        // where the moderation re-trigger for it lives. It is reported here because the
+        // product FORM is one screen: a vendor editing a listing has to see the brand they
+        // already have before deciding whether to change it, and the alternative was a
+        // second fetch of the catalogue page to render one text box. Null on most rows and
+        // permanently so for a buying company's private stock, which has no brand at all.
+        //
+        // unitOfMeasure, packagingUnit and packagingSize are WRITABLE here (create/update all
+        // apply them) - unlike brand, they moved onto this same request rather than staying on
+        // the marketplace-details route, open to a buying company's own stock exactly as much
+        // as a seller's listing. unitOfMeasure is what the product is measured in;
+        // packagingUnit/packagingSize say how it is packaged and how much one package holds -
+        // e.g. unitOfMeasure=KG, packagingUnit=BAG, packagingSize=50 is "a 50kg bag". See
+        // ProductManagementService and UnitOfMeasure/UnitOfMeasureRole.
         String brand,
         String unitOfMeasure,
+        String packagingUnit,
+        BigDecimal packagingSize,
         String imageUrl,
         boolean active,
         boolean isLowStock,
@@ -79,6 +88,8 @@ public record ProductResponse(
                 product.getLowStockThreshold(),
                 product.getBrand(),
                 product.getUnitOfMeasure(),
+                product.getPackagingUnit(),
+                product.getPackagingSize(),
                 product.getImageUrl(),
                 product.isActive(),
                 lowStock,

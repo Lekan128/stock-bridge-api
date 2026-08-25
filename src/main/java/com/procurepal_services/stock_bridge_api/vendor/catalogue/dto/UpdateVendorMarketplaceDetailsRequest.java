@@ -6,8 +6,22 @@ import jakarta.validation.constraints.Size;
 import java.util.UUID;
 
 /**
- * The marketplace facets a SELLER may set on their own product: brand, unit of measure,
- * where it is filed, and the minimum a buyer must order.
+ * The marketplace facets a SELLER may set on their own product: brand, where it is filed, and
+ * the minimum a buyer must order.
+ *
+ * <h2>unitOfMeasure used to be here too</h2>
+ * It was the whole reason this route first existed - a B2B price is meaningless without
+ * knowing whether it is per 50kg bag, per carton or per litre - but it has since moved onto
+ * the same request as everything else a seller sets on a product, {@code /api/products}
+ * create/update, alongside the newer {@code packagingUnit}/{@code packagingSize} pair (e.g.
+ * unit "KG" + packaging "BAG" + size 50 = "a 50kg bag"). That is also where it is validated
+ * against the fixed {@code product.unit.UnitOfMeasure} catalog now. This route did not lose
+ * any capability by the move: a vendor still sets their unit exactly as before, just through
+ * the product form instead of this one, and on the SAME request as name/price/SKU rather than
+ * a second trip. What is left here - brand - stays because it has nowhere more natural to
+ * live: it is a marketplace-only facet with no equivalent field on an ordinary buying
+ * company's product, unlike unitOfMeasure/packagingUnit/packagingSize which every tenant now
+ * benefits from recording.
  *
  * <h2>Why this is a separate record from {@link UpdateMarketplaceDetailsRequest}</h2>
  * It is the operator's record minus one field, and the missing field is the point. A
@@ -34,9 +48,7 @@ import java.util.UUID;
  *
  * <h2>The fields that ARE here, and why each is the seller's business</h2>
  * <ul>
- *   <li><b>brand</b> and <b>unitOfMeasure</b> - the whole reason this route exists. A B2B
- *       buyer cannot act on a price without knowing whether it is per 50kg bag, per carton
- *       or per litre, and only the seller knows. Both are identity fields, so setting them
+ *   <li><b>brand</b> - only the seller knows it, it is an identity field, so setting it
  *       sends the listing back for review - see {@code ProductModerationRules}.</li>
  *   <li><b>categoryId</b> / <b>clearCategory</b> - filing. The TAXONOMY is the operator's
  *       and stays read-only to a vendor (there is no vendor route that creates, renames or
@@ -59,20 +71,20 @@ import java.util.UUID;
 public record UpdateVendorMarketplaceDetailsRequest(
         UUID categoryId,
         Boolean clearCategory,
-        @Size(max = 50) String unitOfMeasure,
         @Min(1) Integer minOrderQuantity,
         @Size(max = 120) String brand) {
 
     /**
      * Widens this into the record the shared service takes, with {@code slug} pinned to
-     * null - "leave the slug alone" in that record's patch-style contract.
+     * null - "leave the slug alone" in that record's patch-style contract - and
+     * {@code unitOfMeasure} likewise always null, since this route no longer carries it at
+     * all: a vendor sets it through {@code /api/products} now.
      *
      * <p>Deliberately a mapping rather than a second service method. The service is the one
      * place that decides what a brand change costs a seller, and a vendor-specific copy of
      * it is how the two surfaces would eventually disagree about that.
      */
     public UpdateMarketplaceDetailsRequest toCatalogRequest() {
-        return new UpdateMarketplaceDetailsRequest(
-                categoryId, clearCategory, unitOfMeasure, minOrderQuantity, brand, null);
+        return new UpdateMarketplaceDetailsRequest(categoryId, clearCategory, minOrderQuantity, brand, null);
     }
 }

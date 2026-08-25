@@ -807,35 +807,32 @@ class VendorWorkspaceIntegrationTest {
     }
 
     /**
-     * The marketplace-details route: a vendor sets the two facets that make a listing
-     * legible to a procurement buyer, on their own product and only their own.
+     * The marketplace-details route: a vendor sets the one identity facet left on it - brand
+     * - on their own product and only their own.
      *
-     * <p>The unit is the commercially load-bearing half. A B2B price is meaningless without
-     * it - N10,000 per 50kg bag and N10,000 per 1kg sachet are not the same offer - and
-     * until this route existed no vendor-facing surface could write it, so vendors listed
-     * without one and buyers had to guess or ask.
+     * <p>unitOfMeasure used to be set through this same route alongside brand; it has since
+     * moved onto {@code /api/products} create/update (see
+     * {@code aVendorSetsUnitOfMeasureAndUnitCountThroughTheProductEndpoint} in
+     * ProductManagementIntegrationTest, and {@code UpdateVendorMarketplaceDetailsRequest} for
+     * the reasoning), so this test now covers brand alone.
      *
      * <p>The second half of the test is the one that would be a commercial incident: the
      * SAME request against vendorB's product is a 404, because the row is resolved through
      * {@code ownedBy} against the caller's own client id and never against anything from
      * the request. A cross-seller write here would not surface as an error - it would
-     * surface as a competitor's approved listing quietly dropping off the storefront with a
-     * changed brand on it.
+     * surface as a competitor's approved listing quietly gaining a changed brand.
      */
     @Test
-    void aVendorSetsBrandAndUnitOnItsOwnProductAndIsRefusedOnAnotherSellers() {
+    void aVendorSetsBrandOnItsOwnProductAndIsRefusedOnAnotherSellers() {
         ResponseEntity<String> mine = restTemplate.exchange(
                 "/api/vendor/catalogue/products/" + vendorA.productId() + "/marketplace-details",
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "50kg bag", 10, "Ada Mills"),
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, 10, "Ada Mills"),
                         authHeaders(vendorA.login())),
                 String.class);
 
         assertThat(mine.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(jdbc.queryForObject(
-                        "SELECT unit_of_measure FROM products WHERE id = ?", String.class, vendorA.productId()))
-                .isEqualTo("50kg bag");
         assertThat(jdbc.queryForObject("SELECT brand FROM products WHERE id = ?", String.class, vendorA.productId()))
                 .isEqualTo("Ada Mills");
 
@@ -843,7 +840,7 @@ class VendorWorkspaceIntegrationTest {
                 "/api/vendor/catalogue/products/" + vendorB.productId() + "/marketplace-details",
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "1kg sachet", null, "Hijacked"),
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, "Hijacked"),
                         authHeaders(vendorA.login())),
                 String.class);
 
@@ -875,7 +872,7 @@ class VendorWorkspaceIntegrationTest {
                 "/api/vendor/catalogue/products/" + productId + "/marketplace-details",
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, null, "PP-VWRK-Brand"),
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, "PP-VWRK-Brand"),
                         authHeaders(operator)),
                 String.class);
 
@@ -893,7 +890,7 @@ class VendorWorkspaceIntegrationTest {
                 "/api/vendor/catalogue/products/" + vendorA.productId() + "/marketplace-details",
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "carton", null, "Nope"),
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, "Nope"),
                         authHeaders(owner)),
                 String.class);
 

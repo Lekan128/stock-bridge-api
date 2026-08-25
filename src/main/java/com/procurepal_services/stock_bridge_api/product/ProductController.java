@@ -1,10 +1,11 @@
 package com.procurepal_services.stock_bridge_api.product;
 
 import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
-import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureResponse;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -45,12 +46,11 @@ import org.springframework.web.multipart.MultipartFile;
 public class ProductController {
 
     private final ProductManagementService productManagementService;
-    private final ProductExcelService productExcelService;
 
     @GetMapping("/template")
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<byte[]> template() {
-        return xlsxResponse(productExcelService.generateTemplate(), "product-import-template.xlsx");
+        return xlsxResponse(productManagementService.generateTemplate(), "product-import-template.xlsx");
     }
 
     @GetMapping("/export")
@@ -72,6 +72,22 @@ public class ProductController {
             @RequestParam(required = false) Boolean active,
             @PageableDefault(size = 20) Pageable pageable) {
         return productManagementService.list(search, active, pageable);
+    }
+
+    /**
+     * The fixed unit-of-measure catalog (see {@link UnitOfMeasure}), so the
+     * product form's picker doesn't hardcode a second copy of the list. Flat,
+     * with each row carrying its category, so the frontend groups client-side.
+     *
+     * <p>VIEW_PRODUCTS rather than MANAGE_PRODUCTS: reading this list is a
+     * prerequisite for even LOOKING at a product's unit, not for changing one,
+     * and every role that can see the catalog (company or vendor) needs it -
+     * same reasoning as {@link #list}.
+     */
+    @GetMapping("/units-of-measure")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<UnitOfMeasureResponse> unitsOfMeasure() {
+        return UnitOfMeasure.all().stream().map(UnitOfMeasureResponse::from).toList();
     }
 
     @GetMapping("/low-stock")

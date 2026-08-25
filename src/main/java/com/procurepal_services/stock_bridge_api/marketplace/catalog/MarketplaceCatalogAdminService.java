@@ -39,12 +39,14 @@ import org.springframework.transaction.annotation.Transactional;
  * around it.
  *
  * <h2>Moderation</h2>
- * The product methods here can reach two of the six identity fields moderation cares
- * about - brand and unit of measure - so {@link #updateMarketplaceDetails} calls
- * {@code ProductModerationService.onListingContentChanged} when either changes. The
- * listing methods cannot reach any of them and deliberately do not: see
- * {@link #setListing} and {@link ProductModerationRules} for the full audit of which write
- * paths re-trigger review and which are exempt.
+ * The product methods here can reach one of the identity fields moderation cares about -
+ * brand - so {@link #updateMarketplaceDetails} calls
+ * {@code ProductModerationService.onListingContentChanged} when it changes. It used to reach
+ * unitOfMeasure too; that field has since moved onto {@code ProductManagementService.create}/
+ * {@code .update} (see {@link ProductModerationRules} for why) and this method no longer
+ * writes it at all. The listing methods cannot reach any identity field and deliberately do
+ * not: see {@link #setListing} and {@link ProductModerationRules} for the full audit of which
+ * write paths re-trigger review and which are exempt.
  *
  * <h2>Two audiences, and the split between them is not down the middle</h2>
  * The PRODUCT methods are per-seller. Every one of them takes an {@code operatorId} and
@@ -90,12 +92,13 @@ public class MarketplaceCatalogAdminService {
     private final PlatformOwnerGuard platformOwnerGuard;
     private final CatalogStockService catalogStockService;
     /**
-     * Two of this class's writable fields - brand and unit of measure - are
-     * moderation-invalidating, so this surface is a second entry point into the
-     * approve-then-swap rule that {@code ProductManagementService} owns. It calls the same
-     * hook rather than re-deciding: {@link ProductModerationRules} is where the ruling
-     * lives, and a second copy of it here is how the two paths would eventually disagree
-     * about whether a brand change counts.
+     * One of this class's writable fields - brand - is moderation-invalidating, so this
+     * surface is a second entry point into the approve-then-swap rule that
+     * {@code ProductManagementService} owns. It calls the same hook rather than re-deciding:
+     * {@link ProductModerationRules} is where the ruling lives, and a second copy of it here
+     * is how the two paths would eventually disagree about whether a brand change counts.
+     * unitOfMeasure used to be a second field reaching this hook from here too; it has since
+     * moved to {@code ProductManagementService}, which owns the same hook for it now.
      */
     private final ProductModerationService productModerationService;
 
@@ -197,16 +200,17 @@ public class MarketplaceCatalogAdminService {
     /**
      * The marketplace-only facets of a product. Name, price, image and SKU are not
      * editable here on purpose - they belong to /api/products, and giving the same row two
-     * write paths is how fields start disagreeing.
+     * write paths is how fields start disagreeing. unitOfMeasure and unitCount belong to
+     * /api/products now too, for the same reason - see the class javadoc and
+     * {@code UpdateVendorMarketplaceDetailsRequest} for why they moved.
      *
-     * <h2>Two of these fields ARE identity fields, and that is the M6 fix</h2>
-     * {@code brand} and {@code unitOfMeasure} are both named in
-     * {@link ProductModerationRules#invalidatesApproval} - they change what a buyer thinks
-     * they are buying, since "Dangote, 50kg bag" becoming "Generic, 25kg bag" is a
-     * different product at the same price - but this method wrote them and never called
-     * the hook. An approved listing could therefore have its brand and its unit swapped
-     * without going back for review, which is exactly the approve-then-swap defeat the
-     * moderation gate exists to prevent.
+     * <h2>brand IS an identity field, and that is the M6 fix</h2>
+     * {@code brand} is named in {@link ProductModerationRules#invalidatesApproval} - it
+     * changes what a buyer thinks they are buying, since "Dangote" becoming "Generic" is a
+     * different product at the same price - but this method wrote it (and, until it moved,
+     * unitOfMeasure alongside it) and never called the hook. An approved listing could
+     * therefore have its brand swapped without going back for review, which is exactly the
+     * approve-then-swap defeat the moderation gate exists to prevent.
      *
      * <p>The remaining fields are deliberately exempt and each has a reason:
      * <ul>
@@ -250,9 +254,8 @@ public class MarketplaceCatalogAdminService {
         // Snapshot BEFORE any mutation, so the check at the bottom compares what the
         // listing was against what it became. Shaped exactly like
         // ProductManagementService.update's snapshot, and captured unconditionally for the
-        // same reason: two string reads are cheaper than two code paths through one method.
+        // same reason: a string read is cheaper than two code paths through one method.
         String beforeBrand = product.getBrand();
-        String beforeUnitOfMeasure = product.getUnitOfMeasure();
 
         if (Boolean.TRUE.equals(request.clearCategory())) {
             product.setCategory(null);
@@ -260,9 +263,6 @@ public class MarketplaceCatalogAdminService {
             product.setCategory(productCategoryRepository
                     .findById(request.categoryId())
                     .orElseThrow(CategoryNotFoundException::new));
-        }
-        if (request.unitOfMeasure() != null) {
-            product.setUnitOfMeasure(blankToNull(request.unitOfMeasure()));
         }
         if (request.minOrderQuantity() != null) {
             product.setMinOrderQuantity(request.minOrderQuantity());
@@ -274,17 +274,21 @@ public class MarketplaceCatalogAdminService {
             applySlug(operatorId, product, request.slug());
         }
 
-        // The four identity fields this method cannot touch are passed as unchanged pairs
-        // rather than omitted, so the call site keeps naming the whole rule: if a seventh
+        // The six identity fields this method cannot touch are passed as unchanged pairs
+        // rather than omitted, so the call site keeps naming the whole rule: if another
         // field is ever added to invalidatesApproval, this line stops compiling instead of
-        // quietly continuing to check six.
+        // quietly continuing to check the old count. unitOfMeasure/packagingUnit/packagingSize
+        // are among them now precisely because this method no longer writes any of the three -
+        // ProductManagementService does, and owns their before/after snapshot.
         if (ProductModerationRules.invalidatesApproval(
                 product.getName(), product.getName(),
                 product.getSku(), product.getSku(),
                 product.getDescription(), product.getDescription(),
                 beforeBrand, product.getBrand(),
                 product.getImageUrl(), product.getImageUrl(),
-                beforeUnitOfMeasure, product.getUnitOfMeasure())) {
+                product.getUnitOfMeasure(), product.getUnitOfMeasure(),
+                product.getPackagingUnit(), product.getPackagingUnit(),
+                product.getPackagingSize(), product.getPackagingSize())) {
             productModerationService.onListingContentChanged(product);
         }
         return toResponse(product);
