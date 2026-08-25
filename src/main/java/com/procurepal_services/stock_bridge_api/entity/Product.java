@@ -54,7 +54,20 @@ public class Product extends TenantAwareEntity {
     @Column(columnDefinition = "TEXT")
     private String description;
 
-    @Column(name = "unit_price", nullable = false, precision = 14, scale = 2)
+    /**
+     * Selling price. Required only for a product belonging to a SELLING tenant -
+     * {@link ClientType#VENDOR}, or the platform owner acting as a seller - and
+     * that requirement is NOT enforced here: a CHECK/NOT NULL on this column
+     * cannot tell a company's row from a vendor's without a join, the same
+     * reason {@link #marketplaceListed}'s seller-only rule lives outside a
+     * constraint too. It is enforced by the service layer instead.
+     *
+     * <p>Nullable since V17. A buying company adding stock it BOUGHT has no
+     * selling price to give and may now leave this blank; a vendor's row is
+     * still expected to always carry one. Existing rows are unaffected - this
+     * only removes the requirement going forward.
+     */
+    @Column(name = "unit_price", precision = 14, scale = 2)
     private BigDecimal unitPrice;
 
     @Column(name = "cost_price", precision = 14, scale = 2)
@@ -99,9 +112,69 @@ public class Product extends TenantAwareEntity {
     @Column(name = "is_marketplace_listed", nullable = false)
     private boolean marketplaceListed;
 
-    /** How the item is actually traded: 'bag (50kg)', 'carton (24)', 'keg (25L)'. */
+    /**
+     * What this product is fundamentally MEASURED in - a weight, volume, length, or (for
+     * uncounted discrete goods) the generic "piece". Must resolve to a
+     * {@code product.unit.UnitOfMeasure} constant whose
+     * {@code product.unit.UnitOfMeasureRole} is {@code BASE} (see that enum for why the split
+     * exists).
+     *
+     * <h2>V18: this is now one of THREE related fields, not one of two</h2>
+     * V17 paired this with a single numeric count and called that "how much one unit is" -
+     * but that conflated two different questions a B2B product actually needs answered
+     * separately: what it is measured in, and how it is packaged/sold. V18 splits the second
+     * question out to {@link #packagingUnit} + {@link #packagingSize}, so "a 50kg bag" is now
+     * expressed as unitOfMeasure=KG (this field), packagingUnit=BAG, packagingSize=50 - all
+     * three together, not unitOfMeasure=BAG with a bare count and no unit. This field alone,
+     * with the other two null, is still valid and means "sold loose" - e.g.
+     * unitOfMeasure=LITER with no packaging at all.
+     *
+     * <p>Column mapping is unchanged by V18 - still a free VARCHAR(50), no CHECK. The
+     * application validates a new value against the fixed list in
+     * {@code product.unit.UnitOfMeasure} (see its {@code fromCode}, role-checked for BASE by
+     * {@code ProductManagementService.resolveUnitOfMeasure}) rather than the schema,
+     * specifically so existing free-text rows are never broken and so a tenant can still
+     * request a unit that isn't on the list yet (a separate module).
+     */
     @Column(name = "unit_of_measure", length = 50)
     private String unitOfMeasure;
+
+    /**
+     * How this product is packaged/sold, if at all - a Bag, Carton, Box and similar. Must
+     * resolve to a {@code product.unit.UnitOfMeasure} constant whose
+     * {@code product.unit.UnitOfMeasureRole} is {@code PACKAGING}.
+     *
+     * <p>Added by V18, alongside the rename of {@code unit_count} to
+     * {@link #packagingSize this column's pair}. Nullable, and pairs both-or-neither with
+     * {@link #packagingSize} - a packaging unit with no size, or a size with no unit, is
+     * ambiguous rather than partially valid (see
+     * {@code PackagingUnitAndSizeRequiredTogetherException}). Also requires
+     * {@link #unitOfMeasure} to be non-null whenever this is set: {@link #packagingSize} is a
+     * count of {@link #unitOfMeasure}, so packaging with no base unit to quantify is
+     * meaningless (see {@code PackagingRequiresUnitOfMeasureException}). A product may have
+     * {@link #unitOfMeasure} set with this null - sold loose, no packaging - but never the
+     * reverse.
+     */
+    @Column(name = "packaging_unit", length = 50)
+    private String packagingUnit;
+
+    /**
+     * How many of {@link #unitOfMeasure} one {@link #packagingUnit} holds, e.g.
+     * unitOfMeasure="KG", packagingUnit="BAG", packagingSize=50 means "a 50kg bag";
+     * unitOfMeasure="LITER", packagingUnit="KEG", packagingSize=0.5 means "a half-litre keg".
+     * Decimal, not integer - Nigerian trade units are routinely fractional (half-bags,
+     * litres). Nullable: meaningless without a {@link #packagingUnit} to quantify, which in
+     * turn requires {@link #unitOfMeasure} - see {@link #packagingUnit}'s javadoc for both
+     * pairing rules.
+     *
+     * <p>Renamed from {@code unitCount} by V18 (same column rename, same NUMERIC(14,2)
+     * type/precision, no data migration) once its meaning narrowed from "how much one
+     * unitOfMeasure is" to specifically "how much one packagingUnit is" - the old name no
+     * longer described what the field means now that unitOfMeasure and packagingUnit are
+     * separate axes.
+     */
+    @Column(name = "packaging_size", precision = 14, scale = 2)
+    private BigDecimal packagingSize;
 
     /**
      * Minimum purchasable quantity, mirroring the column default of 1 so an

@@ -46,6 +46,8 @@ public record MarketplaceProductResponse(
         BigDecimal unitPrice,
         String imageUrl,
         String unitOfMeasure,
+        String packagingUnit,
+        BigDecimal packagingSize,
         int minOrderQuantity,
         int quantityOnHand,
         boolean inStock,
@@ -82,6 +84,8 @@ public record MarketplaceProductResponse(
                 product.getUnitPrice(),
                 product.getImageUrl(),
                 product.getUnitOfMeasure(),
+                product.getPackagingUnit(),
+                product.getPackagingSize(),
                 product.getMinOrderQuantity(),
                 availableToSell,
                 // Stock is client-wide in this pass (contract §4.2: no per-branch

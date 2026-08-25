@@ -124,7 +124,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void aNameEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
-                "Something Else Entirely", null, null, null, null, null, null, null, null, null));
+                "Something Else Entirely", null, null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
         assertThat(reviewedAtIsCleared(approvedProductId)).isTrue();
@@ -133,7 +133,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void anSkuEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
-                null, FIXTURE_PREFIX + "SWAPPED", null, null, null, null, null, null, null, null));
+                null, FIXTURE_PREFIX + "SWAPPED", null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
     }
@@ -142,7 +142,7 @@ class ProductModerationWritePathIntegrationTest {
     void aDescriptionEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
                 null, null, "Now claims to be something a reviewer never saw.",
-                null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
     }
@@ -156,9 +156,77 @@ class ProductModerationWritePathIntegrationTest {
     void anImageRemovalSendsAnApprovedListingBackForReview() {
         jdbc.update("UPDATE products SET image_url = ? WHERE id = ?", "https://example.test/a.png", approvedProductId);
 
-        updateProduct(new UpdateProductRequest(null, null, null, null, null, null, null, true, null, null));
+        updateProduct(new UpdateProductRequest(
+                null, null, null, null, null, null, null, true, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
+    }
+
+    /**
+     * unitOfMeasure moved onto this same endpoint from the marketplace-details route (see
+     * Path 2 below for what remains there), and re-triggering approval moved with it - this
+     * is the M6/M8 rule applying to a field that did not even live here before. Uses a real
+     * catalog code because this path validates against {@code UnitOfMeasure.fromCode} now,
+     * unlike the old marketplace-details route which accepted any string.
+     */
+    @Test
+    void aUnitOfMeasureEditSendsAnApprovedListingBackForReview() {
+        updateProduct(new UpdateProductRequest(
+                null, null, null, null, null, null, null, null, null, null, "KG", null, null));
+
+        assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
+        assertThat(reviewedAtIsCleared(approvedProductId)).isTrue();
+    }
+
+    /**
+     * packagingSize (renamed from unitCount by V18) is new: a 50kg bag quietly becoming a
+     * 25kg one at the same unit label and packaging is exactly the swap
+     * {@link com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules}
+     * exists to catch. unitOfMeasure and packagingUnit are left null here (not resent)
+     * precisely to isolate packagingSize as the only thing changing - the fixture already has
+     * a paired unitOfMeasure/packagingUnit, so this patch alone does not trip either pairing
+     * rule.
+     */
+    @Test
+    void aPackagingSizeEditSendsAnApprovedListingBackForReview() {
+        updateProduct(new UpdateProductRequest(
+                null, null, null, null, null, null, null, null, null, null, null, null, new BigDecimal("25.00")));
+
+        assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
+    }
+
+    /**
+     * V18's third identity field: packagingUnit joins unitOfMeasure/packagingSize as
+     * something that re-triggers moderation on its own - "Bag" quietly becoming "Carton" at
+     * the same unitOfMeasure and the same packagingSize is a different product to a buyer
+     * ("a 50kg bag" vs "a 50kg carton"), exactly the swap this rule exists to catch.
+     * unitOfMeasure/packagingSize are left null here (not resent) to isolate packagingUnit as
+     * the only thing changing - the fixture already pairs it with a packagingSize, so this
+     * patch alone does not trip the pairing rule.
+     */
+    @Test
+    void aPackagingUnitEditSendsAnApprovedListingBackForReview() {
+        updateProduct(new UpdateProductRequest(
+                null, null, null, null, null, null, null, null, null, null, null, "CARTON", null));
+
+        assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
+        assertThat(reviewedAtIsCleared(approvedProductId)).isTrue();
+    }
+
+    /**
+     * The BigDecimal-equality decision made explicit: 50 and 50.00 are the same packaging
+     * size by VALUE, and a client round-tripping a decimal through JSON tends to change its
+     * scale without changing what it means - so resending it, even at a different scale than
+     * what is stored, must not cost a seller their approval. See
+     * {@code ProductModerationRules}'s private {@code changed(BigDecimal, BigDecimal)} for why
+     * this uses {@code compareTo} rather than {@code equals}.
+     */
+    @Test
+    void resendingTheSamePackagingSizeAtADifferentScaleIsNotAnEdit() {
+        updateProduct(new UpdateProductRequest(
+                null, null, null, null, null, null, null, null, null, null, null, null, new BigDecimal("50.0")));
+
+        assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
     }
 
     /**
@@ -179,6 +247,8 @@ class ProductModerationWritePathIntegrationTest {
                 true,
                 null,
                 null,
+                null,
+                null, null,
                 null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
@@ -189,13 +259,14 @@ class ProductModerationWritePathIntegrationTest {
     void resendingTheSameIdentityValuesIsNotAnEdit() {
         String name = jdbc.queryForObject("SELECT name FROM products WHERE id = ?", String.class, approvedProductId);
 
-        updateProduct(new UpdateProductRequest(name, null, null, null, null, null, null, null, null, null));
+        updateProduct(new UpdateProductRequest(
+                name, null, null, null, null, null, null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
     }
 
     // ---------------------------------------------------------------------------------
-    // Path 2: marketplace details - brand and unit of measure. THE M6 FIX.
+    // Path 2: marketplace details - brand only now. THE M6 FIX; unitOfMeasure moved to Path 1.
     // ---------------------------------------------------------------------------------
 
     /**
@@ -211,22 +282,60 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void aVendorsBrandEditSendsAnApprovedListingBackForReview() {
         assertThat(updateMarketplaceDetailsAsVendor(
-                        new UpdateVendorMarketplaceDetailsRequest(
-                                null, null, null, null, "A Different Brand Entirely")))
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, "A Different Brand Entirely")))
                 .isEqualTo(HttpStatus.OK);
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
         assertThat(reviewedAtIsCleared(approvedProductId)).isTrue();
     }
 
-    /** The other half of the same bug: a 50kg bag quietly becoming a 25kg one. */
+    /**
+     * unitOfMeasure used to be set on this same route, and the M6 fix originally re-triggered
+     * moderation for it here too. It has since moved onto {@code /api/products} - see
+     * {@code aUnitOfMeasureEditSendsAnApprovedListingBackForReview} in Path 1 above - and a
+     * client still sending it here (a stale build, say) reaches nothing: the field is not on
+     * {@code UpdateVendorMarketplaceDetailsRequest} anymore, so Jackson silently drops it
+     * (Boot disables FAIL_ON_UNKNOWN_PROPERTIES) before the request even reaches the service.
+     * Asserted with a raw map, the same technique {@code aVendorCannotAuthorASlugThroughTheirOwnRoute}
+     * uses, because the record itself cannot express sending a field it no longer has.
+     */
     @Test
-    void aVendorsUnitOfMeasureEditSendsAnApprovedListingBackForReview() {
-        assertThat(updateMarketplaceDetailsAsVendor(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "25kg bag", null, null)))
-                .isEqualTo(HttpStatus.OK);
+    void unitOfMeasureIsNoLongerWritableThroughTheVendorMarketplaceDetailsRoute() {
+        String before = jdbc.queryForObject(
+                "SELECT unit_of_measure FROM products WHERE id = ?", String.class, approvedProductId);
 
-        assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/vendor/catalogue/products/" + approvedProductId + "/marketplace-details",
+                HttpMethod.PUT,
+                new HttpEntity<>(Map.of("brand", "Still Fine", "unitOfMeasure", "KG"), vendorHeaders),
+                String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject(
+                        "SELECT unit_of_measure FROM products WHERE id = ?", String.class, approvedProductId))
+                .isEqualTo(before);
+    }
+
+    /** The admin route's copy of the same claim - see the vendor version above for the reasoning. */
+    @Test
+    void unitOfMeasureIsNoLongerWritableThroughTheAdminMarketplaceDetailsRoute() {
+        HttpHeaders operator = authHeaders(loginAsPlatformOwner().tokens().accessToken());
+        UUID productId = jdbc.queryForObject(
+                "SELECT p.id FROM products p JOIN clients c ON c.id = p.client_id AND c.is_platform_owner "
+                        + "WHERE p.is_marketplace_listed ORDER BY p.name LIMIT 1",
+                UUID.class);
+        String before =
+                jdbc.queryForObject("SELECT unit_of_measure FROM products WHERE id = ?", String.class, productId);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/marketplace/admin/products/" + productId + "/marketplace-details",
+                HttpMethod.PUT,
+                new HttpEntity<>(Map.of("unitOfMeasure", "KG"), operator),
+                String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(jdbc.queryForObject("SELECT unit_of_measure FROM products WHERE id = ?", String.class, productId))
+                .isEqualTo(before);
     }
 
     /**
@@ -236,16 +345,12 @@ class ProductModerationWritePathIntegrationTest {
      * work.
      */
     @Test
-    void aVendorsBrandAndUnitActuallyReachTheRow() {
-        assertThat(updateMarketplaceDetailsAsVendor(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "10 litre keg", 4, "Ada Mills")))
+    void aVendorsBrandActuallyReachesTheRow() {
+        assertThat(updateMarketplaceDetailsAsVendor(new UpdateVendorMarketplaceDetailsRequest(null, null, 4, "Ada Mills")))
                 .isEqualTo(HttpStatus.OK);
 
         assertThat(jdbc.queryForObject("SELECT brand FROM products WHERE id = ?", String.class, approvedProductId))
                 .isEqualTo("Ada Mills");
-        assertThat(jdbc.queryForObject(
-                        "SELECT unit_of_measure FROM products WHERE id = ?", String.class, approvedProductId))
-                .isEqualTo("10 litre keg");
         assertThat(jdbc.queryForObject(
                         "SELECT min_order_quantity FROM products WHERE id = ?", Integer.class, approvedProductId))
                 .isEqualTo(4);
@@ -264,24 +369,24 @@ class ProductModerationWritePathIntegrationTest {
                 vendorClientId,
                 approvedProductId,
                 new UpdateMarketplaceDetailsRequest(
-                        categoryId, null, null, 12, null, FIXTURE_PREFIX.toLowerCase() + "renamed-link"));
+                        categoryId, null, 12, null, FIXTURE_PREFIX.toLowerCase() + "renamed-link"));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
     }
 
     /**
-     * Sending brand and unit back unchanged is not a change - same rule as the product form.
+     * Sending brand back unchanged is not a change - same rule as the product form.
      *
      * <p>This is the one that would bite in practice rather than in theory. The vendor form
      * posts the WHOLE group on every save, so a vendor correcting a minimum order quantity
-     * resends their existing brand and unit alongside it. If "resent" counted as "changed",
-     * every save from that screen would take the listing off the storefront, and the field
-     * grouping the form is built around would be a lie.
+     * resends their existing brand alongside it. If "resent" counted as "changed", every save
+     * from that screen would take the listing off the storefront, and the field grouping the
+     * form is built around would be a lie.
      */
     @Test
-    void resendingTheSameBrandAndUnitIsNotAnEdit() {
+    void resendingTheSameBrandIsNotAnEdit() {
         assertThat(updateMarketplaceDetailsAsVendor(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "50kg bag", null, "Fixture Brand")))
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, "Fixture Brand")))
                 .isEqualTo(HttpStatus.OK);
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
@@ -296,8 +401,7 @@ class ProductModerationWritePathIntegrationTest {
     void categoryAndMinimumOrderQuantityAreExemptOverTheVendorRouteToo() {
         UUID categoryId = jdbc.queryForObject("SELECT id FROM product_categories LIMIT 1", UUID.class);
 
-        assertThat(updateMarketplaceDetailsAsVendor(
-                        new UpdateVendorMarketplaceDetailsRequest(categoryId, null, null, 24, null)))
+        assertThat(updateMarketplaceDetailsAsVendor(new UpdateVendorMarketplaceDetailsRequest(categoryId, null, 24, null)))
                 .isEqualTo(HttpStatus.OK);
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
@@ -352,8 +456,7 @@ class ProductModerationWritePathIntegrationTest {
                 "/api/marketplace/admin/products/" + productId + "/marketplace-details",
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateMarketplaceDetailsRequest(
-                                null, null, null, null, FIXTURE_PREFIX + "Brand", null),
+                        new UpdateMarketplaceDetailsRequest(null, null, null, FIXTURE_PREFIX + "Brand", null),
                         operator),
                 String.class);
 
@@ -416,8 +519,7 @@ class ProductModerationWritePathIntegrationTest {
                         "SELECT is_marketplace_listed FROM products WHERE id = ?", Boolean.class, approvedProductId))
                 .isTrue();
 
-        assertThat(updateMarketplaceDetailsAsVendor(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "carton of 24", null, "Sneaky")))
+        assertThat(updateMarketplaceDetailsAsVendor(new UpdateVendorMarketplaceDetailsRequest(null, null, null, "Sneaky")))
                 .isEqualTo(HttpStatus.OK);
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
@@ -462,7 +564,7 @@ class ProductModerationWritePathIntegrationTest {
                 "/api/vendor/catalogue/products/" + theirProductId + "/marketplace-details",
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, "1kg sachet", null, "Hijacked"),
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, "Hijacked"),
                         vendorHeaders),
                 String.class);
 
@@ -488,7 +590,7 @@ class ProductModerationWritePathIntegrationTest {
                 "/api/vendor/catalogue/products/" + approvedProductId + "/marketplace-details",
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, null, "Nope"),
+                        new UpdateVendorMarketplaceDetailsRequest(null, null, null, "Nope"),
                         authHeaders(buyer.tokens().accessToken())),
                 String.class);
 
@@ -547,7 +649,7 @@ class ProductModerationWritePathIntegrationTest {
                 HttpMethod.PUT,
                 multipart(
                         new UpdateProductRequest(
-                                "Renamed Napkins", null, null, null, null, null, null, null, null, null),
+                                "Renamed Napkins", null, null, null, null, null, null, null, null, null, null, null, null),
                         buyerHeaders),
                 ProductResponse.class);
 
@@ -587,17 +689,27 @@ class ProductModerationWritePathIntegrationTest {
     }
 
     /**
-     * A vendor listing already cleared by a reviewer, with a brand and a unit of measure
-     * set - the exact state approve-then-swap targets, and the one the pre-M6 code let a
-     * seller change silently.
+     * A vendor listing already cleared by a reviewer, with a brand, a unit of measure, a
+     * packaging unit and a packaging size all set - the exact state approve-then-swap
+     * targets, and the one the pre-M6 code let a seller change silently. unit_of_measure is
+     * deliberately the raw free-text value products carried before the fixed catalog existed
+     * ('50kg bag' rather than a code like 'KG') - this is a direct INSERT bypassing
+     * ProductManagementService's validation entirely, same as every other fixture in this
+     * class, and it stays untouched by tests that never write to it. packaging_unit/
+     * packaging_size are BOTH set (rather than left null) so that a patch touching only ONE
+     * field elsewhere on the row - name, brand, image, or just one of the pair itself (see
+     * the unitOfMeasure/packagingUnit/packagingSize tests on Path 1) - never trips
+     * PackagingUnitAndSizeRequiredTogetherException on the RESULTING state merely because the
+     * fixture itself started out with one of the pair unset.
      */
     private UUID createApprovedVendorProduct() {
         UUID productId = UUID.randomUUID();
         jdbc.update(
                 "INSERT INTO products (id, client_id, name, sku, unit_price, quantity_on_hand, brand, "
-                        + "unit_of_measure, is_active, is_marketplace_listed, approval_status, reviewed_at, "
-                        + "min_order_quantity) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, 'Fixture Brand', '50kg bag', TRUE, TRUE, 'APPROVED', now(), 1)",
+                        + "unit_of_measure, packaging_unit, packaging_size, is_active, is_marketplace_listed, "
+                        + "approval_status, reviewed_at, min_order_quantity) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, 'Fixture Brand', '50kg bag', 'BAG', 50.00, TRUE, TRUE, "
+                        + "'APPROVED', now(), 1)",
                 productId,
                 vendorClientId,
                 FIXTURE_PREFIX + "Approved Rice",
@@ -663,7 +775,7 @@ class ProductModerationWritePathIntegrationTest {
                 "product",
                 new HttpEntity<>(
                         new CreateProductRequest(
-                                "Product " + sku, sku, null, new BigDecimal("500.00"), null, null, null),
+                                "Product " + sku, sku, null, new BigDecimal("500.00"), null, null, null, null, null, null),
                         partHeaders));
 
         HttpHeaders requestHeaders = new HttpHeaders();

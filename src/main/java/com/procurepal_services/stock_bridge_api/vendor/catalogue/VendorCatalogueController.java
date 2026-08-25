@@ -120,18 +120,17 @@ public class VendorCatalogueController {
     }
 
     /**
-     * Brand, unit of measure, filing and minimum order quantity, on the seller's own
-     * product.
+     * Brand, filing and minimum order quantity, on the seller's own product.
      *
-     * <h2>Why a vendor needed this and a listing toggle was not enough</h2>
-     * {@code unitOfMeasure} is how a B2B buyer reads a price at all: N32,000 means
-     * nothing until it means N32,000 per 50kg bag rather than per carton or per litre.
-     * Until this route existed no vendor-facing surface wrote it - {@code /api/products}
-     * has never carried either field, and the operator's route pins its rows to
-     * ProcurePal's own products with {@code ownedBy}, so it 404s a vendor's product even
-     * for the operator. The product form said so and told vendors to contact support,
-     * which was true and useless. A marketplace listing without a unit is close to
-     * unusable for procurement, so this is the gap being closed.
+     * <h2>unitOfMeasure used to be set here too</h2>
+     * It was the original reason this route existed - N32,000 means nothing to a B2B
+     * buyer until it means N32,000 per 50kg bag rather than per carton or per litre - but
+     * it has since moved onto {@code /api/products} create/update, the same request as
+     * everything else a vendor sets on a product, paired there with the
+     * {@code packagingUnit}/{@code packagingSize} pair. A vendor still sets their unit exactly
+     * as before; it is simply on the product form now rather than this one, and validated against the fixed
+     * {@code product.unit.UnitOfMeasure} catalog on that path. See
+     * {@code UpdateVendorMarketplaceDetailsRequest} for the full reasoning.
      *
      * <h2>requireSeller(), not requireVendor()</h2>
      * Same rule as every other handler on this controller, and the reason bears
@@ -144,11 +143,11 @@ public class VendorCatalogueController {
      * the next handler copied from this one.
      *
      * <h2>This sends the listing back for review, and does not decide that here</h2>
-     * {@code brand} and {@code unitOfMeasure} are two of the six identity fields in
-     * {@code ProductModerationRules.invalidatesApproval}: "Dangote, 50kg bag" becoming
-     * "Generic, 25kg bag" at the same name and the same price is a different product to
-     * a buyer, and that is precisely the approve-then-swap the moderation gate exists to
-     * catch. The re-trigger is INHERITED, not re-implemented - the shared service calls
+     * {@code brand} is one of the identity fields in
+     * {@code ProductModerationRules.invalidatesApproval}: "Dangote" becoming "Generic" at
+     * the same name and the same price is a different product to a buyer, and that is
+     * precisely the approve-then-swap the moderation gate exists to catch. The re-trigger
+     * is INHERITED, not re-implemented - the shared service calls
      * {@code onListingContentChanged} itself (the M6 fix), so this handler adds no
      * moderation logic and cannot drift from the operator's route. Category and minimum
      * order quantity are exempt on the same call, for the reasons on the service method.

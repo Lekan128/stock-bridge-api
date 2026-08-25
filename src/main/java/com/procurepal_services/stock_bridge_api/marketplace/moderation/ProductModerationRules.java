@@ -3,6 +3,7 @@ package com.procurepal_services.stock_bridge_api.marketplace.moderation;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
+import java.math.BigDecimal;
 
 /**
  * When a listing needs a human to look at it, and when it does not.
@@ -61,7 +62,7 @@ import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
  * <h2>Every write path that can reach a product row, and what it does about this</h2>
  * The rule above is only worth as much as its coverage, and M6 found it uncovered on one
  * path: {@code MarketplaceCatalogAdminService.updateMarketplaceDetails} wrote {@code brand}
- * and {@code unitOfMeasure} - two of the six fields named below - and never called
+ * and {@code unitOfMeasure} - two of what are now eight fields named below - and never called
  * {@link ProductModerationService#onListingContentChanged}. This table is the audit that
  * found it, kept here so the next person adding a write path has a list to add themselves
  * to rather than a rule to rediscover.
@@ -73,29 +74,61 @@ import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
  * test in {@code ProductModerationWritePathIntegrationTest}, which is organised around this
  * table for exactly that reason.
  *
+ * <p><b>unitOfMeasure moved.</b> A later change gave every tenant - buying company or seller
+ * alike - a structured unit of measure plus a numeric {@code unitCount} on the SAME request as
+ * everything else, {@code ProductManagementService.create}/{@code .update}, and retired
+ * {@code unitOfMeasure} from the two marketplace-details routes below (they keep writing
+ * {@code brand} only). The table's rows for those two routes and for
+ * {@code ProductManagementService.update} were updated to match; nothing about WHERE
+ * unitOfMeasure/unitCount are validated or persisted lives outside this table's routes, only
+ * which of them does it moved.
+ *
+ * <p><b>V18: unitCount split into packagingUnit + packagingSize.</b> The product owner found a
+ * design flaw in the single {@code unitOfMeasure}/{@code unitCount} pair above: it mixed
+ * PACKAGING (Bag, Carton - how something is sold) with MEASUREMENT (kg, L - what it is
+ * measured in) on one axis, with no way to express both at once ("a 50kg bag" needs both). V18
+ * split them - {@code unitOfMeasure} stays what it was, {@code unitCount} was renamed
+ * {@code packagingSize} and joined by a new {@code packagingUnit} - and {@link #invalidatesApproval}
+ * gained {@code oldPackagingUnit}/{@code newPackagingUnit} alongside the renamed
+ * {@code oldPackagingSize}/{@code newPackagingSize}. This did not move any WRITE PATH: every
+ * route in this table that wrote {@code unitOfMeasure}/{@code unitCount} before V18 writes
+ * {@code unitOfMeasure}/{@code packagingUnit}/{@code packagingSize} now, at the same place in
+ * the same method, so no row below needed to move - only {@code ProductManagementService.update}'s
+ * row gained {@code packagingUnit} in its "Identity fields it writes" column.
+ *
  * <table>
  *   <caption>Product write paths</caption>
  *   <tr><th>Path</th><th>Identity fields it writes</th><th>Behaviour</th></tr>
  *   <tr>
  *     <td>{@code ProductManagementService.update} - PUT /api/products/&#123;id&#125;</td>
- *     <td>name, sku, description, imageUrl</td>
+ *     <td>name, sku, description, imageUrl, unitOfMeasure, packagingUnit, packagingSize</td>
  *     <td><b>Re-triggers.</b> The original implementation, and the one every seller's edit
  *         goes through - the vendor catalogue screen links here rather than duplicating a
- *         form. Also the resubmission path for a rejected listing.</td>
+ *         form. Also the resubmission path for a rejected listing. unitOfMeasure and
+ *         unitCount (now packagingSize) joined the fields it actually WRITES here: the
+ *         parameter pair always existed on {@link #invalidatesApproval}, but until that
+ *         change nothing on this path ever set them, so the check was live for a field this
+ *         method could not touch - dead code in the specific sense that no edit here could
+ *         ever trip it. V18 added packagingUnit alongside them, at the same write path, for
+ *         the same reason - see the class javadoc's V18 note. brand is still not writable
+ *         here; it remains the marketplace-details routes' field alone.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code MarketplaceCatalogAdminService.updateMarketplaceDetails} -
  *         PUT /api/marketplace/admin/products/&#123;id&#125;/marketplace-details</td>
- *     <td>brand, unitOfMeasure</td>
+ *     <td>brand</td>
  *     <td><b>Re-triggers</b> since M6; did not before. Latent rather than live at the time
  *         (only the un-moderated platform owner could reach the route), which is why it was
  *         missed - and no longer latent, see the row below. Category, minimum order quantity
- *         and slug are written here too and are exempt - the reasons are on the method.</td>
+ *         and slug are written here too and are exempt - the reasons are on the method.
+ *         unitOfMeasure was writable here through M8; it moved to
+ *         {@code ProductManagementService.create}/{@code .update} (see above) alongside the
+ *         new unitCount, and this method no longer touches it.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code VendorCatalogueController.updateMarketplaceDetails} -
  *         PUT /api/vendor/catalogue/products/&#123;id&#125;/marketplace-details</td>
- *     <td>brand, unitOfMeasure</td>
+ *     <td>brand</td>
  *     <td><b>Re-triggers</b>, by delegation - M8. This is the route the row above called
  *         "the obvious next thing a vendor asks for", and it is the reason the M6 fix was
  *         made against a latent hole: a vendor IS moderated, so from here the approve-then-
@@ -103,7 +136,9 @@ import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
  *         its own - it proves the caller may sell, scopes the row to them, and calls the
  *         same service method, inheriting the re-trigger. It drops {@code slug} on the way
  *         (see {@code UpdateVendorMarketplaceDetailsRequest}); category and minimum order
- *         quantity pass through and keep their exemptions.</td>
+ *         quantity pass through and keep their exemptions. Like the row above, unitOfMeasure
+ *         was writable here through M8 and no longer is - a vendor now sets it through
+ *         /api/products, same as a buying company does.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code MarketplaceCatalogAdminService.setListing} / {@code bulkSetListing}, and
@@ -197,6 +232,17 @@ public final class ProductModerationRules {
      * and the low-stock threshold are deliberately not parameters: they cannot reach
      * this decision, so there is no way for a later edit to accidentally start feeding
      * them in.
+     *
+     * <p>{@code packagingSize} (renamed from {@code unitCount} by V18) joined this list as a
+     * parameter pair alongside {@code unitOfMeasure} rather than being folded into it: they
+     * are separate columns that happen to describe one fact together (see
+     * {@code Product#packagingSize}), and a 25kg bag quietly becoming a 50kg one at the same
+     * unit label is exactly the kind of swap this method exists to catch - "Dangote, 50kg bag"
+     * becoming "Dangote, 25kg bag" is a different product to a buyer even though
+     * {@code unitOfMeasure} alone reads unchanged. {@code packagingUnit} joined as its own pair
+     * for the same reason: "Bag" quietly becoming "Carton" at the same unitOfMeasure and the
+     * same packagingSize is the same kind of swap - "a 50kg bag" and "a 50kg carton" are
+     * different products even though neither of the other two fields changed.
      */
     public static boolean invalidatesApproval(
             String oldName,
@@ -210,16 +256,40 @@ public final class ProductModerationRules {
             String oldImageUrl,
             String newImageUrl,
             String oldUnitOfMeasure,
-            String newUnitOfMeasure) {
+            String newUnitOfMeasure,
+            String oldPackagingUnit,
+            String newPackagingUnit,
+            BigDecimal oldPackagingSize,
+            BigDecimal newPackagingSize) {
         return changed(oldName, newName)
                 || changed(oldSku, newSku)
                 || changed(oldDescription, newDescription)
                 || changed(oldBrand, newBrand)
                 || changed(oldImageUrl, newImageUrl)
-                || changed(oldUnitOfMeasure, newUnitOfMeasure);
+                || changed(oldUnitOfMeasure, newUnitOfMeasure)
+                || changed(oldPackagingUnit, newPackagingUnit)
+                || changed(oldPackagingSize, newPackagingSize);
     }
 
     private static boolean changed(String before, String after) {
         return before == null ? after != null : !before.equals(after);
+    }
+
+    /**
+     * The BigDecimal counterpart of {@link #changed(String, String)}, deliberately NOT using
+     * {@link BigDecimal#equals}: that method is scale-sensitive ({@code 50} and {@code 50.00}
+     * are unequal by it, because it compares representation, not value), so it would send a
+     * listing back for review every time a client resent the same logical unit count at a
+     * different scale - a false positive with no corresponding real edit behind it.
+     * {@link BigDecimal#compareTo} compares numeric value and treats {@code 50} and
+     * {@code 50.00} as equal, which is the behaviour a re-moderation trigger actually wants:
+     * "did the quantity change", not "did the string representation change". Null is handled
+     * the same way {@link #changed(String, String)} handles it - null only equals null.
+     */
+    private static boolean changed(BigDecimal before, BigDecimal after) {
+        if (before == null) {
+            return after != null;
+        }
+        return after == null || before.compareTo(after) != 0;
     }
 }
