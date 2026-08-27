@@ -236,7 +236,7 @@ class RolePermissionMatrixIntegrationTest {
                 "product",
                 new HttpEntity<>(
                         new CreateProductRequest(
-                                "Product " + sku, sku, null, new BigDecimal("9.99"), null, null, null, null, null, null),
+                                "Product " + sku, sku, null, new BigDecimal("9.99"), null, null, null, null, null),
                         partHeaders));
 
         HttpHeaders headers = new HttpHeaders();

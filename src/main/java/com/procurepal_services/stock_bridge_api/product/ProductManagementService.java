@@ -1,8 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product;
 
-import com.procurepal_services.stock_bridge_api.companyvendor.CompanyVendorLookup;
 import com.procurepal_services.stock_bridge_api.entity.Client;
-import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
@@ -18,13 +16,20 @@ import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
+import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
+import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.storage.S3ImageService;
 import com.procurepal_services.stock_bridge_api.storage.UploadResult;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -55,24 +60,55 @@ public class ProductManagementService {
     private final SellerDirectory sellerDirectory;
     private final ProductModerationService productModerationService;
     /**
-     * Resolves a supplier id from a request against the caller's OWN directory.
-     * Goes through the shared lookup rather than the repository directly so the
-     * "active, and belongs to this tenant" check has one implementation - a vendor
-     * id arriving in a request body is exactly where a slightly-wrong copy of it
-     * would file another company's supplier against this company's stock.
+     * V19: the buyer-side product<->vendor join - see {@code ProductVendor}. Used here only to
+     * populate {@code ProductResponse.preferredVendorName}; every other vendor-management
+     * operation (adding a line, editing cost/packaging, toggling preferred) lives in
+     * {@code companyvendor.ProductVendorService} instead.
      */
-    private final CompanyVendorLookup companyVendorLookup;
+    private final ProductVendorRepository productVendorRepository;
+    /** Backs the V19 {@code unitOfMeasure} immutability guard in {@link #update}. */
+    private final StockMovementRepository stockMovementRepository;
+    /**
+     * Reused, not reimplemented, for {@code CreateProductRequest.initialVendor}: {@code stockIn}
+     * already owns the ledger write, the weighted-average cost recalculation and the
+     * find-or-create {@code ProductVendor} line, and a second copy of that logic here would be
+     * the one that drifts. See {@link #create}.
+     */
+    private final StockManagementService stockManagementService;
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
-        return productRepository
-                .findAll(ProductSpecifications.forTenant(requireTenantId(), search, active), pageable)
-                .map(ProductResponse::from);
+        UUID tenantId = requireTenantId();
+        Page<Product> page = productRepository.findAll(ProductSpecifications.forTenant(tenantId, search, active), pageable);
+        Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
+        return page.map(product -> ProductResponse.from(product, preferredVendorNames.get(product.getId()), null));
     }
 
     @Transactional(readOnly = true)
     public ProductResponse get(UUID id) {
-        return ProductResponse.from(findTenantProductOrThrow(id));
+        UUID tenantId = requireTenantId();
+        Product product = findTenantProductOrThrow(id);
+        String preferredVendorName = productVendorRepository
+                .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, id)
+                .map(vendor -> vendor.getCompanyVendor().getName())
+                .orElse(null);
+        return ProductResponse.from(product, preferredVendorName, null);
+    }
+
+    /**
+     * Batched, not per-row: {@code Product.vendors} is a LAZY association specifically so a
+     * page of products never pays for loading it unless something explicitly asks - see that
+     * field's javadoc. One query for the whole page, with {@code companyVendor} eagerly joined,
+     * rather than one query per row.
+     */
+    private Map<UUID, String> preferredVendorNamesFor(UUID tenantId, List<Product> products) {
+        if (products.isEmpty()) {
+            return Map.of();
+        }
+        List<UUID> productIds = products.stream().map(Product::getId).toList();
+        return productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds).stream()
+                .collect(Collectors.toMap(
+                        vendor -> vendor.getProduct().getId(), vendor -> vendor.getCompanyVendor().getName()));
     }
 
     @Transactional(readOnly = true)
@@ -82,8 +118,22 @@ public class ProductManagementService {
                 .toList();
     }
 
+    /** Delegates to {@link #create(CreateProductRequest, MultipartFile, UUID)} with no acting user. */
     @Transactional
     public ProductResponse create(CreateProductRequest request, MultipartFile image) {
+        return create(request, image, null);
+    }
+
+    /**
+     * @param actingUserId attributed on the opening {@code StockMovement} when {@code
+     *     request.initialVendor()} is present - see {@code StockMovement.createdBy}. The
+     *     pre-V19 {@code ProductController} calls the two-argument overload above, which passes
+     *     null here (a movement with no {@code createdBy}, same as any other system-attributed
+     *     write); a controller that has the authenticated principal available should call this
+     *     overload directly instead.
+     */
+    @Transactional
+    public ProductResponse create(CreateProductRequest request, MultipartFile image, UUID actingUserId) {
         UUID tenantId = requireTenantId();
         assertSkuAvailable(tenantId, request.sku(), null);
 
@@ -106,17 +156,20 @@ public class ProductManagementService {
         requirePackagingUnitAndSizePaired(packagingUnit, request.packagingSize());
         requirePackagingImpliesUnitOfMeasure(unitOfMeasure, packagingUnit, request.packagingSize());
 
+        // V19: no .companyVendor(...) builder call any more - Product has no such field. A
+        // supplier is now linked via ProductVendor, either below (initialVendor) or, for a
+        // product created with none, later through ProductVendorService/StockManagementService.
         Product product = Product.builder()
                 .name(request.name())
                 .sku(request.sku())
                 .description(request.description())
                 .unitPrice(isSeller ? request.unitPrice() : null)
-                .costPrice(request.costPrice())
                 .lowStockThreshold(request.lowStockThreshold())
-                .companyVendor(resolveVendor(request.companyVendorId()))
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
                 .packagingSize(request.packagingSize())
+                .quantityOnHand(0)
+                .incomingQuantity(0)
                 .active(true)
                 // Stated rather than left to the column's PENDING default, so the
                 // platform owner's auto-approval is a rule somebody can find. For a
@@ -131,8 +184,40 @@ public class ProductManagementService {
             applyImage(product, image, warnings);
         }
 
-        product = productRepository.save(product);
-        return ProductResponse.from(product, warnings.isEmpty() ? null : warnings);
+        // Flushed, not merely saved: request.initialVendor() below (when present) writes a
+        // StockMovement through StockManagementService.stockIn in the SAME transaction, and
+        // that service locks the product row with a SELECT ... FOR UPDATE against the database
+        // - it must already be able to find this row. Same reasoning
+        // IncomingStockService.findOrCreateBuyerProduct's own saveAndFlush documents.
+        product = productRepository.saveAndFlush(product);
+
+        String preferredVendorName = null;
+        if (request.initialVendor() != null) {
+            CreateProductRequest.InitialVendor initialVendor = request.initialVendor();
+            // Reused, not reimplemented: stockIn already owns the ledger write, the weighted-
+            // average cost recalculation (trivial here since quantityOnHand starts at zero -
+            // the new cost IS initialVendor.cost()) and the find-or-create ProductVendor line,
+            // which this - the product's very first vendor - makes preferred automatically.
+            // "unit" is left null: initialVendor.quantity() is already in the product's own
+            // unitOfMeasure, there being no other configured unit yet to offer a toggle for.
+            stockManagementService.stockIn(
+                    product.getId(),
+                    new StockInRequest(
+                            initialVendor.quantity(),
+                            initialVendor.cost(),
+                            "Opening stock",
+                            null,
+                            initialVendor.companyVendorId(),
+                            initialVendor.packagingUnit(),
+                            initialVendor.packagingSize()),
+                    actingUserId);
+            preferredVendorName = productVendorRepository
+                    .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, product.getId())
+                    .map(vendor -> vendor.getCompanyVendor().getName())
+                    .orElse(null);
+        }
+
+        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
     }
 
     @Transactional
@@ -184,9 +269,6 @@ public class ProductManagementService {
         if (isSeller && product.getUnitPrice() == null) {
             throw new UnitPriceRequiredException();
         }
-        if (request.costPrice() != null) {
-            product.setCostPrice(request.costPrice());
-        }
         if (request.lowStockThreshold() != null) {
             product.setLowStockThreshold(request.lowStockThreshold());
         }
@@ -194,7 +276,19 @@ public class ProductManagementService {
             product.setActive(request.active());
         }
         if (request.unitOfMeasure() != null) {
-            product.setUnitOfMeasure(resolveUnitOfMeasure(request.unitOfMeasure()));
+            // V19: unitOfMeasure is the unit every historical StockMovement quantity is
+            // implicitly recorded in, so it may never actually CHANGE once any movement
+            // exists - see Product.unitOfMeasure's javadoc. Resolved against the fixed unit
+            // list first (same InvalidUnitOfMeasureException as always for a bad code, since
+            // that failure is unconditional), then compared to the RESOLVED existing value -
+            // resending the same unit the product already has is a no-op, not a violation, so
+            // only an actual change trips the guard.
+            String resolvedUnitOfMeasure = resolveUnitOfMeasure(request.unitOfMeasure());
+            if (!Objects.equals(resolvedUnitOfMeasure, product.getUnitOfMeasure())
+                    && stockMovementRepository.existsByProductIdAndClientId(id, product.getClientId())) {
+                throw new UnitOfMeasureImmutableException();
+            }
+            product.setUnitOfMeasure(resolvedUnitOfMeasure);
         }
         if (request.packagingUnit() != null) {
             product.setPackagingUnit(resolvePackagingUnit(request.packagingUnit()));
@@ -212,14 +306,9 @@ public class ProductManagementService {
         requirePackagingUnitAndSizePaired(product.getPackagingUnit(), product.getPackagingSize());
         requirePackagingImpliesUnitOfMeasure(
                 product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize());
-        // Unlink wins over relink: two contradictory instructions in one body, and
-        // "clear it" is the unambiguous one. See UpdateProductRequest for why a bare
-        // null companyVendorId cannot mean this.
-        if (Boolean.TRUE.equals(request.clearCompanyVendor())) {
-            product.setCompanyVendor(null);
-        } else if (request.companyVendorId() != null) {
-            product.setCompanyVendor(resolveVendor(request.companyVendorId()));
-        }
+        // V19: no companyVendorId/clearCompanyVendor handling here any more - see
+        // UpdateProductRequest's class javadoc. Vendor management moved to
+        // companyvendor.ProductVendorService.
 
         List<String> warnings = new ArrayList<>();
         if (hasContent(image)) {
@@ -248,7 +337,11 @@ public class ProductManagementService {
             productModerationService.onListingContentChanged(product);
         }
 
-        return ProductResponse.from(product, warnings.isEmpty() ? null : warnings);
+        String preferredVendorName = productVendorRepository
+                .findByClientIdAndProductIdAndIsPreferredTrue(product.getClientId(), id)
+                .map(vendor -> vendor.getCompanyVendor().getName())
+                .orElse(null);
+        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
     }
 
     @Transactional
@@ -452,25 +545,11 @@ public class ProductManagementService {
         return file != null && !file.isEmpty();
     }
 
-    /**
-     * The supplier a buyer picked, checked against their own directory.
-     *
-     * <p>Nothing stops a caller sending a well-formed UUID belonging to another
-     * company, and {@code products.company_vendor_id} has no CHECK that could catch
-     * it - a foreign key alone is satisfied by any real vendor row. This lookup IS
-     * the constraint, and it is why the id is resolved rather than assigned.
-     *
-     * <p>A VERIFIED entry is a legitimate manual choice, not just an automatic one:
-     * a company that buys rice from a marketplace seller may also want a product
-     * they added by hand filed under that seller. What they may not do is EDIT the
-     * entry, which is a different question and is refused elsewhere.
-     */
-    private CompanyVendor resolveVendor(UUID companyVendorId) {
-        if (companyVendorId == null) {
-            return null;
-        }
-        return companyVendorLookup.find(companyVendorId).orElseThrow(InvalidProductVendorException::new);
-    }
+    // V19: resolveVendor(UUID companyVendorId) removed along with products.company_vendor_id.
+    // The equivalent tenant-scoping lookup for a supplier id now lives in
+    // ProductVendorService.findOrCreateForReceipt (via CompanyVendorLookup, same pattern this
+    // method used) and in CreateProductRequest.InitialVendor's own resolution through
+    // StockManagementService.stockIn.
 
     private Product findTenantProductOrThrow(UUID id) {
         return productRepository.findByIdForCurrentTenant(id).orElseThrow(ProductNotFoundException::new);

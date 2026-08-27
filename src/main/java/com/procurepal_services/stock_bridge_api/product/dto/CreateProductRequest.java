@@ -1,16 +1,30 @@
 package com.procurepal_services.stock_bridge_api.product.dto;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
 import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * {@code companyVendorId} is optional and points at an entry in this company's OWN vendor
- * directory - it is resolved against the caller's tenant before it is stored, so a vendor id
- * belonging to another company is a field error rather than a link. Marketplace purchases set
- * it themselves; this is for stock sourced off-platform.
+ * <h2>V19: companyVendorId is gone; initialVendor replaces it</h2>
+ * The old bare {@code companyVendorId} field assumed a product has at most one supplier - the
+ * single-FK bottleneck MULTI_VENDOR_INVENTORY_DESIGN.md exists to remove. {@link #initialVendor}
+ * is its replacement: optional, and when present it both links the new product to a supplier
+ * from this company's OWN directory AND records the opening stock received from them, in one
+ * screen - "full product form: name, SKU, base unit of measure, default packaging, then first
+ * vendor + cost + quantity in the same screen (this IS the first ProductVendor row, not a
+ * separate step)" (design doc section 7.1). When absent, product creation behaves exactly as
+ * before V19: zero stock, no vendor - most buying companies logging their own napkin count
+ * never fill this in, and nothing forces them to.
+ *
+ * <p>{@code companyVendorId} inside {@link InitialVendor} is resolved against the caller's OWN
+ * tenant before it is stored, the same {@code CompanyVendorLookup} pattern
+ * {@code ProductManagementService.resolveVendor}'s own javadoc warns is load-bearing - a vendor
+ * id belonging to another company must be a field error, never a link.
  *
  * <h2>unitPrice is conditionally required, and not by an annotation</h2>
  * {@code @NotNull} does not appear on this field anymore, deliberately: whether a selling
@@ -46,16 +60,45 @@ import java.util.UUID;
  * fine; nothing here is required. Open to EITHER tenant kind, unlike unitPrice - a buying
  * company logging its own stock benefits from a structured unit exactly as much as a seller
  * does.
+ *
+ * <h2>costPrice is gone - it is never a value a caller supplies</h2>
+ * Per MULTI_VENDOR_INVENTORY_DESIGN.md section 5.3, {@code Product.costPrice} is a computed
+ * weighted-average over purchase history (AVCO, same as Odoo/NetSuite), recalculated by
+ * {@code StockManagementService.stockIn} on every stock-in - never a field a user types. A
+ * bare {@code costPrice} argument here would have been redundant with {@link
+ * InitialVendor#cost} at best (the weighted average of a starting quantity of 0 always
+ * resolves to exactly the vendor's cost, so it was already silently overwritten whenever
+ * {@code initialVendor} was present) and an unearned, unaudited number at worst (whenever it
+ * was not). A product created with no {@code initialVendor} simply has no cost price at all
+ * until its first real stock-in - the same "absent until purchased" state this field's
+ * removal now makes the ONLY way to end up there.
  */
 public record CreateProductRequest(
         @NotBlank String name,
         @NotBlank String sku,
         String description,
         @DecimalMin(value = "0", inclusive = true) BigDecimal unitPrice,
-        @DecimalMin(value = "0", inclusive = true) BigDecimal costPrice,
         @Min(0) Integer lowStockThreshold,
-        UUID companyVendorId,
         String unitOfMeasure,
         String packagingUnit,
-        @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
+        @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
+        @Valid InitialVendor initialVendor) {
+
+    /**
+     * The product's first supplier line, filled in on the same screen as the product itself -
+     * see the class javadoc. {@code quantity} is in base units of the product's own {@code
+     * unitOfMeasure} (no separate {@code unit} toggle here, unlike {@code StockInRequest}: this
+     * form is filling in the product's OWN base unit at the same time, so there is no
+     * already-configured packaging unit yet to enter the quantity in). {@code packagingUnit}/
+     * {@code packagingSize} describe THIS delivery and also seed the vendor line's own
+     * defaults - see {@code ProductVendorService.findOrCreateForReceipt}.
+     */
+    public record InitialVendor(
+            @NotNull UUID companyVendorId,
+            String vendorSku,
+            @NotNull @DecimalMin(value = "0", inclusive = true) BigDecimal cost,
+            @NotNull @Positive Integer quantity,
+            String packagingUnit,
+            @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
+    }
 }

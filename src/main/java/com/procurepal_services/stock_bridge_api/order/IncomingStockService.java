@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.companyvendor.CompanyVendorLinkService;
+import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Order;
 import com.procurepal_services.stock_bridge_api.entity.OrderItem;
 import com.procurepal_services.stock_bridge_api.entity.Product;
@@ -61,6 +63,16 @@ public class IncomingStockService {
     private final BuyerCatalogLookup buyerCatalogLookup;
     private final StockManagementService stockManagementService;
     private final TenantScopeExecutor tenantScopeExecutor;
+    /**
+     * V19: resolves the VERIFIED {@link CompanyVendor} entry for this order's seller, so {@link
+     * #receive} can pass a {@code companyVendorId} into {@code StockManagementService.stockIn} -
+     * which is what actually creates/reuses the {@code ProductVendor} line for this delivery
+     * (see design doc section 7.2). Reused rather than re-derived: {@link
+     * CompanyVendorLinkService#findOrCreateVerifiedEntry} is already the one place that logic
+     * lives, called from {@code recordPurchase} at PLACED - by the time a receipt happens the
+     * row should already exist, but the call is idempotent either way.
+     */
+    private final CompanyVendorLinkService companyVendorLinkService;
 
     /**
      * Called exactly once per order, on the transition into PLACED. Callers must
@@ -113,15 +125,37 @@ public class IncomingStockService {
             // and the buyer cannot fix that from where they are standing.
             locked.setIncomingQuantity(Math.max(0, locked.getIncomingQuantity() - quantity));
 
+            // V19: the vendor side of a verified-vendor receipt is no longer silent - see the
+            // companyVendorLinkService field javadoc and design doc section 7.2. sellerClientId
+            // is guarded the same way CompanyVendorLinkService.recordPurchase guards it: both
+            // should be unreachable in practice (seller_client_id is NOT NULL and an order
+            // cannot name its own buyer as seller), but a receipt must not fail outright over a
+            // data oddity when the buyer is standing in front of the goods - it simply proceeds
+            // with no vendor attributed, exactly as a manual off-platform stock-in with no
+            // vendor picked would.
+            UUID companyVendorId = null;
+            if (order.getSellerClientId() != null && !order.getSellerClientId().equals(order.getClientId())) {
+                CompanyVendor verifiedVendor =
+                        companyVendorLinkService.findOrCreateVerifiedEntry(order.getClientId(), order.getSellerClientId());
+                companyVendorId = verifiedVendor.getId();
+            }
+
             // Reused rather than reimplemented: StockManagementService owns the ledger
-            // write, the row lock and the quantity_on_hand update, and a second copy of
-            // that logic here would be the one that drifts.
+            // write, the row lock, the weighted-average cost recalculation and the
+            // quantity_on_hand/ProductVendor updates, and a second copy of that logic here
+            // would be the one that drifts. "unit"/packagingUnit/packagingSize are left null:
+            // OrderItem.quantity is already in the buyer product's base unitOfMeasure (see
+            // findOrCreateBuyerProduct, which seeds it from item.getUnitOfMeasure()).
             stockManagementService.stockIn(
                     locked.getId(),
                     new StockInRequest(
                             quantity,
                             item.getUnitPrice(),
-                            "Received from marketplace order " + order.getOrderNumber()),
+                            "Received from marketplace order " + order.getOrderNumber(),
+                            null,
+                            companyVendorId,
+                            null,
+                            null),
                     actingUserId);
 
             item.setReceivedQuantity(item.getReceivedQuantity() + quantity);

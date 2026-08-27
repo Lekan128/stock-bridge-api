@@ -6,6 +6,7 @@ import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureResponse;
+import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -18,6 +19,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -102,12 +104,20 @@ public class ProductController {
         return productManagementService.get(id);
     }
 
+    /**
+     * V19: calls the 3-arg {@code create(request, image, actingUserId)} overload rather than
+     * the pre-V19 2-arg one, so {@code request.initialVendor()}'s opening {@code StockMovement}
+     * (when present) is attributed to a real user instead of {@code createdBy = null} - the same
+     * {@code @AuthenticationPrincipal} extraction {@link StockController} already uses.
+     */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<ProductResponse> create(
             @Valid @RequestPart("product") CreateProductRequest request,
-            @RequestPart(value = "image", required = false) MultipartFile image) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(productManagementService.create(request, image));
+            @RequestPart(value = "image", required = false) MultipartFile image,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(productManagementService.create(request, image, principal.getUserId()));
     }
 
     @PutMapping(value = "/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
