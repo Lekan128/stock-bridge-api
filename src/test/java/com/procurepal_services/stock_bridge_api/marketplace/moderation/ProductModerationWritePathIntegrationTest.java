@@ -124,7 +124,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void aNameEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
-                "Something Else Entirely", null, null, null, null, null, null, null, null, null, null, null, null));
+                "Something Else Entirely", null, null, null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
         assertThat(reviewedAtIsCleared(approvedProductId)).isTrue();
@@ -133,7 +133,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void anSkuEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
-                null, FIXTURE_PREFIX + "SWAPPED", null, null, null, null, null, null, null, null, null, null, null));
+                null, FIXTURE_PREFIX + "SWAPPED", null, null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
     }
@@ -142,7 +142,7 @@ class ProductModerationWritePathIntegrationTest {
     void aDescriptionEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
                 null, null, "Now claims to be something a reviewer never saw.",
-                null, null, null, null, null, null, null, null, null, null));
+                null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
     }
@@ -157,7 +157,7 @@ class ProductModerationWritePathIntegrationTest {
         jdbc.update("UPDATE products SET image_url = ? WHERE id = ?", "https://example.test/a.png", approvedProductId);
 
         updateProduct(new UpdateProductRequest(
-                null, null, null, null, null, null, null, true, null, null, null, null, null));
+                null, null, null, null, null, null, true, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
     }
@@ -172,7 +172,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void aUnitOfMeasureEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
-                null, null, null, null, null, null, null, null, null, null, "KG", null, null));
+                null, null, null, null, null, null, null, "KG", null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
         assertThat(reviewedAtIsCleared(approvedProductId)).isTrue();
@@ -190,7 +190,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void aPackagingSizeEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
-                null, null, null, null, null, null, null, null, null, null, null, null, new BigDecimal("25.00")));
+                null, null, null, null, null, null, null, null, null, new BigDecimal("25.00")));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
     }
@@ -207,7 +207,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void aPackagingUnitEditSendsAnApprovedListingBackForReview() {
         updateProduct(new UpdateProductRequest(
-                null, null, null, null, null, null, null, null, null, null, null, "CARTON", null));
+                null, null, null, null, null, null, null, null, "CARTON", null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.PENDING);
         assertThat(reviewedAtIsCleared(approvedProductId)).isTrue();
@@ -224,7 +224,7 @@ class ProductModerationWritePathIntegrationTest {
     @Test
     void resendingTheSamePackagingSizeAtADifferentScaleIsNotAnEdit() {
         updateProduct(new UpdateProductRequest(
-                null, null, null, null, null, null, null, null, null, null, null, null, new BigDecimal("50.0")));
+                null, null, null, null, null, null, null, null, null, new BigDecimal("50.0")));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
     }
@@ -242,11 +242,8 @@ class ProductModerationWritePathIntegrationTest {
                 null,
                 null,
                 new BigDecimal("12345.00"),
-                new BigDecimal("9000.00"),
                 7,
                 true,
-                null,
-                null,
                 null,
                 null, null,
                 null));
@@ -260,7 +257,7 @@ class ProductModerationWritePathIntegrationTest {
         String name = jdbc.queryForObject("SELECT name FROM products WHERE id = ?", String.class, approvedProductId);
 
         updateProduct(new UpdateProductRequest(
-                name, null, null, null, null, null, null, null, null, null, null, null, null));
+                name, null, null, null, null, null, null, null, null, null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);
     }
@@ -649,7 +646,7 @@ class ProductModerationWritePathIntegrationTest {
                 HttpMethod.PUT,
                 multipart(
                         new UpdateProductRequest(
-                                "Renamed Napkins", null, null, null, null, null, null, null, null, null, null, null, null),
+                                "Renamed Napkins", null, null, null, null, null, null, null, null, null),
                         buyerHeaders),
                 ProductResponse.class);
 
@@ -775,7 +772,7 @@ class ProductModerationWritePathIntegrationTest {
                 "product",
                 new HttpEntity<>(
                         new CreateProductRequest(
-                                "Product " + sku, sku, null, new BigDecimal("500.00"), null, null, null, null, null, null),
+                                "Product " + sku, sku, null, new BigDecimal("500.00"), null, null, null, null, null),
                         partHeaders));
 
         HttpHeaders requestHeaders = new HttpHeaders();

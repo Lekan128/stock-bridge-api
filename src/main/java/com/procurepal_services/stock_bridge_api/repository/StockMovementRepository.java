@@ -2,15 +2,47 @@ package com.procurepal_services.stock_bridge_api.repository;
 
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
+import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface StockMovementRepository extends TenantScopedRepository<StockMovement, UUID>, JpaSpecificationExecutor<StockMovement> {
+
+    /**
+     * Whether this product has ever had a movement recorded. Backs the V19 rule that {@code
+     * Product.unitOfMeasure} becomes immutable once true - see {@code Product}'s javadoc on
+     * that field and {@code ProductManagementService.update}'s guard.
+     */
+    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.clientId = :clientId")
+    boolean existsByProductIdAndClientId(@Param("productId") UUID productId, @Param("clientId") UUID clientId);
+
+    /**
+     * Every IN movement (lot) for a product, oldest first, row-locked for the duration of the
+     * caller's transaction - the concurrency guard MULTI_VENDOR_INVENTORY_DESIGN.md section
+     * 5.2a's "Concurrency and oversell" paragraph requires: two stock-outs racing for the same
+     * lot must not both read the same "remaining" balance and both spend it. A second concurrent
+     * {@code stockOut} blocks here until the first transaction commits (or rolls back), then
+     * sees the true post-allocation remaining balance rather than a stale one.
+     *
+     * <p>Locks every IN movement for the product, not just ones with balance remaining -
+     * "remaining" is itself derived from {@code StockMovementAllocationRepository.
+     * sumQuantityByInMovementId} and cannot be filtered in this query without a correlated
+     * subquery per row; simplicity and correctness were chosen over trimming an already-small
+     * per-product row set (inventory volumes here are not high enough for full-table lot counts
+     * to be a real contention concern - see {@code StockManagementService}'s own class javadoc
+     * for the same tradeoff made for the product-row lock).
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT m FROM StockMovement m WHERE m.product.id = :productId AND m.clientId = :clientId "
+            + "AND m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN "
+            + "ORDER BY m.createdAt ASC")
+    List<StockMovement> findInMovementsForUpdate(@Param("productId") UUID productId, @Param("clientId") UUID clientId);
 
     /**
      * Rows with a null unit_price_at_time (adjustments, or IN/OUT recorded

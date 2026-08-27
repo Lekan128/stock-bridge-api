@@ -8,9 +8,10 @@ import com.procurepal_services.stock_bridge_api.entity.Order;
 import com.procurepal_services.stock_bridge_api.entity.OrderItem;
 import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
 import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
-import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -71,7 +72,7 @@ public class VendorPurchaseService {
 
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
-    private final ProductRepository productRepository;
+    private final ProductVendorRepository productVendorRepository;
 
     /** Order count, lifetime spend and last purchase date. Zeroes for EXTERNAL. */
     @Transactional(readOnly = true)
@@ -93,9 +94,10 @@ public class VendorPurchaseService {
      *
      * <h2>The product set comes from the LINK, the price comes from the ORDERS</h2>
      * Two different sources answering two different questions, and merging them
-     * would break both. {@code products.company_vendor_id} says "this is who we get
-     * this item from" - it is a standing arrangement, and it is the only thing an
-     * EXTERNAL supplier can have. The order lines say what was actually paid and
+     * would break both. A {@code product_vendors} row (see {@link ProductVendor}, V19 - this
+     * used to be the single {@code products.company_vendor_id} FK) says "this is a supplier we
+     * buy this item from" - it is a standing arrangement, and it is the only thing an EXTERNAL
+     * supplier can have. The order lines say what was actually paid and
      * when, which is a fact nobody typed in. A product linked but never bought
      * shows with a null price (see VendorProductPriceResponse); a product bought
      * but linked elsewhere shows under the vendor it is linked to, and its real
@@ -104,8 +106,11 @@ public class VendorPurchaseService {
     @Transactional(readOnly = true)
     public List<VendorProductPriceResponse> suppliedProducts(CompanyVendor vendor) {
         UUID buyerClientId = vendor.getClientId();
-        List<Product> products = productRepository.findAllByClientIdAndCompanyVendorIdAndActiveTrueOrderByNameAsc(
-                buyerClientId, vendor.getId());
+        List<Product> products = productVendorRepository
+                .findAllByClientIdAndCompanyVendorIdAndProductActive(buyerClientId, vendor.getId())
+                .stream()
+                .map(ProductVendor::getProduct)
+                .toList();
         if (products.isEmpty()) {
             return List.of();
         }

@@ -11,9 +11,11 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import lombok.Builder;
 import lombok.Getter;
@@ -135,6 +137,17 @@ public class Product extends TenantAwareEntity {
      * {@code ProductManagementService.resolveUnitOfMeasure}) rather than the schema,
      * specifically so existing free-text rows are never broken and so a tenant can still
      * request a unit that isn't on the list yet (a separate module).
+     *
+     * <h2>V19: immutable once the product has any StockMovement</h2>
+     * This is the unit every historical {@link StockMovement} quantity is implicitly recorded
+     * in. Changing it after stock has moved would silently REINTERPRET every past movement
+     * rather than converting anything - a product with 100 units on the books, changed from KG
+     * to BAG, would still say "100" but now mean something 50x larger. Enforced by the service
+     * layer ({@code ProductManagementService.update}, via a {@code StockMovementRepository}
+     * existence check), not a DB constraint - the same reasoning every other cross-row rule in
+     * this class already uses. {@link #packagingUnit}/{@link #packagingSize} are NOT covered by
+     * this rule and stay editable any time - they are a default shortcut for the stock-in form,
+     * never load-bearing for a past record the way the base unit is.
      */
     @Column(name = "unit_of_measure", length = 50)
     private String unitOfMeasure;
@@ -217,27 +230,21 @@ public class Product extends TenantAwareEntity {
     private UUID sourceProductId;
 
     /**
-     * Which supplier this inventory item came from, as an entry in THIS company's
-     * own vendor directory. Set automatically to the VERIFIED entry for the seller
-     * when goods arrive from a marketplace order, and settable by hand to an
-     * EXTERNAL entry for stock sourced off-platform. It is what makes "last
-     * purchase price" and "purchase history per vendor" answerable from the
-     * buyer's own catalog.
+     * Every supplier this inventory item can be bought from, as entries in THIS company's own
+     * vendor directory - the join table that replaced the single {@code company_vendor_id} FK
+     * V11 added and V19 dropped. See {@link ProductVendor}'s class javadoc and
+     * MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1 for the full reasoning behind the change.
      *
-     * <p>Unlike {@link #sourceProductId} this IS a mapped association, and the
-     * difference is the reason: sourceProductId points at the SELLER's product row
-     * and therefore crosses tenants, where a filtered association would be hidden
-     * from under the caller. A CompanyVendor belongs to the same tenant as the
-     * product referencing it, by construction, so navigating it is safe - the same
-     * case as DeliveryAddress.branch.
-     *
-     * <p>Nullable, and permanently so: most inventory rows have no supplier
-     * attached, and a product whose supplier was removed from the directory is
-     * still a product.
+     * <p>LAZY, and deliberately not eagerly joined or batch-fetched: most read paths (the
+     * product list, low-stock, analytics) never touch a product's vendors at all, and forcing
+     * every one of them to pay for loading this collection would be the N+1 this design
+     * explicitly does not want. Load it explicitly (via {@code ProductVendorRepository}) on the
+     * one screen that actually needs it - the Vendors tab - rather than through this
+     * association. {@link #getPreferredVendor()} is the one place this codebase still navigates
+     * it directly, and only because a single row is cheap regardless of collection size.
      */
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "company_vendor_id")
-    private CompanyVendor companyVendor;
+    @OneToMany(mappedBy = "product", fetch = FetchType.LAZY)
+    private List<ProductVendor> vendors;
 
     /**
      * Where this product stands with listing moderation.
@@ -292,4 +299,28 @@ public class Product extends TenantAwareEntity {
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
+
+    /**
+     * Whichever {@link ProductVendor} row currently holds {@code isPreferred = true} for this
+     * product, or {@code null} if the product has no vendors at all. Computed from {@link
+     * #vendors} rather than duplicating a foreign key on this class - see
+     * MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1: "Keep a convenience
+     * Product.getPreferredVendor() accessor computed from the collection - don't duplicate the
+     * FK."
+     *
+     * <p>Requires {@link #vendors} to already be loaded/initialized by the caller - this method
+     * does not trigger a lazy fetch on its own if the collection was never touched inside an
+     * open session, it only filters whatever is already there. Callers that need this outside a
+     * session with the collection loaded should query {@code ProductVendorRepository} directly
+     * instead.
+     */
+    public ProductVendor getPreferredVendor() {
+        if (vendors == null) {
+            return null;
+        }
+        return vendors.stream()
+                .filter(ProductVendor::isPreferred)
+                .findFirst()
+                .orElse(null);
+    }
 }

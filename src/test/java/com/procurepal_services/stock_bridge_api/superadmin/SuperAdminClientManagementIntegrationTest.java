@@ -344,7 +344,7 @@ class SuperAdminClientManagementIntegrationTest {
                 "product",
                 new HttpEntity<>(
                         new CreateProductRequest(
-                                "Product " + sku, sku, null, new BigDecimal("9.99"), null, lowStockThreshold, null,
+                                "Product " + sku, sku, null, new BigDecimal("9.99"), lowStockThreshold, null,
                                 null, null, null),
                         productPartHeaders));
 

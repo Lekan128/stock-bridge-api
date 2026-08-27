@@ -217,7 +217,7 @@ class ProductBulkImportExportIntegrationTest {
     void duplicateSkuAgainstExistingProductIsRejected() {
         TenantLoginResponse admin = signup("Dup Existing Co");
         createProduct(admin, new CreateProductRequest(
-                "Existing", "DUPEX-1", null, new BigDecimal("5.00"), null, null, null, null, null, null));
+                "Existing", "DUPEX-1", null, new BigDecimal("5.00"), null, null, null, null, null));
 
         byte[] file = workbook(List.<Object[]>of(new Object[] {"New Product", "DUPEX-1", null, 9.99, null, null, null}));
 
@@ -375,7 +375,7 @@ class ProductBulkImportExportIntegrationTest {
     void unitOfMeasurePackagingUnitAndPackagingSizeRoundTripThroughCreateAndExport() {
         TenantLoginResponse company = signup("UOM Export Co");
         createProduct(company, new CreateProductRequest(
-                "Rice Bag", "UOM-EXPORT-1", null, null, null, null, null, "kg", "bag", new BigDecimal("25.5")));
+                "Rice Bag", "UOM-EXPORT-1", null, null, null, "kg", "bag", new BigDecimal("25.5"), null));
 
         ResponseEntity<byte[]> response = restTemplate.exchange(
                 "/api/products/export", HttpMethod.GET, new HttpEntity<>(authHeaders(company)), byte[].class);
@@ -582,9 +582,9 @@ class ProductBulkImportExportIntegrationTest {
         TenantLoginResponse tenantA = signup("Export Tenant A " + UUID.randomUUID());
         TenantLoginResponse tenantB = signup("Export Tenant B " + UUID.randomUUID());
         createProduct(tenantA, new CreateProductRequest(
-                "A Item", "EXPORT-A", null, new BigDecimal("1.00"), null, null, null, null, null, null));
+                "A Item", "EXPORT-A", null, new BigDecimal("1.00"), null, null, null, null, null));
         createProduct(tenantB, new CreateProductRequest(
-                "B Item", "EXPORT-B", null, new BigDecimal("1.00"), null, null, null, null, null, null));
+                "B Item", "EXPORT-B", null, new BigDecimal("1.00"), null, null, null, null, null));
 
         ResponseEntity<byte[]> response = restTemplate.exchange(
                 "/api/products/export", HttpMethod.GET, new HttpEntity<>(authHeaders(tenantA)), byte[].class);

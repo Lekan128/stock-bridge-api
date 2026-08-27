@@ -90,7 +90,7 @@ class ProductManagementIntegrationTest {
         // No unitPrice at all - the ordinary case going forward for a buying company.
         ResponseEntity<ProductResponse> withoutPrice = createProduct(
                 company,
-                new CreateProductRequest("Napkins", "NAP-1", null, null, null, null, null, null, null, null),
+                new CreateProductRequest("Napkins", "NAP-1", null, null, null, null, null, null, null),
                 false);
         assertThat(withoutPrice.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(withoutPrice.getBody().unitPrice()).isNull();
@@ -100,7 +100,7 @@ class ProductManagementIntegrationTest {
         ResponseEntity<ProductResponse> withStalePrice = createProduct(
                 company,
                 new CreateProductRequest(
-                        "Cooking Oil", "OIL-1", null, new BigDecimal("999.00"), null, null, null, null, null, null),
+                        "Cooking Oil", "OIL-1", null, new BigDecimal("999.00"), null, null, null, null, null),
                 false);
         assertThat(withStalePrice.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         assertThat(withStalePrice.getBody().unitPrice()).isNull();
@@ -111,7 +111,7 @@ class ProductManagementIntegrationTest {
         TenantLoginResponse company = signup("No Price Needed On Update Co");
         ProductResponse created = createProduct(
                 company,
-                new CreateProductRequest("Broom", "BROOM-1", null, null, null, null, null, null, null, null),
+                new CreateProductRequest("Broom", "BROOM-1", null, null, null, null, null, null, null),
                 false).getBody();
         assertThat(created.unitPrice()).isNull();
 
@@ -120,7 +120,7 @@ class ProductManagementIntegrationTest {
                 HttpMethod.PUT,
                 multipart(
                         new UpdateProductRequest(
-                                null, null, null, new BigDecimal("50.00"), null, null, null, null, null, null,
+                                null, null, null, new BigDecimal("50.00"), null, null, null,
                                 null, null, null),
                         company),
                 ProductResponse.class);
@@ -138,7 +138,7 @@ class ProductManagementIntegrationTest {
                 HttpMethod.POST,
                 multipartEntity(
                         vendor,
-                        new CreateProductRequest("Rice", "RICE-1", null, null, null, null, null, null, null, null),
+                        new CreateProductRequest("Rice", "RICE-1", null, null, null, null, null, null, null),
                         false),
                 ApiError.class);
 
@@ -153,7 +153,7 @@ class ProductManagementIntegrationTest {
         ResponseEntity<ProductResponse> response = createProduct(
                 vendor,
                 new CreateProductRequest(
-                        "Beans", "BEANS-1", null, new BigDecimal("15000.00"), null, null, null, null, null, null),
+                        "Beans", "BEANS-1", null, new BigDecimal("15000.00"), null, null, null, null, null),
                 false);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -180,7 +180,7 @@ class ProductManagementIntegrationTest {
                 HttpMethod.PUT,
                 multipart(
                         new UpdateProductRequest(
-                                "Renamed", null, null, null, null, null, null, null, null, null, null, null, null),
+                                "Renamed", null, null, null, null, null, null, null, null, null),
                         vendor),
                 ApiError.class);
 
@@ -208,7 +208,7 @@ class ProductManagementIntegrationTest {
         ResponseEntity<ProductResponse> response = createProduct(
                 company,
                 new CreateProductRequest(
-                        "Palm Oil", "LOOSE-1", null, null, null, null, null, "LITER", null, null),
+                        "Palm Oil", "LOOSE-1", null, null, null, "LITER", null, null, null),
                 false);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -230,7 +230,7 @@ class ProductManagementIntegrationTest {
         ResponseEntity<ProductResponse> created = createProduct(
                 company,
                 new CreateProductRequest(
-                        "Bagged Rice", "BAGGED-1", null, null, null, null, null, "KG", "BAG", new BigDecimal("50")),
+                        "Bagged Rice", "BAGGED-1", null, null, null, "KG", "BAG", new BigDecimal("50"), null),
                 false);
 
         assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -256,7 +256,7 @@ class ProductManagementIntegrationTest {
         ResponseEntity<ProductResponse> response = createProduct(
                 company,
                 new CreateProductRequest(
-                        "Cement", "CEMENT-1", null, null, null, null, null, "kg", "bag", new BigDecimal("50")),
+                        "Cement", "CEMENT-1", null, null, null, "kg", "bag", new BigDecimal("50"), null),
                 false);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -274,7 +274,7 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         company,
                         new CreateProductRequest(
-                                "Widget", "WIDGET-UOM-1", null, null, null, null, null, "NOT_A_REAL_UNIT", null, null),
+                                "Widget", "WIDGET-UOM-1", null, null, null, "NOT_A_REAL_UNIT", null, null, null),
                         false),
                 ApiError.class);
 
@@ -292,8 +292,8 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         company,
                         new CreateProductRequest(
-                                "Widget", "WIDGET-PKG-1", null, null, null, null, null, "KG", "NOT_A_REAL_PACKAGE",
-                                new BigDecimal("1")),
+                                "Widget", "WIDGET-PKG-1", null, null, null, "KG", "NOT_A_REAL_PACKAGE",
+                                new BigDecimal("1"), null),
                         false),
                 ApiError.class);
 
@@ -315,7 +315,7 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         company,
                         new CreateProductRequest(
-                                "Widget", "WRONGROLE-BASE-1", null, null, null, null, null, "BAG", null, null),
+                                "Widget", "WRONGROLE-BASE-1", null, null, null, "BAG", null, null, null),
                         false),
                 ApiError.class);
 
@@ -337,8 +337,8 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         company,
                         new CreateProductRequest(
-                                "Widget", "WRONGROLE-PKG-1", null, null, null, null, null, "KG", "KG",
-                                new BigDecimal("1")),
+                                "Widget", "WRONGROLE-PKG-1", null, null, null, "KG", "KG",
+                                new BigDecimal("1"), null),
                         false),
                 ApiError.class);
 
@@ -356,7 +356,7 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         company,
                         new CreateProductRequest(
-                                "Sugar", "SUGAR-1", null, null, null, null, null, "KG", "BAG", null),
+                                "Sugar", "SUGAR-1", null, null, null, "KG", "BAG", null, null),
                         false),
                 ApiError.class);
 
@@ -374,7 +374,7 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         company,
                         new CreateProductRequest(
-                                "Flour", "FLOUR-1", null, null, null, null, null, "KG", null, new BigDecimal("10")),
+                                "Flour", "FLOUR-1", null, null, null, "KG", null, new BigDecimal("10"), null),
                         false),
                 ApiError.class);
 
@@ -397,8 +397,8 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         company,
                         new CreateProductRequest(
-                                "Rice", "RICE-NOBASE-1", null, null, null, null, null, null, "BAG",
-                                new BigDecimal("50")),
+                                "Rice", "RICE-NOBASE-1", null, null, null, null, "BAG",
+                                new BigDecimal("50"), null),
                         false),
                 ApiError.class);
 
@@ -417,7 +417,7 @@ class ProductManagementIntegrationTest {
         ProductResponse created = createProduct(
                 company,
                 new CreateProductRequest(
-                        "Palm Oil", "PALMOIL-1", null, null, null, null, null, "LITER", "KEG", new BigDecimal("4")),
+                        "Palm Oil", "PALMOIL-1", null, null, null, "LITER", "KEG", new BigDecimal("4"), null),
                 false).getBody();
 
         ResponseEntity<ProductResponse> updated = restTemplate.exchange(
@@ -425,7 +425,7 @@ class ProductManagementIntegrationTest {
                 HttpMethod.PUT,
                 multipart(
                         new UpdateProductRequest(
-                                null, null, null, null, null, null, null, null, null, null, null, null,
+                                null, null, null, null, null, null, null, null, null,
                                 new BigDecimal("5")),
                         company),
                 ProductResponse.class);
@@ -446,7 +446,7 @@ class ProductManagementIntegrationTest {
         TenantLoginResponse company = signup("Patch Packaging Alone Co");
         ProductResponse created = createProduct(
                 company,
-                new CreateProductRequest("Detergent", "DETERGENT-1", null, null, null, null, null, null, null, null),
+                new CreateProductRequest("Detergent", "DETERGENT-1", null, null, null, null, null, null, null),
                 false).getBody();
         assertThat(created.unitOfMeasure()).isNull();
         assertThat(created.packagingUnit()).isNull();
@@ -457,7 +457,7 @@ class ProductManagementIntegrationTest {
                 HttpMethod.PUT,
                 multipart(
                         new UpdateProductRequest(
-                                null, null, null, null, null, null, null, null, null, null, null, "BAG", null),
+                                null, null, null, null, null, null, null, null, "BAG", null),
                         company),
                 ApiError.class);
 
@@ -477,7 +477,7 @@ class ProductManagementIntegrationTest {
         ProductResponse created = createProduct(
                 company,
                 new CreateProductRequest(
-                        "Rice", "CLEARBASE-1", null, null, null, null, null, "KG", "BAG", new BigDecimal("50")),
+                        "Rice", "CLEARBASE-1", null, null, null, "KG", "BAG", new BigDecimal("50"), null),
                 false).getBody();
 
         ResponseEntity<ApiError> response = restTemplate.exchange(
@@ -485,7 +485,7 @@ class ProductManagementIntegrationTest {
                 HttpMethod.PUT,
                 multipart(
                         new UpdateProductRequest(
-                                null, null, null, null, null, null, null, null, null, null, "", null, null),
+                                null, null, null, null, null, null, null, "", null, null),
                         company),
                 ApiError.class);
 
@@ -538,7 +538,7 @@ class ProductManagementIntegrationTest {
 
         ResponseEntity<ProductResponse> response = createProduct(
                 admin,
-                new CreateProductRequest("Widget", "WID-1", "A widget", new BigDecimal("9.99"), null, 5, null, null, null, null),
+                new CreateProductRequest("Widget", "WID-1", "A widget", new BigDecimal("9.99"), 5, null, null, null, null),
                 true);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -555,7 +555,7 @@ class ProductManagementIntegrationTest {
 
         ResponseEntity<ProductResponse> response = createProduct(
                 admin,
-                new CreateProductRequest("Gadget", "GAD-1", "A gadget", new BigDecimal("14.99"), null, 5, null, null, null, null),
+                new CreateProductRequest("Gadget", "GAD-1", "A gadget", new BigDecimal("14.99"), 5, null, null, null, null),
                 true);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -569,7 +569,7 @@ class ProductManagementIntegrationTest {
     void skuMustBeUniqueWithinTenant() {
         TenantLoginResponse admin = signup("Sku Uniqueness Co");
         CreateProductRequest request =
-                new CreateProductRequest("First", "DUP-1", null, new BigDecimal("1.00"), null, null, null, null, null, null);
+                new CreateProductRequest("First", "DUP-1", null, new BigDecimal("1.00"), null, null, null, null, null);
         assertThat(createProduct(admin, request, false).getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
         ResponseEntity<ApiError> secondResponse = restTemplate.exchange(
@@ -578,7 +578,7 @@ class ProductManagementIntegrationTest {
                 multipartEntity(
                         admin,
                         new CreateProductRequest(
-                                "Second", "DUP-1", null, new BigDecimal("2.00"), null, null, null, null, null, null),
+                                "Second", "DUP-1", null, new BigDecimal("2.00"), null, null, null, null, null),
                         false),
                 ApiError.class);
 
@@ -637,11 +637,11 @@ class ProductManagementIntegrationTest {
         TenantLoginResponse tenantB = signup("Tenant B " + UUID.randomUUID());
         createProduct(
                 tenantA,
-                new CreateProductRequest("A Product", "A-SKU", null, BigDecimal.ONE, null, null, null, null, null, null),
+                new CreateProductRequest("A Product", "A-SKU", null, BigDecimal.ONE, null, null, null, null, null),
                 false);
         ResponseEntity<ProductResponse> bProductResponse = createProduct(
                 tenantB,
-                new CreateProductRequest("B Product", "B-SKU", null, BigDecimal.ONE, null, null, null, null, null, null),
+                new CreateProductRequest("B Product", "B-SKU", null, BigDecimal.ONE, null, null, null, null, null),
                 false);
         UUID bProductId = bProductResponse.getBody().id();
 

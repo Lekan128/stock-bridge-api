@@ -85,29 +85,11 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
     // ------------------------------------------------------------------------
     // The buyer-side vendor directory (M5).
     //
-    // products.company_vendor_id and the product both belong to the same tenant
-    // by construction, so these are ordinary in-tenant reads - no guard, no
-    // filter lifting. The explicit clientId predicate is here for the usual
-    // reason: it holds even if the Hibernate filter is ever left disabled.
-    //
-    // V11 deliberately added no finders for this column. These are the ones the
-    // vendor detail screen and product<->vendor linking actually use, added at
-    // the point of use rather than speculatively.
+    // V19 removed products.company_vendor_id (the single-FK bottleneck one
+    // vendor per product) in favour of the product_vendors join table - see
+    // ProductVendorRepository.findAllByClientIdAndCompanyVendorIdAndProductActive,
+    // which replaced the finder that used to live here.
     // ------------------------------------------------------------------------
-
-    /**
-     * "What we buy from this supplier" - the products a company has filed under one
-     * directory entry, alphabetical, which is the order the vendor detail screen
-     * renders them in.
-     */
-    List<Product> findAllByClientIdAndCompanyVendorIdAndActiveTrueOrderByNameAsc(UUID clientId, UUID companyVendorId);
-
-    /**
-     * How many products would lose their supplier link if this vendor row went
-     * away. Read before deactivating one, so the confirmation can say what the
-     * consequence is instead of asking the buyer to guess.
-     */
-    long countByClientIdAndCompanyVendorIdAndActiveTrue(UUID clientId, UUID companyVendorId);
 
     /**
      * A seller's whole live catalogue, alphabetical - the population behind the

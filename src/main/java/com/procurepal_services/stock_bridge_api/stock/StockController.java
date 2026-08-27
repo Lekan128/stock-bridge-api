@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.stock;
 
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
+import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockAdjustmentRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
@@ -9,6 +10,7 @@ import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockOutRequest;
 import jakarta.validation.Valid;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -71,5 +73,17 @@ public class StockController {
             @RequestParam(required = false) MovementType movementType,
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
         return stockManagementService.allMovements(from, to, movementType, pageable);
+    }
+
+    /**
+     * Traces one delivery (an {@code IN} movement/lot) forward to every sale it contributed to -
+     * MULTI_VENDOR_INVENTORY_DESIGN.md section 8/10, the recall/dispute query this feature exists
+     * to answer. Sits alongside {@link #history}/{@link #allMovements} rather than under {@code
+     * /api/products/{id}/stock/**} because, like {@link #allMovements}, it addresses a movement
+     * directly by its own id rather than through a product.
+     */
+    @GetMapping("/api/stock-movements/{inMovementId}/allocations")
+    public List<AllocationResponse> allocations(@PathVariable UUID inMovementId) {
+        return stockManagementService.allocationsForInMovement(inMovementId);
     }
 }

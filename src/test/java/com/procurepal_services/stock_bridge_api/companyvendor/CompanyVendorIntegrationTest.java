@@ -17,11 +17,15 @@ import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorPurchase
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendorKind;
 import com.procurepal_services.stock_bridge_api.entity.PaymentMethod;
+import com.procurepal_services.stock_bridge_api.entity.Order;
+import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.PaymentTerms;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderResponse;
+import com.procurepal_services.stock_bridge_api.order.dto.ReceiveOrderRequest;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
+import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
@@ -75,6 +79,9 @@ class CompanyVendorIntegrationTest {
 
     @Autowired
     private ProductRepository productRepository;
+
+    @Autowired
+    private OrderRepository orderRepository;
 
     private final List<UUID> plantedCatalogProductIds = new ArrayList<>();
 
@@ -433,21 +440,31 @@ class CompanyVendorIntegrationTest {
         UUID addressId = createAddress(buyer).id();
 
         repriceCatalogProduct(catalogProduct.getId(), new BigDecimal("10000.00"));
-        placeCodOrder(buyer, catalogProduct, 4, addressId);
+        UUID firstOrderId = placeCodOrder(buyer, catalogProduct, 4, addressId).id();
+        deliverOrder(buyer, firstOrderId);
+        receive(buyer, firstOrderId, null);
 
         repriceCatalogProduct(catalogProduct.getId(), new BigDecimal("11500.00"));
-        placeCodOrder(buyer, catalogProduct, 6, addressId);
+        UUID secondOrderId = placeCodOrder(buyer, catalogProduct, 6, addressId).id();
+        deliverOrder(buyer, secondOrderId);
+        receive(buyer, secondOrderId, null);
 
         // The last one, and deliberately the CHEAPEST, so a test that happened to pick
         // the highest price would fail here.
         repriceCatalogProduct(catalogProduct.getId(), new BigDecimal("9250.00"));
-        placeCodOrder(buyer, catalogProduct, 7, addressId);
+        UUID thirdOrderId = placeCodOrder(buyer, catalogProduct, 7, addressId).id();
+        deliverOrder(buyer, thirdOrderId);
+        receive(buyer, thirdOrderId, null);
 
         CompanyVendorResponse vendor = listVendors(buyer).getFirst();
         CompanyVendorDetailResponse detail = getVendor(buyer, vendor.id());
 
-        // The product was linked automatically because it arrived from a marketplace
-        // order - part of the same auto-create.
+        // Since V19, the product_vendors link (what makes a product show up as
+        // "supplied by" this vendor) is created by the RECEIVING step, not by placing
+        // the order - see IncomingStockService.receive and the design doc's §7.2. An
+        // order that is only placed, never received, is not yet a standing "we buy
+        // this from them" arrangement; goods actually arriving is. Each order above is
+        // received immediately so the link exists by the time the assertions run.
         assertThat(detail.products()).hasSize(1);
         VendorProductPriceResponse supplied = detail.products().getFirst();
         assertThat(supplied.sku()).isEqualTo(catalogProduct.getSku());
@@ -737,6 +754,38 @@ class CompanyVendorIntegrationTest {
                 OrderResponse.class);
         assertThat(placed.getStatusCode()).as("place order").isEqualTo(HttpStatus.OK);
         return placed.getBody();
+    }
+
+    /**
+     * Fast-forwards a COD order straight to DELIVERED, bypassing the operator-driven
+     * CONFIRMED/PROCESSING/OUT_FOR_DELIVERY steps that {@code OrderLifecycleService}
+     * would otherwise require - this suite has no platform-owner-operator login
+     * fixture, and the state machine's own transition audit trail is not what these
+     * tests are checking. Direct persistence-layer manipulation under the buyer's own
+     * tenant, same pattern as {@link #plantCatalogProduct} / {@link #repriceCatalogProduct}
+     * already use for the platform owner's side.
+     */
+    private void deliverOrder(Buyer buyer, UUID orderId) {
+        TenantContext.set(buyer.clientId());
+        try {
+            Order order = orderRepository.findById(orderId).orElseThrow();
+            order.setStatus(OrderStatus.DELIVERED);
+            order.setDeliveredAt(java.time.OffsetDateTime.now());
+            orderRepository.saveAndFlush(order);
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    /** Full receipt of everything outstanding on the order (request body {@code null}). */
+    private OrderResponse receive(Buyer buyer, UUID orderId, ReceiveOrderRequest request) {
+        ResponseEntity<OrderResponse> response = restTemplate.exchange(
+                "/api/orders/" + orderId + "/receive",
+                HttpMethod.POST,
+                new HttpEntity<>(request, buyer.headers()),
+                OrderResponse.class);
+        assertThat(response.getStatusCode()).as("receive").isEqualTo(HttpStatus.OK);
+        return response.getBody();
     }
 
     /**

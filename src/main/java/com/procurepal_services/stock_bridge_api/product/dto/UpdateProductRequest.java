@@ -3,18 +3,27 @@ package com.procurepal_services.stock_bridge_api.product.dto;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import java.math.BigDecimal;
-import java.util.UUID;
 
 /**
  * All fields optional/nullable - only non-null ones are applied. removeImage
  * lets a caller clear image_url without providing a replacement file; it's
  * ignored if a new image file part is also present (the new upload wins).
  *
- * <p>{@code clearCompanyVendor} exists for the same reason removeImage does, and it is not
- * redundant with sending {@code companyVendorId: null}: in a patch-style DTO null means "not
- * provided", so there would otherwise be no way to say "unlink this product from its supplier"
- * at all. The explicit flag wins over companyVendorId if both are sent, because "clear it" is
- * the less ambiguous of two contradictory instructions.
+ * <h2>V19: no companyVendorId/clearCompanyVendor here any more</h2>
+ * Both existed only because a product had at most one supplier, via the single {@code
+ * company_vendor_id} FK this whole feature removed - see
+ * MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1. Managing a product's suppliers - adding one,
+ * editing a line's cost/packaging, toggling which is preferred - is no longer a product-edit
+ * concern at all; it lives at {@code GET/PATCH /api/products/{id}/vendors[/{vendorId}]}
+ * ({@code companyvendor.ProductVendorService}). {@code unitOfMeasure} also gained a NEW
+ * cross-field rule here - see below - now that the base unit can no longer be silently changed
+ * out from under a product's history.
+ *
+ * <h2>unitOfMeasure is immutable once the product has any StockMovement</h2>
+ * A non-null {@code unitOfMeasure} in this request is rejected with {@code
+ * UnitOfMeasureImmutableException} if the product already has recorded stock movements - see
+ * {@code Product.unitOfMeasure}'s own javadoc for why. {@code packagingUnit}/{@code
+ * packagingSize} are unaffected and stay editable any time.
  *
  * <h2>unitPrice: patch semantics, but a seller may never end up with none</h2>
  * A non-null unitPrice is applied exactly like every other patch field here - but for a
@@ -46,18 +55,23 @@ import java.util.UUID;
  *       {@code unitOfMeasure} while packaging is still in place from before is rejected the
  *       same way as never having set a {@code unitOfMeasure} at all.</li>
  * </ul>
+ *
+ * <h2>costPrice is gone - it can never be patched directly</h2>
+ * Same reasoning as {@link CreateProductRequest}'s own removal, applied to the patch side:
+ * per MULTI_VENDOR_INVENTORY_DESIGN.md section 5.3, {@code costPrice} is purely derived, a
+ * weighted-average {@code StockManagementService.stockIn} recalculates on every stock-in from
+ * a vendor - not a value this DTO's usual "non-null is applied" patch semantics may ever move.
+ * Letting an update silently clobber it would erase the ledger's weighted average with no
+ * ledger entry and no audit trail, exactly the loophole this removal closes.
  */
 public record UpdateProductRequest(
         String name,
         String sku,
         String description,
         @DecimalMin(value = "0", inclusive = true) BigDecimal unitPrice,
-        @DecimalMin(value = "0", inclusive = true) BigDecimal costPrice,
         @Min(0) Integer lowStockThreshold,
         Boolean active,
         Boolean removeImage,
-        UUID companyVendorId,
-        Boolean clearCompanyVendor,
         String unitOfMeasure,
         String packagingUnit,
         @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
