@@ -181,7 +181,18 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(corsProperties.allowedOrigins());
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        // PATCH is not optional and was not here until bulk import needed it. Nothing in the app
+        // used PATCH before - updates were PUT - so its absence cost nothing and was invisible.
+        // Bulk import's review screen is built on four PATCHes (repair a cell, skip a row, remap a
+        // column, answer a question), which is the entire fix-and-continue loop, and a method
+        // missing from this list is refused by the CorsFilter with a bare 403 "Invalid CORS
+        // request" before it reaches any controller. From a browser that meant the file could be
+        // uploaded and looked at and never corrected.
+        //
+        // Nothing caught it because nothing could: MockMvc and TestRestTemplate are same-origin
+        // and never preflight, and the review screens were developed against an in-memory mock
+        // that made no HTTP request at all. CorsIntegrationTest now preflights PATCH explicitly.
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         // The frontend sends bearer tokens via the Authorization header and keeps
         // them in memory/localStorage rather than cookies, so there's no

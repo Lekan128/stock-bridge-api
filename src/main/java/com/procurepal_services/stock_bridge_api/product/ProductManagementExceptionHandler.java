@@ -29,6 +29,27 @@ public class ProductManagementExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(UnitPriceRequiredException.class)
+    public ResponseEntity<ApiError> handleUnitPriceRequired(UnitPriceRequiredException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidUnitOfMeasureException.class)
+    public ResponseEntity<ApiError> handleInvalidUnitOfMeasure(InvalidUnitOfMeasureException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(PackagingUnitAndSizeRequiredTogetherException.class)
+    public ResponseEntity<ApiError> handlePackagingUnitAndSizeRequiredTogether(
+            PackagingUnitAndSizeRequiredTogetherException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(PackagingRequiresUnitOfMeasureException.class)
+    public ResponseEntity<ApiError> handlePackagingRequiresUnitOfMeasure(PackagingRequiresUnitOfMeasureException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
     /** Safety net for a concurrent create()/update() racing the SKU pre-check. */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> handleDataIntegrityViolation(DataIntegrityViolationException ex) {

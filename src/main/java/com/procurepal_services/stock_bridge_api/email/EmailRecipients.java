@@ -126,6 +126,26 @@ public class EmailRecipients {
     }
 
     /**
+     * The inbox that reads "we don't have that unit yet" suggestions from the
+     * product catalog form - the same {@code app.email.vendor-waitlist-address}
+     * as {@link #forVendorWaitlist()}, which always has a value (see
+     * {@link EmailProperties}).
+     *
+     * <p>Deliberately its own method rather than a second call site scattered
+     * through the product package for {@link #forVendorWaitlist()}, on this
+     * class's usual reasoning: the two audiences are different questions today
+     * (partner recruitment vs. a catalog suggestion box) that happen to share
+     * one inbox at ProcurePaddy's current size, and naming the method for what
+     * it is means a future split only has to change the body here, not every
+     * caller. See {@code ProductEmails} for the one message this is used for.
+     *
+     * <p>Never empty, for the same reason {@link #forVendorWaitlist()} never is.
+     */
+    public List<String> forUnitOfMeasureRequests() {
+        return List.of(emailProperties.vendorWaitlistAddress());
+    }
+
+    /**
      * Every platform operator - the {@code super_admins} table, in full.
      *
      * <h2>Why this one DOES list a table, when the class doc says it never does</h2>

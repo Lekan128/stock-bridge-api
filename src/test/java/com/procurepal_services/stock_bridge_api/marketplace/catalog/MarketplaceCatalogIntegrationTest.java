@@ -554,7 +554,7 @@ class MarketplaceCatalogIntegrationTest {
         assertForbidden(outsider, HttpMethod.POST, ADMIN + "/products/bulk-listing",
                 new BulkListingRequest(List.of(anyId), true));
         assertForbidden(outsider, HttpMethod.PUT, ADMIN + "/products/" + anyId + "/marketplace-details",
-                new UpdateMarketplaceDetailsRequest(null, null, "carton", 1, null, null));
+                new UpdateMarketplaceDetailsRequest(null, null, 1, null, null));
         assertForbidden(outsider, HttpMethod.GET, ADMIN + "/categories", null);
         assertForbidden(outsider, HttpMethod.POST, ADMIN + "/categories",
                 new CreateCategoryRequest("Sneaky", null, null, null, null));
@@ -643,19 +643,17 @@ class MarketplaceCatalogIntegrationTest {
     }
 
     @Test
-    void marketplaceDetailsUpdateCategoryUnitOfMeasureMoqBrandAndSlug() {
+    void marketplaceDetailsUpdateCategoryMoqBrandAndSlug() {
         TenantLoginResponse operator = loginAsOperator();
         Product product = plantOperatorProduct("Details Widget");
         UUID categoryId = categories().getFirst().id();
         try {
             AdminCatalogProductResponse updated = adminBody(
                     operator, HttpMethod.PUT, ADMIN + "/products/" + product.getId() + "/marketplace-details",
-                    new UpdateMarketplaceDetailsRequest(
-                            categoryId, null, "carton (24)", 5, "Test Brand", "details-widget-custom"),
+                    new UpdateMarketplaceDetailsRequest(categoryId, null, 5, "Test Brand", "details-widget-custom"),
                     AdminCatalogProductResponse.class);
 
             assertThat(updated.categoryId()).isEqualTo(categoryId);
-            assertThat(updated.unitOfMeasure()).isEqualTo("carton (24)");
             assertThat(updated.minOrderQuantity()).isEqualTo(5);
             assertThat(updated.brand()).isEqualTo("Test Brand");
             assertThat(updated.slug()).isEqualTo("details-widget-custom");
@@ -665,7 +663,7 @@ class MarketplaceCatalogIntegrationTest {
                     ADMIN + "/products/" + product.getId() + "/marketplace-details",
                     HttpMethod.PUT,
                     new HttpEntity<>(
-                            new UpdateMarketplaceDetailsRequest(null, null, null, 0, null, null),
+                            new UpdateMarketplaceDetailsRequest(null, null, 0, null, null),
                             authHeaders(operator)),
                     ApiError.class);
             assertThat(invalid.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
@@ -702,7 +700,7 @@ class MarketplaceCatalogIntegrationTest {
             // A slug the operator typed collides loudly instead of being silently renamed.
             ResponseEntity<String> conflict = exchange(
                     operator, HttpMethod.PUT, ADMIN + "/products/" + second.getId() + "/marketplace-details",
-                    new UpdateMarketplaceDetailsRequest(null, null, null, null, null, listedFirst.slug()));
+                    new UpdateMarketplaceDetailsRequest(null, null, null, null, listedFirst.slug()));
             assertThat(conflict.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         } finally {
             deleteAs(first.getClientId(), first);

@@ -11,9 +11,11 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
+import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import lombok.Builder;
 import lombok.Getter;
@@ -54,7 +56,20 @@ public class Product extends TenantAwareEntity {
     @Column(columnDefinition = "TEXT")
     private String description;
 
-    @Column(name = "unit_price", nullable = false, precision = 14, scale = 2)
+    /**
+     * Selling price. Required only for a product belonging to a SELLING tenant -
+     * {@link ClientType#VENDOR}, or the platform owner acting as a seller - and
+     * that requirement is NOT enforced here: a CHECK/NOT NULL on this column
+     * cannot tell a company's row from a vendor's without a join, the same
+     * reason {@link #marketplaceListed}'s seller-only rule lives outside a
+     * constraint too. It is enforced by the service layer instead.
+     *
+     * <p>Nullable since V17. A buying company adding stock it BOUGHT has no
+     * selling price to give and may now leave this blank; a vendor's row is
+     * still expected to always carry one. Existing rows are unaffected - this
+     * only removes the requirement going forward.
+     */
+    @Column(name = "unit_price", precision = 14, scale = 2)
     private BigDecimal unitPrice;
 
     @Column(name = "cost_price", precision = 14, scale = 2)
@@ -99,9 +114,80 @@ public class Product extends TenantAwareEntity {
     @Column(name = "is_marketplace_listed", nullable = false)
     private boolean marketplaceListed;
 
-    /** How the item is actually traded: 'bag (50kg)', 'carton (24)', 'keg (25L)'. */
+    /**
+     * What this product is fundamentally MEASURED in - a weight, volume, length, or (for
+     * uncounted discrete goods) the generic "piece". Must resolve to a
+     * {@code product.unit.UnitOfMeasure} constant whose
+     * {@code product.unit.UnitOfMeasureRole} is {@code BASE} (see that enum for why the split
+     * exists).
+     *
+     * <h2>V18: this is now one of THREE related fields, not one of two</h2>
+     * V17 paired this with a single numeric count and called that "how much one unit is" -
+     * but that conflated two different questions a B2B product actually needs answered
+     * separately: what it is measured in, and how it is packaged/sold. V18 splits the second
+     * question out to {@link #packagingUnit} + {@link #packagingSize}, so "a 50kg bag" is now
+     * expressed as unitOfMeasure=KG (this field), packagingUnit=BAG, packagingSize=50 - all
+     * three together, not unitOfMeasure=BAG with a bare count and no unit. This field alone,
+     * with the other two null, is still valid and means "sold loose" - e.g.
+     * unitOfMeasure=LITER with no packaging at all.
+     *
+     * <p>Column mapping is unchanged by V18 - still a free VARCHAR(50), no CHECK. The
+     * application validates a new value against the fixed list in
+     * {@code product.unit.UnitOfMeasure} (see its {@code fromCode}, role-checked for BASE by
+     * {@code ProductManagementService.resolveUnitOfMeasure}) rather than the schema,
+     * specifically so existing free-text rows are never broken and so a tenant can still
+     * request a unit that isn't on the list yet (a separate module).
+     *
+     * <h2>V19: immutable once the product has any StockMovement</h2>
+     * This is the unit every historical {@link StockMovement} quantity is implicitly recorded
+     * in. Changing it after stock has moved would silently REINTERPRET every past movement
+     * rather than converting anything - a product with 100 units on the books, changed from KG
+     * to BAG, would still say "100" but now mean something 50x larger. Enforced by the service
+     * layer ({@code ProductManagementService.update}, via a {@code StockMovementRepository}
+     * existence check), not a DB constraint - the same reasoning every other cross-row rule in
+     * this class already uses. {@link #packagingUnit}/{@link #packagingSize} are NOT covered by
+     * this rule and stay editable any time - they are a default shortcut for the stock-in form,
+     * never load-bearing for a past record the way the base unit is.
+     */
     @Column(name = "unit_of_measure", length = 50)
     private String unitOfMeasure;
+
+    /**
+     * How this product is packaged/sold, if at all - a Bag, Carton, Box and similar. Must
+     * resolve to a {@code product.unit.UnitOfMeasure} constant whose
+     * {@code product.unit.UnitOfMeasureRole} is {@code PACKAGING}.
+     *
+     * <p>Added by V18, alongside the rename of {@code unit_count} to
+     * {@link #packagingSize this column's pair}. Nullable, and pairs both-or-neither with
+     * {@link #packagingSize} - a packaging unit with no size, or a size with no unit, is
+     * ambiguous rather than partially valid (see
+     * {@code PackagingUnitAndSizeRequiredTogetherException}). Also requires
+     * {@link #unitOfMeasure} to be non-null whenever this is set: {@link #packagingSize} is a
+     * count of {@link #unitOfMeasure}, so packaging with no base unit to quantify is
+     * meaningless (see {@code PackagingRequiresUnitOfMeasureException}). A product may have
+     * {@link #unitOfMeasure} set with this null - sold loose, no packaging - but never the
+     * reverse.
+     */
+    @Column(name = "packaging_unit", length = 50)
+    private String packagingUnit;
+
+    /**
+     * How many of {@link #unitOfMeasure} one {@link #packagingUnit} holds, e.g.
+     * unitOfMeasure="KG", packagingUnit="BAG", packagingSize=50 means "a 50kg bag";
+     * unitOfMeasure="LITER", packagingUnit="KEG", packagingSize=0.5 means "a half-litre keg".
+     * Decimal, not integer - Nigerian trade units are routinely fractional (half-bags,
+     * litres). Nullable: meaningless without a {@link #packagingUnit} to quantify, which in
+     * turn requires {@link #unitOfMeasure} - see {@link #packagingUnit}'s javadoc for both
+     * pairing rules.
+     *
+     * <p>Renamed from {@code unitCount} by V18 (same column rename, same NUMERIC(14,2)
+     * type/precision, no data migration) once its meaning narrowed from "how much one
+     * unitOfMeasure is" to specifically "how much one packagingUnit is" - the old name no
+     * longer described what the field means now that unitOfMeasure and packagingUnit are
+     * separate axes.
+     */
+    @Column(name = "packaging_size", precision = 14, scale = 2)
+    private BigDecimal packagingSize;
 
     /**
      * Minimum purchasable quantity, mirroring the column default of 1 so an
@@ -144,27 +230,21 @@ public class Product extends TenantAwareEntity {
     private UUID sourceProductId;
 
     /**
-     * Which supplier this inventory item came from, as an entry in THIS company's
-     * own vendor directory. Set automatically to the VERIFIED entry for the seller
-     * when goods arrive from a marketplace order, and settable by hand to an
-     * EXTERNAL entry for stock sourced off-platform. It is what makes "last
-     * purchase price" and "purchase history per vendor" answerable from the
-     * buyer's own catalog.
+     * Every supplier this inventory item can be bought from, as entries in THIS company's own
+     * vendor directory - the join table that replaced the single {@code company_vendor_id} FK
+     * V11 added and V19 dropped. See {@link ProductVendor}'s class javadoc and
+     * MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1 for the full reasoning behind the change.
      *
-     * <p>Unlike {@link #sourceProductId} this IS a mapped association, and the
-     * difference is the reason: sourceProductId points at the SELLER's product row
-     * and therefore crosses tenants, where a filtered association would be hidden
-     * from under the caller. A CompanyVendor belongs to the same tenant as the
-     * product referencing it, by construction, so navigating it is safe - the same
-     * case as DeliveryAddress.branch.
-     *
-     * <p>Nullable, and permanently so: most inventory rows have no supplier
-     * attached, and a product whose supplier was removed from the directory is
-     * still a product.
+     * <p>LAZY, and deliberately not eagerly joined or batch-fetched: most read paths (the
+     * product list, low-stock, analytics) never touch a product's vendors at all, and forcing
+     * every one of them to pay for loading this collection would be the N+1 this design
+     * explicitly does not want. Load it explicitly (via {@code ProductVendorRepository}) on the
+     * one screen that actually needs it - the Vendors tab - rather than through this
+     * association. {@link #getPreferredVendor()} is the one place this codebase still navigates
+     * it directly, and only because a single row is cheap regardless of collection size.
      */
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "company_vendor_id")
-    private CompanyVendor companyVendor;
+    @OneToMany(mappedBy = "product", fetch = FetchType.LAZY)
+    private List<ProductVendor> vendors;
 
     /**
      * Where this product stands with listing moderation.
@@ -212,6 +292,34 @@ public class Product extends TenantAwareEntity {
     @Column(name = "reviewed_by")
     private UUID reviewedBy;
 
+    /**
+     * The {@link ImportSession} whose commit created this product, or null for anything created
+     * by hand, from an order receipt, or before V20. See BULK_IMPORT_DESIGN.md section 6.5:
+     * "Every entity written by a commit carries the session_id as import_batch_id."
+     *
+     * <h2>What reads it</h2>
+     * Two things, from opposite ends. The result screen's "View products" link
+     * ({@code /app/products?importBatchId={id}}) - so a user who has just imported 42 rows can
+     * see exactly what appeared, which is the difference between trusting the button and
+     * checking the catalog by hand. And the undo of design doc 6.6, whose catalog half
+     * deactivates the products a batch created and reverts the ones it updated to the {@code
+     * raw} snapshot on their {@link ImportSessionRow} - blocked, per that section, for any
+     * created product that has since had a {@link StockMovement}, because a product that has
+     * moved stock is no longer cleanly reversible.
+     *
+     * <p>Set only on CREATE. An update row does not stamp this: the product was not created by
+     * that import, and overwriting the stamp would make the earlier import's undo point at
+     * nothing. This is also why the undo has to consult the row snapshots rather than this
+     * column alone - "created by this batch" and "touched by this batch" are different sets, and
+     * only the first one is a column.
+     *
+     * <p>A raw UUID rather than a mapped {@code @ManyToOne}, matching {@code
+     * StockMovement.importBatchId} - see that field's javadoc for the reasoning. The database
+     * still enforces the reference, {@code ON DELETE RESTRICT}.
+     */
+    @Column(name = "import_batch_id")
+    private UUID importBatchId;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
@@ -219,4 +327,28 @@ public class Product extends TenantAwareEntity {
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
+
+    /**
+     * Whichever {@link ProductVendor} row currently holds {@code isPreferred = true} for this
+     * product, or {@code null} if the product has no vendors at all. Computed from {@link
+     * #vendors} rather than duplicating a foreign key on this class - see
+     * MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1: "Keep a convenience
+     * Product.getPreferredVendor() accessor computed from the collection - don't duplicate the
+     * FK."
+     *
+     * <p>Requires {@link #vendors} to already be loaded/initialized by the caller - this method
+     * does not trigger a lazy fetch on its own if the collection was never touched inside an
+     * open session, it only filters whatever is already there. Callers that need this outside a
+     * session with the collection loaded should query {@code ProductVendorRepository} directly
+     * instead.
+     */
+    public ProductVendor getPreferredVendor() {
+        if (vendors == null) {
+            return null;
+        }
+        return vendors.stream()
+                .filter(ProductVendor::isPreferred)
+                .findFirst()
+                .orElse(null);
+    }
 }

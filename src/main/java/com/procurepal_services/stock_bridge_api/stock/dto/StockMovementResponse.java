@@ -6,6 +6,23 @@ import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
+/**
+ * <h2>V19: the four new fields are IN-movement-only</h2>
+ * {@code companyVendorId}/{@code companyVendorName}/{@code packagingUnit}/{@code packagingSize}
+ * are null on every OUT/ADJUSTMENT row - see {@code StockMovement.companyVendor}'s own javadoc
+ * for why OUT deliberately carries no single vendor. {@code companyVendorName} triggers this
+ * lazy association's one lookup per row that has a vendor at all; pages here are small (default
+ * size 20) so this is an accepted, bounded N+1 rather than a fetch-joined query.
+ *
+ * <h2>V20: createdAt and occurredAt are both published, and they are different questions</h2>
+ * {@code createdAt} is when this row was WRITTEN; {@code occurredAt} is when the delivery,
+ * sale or adjustment actually HAPPENED. They are equal for anything recorded as it happens,
+ * which is why one field sufficed until bulk stock-in made backdating ordinary - see
+ * {@code StockMovement.occurredAt} and BULK_IMPORT_DESIGN.md section 8.4. Any screen showing a
+ * user "when did this arrive" wants {@code occurredAt}; anything auditing "when did this get
+ * entered" wants {@code createdAt}, and the two must not be used interchangeably now that they
+ * can genuinely differ.
+ */
 public record StockMovementResponse(
         UUID id,
         UUID productId,
@@ -14,6 +31,11 @@ public record StockMovementResponse(
         BigDecimal unitPriceAtTime,
         String note,
         UUID createdByUserId,
+        UUID companyVendorId,
+        String companyVendorName,
+        String packagingUnit,
+        BigDecimal packagingSize,
+        OffsetDateTime occurredAt,
         OffsetDateTime createdAt) {
 
     public static StockMovementResponse from(StockMovement movement) {
@@ -27,6 +49,11 @@ public record StockMovementResponse(
                 movement.getUnitPriceAtTime(),
                 movement.getNote(),
                 movement.getCreatedBy() == null ? null : movement.getCreatedBy().getId(),
+                movement.getCompanyVendor() == null ? null : movement.getCompanyVendor().getId(),
+                movement.getCompanyVendor() == null ? null : movement.getCompanyVendor().getName(),
+                movement.getPackagingUnit(),
+                movement.getPackagingSize(),
+                movement.getOccurredAt(),
                 movement.getCreatedAt());
     }
 }

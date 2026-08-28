@@ -4,12 +4,8 @@ import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendorKind;
 import com.procurepal_services.stock_bridge_api.entity.Order;
-import com.procurepal_services.stock_bridge_api.entity.OrderItem;
-import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
-import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
-import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantScopeExecutor;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -79,6 +75,20 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code @PrePersist} stamp the right {@code client_id} and stops the find-or-create
  * query silently matching nothing and inserting a duplicate. Same reasoning, same
  * mechanism, as IncomingStockService.
+ *
+ * <h2>V19: this class no longer links products to the vendor</h2>
+ * Before V19, {@code recordPurchase} also pointed every product an order created at the
+ * VERIFIED entry it found-or-created, via the single {@code products.company_vendor_id} FK. That
+ * FK is gone - a product may now have many vendors (see {@code ProductVendor}) - and the
+ * corresponding {@code product_vendors} row is created lazily, at RECEIPT rather than at PLACED,
+ * by {@code companyvendor.ProductVendorService.findOrCreateForReceipt} through
+ * {@code order.IncomingStockService.receive}. That is a deliberate move, not an oversight: goods
+ * that are still merely PLACED (paid for or promised, not yet in hand) have not actually arrived
+ * from this vendor yet, so recording a vendor LINE - with a cost, a packaging default, a
+ * received quantity - before receipt would be asserting a delivery that has not happened. This
+ * class's remaining job is exactly what its own name says: making sure the VERIFIED {@link
+ * CompanyVendor} entry itself exists, via {@link #findOrCreateVerifiedEntry}, which
+ * {@code IncomingStockService.receive} calls directly.
  */
 @Service
 @RequiredArgsConstructor
@@ -86,19 +96,12 @@ public class CompanyVendorLinkService {
 
     private final CompanyVendorRepository companyVendorRepository;
     private final ClientRepository clientRepository;
-    private final OrderItemRepository orderItemRepository;
-    private final ProductRepository productRepository;
     private final TenantScopeExecutor tenantScopeExecutor;
 
     /**
-     * Put this order's seller in the buyer's directory, and point the products the
-     * order created at it. Called exactly once per order, on the transition into
-     * PLACED.
-     *
-     * <p>Runs after IncomingStockService.materialize, and depends on it: that is
-     * what creates the buyer's inventory rows and sets
-     * {@link OrderItem#getBuyerProductId()}. Called before it, there would be
-     * nothing to link.
+     * Put this order's seller in the buyer's directory. Called exactly once per order, on the
+     * transition into PLACED - see the class javadoc for why product-vendor linking itself no
+     * longer happens here.
      */
     @Transactional
     public void recordPurchase(Order order) {
@@ -112,13 +115,18 @@ public class CompanyVendorLinkService {
             return;
         }
 
-        tenantScopeExecutor.runAs(buyerClientId, () -> {
-            CompanyVendor vendor = findOrCreateVerifiedEntry(buyerClientId, sellerClientId);
-            linkPurchasedProducts(order, vendor);
-        });
+        tenantScopeExecutor.runAs(buyerClientId, () -> findOrCreateVerifiedEntry(buyerClientId, sellerClientId));
     }
 
-    private CompanyVendor findOrCreateVerifiedEntry(UUID buyerClientId, UUID sellerClientId) {
+    /**
+     * Idempotent find-or-create of this buyer's VERIFIED directory entry for a seller - see the
+     * class javadoc's "Idempotency" section. Public since V19: {@code
+     * IncomingStockService.receive} calls this directly (already running inside the buyer's
+     * {@link TenantScopeExecutor} scope) to resolve the {@code companyVendorId} a receipt needs
+     * to pass into {@code StockManagementService.stockIn}, rather than re-deriving the seller's
+     * identity a second way.
+     */
+    public CompanyVendor findOrCreateVerifiedEntry(UUID buyerClientId, UUID sellerClientId) {
         String sellerName = sellerName(sellerClientId);
 
         CompanyVendor existing = companyVendorRepository
@@ -152,44 +160,6 @@ public class CompanyVendorLinkService {
                 .active(true)
                 .build();
         return companyVendorRepository.saveAndFlush(created);
-    }
-
-    /**
-     * Point every product this order put into the buyer's inventory at the vendor
-     * it came from, so "last purchase price" and "products supplied" have something
-     * to hang on.
-     *
-     * <h2>An existing link is never overwritten</h2>
-     * Only a null one is filled in. A buyer who deliberately filed a product under
-     * their local miller must not have it silently re-pointed because they bought a
-     * batch on the marketplace once - the link records the usual supplier, which is
-     * a judgement, while the purchase history records what happened, which is a
-     * fact. The fact is not lost: that order still appears in the new seller's
-     * purchase history whatever the product is linked to.
-     */
-    private void linkPurchasedProducts(Order order, CompanyVendor vendor) {
-        for (OrderItem item : orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(order.getId())) {
-            resolveBuyerProduct(order.getClientId(), item)
-                    .filter(product -> product.getCompanyVendor() == null)
-                    .ifPresent(product -> product.setCompanyVendor(vendor));
-        }
-    }
-
-    /**
-     * The buyer's own inventory row for one order line.
-     *
-     * <p>{@code buyerProductId} first: IncomingStockService has just set it, and it
-     * is the result of the same source_product_id-then-sku matching this would
-     * otherwise repeat. The fallback covers the one case its javadoc admits is
-     * possible - a line that reached here without ever being materialised - by
-     * doing the source_product_id lookup directly, rather than leaving the product
-     * unlinked for a reason nobody could later diagnose.
-     */
-    private java.util.Optional<Product> resolveBuyerProduct(UUID buyerClientId, OrderItem item) {
-        if (item.getBuyerProductId() != null) {
-            return productRepository.findByIdAndClientId(item.getBuyerProductId(), buyerClientId);
-        }
-        return productRepository.findByClientIdAndSourceProductId(buyerClientId, item.getProductId());
     }
 
     /**

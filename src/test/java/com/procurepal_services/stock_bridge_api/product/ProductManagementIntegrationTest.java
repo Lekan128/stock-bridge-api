@@ -5,12 +5,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
+import com.procurepal_services.stock_bridge_api.auth.dto.LoginRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
+import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.storage.S3ImageService;
@@ -32,6 +34,8 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.util.LinkedMultiValueMap;
@@ -68,13 +72,474 @@ class ProductManagementIntegrationTest {
     @MockitoBean
     private S3ImageService s3ImageService;
 
+    @Autowired
+    private JdbcTemplate jdbc;
+
+    @Autowired
+    private PasswordEncoder passwordEncoder;
+
+    // -----------------------------------------------------------------------------------
+    // unitPrice: optional and discarded for a buying company, required for a seller.
+    // See ProductManagementService.create/.update and UnitPriceRequiredException.
+    // -----------------------------------------------------------------------------------
+
+    @Test
+    void companyCreateNeverRequiresUnitPriceAndDiscardsOneIfSent() {
+        TenantLoginResponse company = signup("No Price Needed Co");
+
+        // No unitPrice at all - the ordinary case going forward for a buying company.
+        ResponseEntity<ProductResponse> withoutPrice = createProduct(
+                company,
+                new CreateProductRequest("Napkins", "NAP-1", null, null, null, null, null, null, null),
+                false);
+        assertThat(withoutPrice.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(withoutPrice.getBody().unitPrice()).isNull();
+
+        // A stale client still sending one is tolerated, not rejected - and the value is
+        // simply never stored, since a company has no selling price for it to mean.
+        ResponseEntity<ProductResponse> withStalePrice = createProduct(
+                company,
+                new CreateProductRequest(
+                        "Cooking Oil", "OIL-1", null, new BigDecimal("999.00"), null, null, null, null, null),
+                false);
+        assertThat(withStalePrice.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(withStalePrice.getBody().unitPrice()).isNull();
+    }
+
+    @Test
+    void companyUpdateNeverRequiresUnitPriceAndDiscardsOneIfSent() {
+        TenantLoginResponse company = signup("No Price Needed On Update Co");
+        ProductResponse created = createProduct(
+                company,
+                new CreateProductRequest("Broom", "BROOM-1", null, null, null, null, null, null, null),
+                false).getBody();
+        assertThat(created.unitPrice()).isNull();
+
+        ResponseEntity<ProductResponse> updated = restTemplate.exchange(
+                "/api/products/" + created.id(),
+                HttpMethod.PUT,
+                multipart(
+                        new UpdateProductRequest(
+                                null, null, null, new BigDecimal("50.00"), null, null, null,
+                                null, null, null),
+                        company),
+                ProductResponse.class);
+
+        assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(updated.getBody().unitPrice()).isNull();
+    }
+
+    @Test
+    void vendorCreateRequiresUnitPriceAndFailsClearly() {
+        TenantLoginResponse vendor = createVendor("Needs A Price Ltd");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        vendor,
+                        new CreateProductRequest("Rice", "RICE-1", null, null, null, null, null, null, null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).containsIgnoringCase("unit price");
+    }
+
+    @Test
+    void vendorCreateWithUnitPriceSucceedsAndRoundTrips() {
+        TenantLoginResponse vendor = createVendor("Has A Price Ltd");
+
+        ResponseEntity<ProductResponse> response = createProduct(
+                vendor,
+                new CreateProductRequest(
+                        "Beans", "BEANS-1", null, new BigDecimal("15000.00"), null, null, null, null, null),
+                false);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody().unitPrice()).isEqualByComparingTo("15000.00");
+    }
+
+    /**
+     * A vendor product can only end up with a null unitPrice by bypassing the service (a
+     * direct row, standing in for data from before this rule existed) - create() itself
+     * refuses to produce one. update() must still refuse to leave it that way.
+     */
+    @Test
+    void vendorUpdateCannotLeaveAProductWithoutAUnitPrice() {
+        TenantLoginResponse vendor = createVendor("Loses Its Price Ltd");
+        Client vendorClient = clientRepository.findBySlug(vendor.user().clientIdentifier()).orElseThrow();
+        UUID productId = UUID.randomUUID();
+        jdbc.update(
+                "INSERT INTO products (id, client_id, name, sku, unit_price, quantity_on_hand, is_active) "
+                        + "VALUES (?, ?, ?, ?, NULL, 0, TRUE)",
+                productId, vendorClient.getId(), "Priceless Rice", "PRICELESS-1");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products/" + productId,
+                HttpMethod.PUT,
+                multipart(
+                        new UpdateProductRequest(
+                                "Renamed", null, null, null, null, null, null, null, null, null),
+                        vendor),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).containsIgnoringCase("unit price");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // unitOfMeasure / packagingUnit / packagingSize: open to either tenant kind, each
+    // validated against the fixed catalog with its own role (BASE for unitOfMeasure,
+    // PACKAGING for packagingUnit), packagingUnit/packagingSize required as a pair, and
+    // packaging requires unitOfMeasure. See ProductManagementService and UnitOfMeasure/
+    // UnitOfMeasureRole.
+    // -----------------------------------------------------------------------------------
+
+    /**
+     * unitOfMeasure alone - no packaging at all - is still fully valid, exactly as it was
+     * before packagingUnit/packagingSize existed: a product sold loose (e.g. by the litre)
+     * has nothing to say about how it is packaged.
+     */
+    @Test
+    void unitOfMeasureAloneWithNoPackagingRoundTrips() {
+        TenantLoginResponse company = signup("Loose Goods Co");
+
+        ResponseEntity<ProductResponse> response = createProduct(
+                company,
+                new CreateProductRequest(
+                        "Palm Oil", "LOOSE-1", null, null, null, "LITER", null, null, null),
+                false);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody().unitOfMeasure()).isEqualTo("LITER");
+        assertThat(response.getBody().packagingUnit()).isNull();
+        assertThat(response.getBody().packagingSize()).isNull();
+    }
+
+    /**
+     * The full "Bag of 50 kg" round trip the whole V18 rework exists for: unitOfMeasure says
+     * what it is measured in, packagingUnit says how it is packaged, packagingSize says how
+     * many of the base unit one package holds - all three together, unlike the old flat
+     * unitOfMeasure+unitCount model which could only express one axis at a time.
+     */
+    @Test
+    void bagOf50kgRoundTripsThroughCreateAndGet() {
+        TenantLoginResponse company = signup("Fifty Kilo Bag Co");
+
+        ResponseEntity<ProductResponse> created = createProduct(
+                company,
+                new CreateProductRequest(
+                        "Bagged Rice", "BAGGED-1", null, null, null, "KG", "BAG", new BigDecimal("50"), null),
+                false);
+
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(created.getBody().unitOfMeasure()).isEqualTo("KG");
+        assertThat(created.getBody().packagingUnit()).isEqualTo("BAG");
+        assertThat(created.getBody().packagingSize()).isEqualByComparingTo("50");
+
+        ResponseEntity<ProductResponse> fetched = restTemplate.exchange(
+                "/api/products/" + created.getBody().id(),
+                HttpMethod.GET,
+                new HttpEntity<>(authHeaders(company)),
+                ProductResponse.class);
+        assertThat(fetched.getBody().unitOfMeasure()).isEqualTo("KG");
+        assertThat(fetched.getBody().packagingUnit()).isEqualTo("BAG");
+        assertThat(fetched.getBody().packagingSize()).isEqualByComparingTo("50");
+    }
+
+    /** Both codes are case-insensitive and stored normalized, per UnitOfMeasure.fromCode. */
+    @Test
+    void unitOfMeasureAndPackagingUnitCodesAreNormalizedRegardlessOfCaseSubmitted() {
+        TenantLoginResponse company = signup("Lowercase Unit Co");
+
+        ResponseEntity<ProductResponse> response = createProduct(
+                company,
+                new CreateProductRequest(
+                        "Cement", "CEMENT-1", null, null, null, "kg", "bag", new BigDecimal("50"), null),
+                false);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(response.getBody().unitOfMeasure()).isEqualTo("KG");
+        assertThat(response.getBody().packagingUnit()).isEqualTo("BAG");
+    }
+
+    @Test
+    void aGarbageUnitOfMeasureCodeIsRejected() {
+        TenantLoginResponse company = signup("Garbage Unit Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest(
+                                "Widget", "WIDGET-UOM-1", null, null, null, "NOT_A_REAL_UNIT", null, null, null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("NOT_A_REAL_UNIT");
+    }
+
+    @Test
+    void aGarbagePackagingUnitCodeIsRejected() {
+        TenantLoginResponse company = signup("Garbage Packaging Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest(
+                                "Widget", "WIDGET-PKG-1", null, null, null, "KG", "NOT_A_REAL_PACKAGE",
+                                new BigDecimal("1"), null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("NOT_A_REAL_PACKAGE");
+    }
+
+    /**
+     * BAG is a PACKAGING-role code (see UnitOfMeasureRole) - submitting it as unitOfMeasure,
+     * the BASE-role field, is rejected exactly like a code that is not on the list at all.
+     */
+    @Test
+    void aPackagingRoleCodeIsRejectedWhenSubmittedAsUnitOfMeasure() {
+        TenantLoginResponse company = signup("Wrong Role Base Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest(
+                                "Widget", "WRONGROLE-BASE-1", null, null, null, "BAG", null, null, null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("BAG");
+    }
+
+    /**
+     * The mirror case: KG is a BASE-role code - submitting it as packagingUnit, the
+     * PACKAGING-role field, is rejected exactly like a code that is not on the list at all.
+     */
+    @Test
+    void aBaseRoleCodeIsRejectedWhenSubmittedAsPackagingUnit() {
+        TenantLoginResponse company = signup("Wrong Role Packaging Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest(
+                                "Widget", "WRONGROLE-PKG-1", null, null, null, "KG", "KG",
+                                new BigDecimal("1"), null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("KG");
+    }
+
+    @Test
+    void packagingUnitWithoutPackagingSizeIsRejected() {
+        TenantLoginResponse company = signup("Lone Packaging Unit Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest(
+                                "Sugar", "SUGAR-1", null, null, null, "KG", "BAG", null, null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).containsIgnoringCase("together");
+    }
+
+    @Test
+    void packagingSizeWithoutPackagingUnitIsRejected() {
+        TenantLoginResponse company = signup("Lone Packaging Size Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest(
+                                "Flour", "FLOUR-1", null, null, null, "KG", null, new BigDecimal("10"), null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).containsIgnoringCase("together");
+    }
+
+    /**
+     * The new V18 rule: packagingSize is a COUNT of unitOfMeasure, so packaging can never be
+     * set on a product with no unitOfMeasure to quantify - a bare "sold in bags of 50" says
+     * 50 WHAT, unless a base unit is also given.
+     */
+    @Test
+    void packagingWithoutUnitOfMeasureIsRejected() {
+        TenantLoginResponse company = signup("Packaging No Base Unit Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest(
+                                "Rice", "RICE-NOBASE-1", null, null, null, null, "BAG",
+                                new BigDecimal("50"), null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).containsIgnoringCase("unitOfMeasure");
+    }
+
+    /**
+     * Update's patch semantics: supplying only packagingSize is fine when the product already
+     * carries a packagingUnit (and a unitOfMeasure) from creation, because the pairing check
+     * runs against the RESULTING state, not the request in isolation.
+     */
+    @Test
+    void updatingOnlyPackagingSizeIsAllowedWhenPackagingUnitIsAlreadySet() {
+        TenantLoginResponse company = signup("Patch Packaging Size Co");
+        ProductResponse created = createProduct(
+                company,
+                new CreateProductRequest(
+                        "Palm Oil", "PALMOIL-1", null, null, null, "LITER", "KEG", new BigDecimal("4"), null),
+                false).getBody();
+
+        ResponseEntity<ProductResponse> updated = restTemplate.exchange(
+                "/api/products/" + created.id(),
+                HttpMethod.PUT,
+                multipart(
+                        new UpdateProductRequest(
+                                null, null, null, null, null, null, null, null, null,
+                                new BigDecimal("5")),
+                        company),
+                ProductResponse.class);
+
+        assertThat(updated.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(updated.getBody().unitOfMeasure()).isEqualTo("LITER");
+        assertThat(updated.getBody().packagingUnit()).isEqualTo("KEG");
+        assertThat(updated.getBody().packagingSize()).isEqualByComparingTo("5");
+    }
+
+    /**
+     * The mirror case: a product created with neither packaging field set has nothing for a
+     * lone packagingUnit patch to pair with, so the resulting state is still ambiguous and
+     * the update is rejected exactly as it would be on create.
+     */
+    @Test
+    void updatingOnlyPackagingUnitIsRejectedWhenNoPackagingSizeExistsYet() {
+        TenantLoginResponse company = signup("Patch Packaging Alone Co");
+        ProductResponse created = createProduct(
+                company,
+                new CreateProductRequest("Detergent", "DETERGENT-1", null, null, null, null, null, null, null),
+                false).getBody();
+        assertThat(created.unitOfMeasure()).isNull();
+        assertThat(created.packagingUnit()).isNull();
+        assertThat(created.packagingSize()).isNull();
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products/" + created.id(),
+                HttpMethod.PUT,
+                multipart(
+                        new UpdateProductRequest(
+                                null, null, null, null, null, null, null, null, "BAG", null),
+                        company),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).containsIgnoringCase("together");
+    }
+
+    /**
+     * Clearing unitOfMeasure on an update while packaging is still in place from before is
+     * rejected exactly as if packaging had been set with no unitOfMeasure to begin with - the
+     * packaging-implies-unitOfMeasure rule is checked against the RESULTING state, not just
+     * the raw request.
+     */
+    @Test
+    void clearingUnitOfMeasureOnUpdateWhilePackagingRemainsIsRejected() {
+        TenantLoginResponse company = signup("Clear Base Unit Co");
+        ProductResponse created = createProduct(
+                company,
+                new CreateProductRequest(
+                        "Rice", "CLEARBASE-1", null, null, null, "KG", "BAG", new BigDecimal("50"), null),
+                false).getBody();
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products/" + created.id(),
+                HttpMethod.PUT,
+                multipart(
+                        new UpdateProductRequest(
+                                null, null, null, null, null, null, null, "", null, null),
+                        company),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).containsIgnoringCase("unitOfMeasure");
+    }
+
+    private TenantLoginResponse createVendor(String namePrefix) {
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        String slug = (namePrefix + "-" + suffix).toLowerCase().replace(' ', '-');
+        UUID clientId = UUID.randomUUID();
+        jdbc.update(
+                "INSERT INTO clients (id, name, slug, admin_contact_email, client_type, is_active) "
+                        + "VALUES (?, ?, ?, ?, 'VENDOR', TRUE)",
+                clientId,
+                namePrefix + " " + suffix,
+                slug,
+                "vendor-" + suffix + "@example.com");
+
+        String username = "vendor-" + suffix;
+        jdbc.update(
+                "INSERT INTO users (id, client_id, username, password_hash, role_id, is_active, is_root) "
+                        + "VALUES (?, ?, ?, ?, (SELECT id FROM roles WHERE name = 'VENDOR'), TRUE, TRUE)",
+                UUID.randomUUID(),
+                clientId,
+                username,
+                passwordEncoder.encode(PASSWORD));
+
+        TenantLoginResponse login = restTemplate.postForObject(
+                "/api/auth/login", new LoginRequest(slug, username, PASSWORD), TenantLoginResponse.class);
+        assertThat(login).as("vendor fixture must be able to log in").isNotNull();
+        return login;
+    }
+
+    private HttpEntity<MultiValueMap<String, Object>> multipart(UpdateProductRequest request, TenantLoginResponse asAdmin) {
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        HttpHeaders productPartHeaders = new HttpHeaders();
+        productPartHeaders.setContentType(MediaType.APPLICATION_JSON);
+        body.add("product", new HttpEntity<>(request, productPartHeaders));
+
+        HttpHeaders headers = authHeaders(asAdmin);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        return new HttpEntity<>(body, headers);
+    }
+
     @Test
     void createWithSuccessfulImageUploadReturnsNoWarnings() {
         TenantLoginResponse admin = signup("Image Upload Co");
         when(s3ImageService.uploadProductImage(any())).thenReturn(UploadResult.success("https://cdn.example.com/x.jpg"));
 
         ResponseEntity<ProductResponse> response = createProduct(
-                admin, new CreateProductRequest("Widget", "WID-1", "A widget", new BigDecimal("9.99"), null, 5, null), true);
+                admin,
+                new CreateProductRequest("Widget", "WID-1", "A widget", new BigDecimal("9.99"), 5, null, null, null, null),
+                true);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         ProductResponse body = response.getBody();
@@ -89,7 +554,9 @@ class ProductManagementIntegrationTest {
         when(s3ImageService.uploadProductImage(any())).thenReturn(UploadResult.failure("S3 is not configured"));
 
         ResponseEntity<ProductResponse> response = createProduct(
-                admin, new CreateProductRequest("Gadget", "GAD-1", "A gadget", new BigDecimal("14.99"), null, 5, null), true);
+                admin,
+                new CreateProductRequest("Gadget", "GAD-1", "A gadget", new BigDecimal("14.99"), 5, null, null, null, null),
+                true);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         ProductResponse body = response.getBody();
@@ -102,13 +569,17 @@ class ProductManagementIntegrationTest {
     void skuMustBeUniqueWithinTenant() {
         TenantLoginResponse admin = signup("Sku Uniqueness Co");
         CreateProductRequest request =
-                new CreateProductRequest("First", "DUP-1", null, new BigDecimal("1.00"), null, null, null);
+                new CreateProductRequest("First", "DUP-1", null, new BigDecimal("1.00"), null, null, null, null, null);
         assertThat(createProduct(admin, request, false).getStatusCode()).isEqualTo(HttpStatus.CREATED);
 
         ResponseEntity<ApiError> secondResponse = restTemplate.exchange(
                 "/api/products",
                 HttpMethod.POST,
-                multipartEntity(admin, new CreateProductRequest("Second", "DUP-1", null, new BigDecimal("2.00"), null, null, null), false),
+                multipartEntity(
+                        admin,
+                        new CreateProductRequest(
+                                "Second", "DUP-1", null, new BigDecimal("2.00"), null, null, null, null, null),
+                        false),
                 ApiError.class);
 
         assertThat(secondResponse.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -164,9 +635,14 @@ class ProductManagementIntegrationTest {
     void listAndDetailAreScopedToCallersTenantOnly() {
         TenantLoginResponse tenantA = signup("Tenant A " + UUID.randomUUID());
         TenantLoginResponse tenantB = signup("Tenant B " + UUID.randomUUID());
-        createProduct(tenantA, new CreateProductRequest("A Product", "A-SKU", null, BigDecimal.ONE, null, null, null), false);
+        createProduct(
+                tenantA,
+                new CreateProductRequest("A Product", "A-SKU", null, BigDecimal.ONE, null, null, null, null, null),
+                false);
         ResponseEntity<ProductResponse> bProductResponse = createProduct(
-                tenantB, new CreateProductRequest("B Product", "B-SKU", null, BigDecimal.ONE, null, null, null), false);
+                tenantB,
+                new CreateProductRequest("B Product", "B-SKU", null, BigDecimal.ONE, null, null, null, null, null),
+                false);
         UUID bProductId = bProductResponse.getBody().id();
 
         ResponseEntity<TestPage<ProductResponse>> listAsA = restTemplate.exchange(

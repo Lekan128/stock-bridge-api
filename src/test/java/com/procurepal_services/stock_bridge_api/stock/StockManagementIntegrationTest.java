@@ -89,7 +89,9 @@ class StockManagementIntegrationTest {
                 new HttpEntity<>(new StockOutRequest(10, null, null), authHeaders(admin)),
                 ApiError.class);
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        // V19: insufficient-stock is now a 409 (a conflict with the resource's current state),
+        // not a 400 - see StockManagementExceptionHandler and InsufficientStockErrorResponse.
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
 
         ResponseEntity<ProductResponse> unchanged = restTemplate.exchange(
                 "/api/products/" + product.id(), HttpMethod.GET, new HttpEntity<>(authHeaders(admin)), ProductResponse.class);
@@ -135,7 +137,8 @@ class StockManagementIntegrationTest {
                 HttpStatus status = (HttpStatus) future.get(10, TimeUnit.SECONDS).getStatusCode();
                 if (status == HttpStatus.OK) {
                     successCount++;
-                } else if (status == HttpStatus.BAD_REQUEST) {
+                } else if (status == HttpStatus.CONFLICT) {
+                    // V19: 409, not 400 - see stockOutRejectsWhenInsufficientQuantity above.
                     rejectedCount++;
                 }
             }
@@ -217,7 +220,8 @@ class StockManagementIntegrationTest {
         body.add(
                 "product",
                 new HttpEntity<>(
-                        new CreateProductRequest("Product " + sku, sku, null, new BigDecimal("9.99"), null, null, null),
+                        new CreateProductRequest(
+                                "Product " + sku, sku, null, new BigDecimal("9.99"), null, null, null, null, null),
                         productPartHeaders));
 
         HttpHeaders headers = authHeaders(asAdmin);

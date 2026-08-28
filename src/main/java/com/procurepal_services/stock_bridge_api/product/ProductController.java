@@ -1,10 +1,12 @@
 package com.procurepal_services.stock_bridge_api.product;
 
 import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
-import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureResponse;
+import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import jakarta.validation.Valid;
 import java.util.List;
 import java.util.UUID;
@@ -17,6 +19,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -45,12 +48,11 @@ import org.springframework.web.multipart.MultipartFile;
 public class ProductController {
 
     private final ProductManagementService productManagementService;
-    private final ProductExcelService productExcelService;
 
     @GetMapping("/template")
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<byte[]> template() {
-        return xlsxResponse(productExcelService.generateTemplate(), "product-import-template.xlsx");
+        return xlsxResponse(productManagementService.generateTemplate(), "product-import-template.xlsx");
     }
 
     @GetMapping("/export")
@@ -59,10 +61,19 @@ public class ProductController {
         return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
     }
 
+    /**
+     * V20: calls the 2-arg {@code bulkUpload(file, actingUserId)} overload, so the opening-balance
+     * {@code StockMovement} every row with a quantity now writes (BULK_IMPORT_DESIGN.md section 3)
+     * is attributed to a real user rather than {@code createdBy = null} - the same
+     * {@code @AuthenticationPrincipal} extraction {@link #create} already does for its own ledger
+     * write, and for the same reason.
+     */
     @PostMapping(value = "/bulk-upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
-    public ResponseEntity<BulkUploadResponse> bulkUpload(@RequestPart("file") MultipartFile file) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(productManagementService.bulkUpload(file));
+    public ResponseEntity<BulkUploadResponse> bulkUpload(
+            @RequestPart("file") MultipartFile file, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(productManagementService.bulkUpload(file, principal.getUserId()));
     }
 
     @GetMapping
@@ -72,6 +83,22 @@ public class ProductController {
             @RequestParam(required = false) Boolean active,
             @PageableDefault(size = 20) Pageable pageable) {
         return productManagementService.list(search, active, pageable);
+    }
+
+    /**
+     * The fixed unit-of-measure catalog (see {@link UnitOfMeasure}), so the
+     * product form's picker doesn't hardcode a second copy of the list. Flat,
+     * with each row carrying its category, so the frontend groups client-side.
+     *
+     * <p>VIEW_PRODUCTS rather than MANAGE_PRODUCTS: reading this list is a
+     * prerequisite for even LOOKING at a product's unit, not for changing one,
+     * and every role that can see the catalog (company or vendor) needs it -
+     * same reasoning as {@link #list}.
+     */
+    @GetMapping("/units-of-measure")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<UnitOfMeasureResponse> unitsOfMeasure() {
+        return UnitOfMeasure.all().stream().map(UnitOfMeasureResponse::from).toList();
     }
 
     @GetMapping("/low-stock")
@@ -86,12 +113,20 @@ public class ProductController {
         return productManagementService.get(id);
     }
 
+    /**
+     * V19: calls the 3-arg {@code create(request, image, actingUserId)} overload rather than
+     * the pre-V19 2-arg one, so {@code request.initialVendor()}'s opening {@code StockMovement}
+     * (when present) is attributed to a real user instead of {@code createdBy = null} - the same
+     * {@code @AuthenticationPrincipal} extraction {@link StockController} already uses.
+     */
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<ProductResponse> create(
             @Valid @RequestPart("product") CreateProductRequest request,
-            @RequestPart(value = "image", required = false) MultipartFile image) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(productManagementService.create(request, image));
+            @RequestPart(value = "image", required = false) MultipartFile image,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(productManagementService.create(request, image, principal.getUserId()));
     }
 
     @PutMapping(value = "/{id}", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
