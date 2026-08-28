@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.product;
 
 import com.procurepal_services.stock_bridge_api.entity.Client;
+import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
@@ -9,12 +10,23 @@ import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
 import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadValidationException;
 import com.procurepal_services.stock_bridge_api.product.bulk.ParsedProductRow;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
+import com.procurepal_services.stock_bridge_api.product.bulk.ProductTemplateContext;
+import com.procurepal_services.stock_bridge_api.entity.ImportKind;
+import com.procurepal_services.stock_bridge_api.entity.ImportMode;
+import com.procurepal_services.stock_bridge_api.entity.ImportStatus;
+import com.procurepal_services.stock_bridge_api.imports.ImportCommitExecutor;
+import com.procurepal_services.stock_bridge_api.imports.ImportSessionService;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
+import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
+import com.procurepal_services.stock_bridge_api.product.bulk.ProductVendorSnapshot;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
+import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
@@ -24,8 +36,11 @@ import com.procurepal_services.stock_bridge_api.storage.S3ImageService;
 import com.procurepal_services.stock_bridge_api.storage.UploadResult;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
@@ -54,6 +69,13 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class ProductManagementService {
 
+    /**
+     * The note on every {@code StockMovement} an import's opening balance writes, spelled exactly
+     * as BULK_IMPORT_DESIGN.md section 3 specifies. Fixed rather than composed because it is
+     * user-facing text on the movement history, and because it is the string anything looking for
+     * "stock that came in from a spreadsheet rather than a delivery" will match on.
+     */
+
     private final ProductRepository productRepository;
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
@@ -75,6 +97,16 @@ public class ProductManagementService {
      * the one that drifts. See {@link #create}.
      */
     private final StockManagementService stockManagementService;
+    /**
+     * The tenant's own supplier directory. Two uses, both added with the per-tenant template: the
+     * {@code vendor_name} dropdown a template is generated with, and resolving what an imported
+     * row's {@code vendor_name} cell refers to. Read-only from here - creating a directory entry
+     * is {@code CompanyVendorService}'s job, and an import must never create one silently (see
+     * {@link #openingBalanceVendorId}).
+     */
+    private final CompanyVendorRepository companyVendorRepository;
+    private final ImportSessionService importSessionService;
+    private final ImportCommitExecutor importCommitExecutor;
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
@@ -349,11 +381,42 @@ public class ProductManagementService {
         findTenantProductOrThrow(id).setActive(false);
     }
 
+    /**
+     * <h2>Why the export now carries the vendor columns too</h2>
+     * The export and the template are deliberately the same column set, because the most common
+     * thing a tenant does with these two files is "export what we have, edit it, upload it back".
+     * A column present on the template but absent from the export is a column that silently
+     * empties itself on every round trip - and since {@code vendor_name} now maintains the
+     * product's supplier line on import, an export without it would mean re-uploading your own
+     * catalog wipes its vendor attribution. Filled from the SAME batched preferred-vendor query
+     * {@link #list} uses, for the N+1 reason {@link #preferredVendorNamesFor} states.
+     */
     @Transactional(readOnly = true)
     public byte[] exportActiveProducts() {
-        List<Product> products =
-                productRepository.findAll(ProductSpecifications.forTenant(requireTenantId(), null, true));
-        return productExcelService.exportProducts(products);
+        UUID tenantId = requireTenantId();
+        List<Product> products = productRepository.findAll(ProductSpecifications.forTenant(tenantId, null, true));
+        return productExcelService.exportProducts(products, preferredVendorSnapshotsFor(tenantId, products));
+    }
+
+    /**
+     * The three exported vendor columns per product, flattened off the same one-query-per-page
+     * read {@link #preferredVendorNamesFor} performs. Only the PREFERRED line is exported: a
+     * spreadsheet row is one product, and a product with four suppliers cannot put four of them
+     * in one cell. The multi-vendor case round-trips through the continuation-row convention
+     * (BULK_IMPORT_DESIGN.md section 7.1) on the way IN; exporting it that way as well would mean
+     * an export whose row count does not match the catalog's product count, which is a surprise
+     * nobody asked for.
+     */
+    private Map<UUID, ProductVendorSnapshot> preferredVendorSnapshotsFor(UUID tenantId, List<Product> products) {
+        if (products.isEmpty()) {
+            return Map.of();
+        }
+        List<UUID> productIds = products.stream().map(Product::getId).toList();
+        return productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds).stream()
+                .collect(Collectors.toMap(
+                        vendor -> vendor.getProduct().getId(),
+                        vendor -> new ProductVendorSnapshot(
+                                vendor.getCompanyVendor().getName(), vendor.getVendorSku(), vendor.isPreferred())));
     }
 
     /**
@@ -364,9 +427,21 @@ public class ProductManagementService {
      */
     @Transactional(readOnly = true)
     public byte[] generateTemplate() {
-        Client owner = sellerDirectory.findSellerOfRecord(requireTenantId()).orElse(null);
+        UUID tenantId = requireTenantId();
+        Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
         boolean isSeller = owner != null && owner.canSell();
-        return productExcelService.generateTemplate(isSeller);
+        // V20: the template is per-tenant in a second way now. The tenant's own supplier names go
+        // into the vendor_name dropdown (BULK_IMPORT_DESIGN.md section 5.2) - a user who picks
+        // "Dangote Nigeria Plc" off a list never generates an unresolved-vendor row for it, which
+        // is a question they never get asked and a repair they never have to make. The lookup
+        // lives here, not in ProductExcelService, for the same reason isSeller does: that class
+        // stays free of tenant and security concerns and is handed plain data instead.
+        List<String> vendorNames = companyVendorRepository
+                .findAllByClientIdAndActiveTrueOrderByNameAsc(tenantId)
+                .stream()
+                .map(CompanyVendor::getName)
+                .toList();
+        return productExcelService.generateTemplate(new ProductTemplateContext(isSeller, vendorNames));
     }
 
     /**
@@ -384,21 +459,67 @@ public class ProductManagementService {
      * was not implemented for the same reason - simpler for a user cleaning up
      * a spreadsheet to reason about "nothing happened, fix these" than
      * reconciling which rows silently landed and which didn't.
+     *
+     * <h2>V20: this is now a shim, and what that did and did not change</h2>
+     * BULK_IMPORT_DESIGN.md section 10 keeps this endpoint but reimplements it as
+     * {@code POST /api/imports} plus an immediate commit with CREATE_ONLY, so nothing that
+     * already integrates breaks while there stops being a second way to create a product from a
+     * spreadsheet. The response shape is unchanged, and validation failures still arrive as
+     * {@code BulkUploadValidationException} carrying {@code List<ProductRowError>}.
+     *
+     * <p>The write really does go through the engine now, which is what matters: one code path
+     * stamps {@code import_batch_id}, one writes the opening-balance {@code StockMovement} that
+     * non-negotiable 1 of contract section 8 requires (<b>no quantity reaches {@code
+     * products.quantity_on_hand} without a movement</b>, on every path including this one), and
+     * an upload made here is undoable from the imports screen exactly like any other.
+     *
+     * <h2>Why validation still runs through the M2 parser first</h2>
+     * A deliberate, and the only, deviation from a pure shim. This endpoint's error <em>copy</em>
+     * is part of its frozen interface: {@code ProductBulkImportExportIntegrationTest} asserts on
+     * {@code "is required"} exactly, on {@code "not a recognized unit of measure"}, and on
+     * messages that name {@code unit_of_measure} and {@code packaging_size} as their subject.
+     * The review grid's copy is bound by the opposite rule - design 9.6 forbids a column name as
+     * an error subject and requires a sentence a person would say - so the two vocabularies
+     * genuinely cannot be the same strings. Routing validation through the engine and translating
+     * its verdicts back would mean maintaining a second, invisible copy deck whose only consumer
+     * is a test, and getting one of eleven mappings wrong would break a caller silently.
+     *
+     * <p>There is also a substantive difference the translation could not paper over: for a
+     * buying company the engine has no {@code unit_price} field at all (contract section 5 omits
+     * it for a non-seller), while this endpoint has always parsed and rejected a malformed value
+     * in that column whoever uploaded it.
+     *
+     * <p>So: the parser decides whether the file is acceptable, in the words it has always used;
+     * the engine decides what happens to it. The cost is that the file is read twice, which is a
+     * fair price on a compatibility path.
      */
     @Transactional
     public BulkUploadResponse bulkUpload(MultipartFile file) {
+        return bulkUpload(file, null);
+    }
+
+    /**
+     * @param actingUserId attributed on the opening-balance {@code StockMovement} each row with
+     *     quantity now writes - see {@code StockMovement.createdBy}, and {@link #create(
+     *     CreateProductRequest, MultipartFile, UUID)}, which took the same overload shape for
+     *     the same reason when V19 gave product creation a ledger write. V1's own {@code
+     *     stock_movements} comment already anticipated this: {@code created_by} is nullable
+     *     "to support bulk imports".
+     */
+    @Transactional
+    public BulkUploadResponse bulkUpload(MultipartFile file, UUID actingUserId) {
         UUID tenantId = requireTenantId();
 
-        // One lookup answers two questions, same as create(): whether unit_price is a
-        // required column/cell for THIS upload (ProductExcelService.parse needs to know
-        // before it even validates headers) and the moderation stamp every created row
-        // gets below. Resolved here, at the top, rather than inside toNewProduct, because
-        // parse() itself now depends on isSeller.
+        // One lookup answers two questions, same as create(): whether unit_price is a required
+        // column/cell for THIS upload (ProductExcelService.parse needs to know before it even
+        // validates headers), and - through the engine below - the moderation stamp every
+        // created row gets.
         Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
         boolean isSeller = owner != null && owner.canSell();
 
+        // Phase one: the frozen validation. See the method javadoc for why this still runs
+        // through M2's parser rather than through the engine's own validation pass.
         List<ParsedProductRow> parsedRows = productExcelService.parse(file, isSeller);
-
         List<ProductRowError> duplicateSkuErrors = new ArrayList<>();
         for (ParsedProductRow row : parsedRows) {
             if (productRepository.findByClientIdAndSku(tenantId, row.sku()).isPresent()) {
@@ -410,12 +531,82 @@ public class ProductManagementService {
             throw new BulkUploadValidationException(duplicateSkuErrors);
         }
 
-        List<Product> products =
-                parsedRows.stream().map(row -> toNewProduct(row, isSeller, owner)).toList();
-        List<Product> saved = productRepository.saveAll(products);
+        // Phase two: the write, through the session engine. Design 10's "POST /api/imports +
+        // immediate commit with CREATE_ONLY", so there is exactly one code path that creates a
+        // product from a spreadsheet row, one that stamps import_batch_id, and one that writes
+        // the opening-balance movement design 3 requires.
+        ImportSessionResponse session =
+                importSessionService.create(file, ImportKind.PRODUCT_CATALOG, ImportMode.CREATE_ONLY, actingUserId);
+        if (session.status() != ImportStatus.READY) {
+            importSessionService.discard(session.id());
+            throw new BulkUploadValidationException(engineErrors(session.id()));
+        }
+
+        // Always synchronous, whatever the row count. This endpoint has answered with the
+        // created products since the day it shipped and its callers are written against that;
+        // handing back a 202 they have no way to poll would break them far more thoroughly than
+        // a slow response. Running inline also keeps the whole shim inside one transaction,
+        // which is what preserves the "nothing happened, fix these" semantics its callers expect.
+        importCommitExecutor.runNow(importSessionService.beginCommit(session.id(), actingUserId));
+
+        List<Product> created = productRepository.findAllByClientIdAndImportBatchId(tenantId, session.id()).stream()
+                .sorted(java.util.Comparator.comparing(Product::getSku))
+                .toList();
         return new BulkUploadResponse(
-                saved.size(), saved.stream().map(ProductResponse::from).toList());
+                created.size(), created.stream().map(ProductResponse::from).toList());
     }
+
+    /**
+     * Whatever the engine objected to, in the legacy error shape.
+     *
+     * <p>Unreachable in practice - phase one has already accepted the file, and the engine's
+     * validation is a superset of nothing that the parser rejects - but a shim that silently
+     * reported success because it could not translate a failure would be far worse than one that
+     * reports the failure in slightly unfamiliar words. The prose here is the review grid's, not
+     * the parser's, which is honest about where the objection came from.
+     */
+    private List<ProductRowError> engineErrors(UUID sessionId) {
+        List<ProductRowError> errors = new ArrayList<>();
+        for (ImportRowResponse row : importSessionService
+                .rows(sessionId, "ERROR", org.springframework.data.domain.Pageable.ofSize(ImportLimits.MAX_ROWS))
+                .getContent()) {
+            for (ImportRowResponse.Error error : row.errors()) {
+                errors.add(new ProductRowError(row.excelRow(), error.column(), error.message()));
+            }
+        }
+        if (errors.isEmpty()) {
+            errors.add(new ProductRowError(1, "file", "We could not import this file. Please check it and try again."));
+        }
+        return errors;
+    }
+
+
+    /**
+     * The tenant's active suppliers keyed by name, built once per upload and only when the file
+     * used the {@code vendor_name} column at all.
+     *
+     * <h2>Exact (case- and space-insensitive) matching only, on purpose</h2>
+     * No fuzzy matching here, and that is not an omission. "Dangote Ltd" against a directory
+     * holding "Dangote Nigeria Plc" is a genuine question - it might be the same company, it might
+     * be a second supplier with a similar name - and BULK_IMPORT_DESIGN.md section 6.4 puts that
+     * question on the review screen, asked once per distinct value with suggestions ranked and a
+     * "create new supplier" option beside them. Guessing it here would attach a delivery to the
+     * wrong company's ledger silently, which is precisely the kind of invented fact section 9.6
+     * forbids. The compatibility path has no review screen to ask on, so an unmatched name simply
+     * leaves the movement unattributed - the same "the spreadsheet didn't say" outcome as before.
+     *
+     * <p>Later duplicates lose to the first, matching the alphabetical order the directory read
+     * returns: two active vendors with names differing only in casing is a data-entry accident,
+     * and picking the first one deterministically beats picking whichever the map happened to
+     * hold.
+     */
+
+    /**
+     * Case-folded, whitespace-collapsed - so "dangote nigeria plc" and "Dangote  Nigeria Plc"
+     * match the directory entry a user copied out of it by hand. Anything beyond that (dropping
+     * "Ltd", stemming, edit distance) is the review screen's job, for the reason
+     * {@link #openingBalanceVendorId} states.
+     */
 
     /**
      * Same moderation stamp as {@link #create}. Bulk upload is exactly the path a vendor
@@ -431,23 +622,21 @@ public class ProductManagementService {
      * ProductExcelService.parse() already rejected the file otherwise, so no defensive re-check
      * is needed. row.unitOfMeasure()/row.packagingUnit()/row.packagingSize() have already been
      * validated, role-checked and cross-validated by parse() - persisted as-is, not re-validated.
+     *
+     * <h2>V20: quantityOnHand starts at zero here, whatever the row said</h2>
+     * {@code row.quantityOnHand()} is deliberately NOT copied onto the product. It is applied
+     * through the ledger by {@code ProductCatalogRowHandler}'s opening-balance pass, which brings
+     * the counter to the row's number as a consequence of a real {@code StockMovement} rather
+     * than as an assertion nothing backs - a quantity with no movement behind it has no vendor,
+     * no cost basis, no delivery date, and writes no allocation row when it is later sold.
+     *
+     * <p>{@code costPrice} is still seeded here rather than left to the ledger. That is not an
+     * inconsistency: a row may carry a cost with no quantity ("this is what we pay for it, we
+     * just have none right now"), and there is no movement for that case to hang a cost on. When
+     * the row DOES carry quantity, {@code stockIn}'s weighted-average recalculation runs against
+     * a product with zero on hand and simply returns the delivery's own price - the same value,
+     * arrived at honestly.
      */
-    private Product toNewProduct(ParsedProductRow row, boolean isSeller, Client owner) {
-        return Product.builder()
-                .name(row.name())
-                .sku(row.sku())
-                .description(row.description())
-                .unitPrice(isSeller ? row.unitPrice() : null)
-                .costPrice(row.costPrice())
-                .quantityOnHand(row.quantityOnHand())
-                .lowStockThreshold(row.lowStockThreshold())
-                .unitOfMeasure(row.unitOfMeasure())
-                .packagingUnit(row.packagingUnit())
-                .packagingSize(row.packagingSize())
-                .active(true)
-                .approvalStatus(ProductModerationRules.initialStatusFor(owner))
-                .build();
-    }
 
     private void applyImage(Product product, MultipartFile image, List<String> warnings) {
         UploadResult result = s3ImageService.uploadProductImage(image);

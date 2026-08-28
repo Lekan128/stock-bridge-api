@@ -37,13 +37,25 @@ public record StockMutationResponse(
     public record CheaperVendorHint(UUID companyVendorId, String companyVendorName, java.math.BigDecimal unitPrice, java.math.BigDecimal savingsPerUnit) {
     }
 
-    /** One lot a stock-out drew from, enough to render "12 from Vendor A's Jan 3 delivery". */
+    /**
+     * One lot a stock-out drew from, enough to render "12 from Vendor A's Jan 3 delivery".
+     *
+     * <h2>V20: which of the two dates that sentence means</h2>
+     * "Jan 3 delivery" is {@code inMovementOccurredAt} - when the goods arrived - not
+     * {@code inMovementCreatedAt}, which is when somebody typed it in. Before V20 those could
+     * not differ and this record carried only the second; bulk stock-in makes backdating
+     * ordinary, so a receipt rendered from {@code inMovementCreatedAt} would now name today for
+     * a delivery that arrived last month. Both are published rather than one replaced: the
+     * write-time fact is still the FIFO tiebreak and still what an audit reads, so it has not
+     * stopped being worth knowing - it has stopped being the answer to this particular question.
+     */
     public record AllocationBreakdown(
             UUID inMovementId,
             UUID companyVendorId,
             String companyVendorName,
             int quantity,
-            java.time.OffsetDateTime inMovementCreatedAt) {
+            java.time.OffsetDateTime inMovementCreatedAt,
+            java.time.OffsetDateTime inMovementOccurredAt) {
     }
 
     public static StockMutationResponse of(Product product, StockMovement movement) {

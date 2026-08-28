@@ -49,4 +49,15 @@ public class StockManagementExceptionHandler {
     public ResponseEntity<ApiError> handleInvalidUnit(InvalidStockUnitException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
+
+    /**
+     * 400 rather than 409: nothing about the tenant's current state is in conflict here - the
+     * request itself is simply not a thing that can have happened. Contrast
+     * {@link InsufficientStockException} above, which is 409 precisely because the same request
+     * would have been fine yesterday.
+     */
+    @ExceptionHandler(FutureOccurredAtException.class)
+    public ResponseEntity<ApiError> handleFutureOccurredAt(FutureOccurredAtException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
 }

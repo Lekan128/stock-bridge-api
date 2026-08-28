@@ -83,11 +83,43 @@ public class StockManagementService {
      * already has at least one vendor line on file (see {@link CompanyVendorRequiredException}).
      * A product with zero vendor lines may still receive stock with none - the very first
      * stock-in that DOES supply one is what creates that first line, automatically preferred.
+     *
+     * <h2>V20: occurredAt, and why it is validated here rather than by an annotation</h2>
+     * {@code request.occurredAt()} is when the delivery actually happened; null means now, which
+     * is what every pre-V20 caller said implicitly. It is the one thing that makes bulk stock-in
+     * of last month's purchases sort correctly in FIFO - see {@code StockMovement.occurredAt} for
+     * the full reasoning and {@link #resolveOccurredAt} for the not-in-the-future rule and the
+     * day of clock-skew grace it deliberately allows.
      */
     @Transactional
     public StockMutationResponse stockIn(UUID productId, StockInRequest request, UUID actingUserId) {
+        return stockIn(productId, request, actingUserId, null);
+    }
+
+    /**
+     * Stock-in, stamped with the import that caused it - the one addition BULK_IMPORT_DESIGN.md
+     * section 8.2 asks for ("the only additions are the batch transaction and the
+     * {@code import_batch_id} stamp"), and deliberately the only change this class needed to
+     * serve bulk stock-in. Unit conversion, vendor resolution, ProductVendor creation for a new
+     * pairing, the cached rollups and the weighted-average cost recalculation are all reused
+     * exactly as they are; section 8.2 is explicit that none of it is to be reimplemented.
+     *
+     * <p>An overload rather than a field on {@link StockInRequest} because the stamp is
+     * provenance, not input: it is written by the engine that owns the batch, and putting it on
+     * the request DTO would make it forgeable by any caller of the HTTP endpoint. It is also not
+     * settable after the fact - {@code StockMovement.importBatchId} is {@code updatable = false},
+     * so a movement's provenance is fixed at insert and cannot be quietly re-attributed later,
+     * which is exactly what makes the undo in section 6.6 trustworthy.
+     *
+     * @param importBatchId the {@code import_sessions.id} this receipt belongs to, or null for
+     *     every ordinary hand-entered stock-in.
+     */
+    @Transactional
+    public StockMutationResponse stockIn(
+            UUID productId, StockInRequest request, UUID actingUserId, UUID importBatchId) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
+        OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
 
         int quantityBaseUnits =
                 resolveBaseQuantity(product, request.quantity(), request.unit(), request.packagingUnit(), request.packagingSize());
@@ -134,9 +166,43 @@ public class StockManagementService {
                 .companyVendor(companyVendor)
                 .packagingUnit(request.packagingUnit())
                 .packagingSize(request.packagingSize())
+                .occurredAt(occurredAt)
+                .importBatchId(importBatchId)
                 .build());
 
         return StockMutationResponse.ofStockIn(product, movement, vendorIsNewToProduct, cheaperVendorHint);
+    }
+
+    /**
+     * When the delivery happened. Null means now - the honest answer for a stock-in recorded as
+     * it happens, and what every caller that predates V20 was implicitly saying.
+     *
+     * <h2>The day of grace is skew, not slack</h2>
+     * A future delivery date is rejected, because a delivery cannot have arrived on a date that
+     * has not happened yet and a forward-dated lot would sort last in FIFO forever - drawn from
+     * never, while its stock sat on the books. But the boundary is tomorrow, not this instant,
+     * and the day between them is clock and timezone skew rather than tolerance: a {@code
+     * received_date} cell is a DATE, so it arrives as midnight in somebody's timezone, and a
+     * user's own machine may be minutes or hours ahead of this server. Refusing those means
+     * telling a user that today is in the future. What the rule actually exists to catch is a
+     * mistyped year, and one day catches that exactly as well.
+     *
+     * <p>The other half of BULK_IMPORT_DESIGN.md section 8.4 - "warn, not block, beyond some
+     * distance in the past" - is deliberately not here. That is a warning on a review row, which
+     * is the import session's job to compose and the user's to dismiss; a stock-in service that
+     * refused old dates would be refusing the very thing bulk stock-in exists to record. The
+     * database's {@code chk_stock_movements_occurred_at_not_future} is the backstop under this
+     * check, not a substitute for it - a raw CHECK violation names a column, and design doc 9.6
+     * is explicit that a column name is never an error subject.
+     */
+    private OffsetDateTime resolveOccurredAt(OffsetDateTime requested) {
+        if (requested == null) {
+            return OffsetDateTime.now();
+        }
+        if (requested.isAfter(OffsetDateTime.now().plusDays(1))) {
+            throw new FutureOccurredAtException();
+        }
+        return requested;
     }
 
     /**
@@ -224,7 +290,8 @@ public class StockManagementService {
                     lotVendor == null ? null : lotVendor.getId(),
                     lotVendor == null ? null : lotVendor.getName(),
                     draw.quantity(),
-                    draw.lot().getCreatedAt()));
+                    draw.lot().getCreatedAt(),
+                    draw.lot().getOccurredAt()));
         }
 
         return StockMutationResponse.ofStockOut(product, outMovement, breakdown);
@@ -234,6 +301,23 @@ public class StockManagementService {
      * Oldest-lot-first, across every vendor (design doc section 5.2a: "oldest IN movement
      * first, regardless of vendor, naturally producing oldest-vendor-first as a side effect").
      *
+     * <h2>V20: "oldest" means oldest DELIVERY, not oldest data entry</h2>
+     * The ordering lives in {@link StockMovementRepository#findInMovementsForUpdate}, which this
+     * method consumes in the order it is handed - so the fix is one {@code ORDER BY} rather than
+     * anything here - but the consequence belongs in this javadoc because this is where FIFO is
+     * actually decided. Lots now arrive ordered by {@code (occurredAt, createdAt)} instead of
+     * {@code createdAt} alone. Before V20 those were interchangeable only because nothing could
+     * record a past event; bulk stock-in exists precisely to record past events
+     * (BULK_IMPORT_DESIGN.md section 8.4), so under the old ordering every backdated delivery
+     * sorted after stock that genuinely arrived later, and this loop consumed them in exactly the
+     * wrong order - drawing from a February lot before a January one and then recording that
+     * false answer permanently in {@link StockMovementAllocation}, which is the table the recall
+     * and dispute traces read.
+     *
+     * <p>{@code createdAt} remains as the tiebreak, and remains the immutable audit fact of when
+     * the row was written. See {@code StockMovement.occurredAt} for why a tiebreak is the common
+     * case here rather than a rare one.
+     *
      * <h2>Why this can return draws that sum to LESS than quantityNeeded</h2>
      * The overall oversell check already happened in {@link #stockOut} against {@code
      * Product.quantityOnHand}, not against the sum of lot balances here - deliberately. Every
@@ -241,8 +325,12 @@ public class StockManagementService {
      * StockMovement} lots carrying vendor/packaging context) has that quantity with ZERO
      * backing {@code IN} movements, because the V19 backfill populated {@code product_vendors}
      * but wrote no historical ledger rows - there is nothing honest it could have backdated
-     * them to. The same is true of any product whose {@code quantityOnHand} was set directly
-     * (bulk upload) rather than through {@code stockIn}. Requiring full lot coverage would make
+     * them to. It was also true, until V20, of any product whose {@code quantityOnHand} was set
+     * directly by a bulk upload rather than through {@code stockIn} - that hole is now closed
+     * (see {@code ProductManagementService.bulkUpload}, which routes an imported opening balance
+     * through this service so it becomes a real lot), but every row imported BEFORE V20 still
+     * carries the shortfall and the reconciliation tool that fixes them is design doc section
+     * 12, Phase 3. Requiring full lot coverage would make
      * every such unit of pre-existing stock permanently unsellable the moment this shipped.
      * Instead: draw whatever lots genuinely exist, oldest first, and if that falls short of
      * {@code quantityNeeded}, the remainder is still sold (the OUT movement and the {@code

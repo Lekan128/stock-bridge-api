@@ -292,6 +292,34 @@ public class Product extends TenantAwareEntity {
     @Column(name = "reviewed_by")
     private UUID reviewedBy;
 
+    /**
+     * The {@link ImportSession} whose commit created this product, or null for anything created
+     * by hand, from an order receipt, or before V20. See BULK_IMPORT_DESIGN.md section 6.5:
+     * "Every entity written by a commit carries the session_id as import_batch_id."
+     *
+     * <h2>What reads it</h2>
+     * Two things, from opposite ends. The result screen's "View products" link
+     * ({@code /app/products?importBatchId={id}}) - so a user who has just imported 42 rows can
+     * see exactly what appeared, which is the difference between trusting the button and
+     * checking the catalog by hand. And the undo of design doc 6.6, whose catalog half
+     * deactivates the products a batch created and reverts the ones it updated to the {@code
+     * raw} snapshot on their {@link ImportSessionRow} - blocked, per that section, for any
+     * created product that has since had a {@link StockMovement}, because a product that has
+     * moved stock is no longer cleanly reversible.
+     *
+     * <p>Set only on CREATE. An update row does not stamp this: the product was not created by
+     * that import, and overwriting the stamp would make the earlier import's undo point at
+     * nothing. This is also why the undo has to consult the row snapshots rather than this
+     * column alone - "created by this batch" and "touched by this batch" are different sets, and
+     * only the first one is a column.
+     *
+     * <p>A raw UUID rather than a mapped {@code @ManyToOne}, matching {@code
+     * StockMovement.importBatchId} - see that field's javadoc for the reasoning. The database
+     * still enforces the reference, {@code ON DELETE RESTRICT}.
+     */
+    @Column(name = "import_batch_id")
+    private UUID importBatchId;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
