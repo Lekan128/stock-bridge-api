@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.UUID;
 
 /**
@@ -37,6 +38,22 @@ import java.util.UUID;
  * not rewrite what this specific delivery said. If omitted, the vendor's own {@code
  * defaultPackagingUnit}/{@code defaultPackagingSize} are used as the packaging snapshot instead
  * (and, if the vendor line is brand new, become its default going forward).
+ *
+ * <h2>occurredAt - when the delivery HAPPENED, added V20</h2>
+ * Optional; null means now, which is what every pre-V20 caller effectively said and so nothing
+ * about their behaviour changes. Supplied, it backdates the resulting {@code StockMovement}'s
+ * {@code occurredAt} - the {@code received_date} column of the bulk stock-in sheet, and the
+ * reason that column exists at all (BULK_IMPORT_DESIGN.md section 8.4). FIFO orders lots by
+ * {@code (occurredAt, createdAt)}, so a delivery entered today but received last month is drawn
+ * from before stock that arrived after it, which is the correct answer and the one a
+ * {@code createdAt}-only ordering could not give.
+ *
+ * <p>Validated not-in-the-future by {@code StockManagementService}, not by an annotation - the
+ * rule carries a day of clock/timezone-skew grace (see {@code StockMovement.occurredAt}), and a
+ * {@code @PastOrPresent} would refuse a delivery entered as "today" from a device an hour ahead
+ * with a message that is simply false from where the user is sitting. Same reasoning
+ * {@code companyVendorId} above gives for why its own conditional requirement is not a static
+ * annotation either.
  */
 public record StockInRequest(
         @NotNull @Positive Integer quantity,
@@ -45,10 +62,30 @@ public record StockInRequest(
         String unit,
         UUID companyVendorId,
         String packagingUnit,
-        @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
+        @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
+        OffsetDateTime occurredAt) {
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockInRequest(Integer quantity, BigDecimal unitPrice, String note) {
-        this(quantity, unitPrice, note, null, null, null, null);
+        this(quantity, unitPrice, note, null, null, null, null, null);
+    }
+
+    /**
+     * Convenience for the pre-V20 seven-field shape - every caller that has a vendor and
+     * packaging to state but nothing to say about WHEN, which is every caller recording a
+     * delivery as it happens. Kept as its own constructor rather than making callers pass a
+     * trailing null, so that adding {@code occurredAt} did not touch a single existing call
+     * site: the field is genuinely additive, and a diff that rewrote every {@code
+     * new StockInRequest(...)} in the codebase to say "null" would have obscured that.
+     */
+    public StockInRequest(
+            Integer quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, null);
     }
 }

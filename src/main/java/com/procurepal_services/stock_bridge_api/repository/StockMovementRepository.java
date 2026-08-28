@@ -23,9 +23,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
     boolean existsByProductIdAndClientId(@Param("productId") UUID productId, @Param("clientId") UUID clientId);
 
     /**
-     * Every IN movement (lot) for a product, oldest first, row-locked for the duration of the
-     * caller's transaction - the concurrency guard MULTI_VENDOR_INVENTORY_DESIGN.md section
-     * 5.2a's "Concurrency and oversell" paragraph requires: two stock-outs racing for the same
+     * Every IN movement (lot) for a product, <b>oldest-OCCURRING first</b>, row-locked for the
+     * duration of the caller's transaction - the concurrency guard MULTI_VENDOR_INVENTORY_DESIGN.md
+     * section 5.2a's "Concurrency and oversell" paragraph requires: two stock-outs racing for the same
      * lot must not both read the same "remaining" balance and both spend it. A second concurrent
      * {@code stockOut} blocks here until the first transaction commits (or rolls back), then
      * sees the true post-allocation remaining balance rather than a stale one.
@@ -37,12 +37,62 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      * per-product row set (inventory volumes here are not high enough for full-table lot counts
      * to be a real contention concern - see {@code StockManagementService}'s own class javadoc
      * for the same tradeoff made for the product-row lock).
+     *
+     * <h2>V20: ordered by (occurredAt, createdAt), not createdAt alone</h2>
+     * "Oldest first" has to mean oldest DELIVERY, not oldest data entry, and before V20 those
+     * were the same thing only because nothing could record a past event. Bulk stock-in's whole
+     * purpose is recording purchases made outside the platform, so a typical file is last
+     * month's deliveries entered today - and under a {@code createdAt}-only ordering every one
+     * of those sorts after stock that genuinely arrived later, which is FIFO drawing in exactly
+     * the wrong order, and the per-delivery trace {@link
+     * com.procurepal_services.stock_bridge_api.entity.StockMovementAllocation} then confidently
+     * naming the wrong delivery. See BULK_IMPORT_DESIGN.md section 8.4 and {@code
+     * StockMovement.occurredAt}.
+     *
+     * <p>{@code createdAt} stays in the ORDER BY as the second key, and it is not decoration: a
+     * spreadsheet gives a whole delivery one date (usually midnight, a date cell carrying no
+     * time), so ties are the ordinary case here rather than the rare one. Without a tiebreak the
+     * order among tied lots is whatever the plan happens to produce, which makes FIFO
+     * non-deterministic between two reads of identical data - and "the order they were entered
+     * in" is both stable and defensible to a user asking why one same-day lot went first.
+     * {@code idx_stock_movements_product_id_type_occurred_at} covers this query end to end.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT m FROM StockMovement m WHERE m.product.id = :productId AND m.clientId = :clientId "
             + "AND m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN "
-            + "ORDER BY m.createdAt ASC")
+            + "ORDER BY m.occurredAt ASC, m.createdAt ASC")
     List<StockMovement> findInMovementsForUpdate(@Param("productId") UUID productId, @Param("clientId") UUID clientId);
+
+    /**
+     * Everything one import's commit wrote to the ledger - BULK_IMPORT_DESIGN.md section 6.5's
+     * {@code import_batch_id} stamp, read back. Two callers, from opposite ends: the result
+     * screen's link to what a batch created, and the section 6.6 undo, which needs the lots so
+     * it can check whether any has been drawn from before deciding between a compensating
+     * {@code ADJUSTMENT} and a refusal that names the three deliveries that block it.
+     *
+     * <p>Ordered by {@code occurredAt} rather than {@code createdAt} so the undo's blocker list
+     * reads in the same order as the file the user is looking at. Backed by the partial index
+     * {@code idx_stock_movements_import_batch_id}.
+     */
+    List<StockMovement> findAllByClientIdAndImportBatchIdOrderByOccurredAtAsc(UUID clientId, UUID importBatchId);
+
+    /**
+     * Movements on this product that did NOT come from the given import - added by M4 for the
+     * catalog undo in BULK_IMPORT_DESIGN.md section 6.6.
+     *
+     * <p>{@code existsByProductIdAndClientId} cannot answer the question undo actually asks. A
+     * product created by an import with an opening balance ALWAYS has a movement - the one the
+     * import itself wrote (section 3's fix) - so "has any movement" would block every undo of
+     * the very case the feature was built for. What blocks an undo is a movement somebody else
+     * made afterwards, which is this.
+     */
+    @Query("SELECT COUNT(m) FROM StockMovement m WHERE m.product.id = :productId AND m.clientId = :clientId "
+            + "AND (m.importBatchId IS NULL OR m.importBatchId <> :importBatchId)")
+    long countMovementsOutsideBatch(
+            @Param("productId") UUID productId,
+            @Param("clientId") UUID clientId,
+            @Param("importBatchId") UUID importBatchId);
+
 
     /**
      * Rows with a null unit_price_at_time (adjustments, or IN/OUT recorded

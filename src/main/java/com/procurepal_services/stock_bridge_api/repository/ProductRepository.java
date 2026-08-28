@@ -69,6 +69,16 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
      */
     Optional<Product> findByClientIdAndSourceProductId(UUID clientId, UUID sourceProductId);
 
+    /**
+     * Every product one import's commit CREATED - BULK_IMPORT_DESIGN.md section 6.5's {@code
+     * import_batch_id} stamp, read back. Note "created", not "touched": an update row does not
+     * stamp the column, because the product was not created by that import and overwriting the
+     * stamp would leave an earlier import's undo pointing at nothing. See
+     * {@code Product.importBatchId}. Backed by the partial index
+     * {@code idx_products_import_batch_id}.
+     */
+    List<Product> findAllByClientIdAndImportBatchId(UUID clientId, UUID importBatchId);
+
     /** "Pending delivery" section of the buyer's inventory: bought, paid for, not yet in hand. */
     List<Product> findAllByClientIdAndIncomingQuantityGreaterThan(UUID clientId, int quantity);
 

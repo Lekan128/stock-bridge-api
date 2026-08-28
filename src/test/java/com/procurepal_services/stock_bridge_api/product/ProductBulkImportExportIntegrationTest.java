@@ -58,9 +58,14 @@ class ProductBulkImportExportIntegrationTest {
     private static final List<String> COMPANY_HEADERS = List.of(
             "name", "sku", "description", "cost_price", "quantity_on_hand", "low_stock_threshold",
             "unit_of_measure", "packaging_unit", "packaging_size");
+    // The seller template's full column set. V20 appends the vendor trio (vendor_name,
+    // vendor_sku, is_preferred_vendor) per BULK_IMPORT_CONTRACT.md section 5 and
+    // BULK_IMPORT_DESIGN.md section 7.1 - the first ten are unchanged and in the same order, which
+    // is the column-stability promise this test's containsExactly() is really guarding.
     private static final List<String> FULL_HEADERS = List.of(
             "name", "sku", "description", "unit_price", "cost_price", "quantity_on_hand", "low_stock_threshold",
-            "unit_of_measure", "packaging_unit", "packaging_size");
+            "unit_of_measure", "packaging_unit", "packaging_size",
+            "vendor_name", "vendor_sku", "is_preferred_vendor");
 
     @Autowired
     private TestRestTemplate restTemplate;

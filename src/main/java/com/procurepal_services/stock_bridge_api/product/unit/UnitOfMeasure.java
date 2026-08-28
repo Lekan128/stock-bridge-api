@@ -157,6 +157,60 @@ public enum UnitOfMeasure {
         return Optional.ofNullable(BY_CODE.get(code.trim().toUpperCase()));
     }
 
+    /**
+     * The forgiving sibling of {@link #fromCode}: resolves a code, a display label, a bare label
+     * or any of the trade aliases in {@code UnitOfMeasureAliases} - case-insensitively, ignoring
+     * punctuation, invisible characters and a trailing plural {@code s}. {@code "KG"},
+     * {@code "kg"}, {@code "kgs"}, {@code "Kilogram (kg)"}, {@code "kilogram"}, {@code "kilo"}
+     * and {@code "K.G"} all come back as {@link #KILOGRAM}.
+     *
+     * <h2>Why this is separate from {@link #fromCode} rather than a loosening of it</h2>
+     * The two answer genuinely different questions, and conflating them would quietly weaken the
+     * API. {@code fromCode} answers "is this one of the fixed codes" - the gate the REST layer,
+     * product create/update validation and anything persisting a code must keep using, because
+     * accepting {@code "kilo"} from a JSON request body would mean the same product could be
+     * described two ways by two integrations. {@code fromCodeOrLabel} answers "what did a human
+     * typing into a spreadsheet cell most likely mean", which is a question only the importer
+     * has, and only because BULK_IMPORT_DESIGN.md section 5.2 establishes that a spreadsheet's
+     * data validation is advisory and a share of cells will always be typed rather than picked.
+     *
+     * <p>Resolution is still a lookup against this same closed catalog - nothing is invented, and
+     * an unrecognized value still comes back empty for the caller to turn into "we don't
+     * recognise X, did you mean Y?".
+     *
+     * @param codeOrLabel any spelling a user might have typed; null or blank is simply "not
+     *     provided" and returns empty, exactly as {@link #fromCode} treats it.
+     */
+    public static Optional<UnitOfMeasure> fromCodeOrLabel(String codeOrLabel) {
+        return UnitOfMeasureAliases.resolve(codeOrLabel);
+    }
+
+    /**
+     * {@link #fromCodeOrLabel} with the role constraint applied, so a BASE column can never
+     * resolve to a PACKAGING unit and vice versa.
+     *
+     * <h2>Why the role belongs in the same call for this entry point</h2>
+     * {@link #fromCode} is deliberately role-agnostic (see {@link UnitOfMeasureRole}'s javadoc:
+     * its two call sites want different roles, so baking one in would be wrong for the other).
+     * The forgiving lookup is different in a way that matters: it exists to serve spreadsheet
+     * columns, and a spreadsheet column always knows which role it is - {@code unit_of_measure}
+     * is BASE, {@code packaging_unit} is PACKAGING, with no third case. Offering the filter here
+     * keeps a caller from writing {@code .filter(u -> u.role() == BASE)} at every call site and
+     * eventually forgetting it at one of them, which would let {@code "bags"} land in a product's
+     * base unit slot and reintroduce exactly the "50kg bag" ambiguity {@link UnitOfMeasureRole}
+     * exists to remove.
+     *
+     * <p>A value that resolves to a real unit of the WRONG role returns empty, not the unit - the
+     * caller cannot tell "not a unit at all" from "not a unit for this column", which is
+     * intentional and matches how {@code ProductManagementService.resolveUnitOfMeasure} already
+     * reports both cases with one message. Callers wanting to say "BAG is a packaging unit, put
+     * it in the packaging_unit column" can ask {@link #fromCodeOrLabel} without the role and
+     * compare.
+     */
+    public static Optional<UnitOfMeasure> fromCodeOrLabel(String codeOrLabel, UnitOfMeasureRole requiredRole) {
+        return fromCodeOrLabel(codeOrLabel).filter(unit -> unit.role() == requiredRole);
+    }
+
     /** Every unit, in declaration order - COUNT, then WEIGHT, then VOLUME, then LENGTH. */
     public static List<UnitOfMeasure> all() {
         return List.of(values());

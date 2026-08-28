@@ -61,10 +61,19 @@ public class ProductController {
         return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
     }
 
+    /**
+     * V20: calls the 2-arg {@code bulkUpload(file, actingUserId)} overload, so the opening-balance
+     * {@code StockMovement} every row with a quantity now writes (BULK_IMPORT_DESIGN.md section 3)
+     * is attributed to a real user rather than {@code createdBy = null} - the same
+     * {@code @AuthenticationPrincipal} extraction {@link #create} already does for its own ledger
+     * write, and for the same reason.
+     */
     @PostMapping(value = "/bulk-upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
-    public ResponseEntity<BulkUploadResponse> bulkUpload(@RequestPart("file") MultipartFile file) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(productManagementService.bulkUpload(file));
+    public ResponseEntity<BulkUploadResponse> bulkUpload(
+            @RequestPart("file") MultipartFile file, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(productManagementService.bulkUpload(file, principal.getUserId()));
     }
 
     @GetMapping
