@@ -13,6 +13,6 @@ package com.procurepal_services.stock_bridge_api.product;
 public class InvalidProductVendorException extends RuntimeException {
 
     public InvalidProductVendorException() {
-        super("That supplier is not in your vendor directory.");
+        super("That supplier is not in your directory.");
     }
 }

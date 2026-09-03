@@ -14,6 +14,7 @@ package com.procurepal_services.stock_bridge_api.stock;
 public class CompanyVendorRequiredException extends RuntimeException {
 
     public CompanyVendorRequiredException() {
-        super("companyVendorId is required once a product has at least one vendor on file.");
+        super("This product already has suppliers on file, so we need to know which supplier "
+                + "this delivery came from.");
     }
 }

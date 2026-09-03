@@ -1,6 +1,8 @@
 package com.procurepal_services.stock_bridge_api.product.dto;
 
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
@@ -54,6 +56,27 @@ public record ProductResponse(
         String packagingUnit,
         BigDecimal packagingSize,
         String imageUrl,
+        // V21 / UNIT_UX_CONTRACT.md section 2.3: the closed list of units a quantity for THIS
+        // product may be entered in - its stock unit, its own pack, and the same-category base
+        // units that have a static conversion factor. Steps 1, 2 and 4 of the contract's
+        // algorithm; no supplier pack, which is what ProductVendorResponse.unitOptions adds once
+        // a supplier has been chosen.
+        //
+        // Every quantity entry point draws its options from here and from nothing else - the
+        // stock-in and stock-out toggles, the import review grid's "counted in" cell, both
+        // spreadsheets' validation. That is contract non-negotiable 1 ("no quantity field
+        // anywhere offers a unit with no conversion factor") made structural rather than
+        // remembered: the old modals each built their own ~30-code list, the service accepted
+        // two of them, and picking any of the other twenty-eight was a guaranteed 400
+        // (UNIT_UX_REMEDIATION_PLAN.md section 3, P1-1). There is now one list and the server
+        // owns it.
+        //
+        // Never null and never empty: a product with no unitOfMeasure at all - the pre-V17 row
+        // that never got one - still gets a single-entry set labelled "units", because a form
+        // has to render something and "nothing to count in" is not a state a picker can show.
+        // Computed from fields already on the entity, so a page of products costs no extra
+        // query. See UnitOptions for the algorithm, in its one place.
+        List<UnitOption> unitOptions,
         boolean active,
         boolean isLowStock,
         OffsetDateTime createdAt,
@@ -97,6 +120,7 @@ public record ProductResponse(
                 product.getPackagingUnit(),
                 product.getPackagingSize(),
                 product.getImageUrl(),
+                UnitOptions.forProduct(product),
                 product.isActive(),
                 lowStock,
                 product.getCreatedAt(),

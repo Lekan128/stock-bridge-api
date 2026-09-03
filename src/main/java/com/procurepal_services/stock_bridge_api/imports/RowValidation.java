@@ -81,6 +81,12 @@ public record RowValidation(
             return issue(RowIssue.warning(column, code, message));
         }
 
+        /** A warning carrying the value one click would apply - see {@link RowIssue#warning}. */
+        public Builder warning(
+                String column, String code, String message, ImportFieldDescriptor.Option suggestion) {
+            return issue(RowIssue.warning(column, code, message, suggestion));
+        }
+
         public Builder resolvedTo(UUID id, String label) {
             this.resolvedEntityId = id;
             this.resolvedEntityLabel = label;

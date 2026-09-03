@@ -95,6 +95,38 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
 
 
     /**
+     * Every priced {@code IN} movement in a tenant, as {@code [productId (UUID),
+     * companyVendorId (UUID or null), unitPriceAtTime (BigDecimal), packagingSize (BigDecimal or
+     * null), enteredUnit (String or null)]}. Backs the one-off cost-basis audit of
+     * UNIT_UX_REMEDIATION_PLAN.md Phase 0 - see {@code CostBasisAuditService}, which is the only
+     * caller and reads nothing else from the ledger.
+     *
+     * <p>The last two columns are what make the audit work at all for a buying company. They are
+     * not compared to anything - they are read as PROVENANCE: a row carrying a pack snapshot but
+     * no {@code entered_unit} is, by construction, a delivery described in packs and recorded
+     * before V21 existed to say so, which is precisely the path that stored a per-pack price in a
+     * per-stock-unit column. See {@code CostBasisAuditService.SIGNAL_ENTERED_IN_PACKS_BEFORE_FIX}.
+     *
+     * <p>One query for the whole tenant rather than one per product, because the audit's whole
+     * job is to compare every product's stored cost against its own movement history: doing that
+     * per product would be a full catalogue scan expressed as N round trips. The medians are
+     * computed in Java rather than in SQL deliberately - Postgres has {@code percentile_cont},
+     * but this is an append-only ledger read whose row count is bounded by the tenant's own
+     * purchase history, and a native window function here would be the only such expression in
+     * this repository for no gain a human running a report once would notice.
+     *
+     * <p>{@code OUT}/{@code ADJUSTMENT} rows are excluded: a sale's price is a SELLING price and
+     * blending it into a cost comparison would be comparing two different economic facts.
+     * Unpriced rows are excluded because a null is not a zero - a free sample must not drag a
+     * median toward the floor and manufacture an anomaly that is not there.
+     */
+    @Query("SELECT m.product.id, m.companyVendor.id, m.unitPriceAtTime, m.packagingSize, m.enteredUnit "
+            + "FROM StockMovement m WHERE m.clientId = :clientId "
+            + "AND m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN "
+            + "AND m.unitPriceAtTime IS NOT NULL")
+    List<Object[]> findPricedInMovementPricesForTenant(@Param("clientId") UUID clientId);
+
+    /**
      * Rows with a null unit_price_at_time (adjustments, or IN/OUT recorded
      * without a price) are excluded from value sums by the "unitPriceAtTime IS
      * NOT NULL" predicate below - they still count toward sumQuantity, since

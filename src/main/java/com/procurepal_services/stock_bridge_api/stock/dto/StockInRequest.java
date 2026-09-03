@@ -14,14 +14,29 @@ import java.util.UUID;
  * ledger; every stored quantity (this movement, {@code Product.quantityOnHand}, the vendor's
  * cached rollups) stays in base units, unchanged since before V19.
  *
- * <h2>unit - which of the product's configured units this quantity was entered in</h2>
- * Optional. Either the product's base {@code unitOfMeasure} or its (resolved) packaging unit
- * for this delivery, e.g. {@code "KG"} or {@code "BAG"}. Null or equal to the base unit means
- * no conversion is needed. Equal to the packaging unit means {@code quantity} is multiplied by
- * {@code packagingSize} (this request's, if supplied, else the {@code ProductVendor}'s {@code
- * defaultPackagingSize}) to get the base-unit quantity actually stored. Validated and resolved
- * by {@code StockManagementService}, not Bean Validation - it depends on the product's own
- * configured units, which is not something an annotation can see.
+ * <h2>unit - which of the product's units this quantity and this price were entered in</h2>
+ * Optional. Must be the {@code code} of one of the options in this product's unit set - its
+ * stock unit, its own pack, or a same-category base unit with a static factor - as derived by
+ * {@code UnitOptions} and published on {@code ProductResponse.unitOptions} /
+ * {@code ProductVendorResponse.unitOptions} (UNIT_UX_CONTRACT.md section 2). Anything else is a
+ * 400 naming every option that WOULD have worked; see {@code InvalidStockUnitException}. Null or
+ * blank means the stock unit, factor 1 - which is what every caller that predates this field
+ * already said implicitly, and their behaviour is unchanged in every particular (non-negotiable
+ * 8). Resolved by {@code StockManagementService}, not Bean Validation, because the valid set
+ * depends on the product's own configuration and on this request's own pack override, neither of
+ * which an annotation can see.
+ *
+ * <h2>unitPrice - per {@code unit}, and this is the field that used to lie</h2>
+ * {@code unitPrice} is the price of ONE {@code unit}: per bag when {@code unit} is BAG, per kg
+ * when it is KG or absent. The service divides by the same factor it multiplies {@code quantity}
+ * by, so what reaches {@code Product.costPrice}, {@code ProductVendor.lastCostPrice} and
+ * {@code StockMovement.unitPriceAtTime} is always per STOCK unit (contract section 3.2).
+ *
+ * <p>Before this, the quantity half of an entry was converted and the price half was not:
+ * "20 bags at &#8358;45,000 per bag" on a 50 kg-bag product recorded 1,000 kg at &#8358;45,000
+ * per kg - a fifty-fold error, written silently and compounded into every later weighted average
+ * (UNIT_UX_REMEDIATION_PLAN.md section 3, P0-1). A request that omits {@code unit} has factor 1
+ * and so divides by nothing, which is why closing that hole changed no existing caller.
  *
  * <h2>companyVendorId - conditionally required, and not by an annotation</h2>
  * Which supplier this delivery came from. {@code @NotNull} does not appear here deliberately:
@@ -31,13 +46,31 @@ import java.util.UUID;
  * express, the same reasoning {@code CreateProductRequest.unitPrice}'s javadoc gives for why
  * its own conditional requirement is not a static annotation either.
  *
- * <h2>packagingUnit / packagingSize - this DELIVERY's packaging, snapshotted</h2>
- * Both optional, and pair both-or-neither the same way {@code Product.packagingUnit}/
- * {@code packagingSize} do. Frozen onto the resulting {@code StockMovement} row rather than
- * only updating the vendor's default - a later change to the vendor's default packaging must
- * not rewrite what this specific delivery said. If omitted, the vendor's own {@code
- * defaultPackagingUnit}/{@code defaultPackagingSize} are used as the packaging snapshot instead
- * (and, if the vendor line is brand new, become its default going forward).
+ * <h2>packagingUnit / packagingSize - this DELIVERY's pack, snapshotted</h2>
+ * Both optional. Frozen onto the resulting {@code StockMovement} row rather than only updating
+ * the supplier's default - a later change to that default must not rewrite what this specific
+ * delivery said.
+ *
+ * <p>They also EXTEND this product's unit set for the duration of this request, adding one
+ * option that {@code unit} may then name (contract section 3.1). They do not bypass matching:
+ * "this delivery came in a 25 kg bag" adds "Bag of 25 kg" to the list and resolution then
+ * happens against the list exactly as it does for every other request. That is the fix for
+ * P1-1 - the old code hand-rolled a separate two-branch comparison here, so the answer to
+ * "which units does this product accept" depended on which code path you asked, and picking
+ * anything else from the modal's thirty-code list was a guaranteed 400.
+ *
+ * <h2>saveAsSupplierDefault - the opt-in that makes the help text true</h2>
+ * Nullable, and <b>false is the default in every sense</b>: absent means false. When false, the
+ * pack above applies to THIS delivery only and {@code ProductVendor.defaultPackagingUnit}/
+ * {@code defaultPackagingSize} are left exactly as they were. When true, this delivery's pack
+ * also becomes that supplier's standing default going forward.
+ *
+ * <p>Contract non-negotiable 7: "a per-delivery override never mutates stored configuration
+ * without an explicit opt-in on the same screen." Until now the opposite was true and the UI
+ * said so out loud - the stock-in modal promised "the vendor's default stays unchanged" while
+ * {@code ProductVendorService.findOrCreateForReceipt} overwrote it from these very fields
+ * (P0-5). {@code lastCostPrice} is deliberately NOT behind this flag: a price paid is a running
+ * fact about the relationship, not a configuration choice somebody makes.
  *
  * <h2>occurredAt - when the delivery HAPPENED, added V20</h2>
  * Optional; null means now, which is what every pre-V20 caller effectively said and so nothing
@@ -63,11 +96,41 @@ public record StockInRequest(
         UUID companyVendorId,
         String packagingUnit,
         @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
-        OffsetDateTime occurredAt) {
+        OffsetDateTime occurredAt,
+        Boolean saveAsSupplierDefault) {
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockInRequest(Integer quantity, BigDecimal unitPrice, String note) {
-        this(quantity, unitPrice, note, null, null, null, null, null);
+        this(quantity, unitPrice, note, null, null, null, null, null, null);
+    }
+
+    /**
+     * Convenience for the pre-V21 eight-field shape - every caller that has nothing to say about
+     * whether this delivery's pack should become the supplier's standing default, which is every
+     * caller that predates contract section 3.4. Kept as its own constructor for the same reason
+     * the {@code occurredAt} one below was: the field is additive, and a diff that rewrote every
+     * existing {@code new StockInRequest(...)} to trail a {@code null} would have obscured that.
+     * Absent means false, and false means "touch nothing" - see the class javadoc.
+     */
+    public StockInRequest(
+            Integer quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt, null);
+    }
+
+    /**
+     * Whether this delivery's pack should also become the supplier's standing default. Null -
+     * the wire's ordinary state for a field a client never mentions - reads as false, so the
+     * safe answer is the one a caller gets by saying nothing (contract section 3.4).
+     */
+    public boolean savesAsSupplierDefault() {
+        return Boolean.TRUE.equals(saveAsSupplierDefault);
     }
 
     /**
@@ -86,6 +149,6 @@ public record StockInRequest(
             UUID companyVendorId,
             String packagingUnit,
             BigDecimal packagingSize) {
-        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, null);
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, null, null);
     }
 }

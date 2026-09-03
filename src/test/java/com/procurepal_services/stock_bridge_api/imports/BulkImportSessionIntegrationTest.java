@@ -61,6 +61,16 @@ class BulkImportSessionIntegrationTest {
             "name,sku,description,cost_price,quantity_on_hand,low_stock_threshold,unit_of_measure,"
                     + "packaging_unit,packaging_size,vendor_name,vendor_sku,is_preferred_vendor\n";
 
+    /**
+     * The same columns as a tenant downloads today - UNIT_UX_CONTRACT.md section 9.4's spellings,
+     * in section 9's grouping. {@link #CATALOG_HEADERS} above is deliberately the OLD set, so
+     * every other test in this class doubles as the header-alias test; this one is used where
+     * the point being made is about the current sheet.
+     */
+    private static final String CATALOG_HEADERS_TODAY =
+            "name,sku,description,stock_unit,pack,units_per_pack,opening_stock,low_stock_alert_at,"
+                    + "cost_price,vendor_name,vendor_sku,is_preferred_vendor\n";
+
     private static final String STOCK_IN_HEADERS =
             "sku,product_name,vendor_name,quantity,unit,unit_cost,packaging_size,received_date,reference\n";
 
@@ -148,7 +158,7 @@ class BulkImportSessionIntegrationTest {
     /**
      * Contract section 8.8, and the single most dangerous thing this feature could do quietly.
      *
-     * <p>An update row's {@code quantity_on_hand} is ignored - quantity moves through the ledger
+     * <p>An update row's {@code opening_stock} is ignored - quantity moves through the ledger
      * or not at all - and the review grid has to SAY so. A user re-importing a price list that
      * happens to carry a stock column would otherwise believe they had just corrected their
      * inventory. It is a warning rather than an error because the row's other columns are
@@ -171,7 +181,11 @@ class BulkImportSessionIntegrationTest {
         ImportRowResponse row = firstRow(tenant, session, "ALL");
         assertThat(row.status().name()).isEqualTo("WARNING");
         assertThat(row.warnings()).anySatisfy(warning -> {
-            assertThat(warning.column()).isEqualTo("quantity_on_hand");
+            // UNIT_UX_CONTRACT.md section 5.1 renamed the column, and the field key follows the
+            // header (BULK_IMPORT_CONTRACT.md section 5). The old spelling stays an accepted
+            // header on the way IN - see theOldQuantityOnHandHeaderStillMaps - but what comes back
+            // out is the current key, because that is what the grid renders a cell for.
+            assertThat(warning.column()).isEqualTo("opening_stock");
             assertThat(warning.message()).contains("ignored when updating");
             assertThat(warning.message()).contains("Record stock you received");
         });
@@ -202,7 +216,7 @@ class BulkImportSessionIntegrationTest {
 
         assertThat(session.errorCount()).isEqualTo(1);
         assertThat(firstRow(tenant, session, "ERROR").errors()).anySatisfy(error -> {
-            assertThat(error.column()).isEqualTo("unit_of_measure");
+            assertThat(error.column()).isEqualTo("stock_unit");
             assertThat(error.message()).contains("already had stock recorded");
             // The reason spelled out, not just a refusal.
             assertThat(error.message()).contains("Kilogram");
@@ -379,12 +393,12 @@ class BulkImportSessionIntegrationTest {
         // contents, which is what M7 found and fixed on the frontend side. Design 9.3's mock
         // draws that cell containing the bad value, not a dash.
         assertThat(rows(tenant, session.id(), "ERROR")).allSatisfy(row -> {
-            assertThat(row.raw()).containsEntry("unit_of_measure", "KGX");
-            assertThat(row.normalized().get("unit_of_measure")).isNull();
+            assertThat(row.raw()).containsEntry("stock_unit", "KGX");
+            assertThat(row.normalized().get("stock_unit")).isNull();
         });
         assertThat(rows(tenant, session.id(), "ERROR")).allSatisfy(row -> assertThat(row.errors())
                 .anySatisfy(error -> {
-                    assertThat(error.column()).isEqualTo("unit_of_measure");
+                    assertThat(error.column()).isEqualTo("stock_unit");
                     assertThat(error.bulkFixCount()).isEqualTo(3);
                     assertThat(error.suggestion()).isNotNull();
                     assertThat(error.suggestion().value()).isEqualTo("KG");
@@ -395,7 +409,7 @@ class BulkImportSessionIntegrationTest {
                 tenant,
                 session.id(),
                 rows(tenant, session.id(), "ERROR").get(0).id(),
-                Map.of("unit_of_measure", "KG"));
+                Map.of("stock_unit", "KG"));
         assertThat(repaired.status().name()).isEqualTo("VALID");
         assertThat(repaired.errors()).isEmpty();
         // The two that are left now know they are two.
@@ -870,7 +884,632 @@ class BulkImportSessionIntegrationTest {
         assertThat(discard(tenant, committed.id())).isEqualTo(HttpStatus.CONFLICT);
     }
 
+    // ------------------------------------------------- units, prices and honest totals
+
+    /**
+     * P0-4, and the reason UNIT_UX_CONTRACT.md section 6.3 exists.
+     *
+     * <p>The confirm screen used to sum the RAW entered quantities and label the sum with the
+     * single unit if the file happened to use one: a sheet of 190 bags previewed as "190 BAG"
+     * while the ledger recorded 9,500 kg. A screen whose entire job is "show what is about to
+     * happen before it happens" was stating a number that is never written anywhere.
+     *
+     * <p>Both forms now appear, converted first and typed second, exactly as the contract words
+     * it - and the assertion below is on the whole sentence rather than on a substring, because
+     * the failure this guards against is a number that looks perfectly plausible on its own.
+     */
+    @Test
+    void aStockInPreviewStatesTheLedgersNumberAndTheOneTheUserTyped() {
+        TenantLoginResponse tenant = signup("Honest Totals Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,HON-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS + "HON-1,Rice 50kg,,190,BAG,,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("stock");
+            assertThat(line.text()).isEqualTo("9,500 kg (190 bags) across 1 product");
+        });
+    }
+
+    /**
+     * Section 6.3's second half: "when the file mixes units the parenthetical is dropped and only
+     * the stock-unit total is shown."
+     *
+     * <p>Two rows, one counted in bags and one in kilograms. There is no honest single sentence
+     * of the form "N somethings" for what the user typed - 190 bags and 40 kg is not 230 of
+     * anything - so the restatement goes away and only the number the ledger will hold survives.
+     * The old code printed that sum and called the result "units".
+     */
+    @Test
+    void aMixedEntryUnitStockInPreviewDropsTheRestatementAndKeepsTheLedgersNumber() {
+        TenantLoginResponse tenant = signup("Mixed Entry Units Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,MIX-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS
+                        + "MIX-1,Rice 50kg,,190,BAG,,,,\n"
+                        + "MIX-1,Rice 50kg,,40,KG,,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("stock");
+            assertThat(line.text()).isEqualTo("9,540 kg across 1 product");
+        });
+    }
+
+    /**
+     * The other kind of mixing, and the one no conversion can rescue: two products counted in two
+     * different stock units. Contract section 2.2 is explicit that cross-category conversion "is
+     * not a conversion and must never be offered", so kilograms and litres are stated separately
+     * rather than added together and labelled "units".
+     */
+    @Test
+    void aStockInPreviewNeverAddsKilogramsToLitres() {
+        TenantLoginResponse tenant = signup("Two Stock Units Co");
+        commitCatalog(
+                tenant,
+                "CREATE_ONLY",
+                CATALOG_HEADERS
+                        + "Rice 50kg,TSU-1,,900,,,KG,BAG,50,,,\n"
+                        + "Groundnut Oil,TSU-2,,1200,,,LITER,,,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS
+                        + "TSU-1,Rice 50kg,,2,BAG,,,,\n"
+                        + "TSU-2,Groundnut Oil,,25,LITER,,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("stock");
+            assertThat(line.text()).isEqualTo("100 kg and 25 L across 2 products");
+        });
+    }
+
+    /**
+     * Section 6.3's last line: "the catalog import's opening-balance line follows the same rule."
+     *
+     * <p>There is no bracketed restatement here and that is correct rather than an omission -
+     * {@code opening_stock} is declared to be in the row's stock unit, so what was typed and what
+     * is recorded are the same number. What can still differ is WHICH stock unit, and the old
+     * code answered that by summing across them and writing "units".
+     */
+    @Test
+    void theCatalogOpeningBalanceLineNeverSumsAcrossStockUnits() {
+        TenantLoginResponse tenant = signup("Opening Balance Units Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS
+                        + "Rice 50kg,OBU-1,,900,40,,KG,,,,,\n"
+                        + "Groundnut Oil,OBU-2,,1200,25,,LITER,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("stock");
+            assertThat(line.text()).isEqualTo("Opening balance of 40 kg and 25 L recorded across 2 products");
+        });
+    }
+
+    /**
+     * UNIT_UX_CONTRACT.md section 9.1's headline behaviour, end to end: a catalog row of
+     * <b>30</b> with pack Keg and units per pack 50 commits as <b>1,500 ml</b>, and a row with no
+     * pack commits as its bare number.
+     *
+     * <h2>What this replaced, twice</h2>
+     * First a cross-field WARNING ("20 kg - did you mean 20 bags?"), whose predicate
+     * ({@code opening <= packaging_size}) interrogated somebody who genuinely had 20 kg and said
+     * nothing at all to somebody who typed 60 meaning 60 bags. Then an
+     * {@code opening_stock_counted_in} COLUMN, on the sound-looking reasoning that a quantity
+     * whose unit is inferred from a neighbour is what section 1 forbids everywhere else.
+     *
+     * <p>What that missed is that the neighbour is not an inference, it is the declaration. "30
+     * bags" states its unit in English, and a row saying Keg, 50, 30 states it just as plainly.
+     * The column was asking a question the row had already answered two cells to its left, so
+     * section 9.1 deletes it and reads the row.
+     */
+    @Test
+    void aCatalogRowsOpeningStockCountsPacksAndReachesTheLedgerConverted() {
+        TenantLoginResponse tenant = signup("Pack Counted Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS_TODAY
+                        + "Palm Oil,PACKQ-1,,Milliliter (ml),Keg,50,30,5,475,,,\n"
+                        + "Bolts,PACKQ-2,,Piece,,,600,50,3,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(session.warningCount()).isZero();
+        commit(tenant, session.id());
+
+        // Thirty kegs of 50 ml.
+        ProductResponse oil = productBySku(tenant, "PACKQ-1");
+        assertThat(oil.quantityOnHand()).isEqualTo(1_500);
+        // low_stock_alert_at follows the same rule - five kegs, 250 ml.
+        assertThat(oil.lowStockThreshold()).isEqualTo(250);
+        // cost_price follows the pack too, and this is the AMENDED section 9.2. N475 for one 50 ml
+        // keg is stored as N9.50 per ml. The section originally anchored entry to the stock unit
+        // as well as storage, which put a quantity in kegs beside a price per ml on one row - the
+        // mixed basis this remediation exists to remove, and a user caught it on their first real
+        // file. Storage is still per stock unit, which is what makes two suppliers with different
+        // keg sizes comparable.
+        assertThat(oil.costPrice()).isEqualByComparingTo("9.5");
+
+        // No pack declared, so the bare number is stock units, exactly as it always was.
+        ProductResponse bolts = productBySku(tenant, "PACKQ-2");
+        assertThat(bolts.quantityOnHand()).isEqualTo(600);
+        assertThat(bolts.lowStockThreshold()).isEqualTo(50);
+    }
+
+    /**
+     * Thirty kegs and a half-full one is a real shelf, and an integer count of packs cannot say
+     * it - section 9.1. Converted, then rounded HALF_UP at scale 0 like every other quantity in
+     * the system (section 3.1).
+     */
+    @Test
+    void aFractionalPackCountIsAcceptedAndRoundedTheSameWayEveryOtherQuantityIs() {
+        TenantLoginResponse tenant = signup("Half Keg Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS_TODAY + "Palm Oil,HALF-1,,Milliliter (ml),Keg,50,30.5,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        assertThat(session.errorCount()).isZero();
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "HALF-1").quantityOnHand()).isEqualTo(1_525);
+    }
+
+    /**
+     * Section 3.1's other refusal: a conversion that rounds to zero is an error, never a silent
+     * nothing. Recording "we have none" for stock somebody typed is the same class of defect as
+     * recording the wrong number.
+     */
+    @Test
+    void anOpeningStockThatRoundsToZeroIsRefusedRatherThanStoredAsNothing() {
+        TenantLoginResponse tenant = signup("Rounds To Zero Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS_TODAY + "Gold Dust,ZERO-1,,Kilogram (kg),,,0.4,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        assertThat(session.errorCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, session, "ERROR").errors()).anySatisfy(error -> {
+            assertThat(error.column()).isEqualTo("opening_stock");
+            assertThat(error.message()).contains("less than one whole kg");
+        });
+    }
+
+    /**
+     * Non-negotiable 3 on the catalog grid: what the user typed and what the ledger will record,
+     * together. The cell keeps their 30 - replacing it with 1,500 would answer a question they
+     * did not ask - and the conversion renders underneath it.
+     */
+    @Test
+    void aCatalogRowCountedInPacksCarriesTheLedgersNumberUnderIt() {
+        TenantLoginResponse tenant = signup("Catalog Echo Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS_TODAY
+                        + "Palm Oil,ECHO-1,,Milliliter (ml),Keg,50,30,,,,,\n"
+                        + "Bolts,ECHO-2,,Piece,,,600,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        List<ImportRowResponse> rows = rows(tenant, session.id(), "ALL");
+        ImportRowResponse oil = rows.stream()
+                .filter(row -> "ECHO-1".equals(row.normalized().get("sku")))
+                .findFirst()
+                .orElseThrow();
+        assertThat(oil.normalized().get("opening_stock").toString()).isEqualTo("30");
+        assertThat(oil.baseQuantityText()).isEqualTo("= 1,500 ml");
+
+        // A row counted in its own stock unit has nothing to convert, so there is no echo - "=
+        // 600 Piece" under a cell reading 600 is noise.
+        ImportRowResponse bolts = rows.stream()
+                .filter(row -> "ECHO-2".equals(row.normalized().get("sku")))
+                .findFirst()
+                .orElseThrow();
+        assertThat(bolts.baseQuantityText()).isNull();
+    }
+
+    /**
+     * Contract section 6.2: the row carries its own product's unit set, so the "Counted in" cell
+     * is a two-option select rather than a thirty-option one - the Flatfile pattern
+     * BULK_IMPORT_DESIGN.md section 4 already cites, applied to the column that needed it.
+     *
+     * <p>The negative assertion is the load-bearing one. Non-negotiable 1 is that no quantity
+     * field anywhere offers a unit with no conversion factor, and a Carton is exactly that for a
+     * product whose packs are bags: picking it was a guaranteed 400, which is the complaint this
+     * whole remediation started from (P1-1).
+     */
+    @Test
+    void everyStockInRowCarriesItsOwnProductsUnitOptionsAndTheLedgersNumber() {
+        TenantLoginResponse tenant = signup("Per Row Options Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,OPT-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session =
+                upload(tenant, STOCK_IN_HEADERS + "OPT-1,Rice 50kg,,2,BAG,,,,\n", "STOCK_IN", null);
+
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        assertThat(row.fieldOptions()).isNotNull().containsKey("counted_in");
+        List<ImportFieldDescriptor.Option> options = row.fieldOptions().get("counted_in");
+        assertThat(options).extracting(ImportFieldDescriptor.Option::value).contains("KG", "BAG");
+        assertThat(options).extracting(ImportFieldDescriptor.Option::label).contains("kg", "Bag of 50 kg");
+        assertThat(options).extracting(ImportFieldDescriptor.Option::value).doesNotContain("CARTON", "DRUM");
+
+        // Non-negotiable 3 on the grid: what was typed, and what the ledger will take, together.
+        assertThat(row.baseQuantityText()).isEqualTo("= 100 kg");
+
+        // The reference column states the same answer the sheet does, recomputed from the product
+        // rather than echoed from the file.
+        assertThat(row.normalized().get("how_you_count_it")).isEqualTo("kg · or Bag of 50 kg");
+    }
+
+    /**
+     * A row counted in its product's own stock unit has nothing to convert, so section 6.2's
+     * {@code baseQuantityText} is null and Jackson drops it. "= 40 kg" printed under a cell
+     * reading 40 is noise, and noise is what makes a user stop reading the useful ones.
+     */
+    @Test
+    void aRowCountedInItsOwnStockUnitCarriesNoConversionLine() {
+        TenantLoginResponse tenant = signup("No Conversion Line Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,NOCONV-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session =
+                upload(tenant, STOCK_IN_HEADERS + "NOCONV-1,Rice 50kg,,40,KG,,,,\n", "STOCK_IN", null);
+
+        assertThat(firstRow(tenant, session, "ALL").baseQuantityText()).isNull();
+    }
+
+    /**
+     * P0-1 through the import path, which is the half of it that round-trips.
+     *
+     * <p>{@code cost_per_unit} is per the row's "Counted in". Twenty bags at N45,000 a bag on a
+     * 50 kg-bag product is N900 per kg, and N900 per kg is what every downstream figure is
+     * denominated in - {@code Product.costPrice}, the movement's {@code unitPriceAtTime}, the
+     * supplier's {@code lastCostPrice}. Before this it wrote N45,000 per kg: a fifty-fold error,
+     * silent, and compounded into every later weighted average.
+     *
+     * <p>The division happens inside {@code StockManagementService}, in the same call that
+     * multiplies the quantity by the same factor. This test exists to prove the handler hands the
+     * unit over rather than doing the arithmetic itself - a handler that divided as well would
+     * land on N18 per kg and a handler that forgot the unit would land on N45,000.
+     */
+    @Test
+    void aCostPerBagLandsInTheLedgerAsACostPerStockUnit() {
+        TenantLoginResponse tenant = signup("Price Basis Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,PRICE-1,,,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session =
+                upload(tenant, STOCK_IN_HEADERS + "PRICE-1,Rice 50kg,,20,BAG,45000,,,\n", "STOCK_IN", null);
+        assertThat(session.errorCount()).isZero();
+        commit(tenant, session.id());
+
+        ProductResponse product = productBySku(tenant, "PRICE-1");
+        assertThat(product.quantityOnHand()).isEqualTo(1000);
+        assertThat(product.costPrice()).isEqualByComparingTo("900");
+    }
+
+    /**
+     * Section 3.1's refusal, reachable and readable.
+     *
+     * <p>The old check asked "is it the base unit or the packaging unit?" - a second
+     * implementation of "which units does this product accept", which is what P1-1 was. It now
+     * resolves against the one set, and the message names every valid answer in the grammar a
+     * person would use: "bags of 50 kg", not the picker's "Bag of 50 kg" spliced into the middle
+     * of a sentence.
+     */
+    @Test
+    void aUnitThisProductCannotBeCountedInIsRefusedByNamingTheOnesItCan() {
+        TenantLoginResponse tenant = signup("Unit Not Stocked Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,UNS-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session =
+                upload(tenant, STOCK_IN_HEADERS + "UNS-1,Rice 50kg,,5,CARTON,,,,\n", "STOCK_IN", null);
+
+        assertThat(session.errorCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, session, "ERROR").errors()).anySatisfy(error -> {
+            assertThat(error.column()).isEqualTo("counted_in");
+            assertThat(error.message()).contains("Rice 50kg is counted in");
+            assertThat(error.message()).contains("bags of 50 kg");
+            assertThat(error.message()).contains("we don't know how to count it in cartons");
+            // Never the raw picker label mid-sentence - that capital B is the tell that a machine
+            // assembled the sentence.
+            assertThat(error.message()).doesNotContain("Bag of 50 kg");
+        });
+    }
+
+    /**
+     * Contract section 5.2: {@code packaging_size} is removed from the sheet, and a number left in
+     * it on an old saved copy is accepted, ignored, and warned about - never silently dropped and
+     * never used.
+     *
+     * <p>The warning lands only on rows that record something. The pre-filled template is the
+     * tenant's whole catalog, so a six-line delivery arrives as a four-hundred-row file; warning
+     * on all four hundred would be the same as warning on none (contract section 8.11's
+     * reasoning, applied to the column beside it).
+     */
+    @Test
+    void aPackagingSizeLeftOnAnOldStockInTemplateIsIgnoredOutLoudAndOnlyWhereItMatters() {
+        TenantLoginResponse tenant = signup("Ignored Pack Size Co");
+        commitCatalog(
+                tenant,
+                "CREATE_ONLY",
+                CATALOG_HEADERS
+                        + "Rice 50kg,IPS-1,,900,,,KG,BAG,50,,,\n"
+                        + "Beans 100kg,IPS-2,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS
+                        + "IPS-1,Rice 50kg,,2,BAG,,25,,\n"
+                        // No quantity: nothing arrived, so nothing is said about any of its other
+                        // columns either.
+                        + "IPS-2,Beans 100kg,,,BAG,,25,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(session.warningCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, session, "WARNING").warnings()).anySatisfy(warning -> {
+            // The stock-in sheet's ignored column keeps its old HEADER ("packaging_size") but its
+            // field key moved with section 9.4, and the grid addresses cells by field key.
+            assertThat(warning.column()).isEqualTo("units_per_pack");
+            assertThat(warning.message()).contains("take the pack from your product setup");
+        });
+
+        // Ignored means ignored: 2 bags is 100 kg from the product's own pack, never 50 kg from
+        // the number in the column we just said we were not reading.
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "IPS-1").quantityOnHand()).isEqualTo(100);
+    }
+
+    /**
+     * The rename is a rename of the header, not a break in it. Contract section 5.1/5.2 keep
+     * {@code quantity_on_hand}, {@code unit} and {@code unit_cost} accepted on read forever -
+     * tenants hold saved copies of every template we have ever published, and a rename that costs
+     * a customer a morning is not a rename worth making.
+     *
+     * <p>Both files below use the OLD headers throughout, which is also why every other test in
+     * this class still does.
+     */
+    @Test
+    void theHeadersOfEveryTemplateWeHaveEverPublishedStillMap() {
+        TenantLoginResponse tenant = signup("Old Headers Co");
+        ImportSessionResponse catalog = upload(
+                tenant,
+                CATALOG_HEADERS + "Rice 50kg,OLDH-1,,900,40,,KG,BAG,50,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+        assertThat(catalog.needsMapping()).isFalse();
+        assertThat(catalog.unmappedHeaders()).isEmpty();
+        assertThat(catalog.columnMapping())
+                .containsEntry("quantity_on_hand", "opening_stock")
+                .containsEntry("low_stock_threshold", "low_stock_alert_at")
+                .containsEntry("unit_of_measure", "stock_unit")
+                .containsEntry("packaging_unit", "pack")
+                .containsEntry("packaging_size", "units_per_pack");
+        commit(tenant, catalog.id());
+
+        ImportSessionResponse stockIn =
+                upload(tenant, STOCK_IN_HEADERS + "OLDH-1,Rice 50kg,,2,BAG,45000,,,\n", "STOCK_IN", null);
+        assertThat(stockIn.needsMapping()).isFalse();
+        assertThat(stockIn.unmappedHeaders()).isEmpty();
+        assertThat(stockIn.columnMapping())
+                .containsEntry("unit", "counted_in")
+                .containsEntry("unit_cost", "cost_per_unit");
+        assertThat(stockIn.errorCount()).isZero();
+    }
+
+    /**
+     * M2's handover, and the one thing a reference column must never do: appear on the mapping
+     * screen as a column we did not understand. {@code how_you_count_it} answers the question the
+     * sheet asks; being told we do not recognise it would undo exactly the reassurance it exists
+     * to give.
+     */
+    @Test
+    void theStockInSheetsReferenceColumnIsRecognisedRatherThanReportedAsUnknown() {
+        TenantLoginResponse tenant = signup("Reference Column Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,REFC-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,reference\n"
+                        + "REFC-1,Rice 50kg,kg · or Bag of 50 kg,,2,Bag of 50 kg,45000,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.unmappedHeaders()).isEmpty();
+        assertThat(session.needsMapping()).isFalse();
+        assertThat(session.errorCount()).isZero();
+        // The composed pack label the template writes into the cell reads back as the pack -
+        // "Bag of 50 kg" is not a unit, it is a unit and a size, and M2's SheetUnitOptions is
+        // what undoes the composition.
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        assertThat(row.normalized().get("counted_in")).isEqualTo("BAG");
+        assertThat(row.baseQuantityText()).isEqualTo("= 100 kg");
+    }
+
+    // ------------------------------------------------- the bulk fix actually fixing
+
+    /**
+     * BULK_IMPORT_DESIGN.md section 9.3 calls {@code [Fix all 12 "KGS" rows]} "the single
+     * highest-value interaction on the page", and BULK_IMPORT_CONTRACT.md section 8.3 makes
+     * "every fix offers its bulk form" a non-negotiable. Until this test, the form did nothing.
+     *
+     * <h2>The bug, which returned 200 and changed nothing</h2>
+     * {@code PATCH /value-mappings} persisted every arm of the union and re-validated, but
+     * {@code newState} built a row's inputs from the file and the user's own cell edits only.
+     * Nothing read a LITERAL answer for an ordinary column - the handlers consult
+     * {@code ValueMappings} themselves for {@code vendor_name} and {@code sku}, which is why the
+     * supplier card always worked, and for every other column nothing consulted it at all. So the
+     * request succeeded, the grid refetched, and the same broken rows came back.
+     *
+     * <p>The canonical case is a unit column, which makes this the repair loop for exactly the
+     * confusion UNIT_UX_CONTRACT.md exists to end - it was dead in the one place it mattered most.
+     */
+    @Test
+    void oneBulkFixRepairsEveryRowThatSharesTheSameBadValue() {
+        TenantLoginResponse tenant = signup("Bulk Fix Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS
+                        + "Rice 50kg,BULK-1,,900,,,KGG,,,,,\n"
+                        + "Beans 100kg,BULK-2,,900,,,KGG,,,,,\n"
+                        + "Millet 25kg,BULK-3,,900,,,KGG,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        assertThat(session.errorCount()).isEqualTo(3);
+        // The count that powers the button's label, so it says "Fix all 3" and not "Fix all".
+        assertThat(firstRow(tenant, session, "ERROR").errors())
+                .anySatisfy(error -> assertThat(error.bulkFixCount()).isEqualTo(3));
+
+        ImportSessionResponse fixed = resolveValue(
+                tenant,
+                session.id(),
+                new ValueMappingRequest(
+                        "stock_unit", "KGG", new ValueResolution("LITERAL", null, "KG", null)));
+
+        assertThat(fixed.errorCount()).isZero();
+        assertThat(rows(tenant, session.id(), "ALL"))
+                .hasSize(3)
+                .allSatisfy(row -> {
+                    assertThat(row.status().name()).isEqualTo("VALID");
+                    assertThat(row.normalized().get("stock_unit")).isEqualTo("KG");
+                });
+
+        // And it is a real repair, not a cosmetic one: the products import with the unit.
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "BULK-2").unitOfMeasure()).isEqualTo("KG");
+    }
+
+    /**
+     * A bulk answer is about the FILE; a cell edit is about one row. The row wins.
+     *
+     * <p>Correcting row 4 by hand and then bulk-fixing the rest is an ordinary sequence, not a
+     * conflict - and silently overwriting the considered decision with the sweeping one would be
+     * the review grid undoing the user's work in front of them. {@code editedKeys} is the record
+     * of what was typed by hand, and the overlay skips those cells.
+     */
+    @Test
+    void aHandEditSurvivesABulkFixAppliedAfterwards() {
+        TenantLoginResponse tenant = signup("Edit Beats Bulk Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS
+                        + "Groundnut Oil,EDIT-1,,900,,,KGG,,,,,\n"
+                        + "Rice 50kg,EDIT-2,,900,,,KGG,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        ImportRowResponse oil = rows(tenant, session.id(), "ALL").stream()
+                .filter(row -> "EDIT-1".equals(row.normalized().get("sku")))
+                .findFirst()
+                .orElseThrow();
+        patchRow(tenant, session.id(), oil.id(), Map.of("stock_unit", "LITER"));
+
+        resolveValue(
+                tenant,
+                session.id(),
+                new ValueMappingRequest(
+                        "stock_unit", "KGG", new ValueResolution("LITERAL", null, "KG", null)));
+
+        Map<String, Object> bySku = new java.util.LinkedHashMap<>();
+        rows(tenant, session.id(), "ALL")
+                .forEach(row -> bySku.put(
+                        String.valueOf(row.normalized().get("sku")), row.normalized().get("stock_unit")));
+        assertThat(bySku).containsEntry("EDIT-1", "LITER").containsEntry("EDIT-2", "KG");
+    }
+
+    /**
+     * The BLANK arm, on an ordinary column: clear the cell everywhere it says this, rather than
+     * substitute into it. Same overlay, same precedence rules - it is the answer "that column was
+     * nonsense, drop it" given once instead of forty-seven times.
+     */
+    @Test
+    void aBulkBlankClearsTheCellOnEveryMatchingRow() {
+        TenantLoginResponse tenant = signup("Bulk Blank Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS
+                        + "Rice 50kg,BLANK-1,,900,,,KGG,,,,,\n"
+                        + "Beans 100kg,BLANK-2,,900,,,KGG,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+        assertThat(session.errorCount()).isEqualTo(2);
+
+        ImportSessionResponse cleared = resolveValue(
+                tenant,
+                session.id(),
+                new ValueMappingRequest(
+                        "stock_unit", "KGG", new ValueResolution("BLANK", null, null, null)));
+
+        assertThat(cleared.errorCount()).isZero();
+        assertThat(rows(tenant, session.id(), "ALL"))
+                .allSatisfy(row -> assertThat(row.normalized().get("stock_unit")).isNull());
+    }
+
+    /**
+     * The REFERENCE path is untouched, and this is the regression guard for that.
+     *
+     * <p>{@code vendor_name} is named by {@code selfResolvedColumns}, so the engine's generic
+     * substitution stays off it and {@code resolveVendor} keeps handling all five arms at commit
+     * time. A LITERAL there means "go looking under this other name", not "put this text in the
+     * cell" - and the difference only shows up where it matters, which is what the vendor line
+     * below is checking.
+     */
+    @Test
+    void aLiteralOnTheSupplierColumnStillGoesThroughTheHandlerAndNotTheOverlay() {
+        TenantLoginResponse tenant = signup("Literal Supplier Co");
+        CompanyVendorResponse dangote = createVendor(tenant, "Dangote Nigeria Plc");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS + "Rice 50kg,LITV-1,,900,,,KG,,,Dangote Ltd,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        resolveValue(
+                tenant,
+                session.id(),
+                new ValueMappingRequest(
+                        "vendor_name", "Dangote Ltd",
+                        new ValueResolution("LITERAL", null, "Dangote Nigeria Plc", null)));
+        commit(tenant, session.id());
+
+        // The cell still says what the file said - the handler resolved the pointer, it did not
+        // rewrite the row - and the vendor line landed on the real supplier.
+        assertThat(vendorLines(tenant, productBySku(tenant, "LITV-1").id()))
+                .anySatisfy(line -> assertThat(line.companyVendorId()).isEqualTo(dangote.id()));
+    }
+
     // ----------------------------------------------------------------- helpers
+
+    private PreviewBody previewOf(TenantLoginResponse tenant, ImportSessionResponse session) {
+        return restTemplate
+                .exchange(
+                        "/api/imports/" + session.id() + "/preview",
+                        HttpMethod.GET,
+                        new HttpEntity<>(authHeaders(tenant)),
+                        PreviewBody.class)
+                .getBody();
+    }
+
 
     private HttpStatus discard(TenantLoginResponse tenant, UUID sessionId) {
         return (HttpStatus) restTemplate
