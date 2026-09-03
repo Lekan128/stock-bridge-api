@@ -52,6 +52,13 @@ import org.hibernate.annotations.CreationTimestamp;
  * distinction is load-bearing rather than cosmetic. {@link #importBatchId} stamps the {@link
  * ImportSession} whose commit wrote the row, which is what makes "show me what this import
  * created" and the undo of BULK_IMPORT_DESIGN.md section 6.6 possible at all.
+ *
+ * <h2>V21: what was typed, kept beside what was recorded</h2>
+ * {@link #enteredUnit}, {@link #enteredQuantity} and {@link #enteredUnitPrice} are the entry as
+ * the human wrote it - "20 bags at &#8358;45,000/bag" - while {@link #quantity} and
+ * {@link #unitPriceAtTime} keep their existing meaning exactly: base units, and money per stock
+ * unit. Read {@link #enteredUnit}'s javadoc before touching any of the three; they are display
+ * facts, and UNIT_UX_CONTRACT.md section 3.3 forbids reading them to compute a balance or a cost.
  */
 @Entity
 @Table(name = "stock_movements")
@@ -188,6 +195,67 @@ public class StockMovement extends TenantAwareEntity {
      */
     @Column(name = "import_batch_id", updatable = false)
     private UUID importBatchId;
+
+    /**
+     * The unit code the human actually typed this delivery in - {@code "BAG"}, {@code "T"} -
+     * or NULL when they typed it in the product's own stock unit (which is what every request
+     * that omits {@code unit} says). Added V21; UNIT_UX_CONTRACT.md section 3.3.
+     *
+     * <h2>Display fact, never an input to a calculation</h2>
+     * This and its two siblings below exist so a receipt, a history row or an audit can show
+     * <em>what was entered</em> alongside <em>what was recorded</em> - contract non-negotiable 3,
+     * "what the user typed and what the ledger records appear together". They are deliberately
+     * NOT part of any balance or cost: {@link #quantity} stays the base-unit quantity and
+     * {@link #unitPriceAtTime} stays the per-stock-unit price, and those two remain the only
+     * numbers {@code Product.quantityOnHand}, the weighted-average cost, FIFO and
+     * {@link StockMovementAllocation} are computed from. Section 3.3 states the rule flatly:
+     * "nothing may read them to compute a balance or a cost." A second quantity that some code
+     * path might sum is how a ledger acquires two answers to the same question.
+     *
+     * <p>This is NetSuite's model rather than an invention - store the transaction in the base
+     * unit, keep the entered unit beside it, show what was typed, compute on the base.
+     *
+     * <h2>Every existing row is NULL, and NULL has a defined meaning</h2>
+     * The V21 migration backfills nothing, because there is nothing honest to backfill: a
+     * movement written before this column existed did not record what unit its number was typed
+     * in. NULL therefore reads as "entered in the stock unit", and every consumer falls back to
+     * {@link #quantity}/{@link #unitPriceAtTime} - which is not a guess, it is exactly what those
+     * rows meant, since before this remediation a converted quantity was the only thing ever
+     * stored.
+     *
+     * <p>{@code updatable = false} like every other column on this append-only row: what somebody
+     * typed on a Tuesday is not a fact that later becomes a different fact.
+     */
+    @Column(name = "entered_unit", length = 32, updatable = false)
+    private String enteredUnit;
+
+    /**
+     * The number the human typed, counted in {@link #enteredUnit} - 20, where {@link #quantity}
+     * says 1000. Null exactly when {@link #enteredUnit} is; see its javadoc for why nothing may
+     * compute from this. Added V21.
+     *
+     * <p>Decimal rather than integer, unlike {@link #quantity}: an entered quantity is not
+     * constrained to whole stock units (that is the entire point of entering in another unit),
+     * and a future half-tonne entry should not have to round before it is even recorded. Scale 3
+     * matches {@code numeric(14,3)} in V21.
+     */
+    @Column(name = "entered_quantity", precision = 14, scale = 3, updatable = false)
+    private BigDecimal enteredQuantity;
+
+    /**
+     * The price the human typed, <b>per {@link #enteredUnit}</b> - &#8358;45,000 per bag, where
+     * {@link #unitPriceAtTime} says &#8358;900 per kg. Null when no price was given or when the
+     * entry was in the stock unit. Added V21.
+     *
+     * <p>The pair of prices is the visible half of the P0-1 fix
+     * (UNIT_UX_REMEDIATION_PLAN.md section 3): before this, only the typed number was stored and
+     * it was stored in the per-stock-unit column, so &#8358;45,000 per bag became &#8358;45,000
+     * per kg with nothing on the row to reveal it. Now the converted figure is what the ledger
+     * uses and the typed figure sits beside it, so the two can be shown together and any future
+     * drift between them is visible rather than silent.
+     */
+    @Column(name = "entered_unit_price", precision = 14, scale = 2, updatable = false)
+    private BigDecimal enteredUnitPrice;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

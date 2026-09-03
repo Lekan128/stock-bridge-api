@@ -4,6 +4,6 @@ package com.procurepal_services.stock_bridge_api.companyvendor;
 public class PriceTierNotFoundException extends RuntimeException {
 
     public PriceTierNotFoundException() {
-        super("That price tier was not found on this vendor.");
+        super("That price tier was not found on this supplier.");
     }
 }

@@ -85,6 +85,32 @@ public interface ImportRowHandler {
     void validateBatch(BatchContext ctx);
 
     /**
+     * Columns this handler resolves against {@code ValueMappings} <b>itself</b>, and which the
+     * engine must therefore not apply on its behalf.
+     *
+     * <h2>Why the engine has to be told rather than work it out</h2>
+     * Most columns hold a value: an answer of "use KG instead" means "put KG in the cell", and
+     * the engine can do that generically for every row that said KGS. A REFERENCE column holds a
+     * pointer to an entity, and there the same five arms mean five different things - EXISTING
+     * names a row in the supplier directory, CREATE_NEW is a promise to write one inside the
+     * commit transaction, LITERAL is a different name to go looking under. Only the handler knows
+     * how to turn any of that into a {@code CompanyVendor}, and it does, at the point where it
+     * needs one.
+     *
+     * <p>So this is the seam between the two: a column named here is the handler's, and
+     * {@code ImportSessionService.applyValueMappings} leaves it alone; anything not named gets
+     * the generic LITERAL/BLANK substitution. Erring towards naming a column that does not need
+     * it costs a dead bulk fix - the defect that motivated this method - so the list is short and
+     * every entry has real handling behind it.
+     *
+     * @return field keys, never null. Empty by default, the right answer for a handler that asks
+     *     no distinct-value questions.
+     */
+    default java.util.Set<String> selfResolvedColumns() {
+        return java.util.Set.of();
+    }
+
+    /**
      * Distinct unresolved values needing a human decision (design 6.4), collapsed across rows.
      *
      * <p>Returns questions, not problems. A value only belongs here if one answer settles every

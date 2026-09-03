@@ -62,7 +62,7 @@ public final class ProductEmails {
             String note,
             OffsetDateTime submittedAt) {
         String body = paragraphHtml(bold(escape(companyName))
-                        + " has asked for a unit of measure that is not on the current list.")
+                        + " has asked for a unit that is not on the current list.")
                 + detailTable(List.of(
                         new Detail("Company", companyName),
                         new Detail("Requested by", requesterName),
@@ -71,7 +71,7 @@ public final class ProductEmails {
                         new Detail("Submitted", timestamp(submittedAt))))
                 + noteBlockHtml(note);
 
-        String text = companyName + " has asked for a unit of measure that is not on the current list.\n\n"
+        String text = companyName + " has asked for a unit that is not on the current list.\n\n"
                 + "Company: " + companyName + "\n"
                 + "Requested by: " + requesterName + "\n"
                 + (requesterEmail == null || requesterEmail.isBlank() ? "" : "Their email: " + requesterEmail + "\n")
@@ -81,8 +81,8 @@ public final class ProductEmails {
 
         return new EmailMessage(
                 to,
-                "Unit of measure request: " + requestedUnit,
-                page("New unit of measure request", companyName + " asked for \"" + requestedUnit + "\".", body),
+                "Unit request: " + requestedUnit,
+                page("New unit request", companyName + " asked for \"" + requestedUnit + "\".", body),
                 text,
                 EmailKind.TRANSACTIONAL);
     }

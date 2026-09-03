@@ -6,6 +6,7 @@ import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportSession;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import com.procurepal_services.stock_bridge_api.imports.BatchContext;
 import com.procurepal_services.stock_bridge_api.imports.CommitOutcome;
@@ -18,6 +19,7 @@ import com.procurepal_services.stock_bridge_api.imports.ImportRowHandler;
 import com.procurepal_services.stock_bridge_api.imports.ImportRowState;
 import com.procurepal_services.stock_bridge_api.imports.NameSimilarity;
 import com.procurepal_services.stock_bridge_api.imports.RowContext;
+import com.procurepal_services.stock_bridge_api.imports.RowIssue;
 import com.procurepal_services.stock_bridge_api.imports.RowValidation;
 import com.procurepal_services.stock_bridge_api.imports.UndoOutcome;
 import com.procurepal_services.stock_bridge_api.imports.UnresolvedValue;
@@ -25,9 +27,12 @@ import com.procurepal_services.stock_bridge_api.imports.ValueMappings;
 import com.procurepal_services.stock_bridge_api.imports.ValueResolution;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
+import com.procurepal_services.stock_bridge_api.product.bulk.SheetUnitOptions;
 import com.procurepal_services.stock_bridge_api.product.bulk.StockInExcelService;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
@@ -74,14 +79,32 @@ import org.springframework.stereotype.Component;
  * section 8.11: a blank {@code quantity} is a silent skip, not an error. Not a warning either -
  * three hundred and ninety-four warnings is the same as none.
  *
- * <h2>Units, and what is deliberately not attempted</h2>
- * Design 8.3 rules out per-row dependent dropdowns in the spreadsheet: they are possible in
- * Excel via {@code INDIRECT} and they break in Google Sheets, Numbers and LibreOffice. The
- * answer is a flat dropdown of every unit code in the sheet, pre-filled per row with the right
- * one, and narrowing server-side to *that product's* two configured units - which is this
- * class's job, with the error naming the two that are valid. M2 left
- * {@link StockInExcelService#unitNotStockedMessage} public and static precisely so this handler
- * would use its wording rather than write a second one.
+ * <h2>Units - one set, three surfaces, no second opinion</h2>
+ * Design 8.3 rules out per-row dependent dropdowns in the spreadsheet: they work in Excel via
+ * {@code INDIRECT} and break in Google Sheets, Numbers and LibreOffice. So the sheet carries a
+ * flat dropdown plus a per-row {@code how_you_count_it} reference column, and the narrowing to
+ * <em>this product's</em> units happens server-side - here.
+ *
+ * <p>What this class must not do is decide for itself what those units are. That is what P1-1
+ * was: the modal offered thirty codes, the service accepted two, and the answer depended on
+ * which code path you asked. {@code UnitOptions} is the one implementation of
+ * UNIT_UX_CONTRACT.md section 2.1, and this handler resolves against it, hands the resolved
+ * option's factor to {@code stockIn} rather than applying it, and publishes the same set to the
+ * review grid as {@code fieldOptions} (section 6.2). Three surfaces, one list.
+ *
+ * <p>The refusal sentence stays M2's
+ * {@link StockInExcelService#unitNotStockedMessage(String, List, String)} - the file that
+ * decides what a column may contain is the file that explains it - fed with
+ * {@code UnitOptions.spokenPhrase} so it reads "kg or bags of 50 kg" rather than splicing a
+ * capitalised picker label into the middle of a sentence.
+ *
+ * <h2>Prices are handed over, never converted here</h2>
+ * {@code cost_per_unit} is per the row's {@code counted_in}, and it travels to
+ * {@code StockManagementService.stockIn} exactly as typed, together with the unit it is per.
+ * The division by the option's factor happens there, in the same call that multiplies the
+ * quantity by it (section 3.2). Doing it here would either double-apply the conversion or put a
+ * second copy of the rule in a second file - and the two halves of that rule living apart is
+ * precisely what P0-1 was.
  */
 @Component
 @RequiredArgsConstructor
@@ -90,6 +113,8 @@ public class StockInRowHandler implements ImportRowHandler {
     private static final String CACHE_PRODUCTS_BY_SKU = "stock-in-products-by-sku";
     private static final String CACHE_VENDOR_LINE_COUNT = "stock-in-vendor-line-count";
     private static final String CACHE_ACTIVE_PRODUCTS = "stock-in-active-products";
+    private static final String CACHE_PREFERRED_VENDOR_LINE = "stock-in-preferred-vendor-line";
+    private static final String CACHE_PRODUCTS_BY_ID = "stock-in-products-by-id";
 
     /** Beyond this a backdated delivery is warned about, never blocked - design 8.4. */
     private static final int BACKDATE_WARNING_DAYS = 365;
@@ -111,41 +136,75 @@ public class StockInRowHandler implements ImportRowHandler {
     // ------------------------------------------------------------------ fields
 
     /**
-     * Nine columns, of which the user fills one.
+     * UNIT_UX_CONTRACT.md section 5.2's column set, in template order, of which the user fills
+     * one - plus {@code packaging_size}, which the sheet no longer has but old saved copies do.
      *
-     * <p>{@code sku} and {@code product_name} are {@code readOnly}: they identify the row, and
-     * editing them in the grid would silently re-point a delivery at a different product.
-     * {@code quantity} is the kind's single {@code primaryInput}, which is what lets the grid say
-     * so visually - "we bring the rows, the user brings one number" is only true if the screen
-     * makes that number obvious.
+     * <h2>What changed, and why each change is here rather than in the sheet alone</h2>
+     * The field key IS the column header (BULK_IMPORT_CONTRACT.md section 5), so M2's rename of
+     * the sheet is this list's rename too: {@code unit} became {@code counted_in} and
+     * {@code unit_cost} became {@code cost_per_unit}. Both old spellings stay permanent read
+     * aliases in {@link com.procurepal_services.stock_bridge_api.imports.ImportColumnMapper}, so a
+     * saved copy of any template we have ever published still maps.
+     *
+     * <p>{@code how_you_count_it} is new and read-only. It is the column that fixes the reported
+     * complaint on the sheet - the valid answers printed on the row, beside the cell that asks
+     * for one - and it is declared here so the grid shows the same reference text and so the
+     * header is never reported as a column we did not understand.
+     *
+     * <p>{@code packaging_size} is last, read-only, and never read for a value. Section 5.2
+     * removed it from the sheet (a delivery line must not redefine a stored product attribute -
+     * UNIT_UX_REMEDIATION_PLAN.md P3-3) but requires that a number left in it on an old saved
+     * template is accepted, ignored, and <em>warned about</em> rather than silently dropped. It
+     * has to resolve to a field for that warning to have a cell to attach to.
+     *
+     * <h2>The options on {@code counted_in} are the fallback, not the answer</h2>
+     * Section 6.1 keeps the descriptor's {@code options} kind-wide; the per-row narrowing travels
+     * on the row as {@code fieldOptions} (section 6.2). The fallback is base units only, never
+     * the nineteen PACKAGING constants the old list carried: non-negotiable 1 is that no quantity
+     * field anywhere offers a unit with no conversion factor, and a Carton is not an alternative
+     * way to count a product whose packs are bags - it is an unanswerable question that resolves
+     * to a guaranteed 400 (P1-1, the reported complaint).
      */
     @Override
     public List<ImportFieldDescriptor> fields() {
         return List.of(
                 new ImportFieldDescriptor(ImportFields.SKU, "Product code", ImportFieldDescriptor.Type.TEXT,
                         true, true, false,
-                        "Your product code. This is how we match the row to your product - do not change it.", null),
+                        "Your product code. This is how we match the row to your product - do not change it.", null, null),
                 new ImportFieldDescriptor(ImportFields.PRODUCT_NAME, "Product", ImportFieldDescriptor.Type.TEXT,
-                        false, true, false, "For your reference. We match on the code, not on this.", null),
-                new ImportFieldDescriptor(ImportFields.VENDOR_NAME, "Supplier",
+                        false, true, false, "For your reference. We match on the code, not on this.", null, null),
+                new ImportFieldDescriptor(ImportFields.HOW_YOU_COUNT_IT, "How you count it",
+                        ImportFieldDescriptor.Type.TEXT, false, true, false,
+                        "For your reference: the ways you can count this product. Copy one of them into "
+                                + "“Counted in”. Other sizes of the same measure work too - g or t for a product "
+                                + "counted in kg.", null, null),
+                new ImportFieldDescriptor(ImportFields.VENDOR_NAME, ImportCopy.Labels.SUPPLIER,
                         ImportFieldDescriptor.Type.REFERENCE, false, false, false,
-                        "Who this delivery came from.", null),
+                        "Who this delivery came from.", null, null),
                 new ImportFieldDescriptor(ImportFields.QUANTITY, "Quantity", ImportFieldDescriptor.Type.INTEGER,
                         false, false, true,
-                        "How much of this product arrived. Leave it empty for products you did not receive.", null),
-                ImportFieldDescriptor.enumeration(ImportFields.UNIT, "Counted in", false,
-                        "What the quantity is counted in - the product's own unit, or the pack you buy it by.",
-                        RowValues.options(UnitOfMeasure.all())),
-                ImportFieldDescriptor.of(ImportFields.UNIT_COST, "Cost each", ImportFieldDescriptor.Type.MONEY,
-                        false, "What one of the above cost you."),
-                ImportFieldDescriptor.of(ImportFields.PACKAGING_SIZE, "Units per pack",
-                        ImportFieldDescriptor.Type.NUMBER, false,
-                        "How many base units are in one pack, if the quantity is in packs."),
+                        "How much of this product arrived, counted in whatever “Counted in” says. Leave it "
+                                + "empty for products you did not receive.", null, null),
+                ImportFieldDescriptor.enumeration(ImportFields.COUNTED_IN, ImportCopy.Labels.COUNTED_IN, false,
+                                "Which of the ways in “How you count it” the number beside it is in - the product's own "
+                                        + "stock unit, or the pack you buy it by.",
+                                RowValues.options(UnitOfMeasure.baseUnits()))
+                        // Same rule as the catalog sheet's opening_stock_counted_in: a column
+                        // that states what a quantity MEANS must stay visible wherever that
+                        // quantity is, or the grid hides the only way to correct it.
+                        .withQualifies(ImportFields.QUANTITY),
+                ImportFieldDescriptor.of(ImportFields.COST_PER_UNIT, ImportCopy.Labels.COST_PER_COUNTED_IN_UNIT,
+                        ImportFieldDescriptor.Type.MONEY, false,
+                        "Per whatever this row's “Counted in” says - per bag if it says Bag, per kg if it says kg."),
                 ImportFieldDescriptor.of(ImportFields.RECEIVED_DATE, "Date received",
                         ImportFieldDescriptor.Type.DATE, false,
                         "When the delivery actually arrived. We use this to work out which stock was sold first."),
                 ImportFieldDescriptor.text(ImportFields.REFERENCE, "Waybill or invoice",
-                        "So you can find this delivery again."));
+                        "So you can find this delivery again."),
+                new ImportFieldDescriptor(ImportFields.PACKAGING_SIZE, ImportCopy.Labels.UNITS_PER_PACK,
+                        ImportFieldDescriptor.Type.NUMBER, false, true, false,
+                        "No longer used. We take the pack from your product setup now, so a number here is "
+                                + "ignored.", null, null));
     }
 
     // ---------------------------------------------------------------- validate
@@ -180,13 +239,13 @@ public class StockInRowHandler implements ImportRowHandler {
             // "create this product", which the commit will honour. Nothing further to check
             // against a product that does not exist yet - its units are whatever the resolution
             // said they would be.
-            readRemainingColumns(ctx, out, subject, null);
+            readRemainingColumns(ctx, out, subject, null, quantity);
             return out.build();
         }
         out.resolvedTo(product.getId(), product.getName());
         subject = product.getName();
 
-        readRemainingColumns(ctx, out, subject, product);
+        readRemainingColumns(ctx, out, subject, product, quantity);
         validateVendor(ctx, out, product, subject);
         return out.build();
     }
@@ -279,63 +338,176 @@ public class StockInRowHandler implements ImportRowHandler {
     }
 
     private void readRemainingColumns(
-            RowContext ctx, RowValidation.Builder out, String subject, Product product) {
-        validateUnit(ctx, out, product, subject);
-        RowValues.money(ctx, out, ImportFields.UNIT_COST, "Cost each", subject);
-        RowValues.decimal(ctx, out, ImportFields.PACKAGING_SIZE, "Units per pack", subject);
+            RowContext ctx, RowValidation.Builder out, String subject, Product product, Integer quantity) {
+        List<UnitOption> options =
+                product == null ? List.of() : unitOptionsFor(ctx.tenantId(), ctx.cache(), product);
+        UnitOption countedIn = validateCountedIn(ctx, out, product, options, subject);
+        RowValues.money(ctx, out, ImportFields.COST_PER_UNIT, ImportCopy.Labels.COST_PER_COUNTED_IN_UNIT, subject);
+        warnOnIgnoredPackagingSize(ctx, out);
         validateReceivedDate(ctx, out, subject);
         out.value(ImportFields.REFERENCE, ctx.text(ImportFields.REFERENCE));
+        describeUnits(out, subject, product, options, countedIn, quantity);
     }
 
     /**
-     * Design 8.3's server-side narrowing: a unit code that exists in the catalog but is not one
-     * of <em>this product's</em> two configured units.
+     * UNIT_UX_CONTRACT.md section 3.1's resolution, done against the row's product rather than
+     * against a hand-rolled two-branch comparison.
      *
-     * <p>The message is M2's {@link StockInExcelService#unitNotStockedMessage}, which was left
-     * static and public for exactly this call. Writing a second version of "Rice 50kg is stocked
-     * in KG or BAG" here would be two sentences to keep in step for no benefit.
+     * <h2>What this replaces</h2>
+     * The previous version asked two questions - "is this the base unit?" and "is this the
+     * packaging unit?" - which is a second implementation of "which units does this product
+     * accept", and a second implementation is what P1-1 was: the modal offered thirty codes, the
+     * service accepted two, and the answer depended on which code path you asked. There is now
+     * one list, {@code UnitOptions} builds it, and every surface resolves against it.
+     *
+     * <p>The refusal names every valid answer, in the grammar a person would use -
+     * {@code UnitOptions.spokenPhrase} turns the picker label "Bag of 50 kg" into the
+     * mid-sentence "bags of 50 kg", so the message reads "Rice 50kg is counted in kg or bags of
+     * 50 kg - we don't know how to count it in cartons" rather than splicing a capitalised label
+     * into the middle of a sentence. The sentence template itself stays in
+     * {@link StockInExcelService#unitNotStockedMessage(String, List, String)}, next to the column
+     * and the dropdown it is about, so the sheet and the grid cannot drift.
+     *
+     * @return the option this row's quantity and price are counted in, or null when the cell
+     *     could not be resolved. A blank cell resolves to the product's stock unit, which is what
+     *     an absent {@code unit} means everywhere else (non-negotiable 8).
      */
-    private void validateUnit(RowContext ctx, RowValidation.Builder out, Product product, String subject) {
-        String raw = ctx.text(ImportFields.UNIT);
+    private UnitOption validateCountedIn(
+            RowContext ctx,
+            RowValidation.Builder out,
+            Product product,
+            List<UnitOption> options,
+            String subject) {
+        String raw = ctx.text(ImportFields.COUNTED_IN);
         if (raw == null) {
-            out.value(ImportFields.UNIT, null);
-            return;
+            out.value(ImportFields.COUNTED_IN, null);
+            return product == null ? null : UnitOptions.stockUnitOption(options).orElse(null);
         }
-        Optional<UnitOfMeasure> resolved = UnitOfMeasure.fromCodeOrLabel(raw);
+
+        // SheetUnitOptions.resolve, not UnitOfMeasure.fromCodeOrLabel: the cell may contain a
+        // composed pack label ("Bag of 50 kg") because that is what M2's template writes into it,
+        // and that string is not a unit - it is a unit and a size. M2 owns undoing that
+        // composition; re-deriving it here would be the second copy again.
+        Optional<UnitOfMeasure> resolved = SheetUnitOptions.resolve(raw);
         if (resolved.isEmpty()) {
             ImportFieldDescriptor.Option suggestion = RowValues.closestUnit(raw, UnitOfMeasureRole.BASE);
-            out.issue(com.procurepal_services.stock_bridge_api.imports.RowIssue.error(
-                    ImportFields.UNIT, "UNIT_NOT_RECOGNISED",
+            out.issue(RowIssue.error(
+                    ImportFields.COUNTED_IN, "UNIT_NOT_RECOGNISED",
                     suggestion == null
-                            ? "We don't recognise %s as a unit.".formatted(ImportCopy.quote(raw))
-                            : "We don't recognise %s as a unit. Did you mean %s?"
-                                    .formatted(ImportCopy.quote(raw), suggestion.label()),
+                            ? "We don't recognise %s as a way to count %s."
+                                    .formatted(ImportCopy.quote(raw), subject)
+                            : "We don't recognise %s as a way to count %s. Did you mean %s?"
+                                    .formatted(ImportCopy.quote(raw), subject, suggestion.label()),
                     suggestion));
-            out.value(ImportFields.UNIT, null);
-            return;
+            out.value(ImportFields.COUNTED_IN, null);
+            return null;
         }
+
         String code = resolved.get().code();
         if (product == null) {
-            out.value(ImportFields.UNIT, code);
+            // An unresolved SKU, or one answered with "create this product". Its unit set is
+            // whatever the resolution card said it would be, so there is nothing to check the
+            // cell against yet - keep the code and let the next pass judge it.
+            out.value(ImportFields.COUNTED_IN, code);
+            return null;
+        }
+
+        Optional<UnitOption> option = UnitOptions.resolve(options, code);
+        if (option.isEmpty()) {
+            UnitOption stockUnit = UnitOptions.stockUnitOption(options).orElse(null);
+            out.issue(RowIssue.error(
+                    ImportFields.COUNTED_IN, "UNIT_NOT_STOCKED",
+                    StockInExcelService.unitNotStockedMessage(
+                            subject,
+                            options.stream().map(UnitOptions::spokenPhrase).toList(),
+                            UnitOptions.spokenPhraseOfSubmitted(raw)),
+                    stockUnit == null
+                            ? null
+                            : new ImportFieldDescriptor.Option(stockUnit.code(), stockUnit.label())));
+            out.value(ImportFields.COUNTED_IN, null);
+            return null;
+        }
+        out.value(ImportFields.COUNTED_IN, option.get().code());
+        return option.get();
+    }
+
+    /**
+     * The three things the review grid needs in order to show a unit rather than assume one -
+     * UNIT_UX_CONTRACT.md section 6.2.
+     *
+     * <ul>
+     *   <li>{@code how_you_count_it}: recomputed from the product rather than echoed from the
+     *       file, so the reference column states today's truth even on a sheet saved last month.
+     *   <li>{@code fieldOptions}: this row's own unit set, which turns the "Counted in" cell from
+     *       a thirty-option select into a two-option one. The kind-wide list on the descriptor
+     *       stays as the fallback for rows whose product has not resolved (section 6.1).
+     *   <li>{@code baseQuantityText}: {@code "= 2,000 kg"}, the ledger's number sitting under the
+     *       user's number. Non-negotiable 3 on the grid.
+     * </ul>
+     *
+     * <p>The conversion is checked for overflow here rather than left to the commit. Two billion
+     * bags of fifty is a mistyped cell, not a server fault, and it has to come back as an
+     * outlined cell like every other bad number - {@code stock_movements.quantity} is an int, so
+     * a commit would otherwise fail mid-transaction and roll back the whole file.
+     */
+    private void describeUnits(
+            RowValidation.Builder out,
+            String subject,
+            Product product,
+            List<UnitOption> options,
+            UnitOption countedIn,
+            Integer quantity) {
+        if (product == null || options.isEmpty()) {
             return;
         }
-        boolean isBase = code.equalsIgnoreCase(product.getUnitOfMeasure());
-        boolean isPack = product.getPackagingUnit() != null && code.equalsIgnoreCase(product.getPackagingUnit());
-        if (product.getUnitOfMeasure() == null || isBase || isPack) {
-            out.value(ImportFields.UNIT, code);
+        out.value(ImportFields.HOW_YOU_COUNT_IT, SheetUnitOptions.howYouCountIt(options));
+        out.value(ImportFields.FIELD_OPTIONS, Map.of(ImportFields.COUNTED_IN, options.stream()
+                .map(option -> {
+                    Map<String, Object> entry = new LinkedHashMap<>();
+                    entry.put("value", option.code());
+                    entry.put("label", option.label());
+                    return entry;
+                })
+                .toList()));
+
+        if (countedIn == null || quantity == null || quantity <= 0) {
             return;
         }
-        ImportFieldDescriptor.Option suggestion =
-                new ImportFieldDescriptor.Option(product.getUnitOfMeasure(),
-                        ImportCopy.unitLabel(product.getUnitOfMeasure()));
-        out.issue(com.procurepal_services.stock_bridge_api.imports.RowIssue.error(
-                ImportFields.UNIT, "UNIT_NOT_STOCKED",
-                StockInExcelService.unitNotStockedMessage(
-                        subject,
-                        ImportCopy.unitLabel(product.getUnitOfMeasure()),
-                        product.getPackagingUnit() == null ? null : ImportCopy.unitLabel(product.getPackagingUnit())),
-                suggestion));
-        out.value(ImportFields.UNIT, null);
+        Long baseQuantity = toStockUnits(countedIn, quantity);
+        if (baseQuantity == null) {
+            out.error(ImportFields.QUANTITY, "NUMBER_TOO_LARGE",
+                    "That is a larger delivery of %s than we can record.".formatted(subject));
+            out.value(ImportFields.QUANTITY, null);
+            return;
+        }
+        if (countedIn.isStockUnit()) {
+            // Nothing to convert. "= 20 kg" under a cell reading 20 is noise, and section 6.2
+            // says null rather than a restatement.
+            return;
+        }
+        out.value(ImportFields.BASE_QUANTITY_TEXT,
+                ImportCopy.baseQuantityText(baseQuantity, product.getUnitOfMeasure()));
+    }
+
+    /**
+     * Contract section 5.2: {@code packaging_size} is accepted, ignored, and warned about.
+     *
+     * <p>Reached only after the blank-quantity rule has already returned (contract section 8.11),
+     * which is what keeps this proportionate: a four-hundred-row pre-filled sheet recording a
+     * six-line delivery produces six of these, not four hundred. A warning on every row of a file
+     * is the same as no warning at all.
+     *
+     * <p>The normalized value is always null. The column is read so that it can be explicitly
+     * ignored rather than silently, never so that it can be used - a delivery line must not
+     * redefine a stored product attribute (UNIT_UX_REMEDIATION_PLAN.md P3-3).
+     */
+    private void warnOnIgnoredPackagingSize(RowContext ctx, RowValidation.Builder out) {
+        out.value(ImportFields.PACKAGING_SIZE, null);
+        if (ctx.text(ImportFields.PACKAGING_SIZE) == null) {
+            return;
+        }
+        out.warning(ImportFields.PACKAGING_SIZE, "PACKAGING_SIZE_IGNORED",
+                StockInExcelService.PACKAGING_SIZE_IGNORED_WARNING);
     }
 
     /**
@@ -433,6 +605,17 @@ public class StockInRowHandler implements ImportRowHandler {
      * new items in a delivery, not a whole file, which is what keeps it from degrading into
      * design 5.1's rejected "fill in the form afterwards" experience.
      */
+    /**
+     * {@code sku} and {@code vendor_name} - the two columns this handler asks questions about and
+     * answers itself, in {@link #resolveProduct} and {@link #resolveVendor}. Both point at
+     * entities rather than holding values, so substituting text into them generically would be
+     * the engine guessing at something only the handler can do.
+     */
+    @Override
+    public java.util.Set<String> selfResolvedColumns() {
+        return java.util.Set.of(ImportFields.SKU, ImportFields.VENDOR_NAME);
+    }
+
     @Override
     public List<UnresolvedValue> unresolvedValues(BatchContext ctx) {
         List<UnresolvedValue> unresolved = new ArrayList<>();
@@ -514,16 +697,37 @@ public class StockInRowHandler implements ImportRowHandler {
     // ---------------------------------------------------------------- preview
 
     /**
-     * Design 9.4's stock-in wording: "Record 18 deliveries - 1,240 kg across 18 products from 4
-     * suppliers, dated 12 Jan - 3 Feb. Total cost ₦8,420,000."
+     * Design 9.4's stock-in wording, with UNIT_UX_CONTRACT.md section 6.3's correction:
+     * "Record 18 deliveries - 9,500 kg (190 bags) across 12 products from 4 suppliers, dated
+     * 12 Jan - 3 Feb. Total cost N8,420,000."
      *
-     * <p>Same screen as the catalog's, different sentences, and the button says what it does.
+     * <h2>P0-4, and why this is the most important method in the class</h2>
+     * It used to do {@code quantity += number.intValue()} over the RAW entered quantities and
+     * then label the sum with the single unit if the file happened to use one, else the word
+     * "units". A sheet of 190 bags therefore previewed as "190 BAG" while the ledger recorded
+     * 9,500 kg, and a mixed-unit sheet previewed as a sum of numbers denominated in different
+     * things - a quantity that exists nowhere and means nothing.
+     *
+     * <p>A confirm screen exists for exactly one reason: to prevent surprise. One that states a
+     * number the ledger never writes is worse than no confirm screen at all, because it converts
+     * a user's caution into false confidence. So every row is converted to its product's stock
+     * unit BEFORE it is added to anything, and the sentence states both halves - what the ledger
+     * will record, and, in brackets, what the user typed.
+     *
+     * <h2>When the parenthetical is dropped</h2>
+     * Section 6.3: only when the file genuinely used one entry unit throughout does "(190 bags)"
+     * mean anything. Two entry units, or products counted in two different stock units, and the
+     * restatement would be a second lie replacing the first - so only the stock-unit totals are
+     * shown, one per stock unit, joined with "and" rather than summed across categories (adding
+     * kilograms to pieces is not a conversion, contract section 2.2).
      */
     @Override
     public CommitPreview preview(BatchContext ctx) {
         int deliveries = 0;
-        long quantity = 0;
-        Set<String> units = new LinkedHashSet<>();
+        // Insertion-ordered: the first product in the file names the unit the sentence leads with.
+        Map<String, Long> stockUnitTotals = new LinkedHashMap<>();
+        Map<String, Long> enteredTotals = new LinkedHashMap<>();
+        Map<String, UnitOption> enteredOptions = new LinkedHashMap<>();
         Set<UUID> products = new LinkedHashSet<>();
         Set<String> suppliers = new LinkedHashSet<>();
         BigDecimal totalCost = BigDecimal.ZERO;
@@ -546,16 +750,36 @@ public class StockInRowHandler implements ImportRowHandler {
                 continue;
             }
             deliveries++;
-            quantity += number.intValue();
-            units.add(state.text(ImportFields.UNIT) == null ? "unit" : state.text(ImportFields.UNIT));
+
+            Product product = productOf(ctx, state);
+            UnitOption option = optionFor(ctx, product, state.text(ImportFields.COUNTED_IN));
+            Long converted = option == null ? null : toStockUnits(option, number.intValue());
+            // A row whose product has not been created yet converts by 1: the resolution card
+            // collected a base unit and nothing else, so the number the user typed IS the number
+            // the ledger will take. Falling back to the raw value here is not the bare sum P0-4
+            // is about - it is a genuine stock-unit quantity for a product with no pack.
+            stockUnitTotals.merge(
+                    stockUnitSymbolOf(ctx, product, state),
+                    converted == null ? (long) number.intValue() : converted,
+                    Long::sum);
+
+            String enteredCode = option == null ? ImportFields.QUANTITY : option.code();
+            enteredTotals.merge(enteredCode, (long) number.intValue(), Long::sum);
+            if (option != null) {
+                enteredOptions.putIfAbsent(enteredCode, option);
+            }
+
             if (state.getResolvedEntityId() != null) {
                 products.add(state.getResolvedEntityId());
             }
             if (state.text(ImportFields.VENDOR_NAME) != null) {
                 suppliers.add(ValueMappings.normalizeKey(state.text(ImportFields.VENDOR_NAME)));
             }
-            Object cost = state.value(ImportFields.UNIT_COST);
+            Object cost = state.value(ImportFields.COST_PER_UNIT);
             if (cost != null) {
+                // Money spent, and that is basis-independent: a price per bag times a count of
+                // bags is the same naira as a price per kg times a count of kg. This one line
+                // was never wrong, and converting either half of it would have made it so.
                 totalCost = totalCost.add(
                         new BigDecimal(cost.toString()).multiply(BigDecimal.valueOf(number.intValue())));
             }
@@ -568,16 +792,14 @@ public class StockInRowHandler implements ImportRowHandler {
         }
 
         int productCount = Math.max(products.size(), productsToCreate);
-        String unitPhrase = units.size() == 1
-                ? ImportCopy.count(quantity) + " " + ImportCopy.unitSymbol(units.iterator().next())
-                : ImportCopy.count(quantity) + " units";
+        String quantityPhrase = quantityPhrase(stockUnitTotals, enteredTotals, enteredOptions);
 
         CommitPreview.Builder preview = CommitPreview.builder()
                 .headline("Record %s from %s".formatted(ImportCopy.deliveries(deliveries),
                         ctx.session().getOriginalFilename()))
                 .confirmLabel("Record " + ImportCopy.deliveries(deliveries))
                 .line("stock", "Stock", deliveries,
-                        "%s arriving across %s".formatted(unitPhrase, ImportCopy.products(productCount)))
+                        "%s across %s".formatted(quantityPhrase, ImportCopy.products(productCount)))
                 .line("vendors", "Suppliers", vendorsToCreate,
                         ImportCopy.qualified(vendorsToCreate, "new", "supplier", "suppliers")
                                 + " will be added to your directory")
@@ -604,6 +826,56 @@ public class StockInRowHandler implements ImportRowHandler {
         return preview.build();
     }
 
+    /**
+     * Section 6.3's sentence fragment: the ledger's number, and the user's number in brackets
+     * when - and only when - the whole file used one way of counting.
+     */
+    private String quantityPhrase(
+            Map<String, Long> stockUnitTotals,
+            Map<String, Long> enteredTotals,
+            Map<String, UnitOption> enteredOptions) {
+        String ledger = ImportCopy.quantityTotals(stockUnitTotals);
+        if (stockUnitTotals.size() != 1 || enteredTotals.size() != 1) {
+            return ledger;
+        }
+        UnitOption only = enteredOptions.get(enteredTotals.keySet().iterator().next());
+        if (only == null || only.isStockUnit()) {
+            // Typed in the stock unit already, so the bracket would repeat the number to its own
+            // left. Non-negotiable 3 asks for both forms to appear together, not for one form to
+            // appear twice.
+            return ledger;
+        }
+        return ledger + " (" + ImportCopy.enteredQuantityPhrase(enteredTotals.values().iterator().next(), only) + ")";
+    }
+
+    /**
+     * The stock unit a row's quantity will land in, as a short symbol.
+     *
+     * <p>For a product that does not exist yet, the answer is whatever the inline-create card
+     * collected - the resolution payload's {@code unitOfMeasure} - because that is the unit the
+     * product will be created with a moment later, and a preview that named a different one would
+     * be describing a different import.
+     */
+    private String stockUnitSymbolOf(BatchContext ctx, Product product, ImportRowState state) {
+        String code = product != null ? product.getUnitOfMeasure() : createdProductUnitOf(ctx, state);
+        String symbol = UnitOptions.symbolOf(code);
+        return symbol.isEmpty() ? UnitOptions.NO_STOCK_UNIT_LABEL : symbol;
+    }
+
+    private String createdProductUnitOf(BatchContext ctx, ImportRowState state) {
+        String sku = state.text(ImportFields.SKU);
+        if (sku == null) {
+            return null;
+        }
+        return ctx.valueMappings()
+                .resolutionFor(ImportFields.SKU, sku)
+                .filter(ValueResolution::isCreateNew)
+                .map(resolution -> resolution.payloadText("unitOfMeasure"))
+                .flatMap(unit -> UnitOfMeasure.fromCodeOrLabel(unit, UnitOfMeasureRole.BASE))
+                .map(UnitOfMeasure::code)
+                .orElse(null);
+    }
+
     // ----------------------------------------------------------------- commit
 
     /** One transaction, one {@code stockIn} per row, nothing reimplemented (design 8.2). */
@@ -615,7 +887,6 @@ public class StockInRowHandler implements ImportRowHandler {
 
         int recorded = 0;
         int skipped = 0;
-        long quantity = 0;
 
         for (ImportRowState state : ctx.states()) {
             if (state.isSkipped()) {
@@ -649,17 +920,34 @@ public class StockInRowHandler implements ImportRowHandler {
             }
 
             CompanyVendor vendor = resolveVendor(ctx, state, createdVendors);
+            UnitOption option = optionFor(ctx, product, state.text(ImportFields.COUNTED_IN));
             stockManagementService.stockIn(
                     product.getId(),
                     new StockInRequest(
                             number.intValue(),
-                            decimalOf(state, ImportFields.UNIT_COST),
+                            // cost_per_unit is per the row's "Counted in", and it is handed over
+                            // exactly as typed. UNIT_UX_CONTRACT.md section 3.2's division by the
+                            // option's factor happens once, inside StockManagementService, beside
+                            // the multiplication of the quantity by the same factor - which is
+                            // the entire point of M1 resolving the two together (P0-1 was the two
+                            // halves living apart). Dividing here as well would halve every
+                            // imported cost, and dividing here INSTEAD would put a second copy of
+                            // the rule in a second file.
+                            decimalOf(state, ImportFields.COST_PER_UNIT),
                             state.text(ImportFields.REFERENCE),
-                            state.text(ImportFields.UNIT),
+                            state.text(ImportFields.COUNTED_IN),
                             vendor == null ? null : vendor.getId(),
-                            packagingUnitFor(state, product),
-                            decimalOf(state, ImportFields.PACKAGING_SIZE),
-                            occurredAt(state)),
+                            packOverrideUnit(option),
+                            packOverrideSize(option),
+                            occurredAt(state),
+                            // Contract section 3.4 and non-negotiable 7: a per-delivery pack never
+                            // mutates stored configuration without an explicit opt-in on the same
+                            // screen. A spreadsheet has no such screen and the review grid offers
+                            // no such checkbox, so the answer is false - written out rather than
+                            // left to the shorter constructor's implicit null, because "nobody
+                            // said" and "no" reading alike is a thing a reader should not have to
+                            // go and confirm.
+                            false),
                     ctx.actingUserId(),
                     batchId);
             state.setOutcome(ImportFields.OUTCOME_CREATED);
@@ -667,7 +955,6 @@ public class StockInRowHandler implements ImportRowHandler {
             state.setResolvedEntityId(product.getId());
             state.setResolvedEntityLabel(product.getName());
             recorded++;
-            quantity += number.intValue();
         }
 
         List<CommitPreview.Line> lines = new ArrayList<>();
@@ -691,20 +978,47 @@ public class StockInRowHandler implements ImportRowHandler {
     }
 
     /**
-     * The unit a quantity in packs converts by.
+     * This delivery's pack, handed to {@code stockIn} so that the option the review grid resolved
+     * against is the option the ledger resolves against.
      *
-     * <p>{@code StockManagementService.resolveBaseQuantity} treats a unit that is not the
-     * product's base unit as a packaging unit and multiplies by the packaging size. It needs to
-     * be told which packaging unit that is when the row's unit is not the product's own default -
-     * passing it explicitly rather than letting the service fall back to the product's saved
-     * packaging is what makes a delivery counted in an unusual pack size convert correctly.
+     * <h2>Why this is not simply the row's unit code, as it used to be</h2>
+     * The old version passed the row's {@code unit} as {@code packagingUnit} whenever it was not
+     * the product's base unit, and let the service fall back to the product's own
+     * {@code packagingSize}. Under M1's rewritten {@code resolveEntry} that is actively wrong: a
+     * row counted in tonnes would be handed "T" as a packaging unit with the product's pack size
+     * as its factor, so a tonne of a 50 kg-bagged product would be recorded as 50 kg. Tonnes are
+     * a same-category base unit with a static factor of 1,000 (contract section 2.2), not a pack.
+     *
+     * <p>So the override is derived from the resolved {@link UnitOption} instead, and only for a
+     * genuine pack - an option that is neither the stock unit nor a BASE-role unit. For a pack
+     * that is already the product's own, {@code UnitOptions.extendedWith} replaces the entry with
+     * an identical one and nothing changes. For a pack that came from the supplier's standing
+     * default, this is what carries it across: without it the service, which builds its set from
+     * the product alone, would refuse a unit the sheet had legitimately offered.
+     *
+     * <p>It also snapshots the pack onto the resulting {@code StockMovement}, which is what makes
+     * "what did this delivery arrive as" answerable later without inferring it from a
+     * configuration that may since have changed.
      */
-    private String packagingUnitFor(ImportRowState state, Product product) {
-        String unit = state.text(ImportFields.UNIT);
-        if (unit == null || unit.equalsIgnoreCase(product.getUnitOfMeasure())) {
-            return null;
-        }
-        return unit;
+    private static String packOverrideUnit(UnitOption option) {
+        return isPack(option) ? option.code() : null;
+    }
+
+    /** The size half of {@link #packOverrideUnit}; the two are only ever passed together. */
+    private static BigDecimal packOverrideSize(UnitOption option) {
+        return isPack(option) ? option.factorToStockUnit() : null;
+    }
+
+    /**
+     * A pack is an option that is neither the stock unit nor one of section 2.2's same-category
+     * base units - i.e. a container whose factor came from a product's or a supplier's
+     * configuration rather than from the static table.
+     */
+    private static boolean isPack(UnitOption option) {
+        // Was inferred from UnitOfMeasure.role(); that only worked while the role split was a
+        // hard gate. A turmeric packed in 34 g PIECEs has a pack whose code is declared BASE, so
+        // the inference reported "no pack" on a delivery that had one. The set records it now.
+        return option != null && option.isPack();
     }
 
     /**
@@ -970,6 +1284,78 @@ public class StockInRowHandler implements ImportRowHandler {
     }
 
     // ----------------------------------------------------------------- helpers
+
+    /**
+     * This row's product's unit set - contract section 2.1 steps 1 to 4, including the preferred
+     * supplier's own pack.
+     *
+     * <h2>Why the supplier's pack is in here</h2>
+     * Because it is in the sheet. {@code StockInTemplateService} builds every template row's
+     * {@code how_you_count_it} from {@code SheetUnitOptions.forRow}, which includes the preferred
+     * supplier's default pack, and the {@code counted_in} dropdown offers it. A server that then
+     * resolved against the product alone would reject a value its own template had just told the
+     * user was valid - which is P1-1 in a new costume: two answers to "which units does this
+     * product accept", differing by which code path you asked.
+     *
+     * <p>One lookup per product per pass, memoised on the batch cache: the grid re-validates the
+     * whole file on every cell repair, so an un-cached query here would be paid on every
+     * keystroke-settle rather than once per upload.
+     */
+    private List<UnitOption> unitOptionsFor(UUID tenantId, ImportBatchCache cache, Product product) {
+        ProductVendor preferred = cache.get(CACHE_PREFERRED_VENDOR_LINE, product.getId(),
+                id -> productVendorRepository
+                        .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, id)
+                        .orElse(null));
+        return UnitOptions.forProductAndSupplier(
+                product.getUnitOfMeasure(),
+                product.getPackagingUnit(),
+                product.getPackagingSize(),
+                preferred == null ? null : preferred.getDefaultPackagingUnit(),
+                preferred == null ? null : preferred.getDefaultPackagingSize());
+    }
+
+    /** {@link #unitOptionsFor} plus section 3.1's resolution, for the batch phases. */
+    private UnitOption optionFor(BatchContext ctx, Product product, String countedIn) {
+        if (product == null) {
+            return null;
+        }
+        return UnitOptions.resolve(unitOptionsFor(ctx.tenantId(), ctx.cache(), product), countedIn)
+                .orElse(null);
+    }
+
+    /**
+     * The product a batch-phase row is about. Preview and commit both need it and neither
+     * re-validates, so it is read back through the same cache {@code validate} filled.
+     */
+    private Product productOf(BatchContext ctx, ImportRowState state) {
+        UUID resolved = state.getResolvedEntityId();
+        if (resolved != null) {
+            return ctx.cache().get(CACHE_PRODUCTS_BY_ID, resolved,
+                    id -> productRepository.findByIdAndClientId(id, ctx.tenantId()).orElse(null));
+        }
+        String sku = state.text(ImportFields.SKU);
+        return sku == null ? null : findBySku(ctx.tenantId(), ctx.cache(), sku);
+    }
+
+    /**
+     * {@code UnitOption.toStockUnitQuantity} with the overflow turned into an answer rather than
+     * an exception.
+     *
+     * <p>{@code stock_movements.quantity} is an int, and the conversion multiplies a number the
+     * user typed by a factor they configured, so the product of two individually legal values can
+     * exceed it. M1's method throws {@code ArithmeticException} there, correctly - it has no
+     * subject to name and no cell to outline. This module has both, so it catches the throw and
+     * lets the caller raise a cell error instead of failing a 5,000-row commit half way through.
+     *
+     * @return the quantity in stock units, or null when it does not fit.
+     */
+    private static Long toStockUnits(UnitOption option, int enteredQuantity) {
+        try {
+            return (long) option.toStockUnitQuantity(enteredQuantity);
+        } catch (ArithmeticException tooLarge) {
+            return null;
+        }
+    }
 
     private Product findBySku(UUID tenantId, ImportBatchCache cache, String sku) {
         return cache.get(CACHE_PRODUCTS_BY_SKU, sku.toUpperCase(Locale.ROOT),

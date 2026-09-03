@@ -66,9 +66,16 @@ class StockInTemplateServiceIntegrationTest {
     }
 
     /**
-     * The whole of BULK_IMPORT_DESIGN.md section 8.1's column table, asserted against real rows:
-     * supplier and cost from the preferred vendor line, unit from the packaging unit, pack size
-     * from the vendor's default, date today - and quantity, the one column the user fills, empty.
+     * The whole of UNIT_UX_CONTRACT.md section 5.2's column table, asserted against real rows:
+     * supplier from the preferred vendor line, every way of counting the product in
+     * {@code how_you_count_it}, the likeliest of them pre-filled into {@code counted_in}, the cost
+     * stated in that option's terms, date today - and quantity, the one column the user fills,
+     * empty.
+     *
+     * <p>{@code lastCostPrice} is ₦900, per KG, because contract section 3.2 makes every stored
+     * price per stock unit. The sheet has to state it as ₦45,000 against the 50 kg bag it pre-fills,
+     * or a user who accepts the pre-fill imports a fiftieth of what they paid - which is exactly the
+     * round trip that made UNIT_UX_REMEDIATION_PLAN.md P0-1 self-perpetuating.
      */
     @Test
     @Transactional
@@ -76,7 +83,7 @@ class StockInTemplateServiceIntegrationTest {
         tenant("Stock In Template Co");
         CompanyVendor vendor = vendor("Dangote Nigeria Plc");
         Product rice = product("RICE-50", "Rice 50kg", "KG", "BAG", new BigDecimal("50"), 40, null);
-        vendorLine(rice, vendor, new BigDecimal("42000"), new BigDecimal("50"));
+        vendorLine(rice, vendor, new BigDecimal("900"), new BigDecimal("50"));
         product("OIL-5L", "Groundnut Oil 5L", "LITER", null, null, 10, null);
 
         Sheet sheet = firstSheetOf(stockInTemplateService.generate(List.of(), StockInTemplateFilter.ALL, null, null));
@@ -86,16 +93,21 @@ class StockInTemplateServiceIntegrationTest {
         assertThat(riceRow.getCell(headers.indexOf("product_name")).getStringCellValue()).isEqualTo("Rice 50kg");
         assertThat(riceRow.getCell(headers.indexOf("vendor_name")).getStringCellValue())
                 .isEqualTo("Dangote Nigeria Plc");
-        assertThat(riceRow.getCell(headers.indexOf("unit")).getStringCellValue()).isEqualTo("BAG");
-        assertThat(riceRow.getCell(headers.indexOf("unit_cost")).getNumericCellValue()).isEqualTo(42000.0);
-        assertThat(riceRow.getCell(headers.indexOf("packaging_size")).getNumericCellValue()).isEqualTo(50.0);
+        assertThat(riceRow.getCell(headers.indexOf("how_you_count_it")).getStringCellValue())
+                .as("both valid answers, on the row, beside the cell that asks the question")
+                .isEqualTo("kg · or Bag of 50 kg");
+        assertThat(riceRow.getCell(headers.indexOf("counted_in")).getStringCellValue()).isEqualTo("Bag of 50 kg");
+        assertThat(riceRow.getCell(headers.indexOf("cost_per_unit")).getNumericCellValue())
+                .as("₦900 per kg, stated per the 50 kg bag this row is counted in")
+                .isEqualTo(45000.0);
         assertThat(riceRow.getCell(headers.indexOf("received_date"))).isNotNull();
         assertThat(riceRow.getCell(headers.indexOf("quantity"))).as("the one column they fill").isNull();
 
-        // A product with no supplier line still pre-fills its unit - only what we genuinely do not
-        // know is left blank.
+        // A product with no supplier line still pre-fills its unit set - only what we genuinely do
+        // not know is left blank.
         Row oilRow = rowWithSku(sheet, "OIL-5L");
-        assertThat(oilRow.getCell(headers.indexOf("unit")).getStringCellValue()).isEqualTo("LITER");
+        assertThat(oilRow.getCell(headers.indexOf("how_you_count_it")).getStringCellValue()).isEqualTo("L");
+        assertThat(oilRow.getCell(headers.indexOf("counted_in")).getStringCellValue()).isEqualTo("L");
         assertThat(oilRow.getCell(headers.indexOf("vendor_name"))).isNull();
     }
 
@@ -205,6 +217,7 @@ class StockInTemplateServiceIntegrationTest {
         return productRepository.saveAndFlush(product);
     }
 
+    /** @param lastCost per STOCK UNIT, which is what {@code ProductVendor.lastCostPrice} is - contract 3.2. */
     private void vendorLine(Product product, CompanyVendor vendor, BigDecimal lastCost, BigDecimal packagingSize) {
         ProductVendor line = new ProductVendor();
         line.setProduct(product);

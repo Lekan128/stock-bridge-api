@@ -38,7 +38,7 @@ import org.springframework.stereotype.Component;
  * </ol>
  *
  * <h2>Why the alias table is per-kind</h2>
- * {@code "unit"} means {@code unit_of_measure} on a catalog sheet and {@code unit} on a stock-in
+ * {@code "unit"} means {@code stock_unit} on a catalog sheet and {@code counted_in} on a stock-in
  * sheet; {@code "cost"} means {@code cost_price} on one and {@code unit_cost} on the other; a
  * bare {@code "quantity"} means the opening balance on one and the delivered amount on the
  * other. A single flat table would have to pick a winner and would then be silently wrong for
@@ -139,11 +139,24 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.DESCRIPTION, "desc", "details", "notes", "remarks");
         put(aliases, ImportFields.UNIT_PRICE, "price", "selling_price", "sale_price", "sales_price", "list_price", "rrp");
         put(aliases, ImportFields.COST_PRICE, "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");
-        put(aliases, ImportFields.QUANTITY_ON_HAND, "qty", "quantity", "stock", "on_hand", "opening_stock", "opening_balance", "current_stock", "stock_on_hand", "qty_on_hand");
-        put(aliases, ImportFields.LOW_STOCK_THRESHOLD, "reorder_level", "reorder_point", "min_stock", "minimum_stock", "low_stock", "reorder");
-        put(aliases, ImportFields.UNIT_OF_MEASURE, "uom", "unit", "units", "measure", "base_unit", "unit_measure", "sold_in");
-        put(aliases, ImportFields.PACKAGING_UNIT, "pack", "packaging", "pack_type", "package", "package_unit", "pack_unit");
-        put(aliases, ImportFields.PACKAGING_SIZE, "pack_size", "package_size", "units_per_pack", "size", "qty_per_pack");
+        // Each of the four renamed columns leads with the spelling OUR OWN template used before
+        // UNIT_UX_CONTRACT.md section 9.4 - "quantity_on_hand" (section 5.1), then section 9.4's
+        // "low_stock_threshold", "unit_of_measure" and "packaging_unit"/"packaging_size". Section
+        // 9.4 makes them permanent read aliases rather than deprecations, so a sheet somebody
+        // downloaded before the rename still maps by itself and never reaches the mapping screen.
+        //
+        // An aliased opening_stock is read under section 9.1's rule like any other - packs when
+        // the row declares one. That is deliberate and it is stated in the contract: nothing has
+        // reached production, so there is no saved sheet whose bare number needs its old meaning
+        // preserved, and preserving it was the only argument for the deleted
+        // opening_stock_counted_in column.
+        put(aliases, ImportFields.OPENING_STOCK, "quantity_on_hand", "qty", "quantity", "stock", "on_hand", "opening_balance", "current_stock", "stock_on_hand", "qty_on_hand");
+        put(aliases, ImportFields.LOW_STOCK_ALERT_AT, "low_stock_threshold", "reorder_level", "reorder_point", "min_stock", "minimum_stock", "low_stock", "reorder", "alert_at");
+        // "unit" stays here and still means the STOCK unit on a catalog sheet - see the per-kind
+        // note in this class's javadoc for why that is not the same answer as on a stock-in sheet.
+        put(aliases, ImportFields.STOCK_UNIT, "unit_of_measure", "uom", "unit", "units", "measure", "base_unit", "unit_measure", "sold_in");
+        put(aliases, ImportFields.PACK, "packaging_unit", "packaging", "pack_type", "package", "package_unit", "pack_unit");
+        put(aliases, ImportFields.UNITS_PER_PACK, "packaging_size", "pack_size", "package_size", "size", "qty_per_pack");
         put(aliases, ImportFields.VENDOR_NAME, "supplier", "vendor", "supplier_name", "bought_from", "source", "distributor");
         put(aliases, ImportFields.VENDOR_SKU, "supplier_code", "vendor_code", "supplier_sku", "supplier_item_code", "their_code");
         put(aliases, ImportFields.IS_PREFERRED_VENDOR, "preferred", "main_supplier", "preferred_supplier", "primary_supplier", "default_supplier");
@@ -156,9 +169,21 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.PRODUCT_NAME, "product", "item", "item_name", "name", "description");
         put(aliases, ImportFields.VENDOR_NAME, "supplier", "vendor", "supplier_name", "bought_from", "source", "distributor");
         put(aliases, ImportFields.QUANTITY, "qty", "quantity_received", "received", "amount", "qty_received", "delivered");
-        put(aliases, ImportFields.UNIT, "uom", "units", "measure", "unit_of_measure", "counted_in");
-        put(aliases, ImportFields.UNIT_COST, "cost", "cost_price", "price", "unit_price", "purchase_price", "buying_price", "cost_per_unit");
-        put(aliases, ImportFields.PACKAGING_SIZE, "pack_size", "package_size", "units_per_pack", "size", "qty_per_pack");
+        // "unit" and "unit_cost" lead for the same reason "quantity_on_hand" does above: they
+        // are what every stock-in template published before UNIT_UX_CONTRACT.md section 5.2
+        // called these columns, and section 5.2 keeps them accepted on read forever.
+        put(aliases, ImportFields.COUNTED_IN, "unit", "uom", "units", "measure", "unit_of_measure");
+        put(aliases, ImportFields.COST_PER_UNIT, "unit_cost", "cost", "cost_price", "price", "unit_price", "purchase_price", "buying_price");
+        // Removed from the sheet by section 5.2, still mapped on purpose. A number here is read,
+        // ignored, and warned about once per affected row (StockInRowHandler) - which is only
+        // possible if the column resolves to a field at all. Left unmapped it would instead be
+        // reported as a column we did not understand, which is both untrue and silent about the
+        // thing the user needs to hear: that the pack now comes from their product setup.
+        //
+        // The key itself is now "units_per_pack" (section 9.4), so "packaging_size" - the header
+        // the sheet actually carried before section 5.2 removed the column - has to be listed as
+        // an alias here rather than matching by identity as it used to.
+        put(aliases, ImportFields.UNITS_PER_PACK, "packaging_size", "pack_size", "package_size", "size", "qty_per_pack");
         put(aliases, ImportFields.RECEIVED_DATE, "date", "received", "delivery_date", "date_received", "invoice_date", "receipt_date");
         put(aliases, ImportFields.REFERENCE, "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "ref", "doc_no");
         return Map.copyOf(aliases);

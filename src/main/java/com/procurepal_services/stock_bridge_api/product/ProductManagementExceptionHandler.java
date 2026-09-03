@@ -50,6 +50,11 @@ public class ProductManagementExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(PackagingUnitSameAsStockUnitException.class)
+    public ResponseEntity<ApiError> handlePackagingUnitSameAsStockUnit(PackagingUnitSameAsStockUnitException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
     /** Safety net for a concurrent create()/update() racing the SKU pre-check. */
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> handleDataIntegrityViolation(DataIntegrityViolationException ex) {

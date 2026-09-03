@@ -302,8 +302,12 @@ class ProductManagementIntegrationTest {
     }
 
     /**
-     * BAG is a PACKAGING-role code (see UnitOfMeasureRole) - submitting it as unitOfMeasure,
-     * the BASE-role field, is rejected exactly like a code that is not on the list at all.
+     * BAG is a PACKAGING-role code - submitting it as unitOfMeasure is still rejected.
+     *
+     * <p>COUNT units were opened up in ONE direction only: a COUNT code may serve as a PACK (so a
+     * turmeric sold in 34 g PIECEs is describable), but not as a stock unit. Widening the stock
+     * unit list to every container is a bigger change than the reported problem needs, and it is
+     * the shape {@code UnitOfMeasureRole}'s javadoc argues hardest against.
      */
     @Test
     void aPackagingRoleCodeIsRejectedWhenSubmittedAsUnitOfMeasure() {
@@ -704,5 +708,88 @@ class ProductManagementIntegrationTest {
     }
 
     private record TestPage<T>(List<T> content) {
+    }
+
+    /**
+     * "Piece should be a packaging unit" - a user, correctly, about half of it.
+     *
+     * <p>PIECE has to stay a stock unit: for a phone there is nothing underneath it, and that is
+     * the commonest inventory shape there is (Odoo's default UoM for a new product is literally
+     * "Units"; NetSuite's base is "Each"). But it is also a perfectly good container - turmeric
+     * measured in grams and sold in 34 g pieces is G + PIECE + 34 - and the BASE/PACKAGING split
+     * refused exactly that, because it modelled role as a property of the CODE when it is a
+     * property of the USAGE. COUNT units now serve either.
+     */
+    @Test
+    void aCountUnitIsAStockUnitOnOneProductAndAPackOnAnother() {
+        TenantLoginResponse company = signup("Dual Role Co");
+
+        ResponseEntity<ProductResponse> phone = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest("Phone", "DUAL-BASE", null, null, null, "PIECE", null, null, null),
+                        false),
+                ProductResponse.class);
+        assertThat(phone.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(phone.getBody().unitOfMeasure()).isEqualTo("PIECE");
+
+        ResponseEntity<ProductResponse> turmeric = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest("Turmeric", "DUAL-PACK", null, null, null, "G", "PIECE",
+                                new BigDecimal("34"), null),
+                        false),
+                ProductResponse.class);
+        assertThat(turmeric.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(turmeric.getBody().unitOfMeasure()).isEqualTo("G");
+        assertThat(turmeric.getBody().packagingUnit()).isEqualTo("PIECE");
+    }
+
+    /**
+     * The invariant the role split used to guarantee by accident. A pack of itself converts
+     * nothing - any size but 1 is a contradiction and 1 is a pack that does nothing - so it is
+     * refused rather than stored.
+     */
+    @Test
+    void aPackCannotNameTheSameUnitAsTheStockUnit() {
+        TenantLoginResponse company = signup("Pack Of Itself Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest("Nonsense", "DUAL-SAME", null, null, null, "PIECE", "PIECE",
+                                new BigDecimal("34"), null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("different from the stock unit");
+    }
+
+    /**
+     * Relaxing COUNT must not relax everything: a weight is never a container, and
+     * {@code packagingUnit=KG} would resurrect the "50kg bag" ambiguity the role split removed.
+     */
+    @Test
+    void aWeightUnitIsStillRefusedAsAPack() {
+        TenantLoginResponse company = signup("Kg Pack Co");
+
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/products",
+                HttpMethod.POST,
+                multipartEntity(
+                        company,
+                        new CreateProductRequest("Rice", "DUAL-KG-PACK", null, null, null, "G", "KG",
+                                new BigDecimal("1000"), null),
+                        false),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 }

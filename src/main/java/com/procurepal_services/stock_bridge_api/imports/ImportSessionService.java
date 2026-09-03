@@ -436,7 +436,7 @@ public class ImportSessionService {
 
         List<ImportRowState> states = new ArrayList<>(rows.size());
         for (ImportSessionRow row : rows) {
-            ImportRowState state = newState(session, row);
+            ImportRowState state = newState(session, row, mappings);
             RowContext ctx = new RowContext(
                     session, row, state.getInput(), state.getRawText(), mappings, cache, actingUserId);
             RowValidation validation = handler.validate(ctx);
@@ -465,7 +465,7 @@ public class ImportSessionService {
      * typed. Without that distinction, a cell someone deliberately emptied would be helpfully
      * re-filled from the file on the very next keystroke.
      */
-    private ImportRowState newState(ImportSession session, ImportSessionRow row) {
+    private ImportRowState newState(ImportSession session, ImportSessionRow row, ValueMappings mappings) {
         Map<String, Object> input = new LinkedHashMap<>();
         Map<String, String> rawText = new LinkedHashMap<>();
         Map<String, Object> raw = row.getRaw() == null ? Map.of() : row.getRaw();
@@ -490,9 +490,86 @@ public class ImportSessionService {
             }
         });
 
+        // Last, so it beats the previous pass's coerced value - see applyValueMappings for why
+        // that ordering is the whole point, and why it still loses to a hand edit.
+        applyValueMappings(session, mappings, rawText, edited, input);
+
         ImportRowState state = new ImportRowState(row, input, rawText);
         state.setSkipped(Boolean.TRUE.equals(normalized.get(ImportFields.USER_SKIPPED)));
         return state;
+    }
+
+    /**
+     * Applies the answers to section 6.4's distinct-value questions that no row handler applies
+     * for itself: LITERAL and BLANK on an ordinary column.
+     *
+     * <h2>The bug this fixes, and why it was invisible</h2>
+     * {@code PATCH /value-mappings} has always persisted every arm of the union into
+     * {@code import_sessions.value_mappings} and then re-validated the affected rows. But
+     * {@code newState} built each row's {@code input} from the file and the user's own cell edits
+     * only, so a LITERAL answer was written down and never read. The handlers consult
+     * {@code ValueMappings} themselves for {@code vendor_name} and {@code sku} - which is why the
+     * supplier card works - and for every other column nothing consulted it at all.
+     *
+     * <p>The visible effect was the worst kind: {@code [Fix all 12 "KGS" rows]} returned 200, the
+     * grid refetched, and twelve identical broken rows came back. BULK_IMPORT_DESIGN.md section
+     * 9.3 calls that affordance "the single highest-value interaction on the page" and
+     * BULK_IMPORT_CONTRACT.md section 8.3 makes "every fix offers its bulk form" a
+     * non-negotiable - which a form that silently does nothing does not satisfy. The canonical
+     * case is a unit column, so the repair loop for the exact confusion UNIT_UX_CONTRACT.md
+     * exists to end was itself dead.
+     *
+     * <h2>Three orderings, each load-bearing</h2>
+     * <ol>
+     *   <li><b>After the normalized overlay</b>, so it beats the previous pass's coerced value.
+     *       For the canonical case that cell is null anyway (an unreadable unit normalizes to
+     *       nothing), but a LITERAL correcting a value that DID coerce - a readable unit that is
+     *       simply the wrong one - would otherwise be overwritten by the very value it was
+     *       answering.</li>
+     *   <li><b>Never over an edited cell.</b> {@code editedKeys} is the record of what this user
+     *       typed by hand, and a bulk answer to a question about the FILE must not reach in and
+     *       overwrite a deliberate per-cell decision. One person correcting row 4 individually
+     *       and then bulk-fixing the other eleven is an ordinary sequence, not a conflict.</li>
+     *   <li><b>Keyed on the row's ORIGINAL text</b>, from {@code rawText}, which is projected from
+     *       the immutable {@code raw}. Keying on the current input would mean a row stopped
+     *       matching its own answer the moment the answer was applied - the mapping would fire
+     *       once and then evaporate on the next pass, which is the opposite of idempotent.</li>
+     * </ol>
+     *
+     * <p>Idempotence holds because both inputs - the file and the stored mappings - are fixed for
+     * the duration of a pass, so running this twice produces the same {@code input} exactly. That
+     * is the rule {@link #newState}'s javadoc states and this obeys rather than bends.
+     *
+     * <p>SKIP_ROWS is deliberately absent. It is offered only for stock-in's {@code sku}
+     * (see {@code UnresolvedValue.allowSkipRows}), which is a self-resolved column, so a generic
+     * implementation here would be unreachable code guessing at a meaning no caller has asked for.
+     */
+    private void applyValueMappings(
+            ImportSession session,
+            ValueMappings mappings,
+            Map<String, String> rawText,
+            Set<String> edited,
+            Map<String, Object> input) {
+        Set<String> selfResolved = handlerFor(session.getKind()).selfResolvedColumns();
+        for (String column : mappings.answeredColumns()) {
+            if (selfResolved.contains(column) || edited.contains(column)) {
+                continue;
+            }
+            String original = rawText.get(column);
+            if (original == null) {
+                continue;
+            }
+            mappings.resolutionFor(column, original).ifPresent(resolution -> {
+                if (resolution.isLiteral()) {
+                    input.put(column, resolution.value());
+                } else if (resolution.isBlank()) {
+                    // containsKey with a null value, which is exactly what RowContext.
+                    // explicitlyBlank reads as "the user emptied this on purpose" - true here,
+                    // they just did it to every matching row at once.
+                    input.put(column, null);
+                }
+            });
+        }
     }
 
     @SuppressWarnings("unchecked")
@@ -525,17 +602,35 @@ public class ImportSessionService {
             if (state.isSkipped()) {
                 continue;
             }
-            for (RowIssue issue : state.getErrors()) {
+            for (RowIssue issue : countable(state)) {
                 counts.merge(bulkFixKey(state, issue), 1, Integer::sum);
             }
         }
         for (ImportRowState state : states) {
             Map<RowIssue, Integer> forRow = new LinkedHashMap<>();
-            for (RowIssue issue : state.getErrors()) {
+            for (RowIssue issue : countable(state)) {
                 forRow.put(issue, counts.getOrDefault(bulkFixKey(state, issue), 1));
             }
             state.setBulkFixCounts(forRow);
         }
+    }
+
+    /**
+     * Which of a row's issues a bulk affordance can be hung off: every error, plus a warning that
+     * carries a suggestion.
+     *
+     * <p>Contract section 4 says warnings carry no count, and its reasoning holds for every
+     * warning that has nothing to apply - an update row's ignored quantity is a fact, not a
+     * defect. UNIT_UX_CONTRACT.md section 5.1 then added one that does have something to apply:
+     * "20 kg - did you mean 20 bags (1,000 kg)?", which section 6.5 of the remediation plan calls
+     * the highest-value warning the catalog import can carry and asks to be bulk-fixable. Keying
+     * on "has a suggestion" rather than on severity keeps both rules true at once: a bulk button
+     * appears exactly where there is a concrete value a click would write.
+     */
+    private List<RowIssue> countable(ImportRowState state) {
+        List<RowIssue> issues = new ArrayList<>(state.getErrors());
+        state.getWarnings().stream().filter(issue -> issue.suggestion() != null).forEach(issues::add);
+        return issues;
     }
 
     private String bulkFixKey(ImportRowState state, RowIssue issue) {
@@ -626,12 +721,21 @@ public class ImportSessionService {
             map.put(RowIssue.KEY_BULK_FIX_COUNT, count == null ? 1 : count);
             issues.add(map);
         }
-        // Warnings deliberately carry no count. A warning is informational - an update row's
-        // ignored quantity - not a defect to repair, so there is nothing for a bulk form to
-        // apply, and section 8.3's "every fix offers its bulk form" is errors-only by design
-        // rather than by omission. Do not add it here later.
+        // A warning carries a count only when it also carries a suggestion. The original rule
+        // here was "warnings never carry one", and its reasoning was right for the warning that
+        // existed at the time: an update row's ignored quantity is informational, and a bulk
+        // button offering to fix nothing is worse than no button. UNIT_UX_CONTRACT.md section 5.1
+        // then added a warning with a concrete one-click answer ("20 kg - did you mean 20 bags
+        // (1,000 kg)?") and section 6.5 asks for its bulk form explicitly. The suggestion is what
+        // tells the two apart, so that is what this branches on - not severity, and not a list of
+        // codes that would have to be kept in step with the handlers.
         for (RowIssue issue : state.getWarnings()) {
-            issues.add(issue.toMap());
+            Map<String, Object> map = issue.toMap();
+            if (issue.suggestion() != null) {
+                Integer count = counts == null ? null : counts.get(issue);
+                map.put(RowIssue.KEY_BULK_FIX_COUNT, count == null ? 1 : count);
+            }
+            issues.add(map);
         }
         return issues;
     }
@@ -655,7 +759,7 @@ public class ImportSessionService {
         ImportBatchCache cache = new ImportBatchCache();
         List<ImportRowState> states = new ArrayList<>(rows.size());
         for (ImportSessionRow row : rows) {
-            ImportRowState state = newState(session, row);
+            ImportRowState state = newState(session, row, mappings);
             Map<String, Object> normalized = row.getNormalized() == null ? Map.of() : row.getNormalized();
             state.setNormalized(new LinkedHashMap<>(normalized));
             state.setResolvedEntityId(row.getResolvedEntityId());
@@ -1164,19 +1268,21 @@ public class ImportSessionService {
         for (Map<String, Object> issue : stored) {
             String column = asText(issue.get(RowIssue.KEY_COLUMN));
             String message = asText(issue.get(RowIssue.KEY_MESSAGE));
+            String suggestionValue = asText(issue.get(RowIssue.KEY_SUGGESTION_VALUE));
+            ImportRowResponse.Suggestion suggestion = suggestionValue == null
+                    ? null
+                    : new ImportRowResponse.Suggestion(
+                            suggestionValue, asText(issue.get(RowIssue.KEY_SUGGESTION_LABEL)));
+            Integer bulkFixCount =
+                    issue.get(RowIssue.KEY_BULK_FIX_COUNT) instanceof Number number ? number.intValue() : null;
             if (RowIssue.Severity.WARNING.name().equals(asText(issue.get(RowIssue.KEY_SEVERITY)))) {
-                warnings.add(new ImportRowResponse.Warning(column, message));
+                // Both extra fields are null for every warning that carries no suggestion, which
+                // is every warning that existed before UNIT_UX_CONTRACT.md section 5.1 - see
+                // ImportRowResponse.Warning for why the one that does gets to offer a bulk fix.
+                warnings.add(new ImportRowResponse.Warning(column, message, suggestion, bulkFixCount));
                 continue;
             }
-            String suggestionValue = asText(issue.get(RowIssue.KEY_SUGGESTION_VALUE));
-            errors.add(new ImportRowResponse.Error(
-                    column,
-                    message,
-                    suggestionValue == null
-                            ? null
-                            : new ImportRowResponse.Suggestion(
-                                    suggestionValue, asText(issue.get(RowIssue.KEY_SUGGESTION_LABEL))),
-                    issue.get(RowIssue.KEY_BULK_FIX_COUNT) instanceof Number number ? number.intValue() : null));
+            errors.add(new ImportRowResponse.Error(column, message, suggestion, bulkFixCount));
         }
 
         return new ImportRowResponse(
@@ -1190,7 +1296,46 @@ public class ImportSessionService {
                 row.getResolvedEntityId(),
                 resolvedLabelOf(row, normalized),
                 normalized.get(ImportFields.CONTINUATION_OF) instanceof Number number ? number.intValue() : null,
-                asText(normalized.get(ImportFields.OUTCOME)));
+                asText(normalized.get(ImportFields.OUTCOME)),
+                fieldOptionsOf(normalized),
+                asText(normalized.get(ImportFields.BASE_QUANTITY_TEXT)));
+    }
+
+    /**
+     * Contract section 6.2's {@code fieldOptions}, read back off the row.
+     *
+     * <p>The handler computed this during validation and stashed it under a reserved key, for the
+     * reason {@link ImportFields#FIELD_OPTIONS} gives: the options the grid offers must be the
+     * ones validation just judged the cell against, and a page of fifty rows must not cost fifty
+     * product lookups. All this does is turn the persisted jsonb back into the record shape the
+     * wire promises.
+     *
+     * <p>Returns null rather than an empty map when there is nothing to narrow, because
+     * contract section 6.2 makes null the signal to fall back to the field descriptor's
+     * kind-wide options, and Jackson's NON_NULL then drops the key entirely.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, List<ImportFieldDescriptor.Option>> fieldOptionsOf(Map<String, Object> normalized) {
+        if (!(normalized.get(ImportFields.FIELD_OPTIONS) instanceof Map<?, ?> stored) || stored.isEmpty()) {
+            return null;
+        }
+        Map<String, List<ImportFieldDescriptor.Option>> out = new LinkedHashMap<>();
+        stored.forEach((field, options) -> {
+            if (!(options instanceof Collection<?> entries)) {
+                return;
+            }
+            List<ImportFieldDescriptor.Option> parsed = new ArrayList<>();
+            for (Object entry : entries) {
+                if (entry instanceof Map<?, ?> option) {
+                    parsed.add(new ImportFieldDescriptor.Option(
+                            asText(option.get("value")), asText(option.get("label"))));
+                }
+            }
+            if (!parsed.isEmpty()) {
+                out.put(String.valueOf(field), List.copyOf(parsed));
+            }
+        });
+        return out.isEmpty() ? null : Map.copyOf(out);
     }
 
     /**

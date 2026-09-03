@@ -28,8 +28,11 @@ import com.procurepal_services.stock_bridge_api.imports.ValueMappings;
 import com.procurepal_services.stock_bridge_api.imports.ValueResolution;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
+import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementAllocationRepository;
@@ -84,11 +87,23 @@ import org.springframework.stereotype.Component;
  * </ol>
  *
  * <h2>Opening balance is only ever available on a row that creates a product</h2>
- * Design 6.7 asks for those words exactly. A created row's {@code quantity_on_hand} writes a
+ * Design 6.7 asks for those words exactly. A created row's {@code opening_stock} writes a
  * real {@code IN} movement through {@code StockManagementService.stockIn} - a genuine lot with a
  * vendor and a cost, converging on the same ledger bulk stock-in uses - and an updated row's
  * does nothing at all. So there is exactly one way to add stock to a product that already
  * exists, and nobody ever has to work out which of two tools moves a number.
+ *
+ * <h2>Both quantity columns count PACKS - UNIT_UX_CONTRACT.md section 9.1</h2>
+ * {@code opening_stock} and {@code low_stock_alert_at} are counted in the row's own pack
+ * whenever it declares one ({@code pack} + {@code units_per_pack}), and in its stock unit when
+ * it does not. Thirty beside a Keg of 50 ml is 1,500 ml. Decimals are accepted, because thirty
+ * kegs and a half-full one is a real shelf; a conversion that rounds to zero is refused rather
+ * than stored as nothing (section 3.1).
+ *
+ * <p>{@code cost_price} deliberately does NOT follow - it stays per stock unit, per ml and not
+ * per keg (section 9.2). That is why the opening balance below hands {@code stockIn} a quantity
+ * already converted and a null {@code unit}: one request cannot carry two bases, and the price
+ * is the one that must not be divided.
  */
 @Component
 @RequiredArgsConstructor
@@ -129,6 +144,21 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
      *
      * <p>Reads the tenant through {@code TenantContext}, which the SPI's javadoc explicitly
      * permits and which is the only way a no-argument method can be tenant-correct.
+     *
+     * <h2>The order is the sheet's order, and the sheet's order is now load bearing</h2>
+     * UNIT_UX_CONTRACT.md section 9 regrouped the columns: identity, then how you count it
+     * ({@code stock_unit}, {@code pack}, {@code units_per_pack}), then how much
+     * ({@code opening_stock}, {@code low_stock_alert_at}, the two prices), then supplier. The
+     * counting columns come first because since section 9.1 they DECIDE what the quantity
+     * columns mean, and a review grid that showed them in a different order from the spreadsheet
+     * the user just uploaded would be describing a different file.
+     *
+     * <h2>opening_stock_counted_in is gone</h2>
+     * It asked which unit the number beside it was in. The row answers that by itself now - a
+     * declared pack means packs - so the column was a question whose answer was already two
+     * cells to its left, and section 9.1 deletes it outright: no alias, no legacy reading, no
+     * fallback. Nothing has reached production, so there is no saved sheet whose bare number
+     * needs its old meaning preserved, and that was its only remaining argument.
      */
     @Override
     public List<ImportFieldDescriptor> fields() {
@@ -140,31 +170,43 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 "Your own code for this product. It has to be unique in your catalog."));
         fields.add(ImportFieldDescriptor.text(ImportFields.DESCRIPTION, "Description",
                 "Anything you want shown on the product page."));
+        fields.add(ImportFieldDescriptor.enumeration(ImportFields.STOCK_UNIT, ImportCopy.Labels.STOCK_UNIT,
+                false, "What you count this product in - kilograms, millilitres, pieces. Everything we store "
+                        + "for it is counted this way.",
+                RowValues.options(UnitOfMeasure.baseUnits())));
+        fields.add(ImportFieldDescriptor.enumeration(ImportFields.PACK, ImportCopy.Labels.PACK, false,
+                "The container you buy and sell it by - Bag, Keg, Carton. Leave it blank if you sell it loose.",
+                RowValues.options(UnitOfMeasure.packagingUnits())));
+        fields.add(ImportFieldDescriptor.of(ImportFields.UNITS_PER_PACK, ImportCopy.Labels.UNITS_PER_PACK,
+                ImportFieldDescriptor.Type.NUMBER, false,
+                "How much is in one pack. Stock unit Milliliter + Pack Keg + 50 means a 50 ml keg."));
+        // NUMBER rather than INTEGER, on both quantity columns. Section 9.1 accepts decimals
+        // because they now count PACKS, and thirty kegs and a half-full one is a real shelf that
+        // an integer cannot say. The grid renders the number the user typed; the "= 1,500 ml"
+        // underneath it is _base_quantity_text.
+        fields.add(ImportFieldDescriptor.of(ImportFields.OPENING_STOCK, ImportCopy.Labels.OPENING_STOCK,
+                ImportFieldDescriptor.Type.NUMBER, false,
+                "How much you have right now, counted in packs when this row has one - 30 beside a Keg of "
+                        + "50 ml means 30 kegs, not 30 ml. Only used on products we are creating, and it is "
+                        + "recorded as an opening stock entry."));
+        fields.add(ImportFieldDescriptor.of(ImportFields.LOW_STOCK_ALERT_AT, ImportCopy.Labels.LOW_STOCK_ALERT_AT,
+                ImportFieldDescriptor.Type.NUMBER, false,
+                "We warn you when stock falls to this much, counted the same way as opening stock - in "
+                        + "packs if this row has one."));
+        fields.add(ImportFieldDescriptor.of(ImportFields.COST_PRICE, ImportCopy.Labels.COST_PER_STOCK_UNIT,
+                ImportFieldDescriptor.Type.MONEY, false,
+                "What you pay for ONE of whatever the opening stock counts - one keg if this row has a "
+                        + "pack, one ml if it does not. On a new product with an opening stock, this becomes "
+                        + "that stock's cost."));
         if (seller) {
             fields.add(ImportFieldDescriptor.of(ImportFields.UNIT_PRICE, "Selling price",
-                    ImportFieldDescriptor.Type.MONEY, true, "Your marketplace selling price."));
+                    ImportFieldDescriptor.Type.MONEY, true,
+                    "Your marketplace selling price, for one stock unit - per ml, not per keg."));
         }
-        fields.add(ImportFieldDescriptor.of(ImportFields.COST_PRICE, "Cost price",
-                ImportFieldDescriptor.Type.MONEY, false,
-                "What you pay for one unit. On a new product with a quantity, this becomes that stock's cost."));
-        fields.add(ImportFieldDescriptor.of(ImportFields.QUANTITY_ON_HAND, "Opening stock",
-                ImportFieldDescriptor.Type.INTEGER, false,
-                "How much you have right now. Only used on products we are creating - it is recorded as an "
-                        + "opening stock entry."));
-        fields.add(ImportFieldDescriptor.of(ImportFields.LOW_STOCK_THRESHOLD, "Low stock level",
-                ImportFieldDescriptor.Type.INTEGER, false, "We warn you when stock falls to this number."));
-        fields.add(ImportFieldDescriptor.enumeration(ImportFields.UNIT_OF_MEASURE, "Unit of measure", false,
-                "What one unit of this product is measured in.", RowValues.options(UnitOfMeasure.baseUnits())));
-        fields.add(ImportFieldDescriptor.enumeration(ImportFields.PACKAGING_UNIT, "Packaging", false,
-                "How it is packaged - Bag, Carton, Drum. Leave blank if it is sold loose.",
-                RowValues.options(UnitOfMeasure.packagingUnits())));
-        fields.add(ImportFieldDescriptor.of(ImportFields.PACKAGING_SIZE, "Units per pack",
-                ImportFieldDescriptor.Type.NUMBER, false,
-                "How many units are in one package. Kilogram + Bag + 50 means a 50kg bag."));
-        fields.add(new ImportFieldDescriptor(ImportFields.VENDOR_NAME, "Supplier",
+        fields.add(new ImportFieldDescriptor(ImportFields.VENDOR_NAME, ImportCopy.Labels.SUPPLIER,
                 ImportFieldDescriptor.Type.REFERENCE, false, false, false,
-                "Who you buy this from. Repeat the product code on the next row to add a second supplier.", null));
-        fields.add(ImportFieldDescriptor.text(ImportFields.VENDOR_SKU, "Supplier's code",
+                "Who you buy this from. Repeat the product code on the next row to add a second supplier.", null, null));
+        fields.add(ImportFieldDescriptor.text(ImportFields.VENDOR_SKU, ImportCopy.Labels.SUPPLIERS_CODE,
                 "That supplier's own code for this product, if it differs from yours."));
         fields.add(ImportFieldDescriptor.of(ImportFields.IS_PREFERRED_VENDOR, "Main supplier",
                 ImportFieldDescriptor.Type.BOOLEAN, false,
@@ -222,17 +264,30 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         BigDecimal costPrice = RowValues.money(ctx, out, ImportFields.COST_PRICE, "Cost price", subject);
-        Integer quantity = RowValues.wholeNumber(ctx, out, ImportFields.QUANTITY_ON_HAND, "Opening stock", subject);
-        RowValues.wholeNumber(ctx, out, ImportFields.LOW_STOCK_THRESHOLD, "Low stock level", subject);
 
-        String unitOfMeasure = RowValues.unitCode(ctx, out, ImportFields.UNIT_OF_MEASURE,
-                UnitOfMeasureRole.BASE, "Unit of measure", "packaging", subject);
-        String packagingUnit = RowValues.unitCode(ctx, out, ImportFields.PACKAGING_UNIT,
-                UnitOfMeasureRole.PACKAGING, "Packaging", "unit of measure", subject);
-        BigDecimal packagingSize =
-                RowValues.decimal(ctx, out, ImportFields.PACKAGING_SIZE, "Units per pack", subject);
+        // These four label strings are user-facing: RowValues.unitCode splices them into "%s is
+        // %s, which belongs in the %s column rather than here". They are section 1's locked names
+        // rather than literals, so the sentence names each column the same way the grid header
+        // and the spreadsheet comment do - "Pack" and "Stock unit", never "Packaging" or "unit of
+        // measure" (both banned spellings for these two concepts).
+        //
+        // Read BEFORE the two quantity columns, and that order is section 9.1 in code: what
+        // opening_stock and low_stock_alert_at COUNT depends on whether this row declared a pack.
+        String unitOfMeasure = RowValues.unitCode(ctx, out, ImportFields.STOCK_UNIT,
+                UnitOfMeasureRole.BASE, ImportCopy.Labels.STOCK_UNIT, ImportCopy.Labels.PACK, subject);
+        String packagingUnit = RowValues.unitCode(ctx, out, ImportFields.PACK,
+                UnitOfMeasureRole.PACKAGING, ImportCopy.Labels.PACK, ImportCopy.Labels.STOCK_UNIT, subject);
+        BigDecimal packagingSize = RowValues.decimal(
+                ctx, out, ImportFields.UNITS_PER_PACK, ImportCopy.Labels.UNITS_PER_PACK, subject);
 
         validatePackagingCoherence(ctx, out, subject, unitOfMeasure, packagingUnit, packagingSize);
+
+        UnitOption countedIn = countedIn(unitOfMeasure, packagingUnit, packagingSize);
+        BigDecimal quantity = quantityColumn(ctx, out, ImportFields.OPENING_STOCK,
+                ImportCopy.Labels.OPENING_STOCK, subject, countedIn, unitOfMeasure, true);
+        quantityColumn(ctx, out, ImportFields.LOW_STOCK_ALERT_AT,
+                ImportCopy.Labels.LOW_STOCK_ALERT_AT, subject, countedIn, unitOfMeasure, false);
+
         validateVendorColumns(ctx, out, subject, costPrice, creating);
 
         if (!creating && existing != null) {
@@ -294,26 +349,231 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             String unitOfMeasure,
             String packagingUnit,
             BigDecimal packagingSize) {
-        boolean unitProvided = ctx.has(ImportFields.UNIT_OF_MEASURE);
-        boolean packagingUnitProvided = ctx.has(ImportFields.PACKAGING_UNIT);
-        boolean packagingSizeProvided = ctx.has(ImportFields.PACKAGING_SIZE);
+        boolean unitProvided = ctx.has(ImportFields.STOCK_UNIT);
+        boolean packagingUnitProvided = ctx.has(ImportFields.PACK);
+        boolean packagingSizeProvided = ctx.has(ImportFields.UNITS_PER_PACK);
 
         if (packagingUnitProvided != packagingSizeProvided) {
             if (packagingUnitProvided) {
-                out.error(ImportFields.PACKAGING_SIZE, "PACKAGING_SIZE_REQUIRED",
-                        "How many units are in one %s of %s? Packaging needs a size to be useful."
+                out.error(ImportFields.UNITS_PER_PACK, "PACKAGING_SIZE_REQUIRED",
+                        "How many stock units are in one %s of %s? A pack needs a size to be useful."
                                 .formatted(ImportCopy.unitLabel(packagingUnit == null ? "pack" : packagingUnit), subject));
             } else {
-                out.error(ImportFields.PACKAGING_UNIT, "PACKAGING_UNIT_REQUIRED",
+                out.error(ImportFields.PACK, "PACKAGING_UNIT_REQUIRED",
                         "%s says there are %s units in a pack, but not what kind of pack. Bag, carton, drum?"
                                 .formatted(subject, ImportCopy.count(packagingSize)));
             }
         }
         if (!unitProvided && (packagingUnitProvided || packagingSizeProvided)) {
-            out.error(ImportFields.UNIT_OF_MEASURE, "UNIT_REQUIRED_FOR_PACKAGING",
-                    "Before we can record how %s is packaged, we need to know what one unit of it is measured in."
-                            .formatted(subject));
+            out.error(ImportFields.STOCK_UNIT, "UNIT_REQUIRED_FOR_PACKAGING",
+                    // "Stock unit", not "measured in" - UNIT_UX_CONTRACT.md section 1 locks the
+                    // name and bans that spelling. The error also names the column's own label,
+                    // so the sentence points at the cell the user has to fill rather than
+                    // describing it in different words than the grid header does.
+                    "Before we can record how %s is packed, we need to know its stock unit - what every "
+                            .formatted(subject)
+                            + "quantity of it is counted in.");
         }
+        // Reachable only since COUNT units began serving either role: "a Piece of 34 Pieces".
+        // The BASE/PACKAGING split used to make this impossible by construction, so relaxing it
+        // means stating the invariant instead of inheriting it. A pack of itself converts nothing.
+        if (packagingUnit != null && packagingUnit.equalsIgnoreCase(unitOfMeasure)) {
+            out.error(ImportFields.PACK, "PACKAGING_UNIT_SAME_AS_STOCK_UNIT",
+                    "%s is counted in %s, so it cannot also be packed in %s - name the container they come in, "
+                            .formatted(subject, ImportCopy.unitLabel(unitOfMeasure), ImportCopy.unitLabel(packagingUnit))
+                            + "or leave the pack columns empty.");
+        }
+    }
+
+    /**
+     * One of the two quantity columns, read under UNIT_UX_CONTRACT.md section 9.1: <b>packs when
+     * this row declares one, stock units when it does not</b>.
+     *
+     * <h2>What this replaced, twice</h2>
+     * A cross-field <em>warning</em> used to live here - "12 kg, did you mean 12 bags (480 kg)?",
+     * fired when {@code opening_stock <= packaging_size}. It was a guess standing in for a fact,
+     * and its predicate was unsound in both directions: it interrogated somebody who genuinely
+     * had 12 kg and said nothing at all to somebody who typed 60 meaning 60 bags, because 60 is
+     * greater than 40. Loud on the cheap mistake, silent on the expensive one.
+     *
+     * <p>That warning was replaced by an {@code opening_stock_counted_in} column, on the
+     * reasoning that a quantity whose unit is inferred from a neighbour is exactly what section 1
+     * exists to forbid. Sound reasoning, wrong instrument. A user then said, unprompted, what the
+     * number had meant to them all along - "opening_stock is the amount of the packaging unit the
+     * company wants to add... 30 bags of 80 kg rice = 2,400 kg" - and they were right, and they
+     * had independently arrived at NetSuite's purchase-unit / sale-unit split. The unit is not
+     * being inferred from a neighbour; the neighbour IS the declaration, the same way "30 bags"
+     * declares its unit in English. So the column asked a question the row had already answered,
+     * and section 9.1 deletes it.
+     *
+     * <h2>Decimals, and the two refusals</h2>
+     * The entered number may be fractional - {@code RowValues.wholeNumber} is the wrong parser
+     * for a count of packs, because thirty kegs and a half-full one is a real shelf. Conversion
+     * rounds HALF_UP at scale 0, section 3.1's rounding, since every stored quantity column is an
+     * integer. Two results are refused rather than stored: an overflow (two billion bags of
+     * fifty is a mistyped cell, and {@code stock_movements.quantity} is an int, so a commit would
+     * otherwise fail mid-file), and a conversion that rounds to <b>zero</b>, which section 3.1
+     * requires be a refusal and never a silent nothing.
+     *
+     * <h2>What is stored, and what is shown under it</h2>
+     * The normalized value is the number the user TYPED, in packs - not the converted figure.
+     * The review grid renders that cell and lets them edit it, and replacing their 30 with 1,500
+     * would be answering a question they did not ask. Non-negotiable 3 is met the way the
+     * stock-in grid meets it: {@code _base_quantity_text} carries the "= 1,500 ml" that renders
+     * beneath. Every consumer downstream converts through {@link #stockUnitsOf}, which applies
+     * this same factor once.
+     *
+     * @param primary whether this is the column whose conversion the grid echoes. Only
+     *     {@code opening_stock} gets the echo; a second "= 250 ml" under the alert threshold
+     *     would be two conversions competing for one line of space.
+     * @return the number as typed, in {@code countedIn}'s terms, or null when the cell was blank
+     *     or unusable.
+     */
+    private BigDecimal quantityColumn(
+            RowContext ctx,
+            RowValidation.Builder out,
+            String field,
+            String label,
+            String subject,
+            UnitOption countedIn,
+            String stockUnitCode,
+            boolean primary) {
+        BigDecimal entered = RowValues.decimal(ctx, out, field, label, subject);
+        if (entered == null) {
+            return null;
+        }
+        Integer stockUnits = toStockUnits(countedIn, entered);
+        if (stockUnits == null) {
+            out.error(field, "NUMBER_TOO_LARGE",
+                    "%s is larger than we can record for %s.".formatted(label, subject));
+            out.value(field, null);
+            return null;
+        }
+        if (stockUnits == 0 && entered.signum() > 0) {
+            out.error(field, "ROUNDS_TO_ZERO",
+                    "%s of %s is less than one whole %s, and we can only record whole ones - enter a larger "
+                            .formatted(ImportCopy.count(entered), spokenOf(countedIn), symbolOrUnits(stockUnitCode))
+                            + "amount, or count " + subject + " in a smaller unit.");
+            out.value(field, null);
+            return null;
+        }
+        if (primary && !countedIn.isStockUnit() && stockUnits > 0) {
+            out.value(ImportFields.BASE_QUANTITY_TEXT, ImportCopy.baseQuantityText(stockUnits, stockUnitCode));
+        }
+        return entered;
+    }
+
+    /**
+     * Which unit a row's quantities are counted in - section 9.1's rule expressed as section
+     * 2.1's set rather than as a fresh {@code if}.
+     *
+     * <p>"The pack when the row declares one, the stock unit when it does not" is exactly what
+     * {@code UnitOptions.defaultOption} already means: section 2.1 defines {@code isDefault} as
+     * the product's own pack if it has one, else the stock unit. Asking the set rather than
+     * re-deriving the rule is what keeps this sheet, the product form and the stock modals from
+     * ever disagreeing about what a number means - the single failure the whole remediation
+     * exists to undo.
+     *
+     * <p>Scoped to the ROW, deliberately, and not widened to the stored product on an update.
+     * Section 9.1 says "whenever the row declares one", and the row is what the person was
+     * looking at when they typed. Our own export always writes the pack columns, so the
+     * export-edit-reupload path always declares; a partial supplier price-list that mentions
+     * neither pack column is saying "stock units", which is the same thing it has always said.
+     */
+    private UnitOption countedIn(String stockUnitCode, String packagingUnit, BigDecimal unitsPerPack) {
+        List<UnitOption> options = UnitOptions.forProduct(stockUnitCode, packagingUnit, unitsPerPack);
+        return UnitOptions.defaultOption(options)
+                .or(() -> UnitOptions.stockUnitOption(options))
+                .orElseGet(() -> new UnitOption(UnitOptions.NO_STOCK_UNIT_CODE, UnitOptions.NO_STOCK_UNIT_LABEL,
+                        BigDecimal.ONE, true, true, false));
+    }
+
+    /** {@link #countedIn} for a row that has already been validated. */
+    private UnitOption countedIn(ImportRowState state) {
+        return countedIn(
+                state.text(ImportFields.STOCK_UNIT),
+                state.text(ImportFields.PACK),
+                decimalOf(state, ImportFields.UNITS_PER_PACK));
+    }
+
+    /**
+     * A validated row's quantity column in STOCK units - the one conversion every commit-side
+     * consumer goes through, so that the ledger, the product's alert threshold and the preview
+     * total cannot disagree about what "30" meant.
+     */
+    /**
+     * A money column read as "per whatever this row is counted in", converted to the per-stock-unit
+     * figure everything downstream stores - contract section 3.2's division, the price twin of
+     * {@link #stockUnitsOf}.
+     *
+     * <h2>Why this exists, and what it replaces</h2>
+     * Section 9.2 originally anchored {@code cost_price} to the STOCK UNIT on entry as well as in
+     * storage, and recorded that as a deliberate divergence from Odoo (whose vendor pricelist price
+     * is per Purchase UoM) and NetSuite (whose Purchase Price is per purchase unit), both of which
+     * let you type the per-pack figure and convert for you. The argument was comparability across
+     * suppliers with different packs.
+     *
+     * <p>It did not survive contact with a real sheet. A row read <b>45 baskets</b> of mango beside
+     * <b>78,000</b>, and the screen dutifully echoed "= N2,340,000.00 / basket" - arithmetically
+     * perfect, since 78,000 x 30 is exactly that, and completely wrong, because 78,000 was the price
+     * of ONE basket. The row was stating its quantity in packs and its price per stock unit: the
+     * mixed basis this whole remediation exists to remove, sitting in two adjacent cells.
+     *
+     * <p>So entry follows the pack, like every other number on the row, and storage stays per stock
+     * unit, which is what actually delivers the comparability the old rule was reaching for. This is
+     * also what the STOCK-IN sheet has always done - its {@code cost_per_unit} is "per whatever this
+     * row's counted_in says" - so the two sheets now agree instead of contradicting each other.
+     */
+    private BigDecimal perStockUnitPriceOf(ImportRowState state, String field) {
+        BigDecimal entered = decimalOf(state, field);
+        if (entered == null) {
+            return null;
+        }
+        return countedIn(state).toStockUnitPrice(entered);
+    }
+
+    private Integer stockUnitsOf(ImportRowState state, String field) {
+        BigDecimal entered = decimalOf(state, field);
+        return entered == null ? null : toStockUnits(countedIn(state), entered);
+    }
+
+    /**
+     * {@code round(entered x factorToStockUnit)}, HALF_UP scale 0 - contract section 3.1 - with
+     * the overflow turned into an answer rather than an exception.
+     *
+     * <h2>Why the arithmetic is here at all</h2>
+     * It should be {@code UnitOption.toStockUnitQuantity}, and for an integer entry it is exactly
+     * that method's result, digit for digit. That method takes an {@code int}, and section 9.1
+     * accepts decimals, so a count of 30.5 kegs has nowhere to go through it. The factor is still
+     * M1's - derived once by {@code UnitOptions} from the row's own declaration and never
+     * recomputed here - so what is duplicated is one multiply and one rounding mode, not the
+     * decision this remediation exists to keep single.
+     *
+     * <p>The right fix is a {@code toStockUnitQuantity(BigDecimal)} overload on {@code UnitOption}
+     * that this method and {@code StockInRowHandler.toStockUnits} both delegate to.
+     * {@code product/unit/**} is not this module's to write, so it is named here instead of done.
+     *
+     * @return the amount in stock units, or null when it does not fit an int.
+     */
+    private static Integer toStockUnits(UnitOption option, BigDecimal entered) {
+        BigDecimal converted = option.factorToStockUnit().multiply(entered);
+        if (converted.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0) {
+            return null;
+        }
+        return converted.setScale(0, java.math.RoundingMode.HALF_UP).intValue();
+    }
+
+    /** "kegs", "kg" - one option as it reads inside a sentence. */
+    private static String spokenOf(UnitOption option) {
+        String phrase = UnitOptions.spokenPhrase(option);
+        int of = phrase.indexOf(" of ");
+        return of > 0 ? phrase.substring(0, of) : phrase;
+    }
+
+    /** The stock unit's short symbol, or section 2.1's "units" for a product that has none. */
+    private static String symbolOrUnits(String stockUnitCode) {
+        String symbol = UnitOptions.symbolOf(stockUnitCode);
+        return symbol.isEmpty() ? UnitOptions.NO_STOCK_UNIT_LABEL : symbol;
     }
 
     /**
@@ -367,15 +627,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             RowValidation.Builder out,
             Product existing,
             String subject,
-            Integer quantity,
+            BigDecimal quantity,
             String unitOfMeasure,
             BigDecimal costPrice) {
 
         // (1) Quantity is ignored, and the grid says so. Contract section 8.8 - never silently.
         // The message is contract section 4's, verbatim, because the frontend renders it as-is
         // and the mock the review screen was built against contains this exact sentence.
-        if (quantity != null && quantity > 0) {
-            out.warning(ImportFields.QUANTITY_ON_HAND, "QUANTITY_IGNORED_ON_UPDATE",
+        if (quantity != null && quantity.signum() > 0) {
+            out.warning(ImportFields.OPENING_STOCK, "QUANTITY_IGNORED_ON_UPDATE",
                     "Quantity is ignored when updating an existing product — use Record stock you received.");
         }
 
@@ -384,8 +644,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 && !Objects.equals(unitOfMeasure, existing.getUnitOfMeasure())
                 && hasMovements(ctx.tenantId(), ctx.cache(), existing.getId())) {
             String current = ImportCopy.unitLabel(existing.getUnitOfMeasure());
-            out.error(ImportFields.UNIT_OF_MEASURE, "UNIT_IMMUTABLE",
-                    "%s has already had stock recorded in %s, so we cannot change what it is measured in - "
+            out.error(ImportFields.STOCK_UNIT, "UNIT_IMMUTABLE",
+                    "%s has already had stock recorded in %s, so we cannot change its stock unit - "
                             .formatted(existing.getName(), current == null ? "its current unit" : current)
                             + "everything already in the ledger is counted that way. Add a separate product if you "
                             + "now buy it in " + ImportCopy.unitLabel(unitOfMeasure) + ".");
@@ -492,8 +752,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private void warnAboutIgnoredColumns(ImportRowState state, ImportRowState parent) {
         List<String> ignorable = List.of(
                 ImportFields.NAME, ImportFields.DESCRIPTION, ImportFields.UNIT_PRICE,
-                ImportFields.QUANTITY_ON_HAND, ImportFields.LOW_STOCK_THRESHOLD,
-                ImportFields.UNIT_OF_MEASURE, ImportFields.PACKAGING_UNIT, ImportFields.PACKAGING_SIZE);
+                ImportFields.OPENING_STOCK, ImportFields.LOW_STOCK_ALERT_AT,
+                ImportFields.STOCK_UNIT, ImportFields.PACK, ImportFields.UNITS_PER_PACK);
         for (String field : ignorable) {
             if (state.value(field) != null) {
                 state.addWarning(RowIssue.warning(field, "CONTINUATION_COLUMN_IGNORED",
@@ -520,6 +780,17 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
      * affordance, the same one decision applied to the same twelve rows. Asking the same
      * question in two places on one screen is worse than asking it well in one.
      */
+    /**
+     * Only {@code vendor_name}. It is the one column this handler asks a question about, and
+     * {@link #resolveVendor} handles all five arms of the answer - so the engine's generic
+     * LITERAL/BLANK substitution must stay off it. Every other column is an ordinary value and
+     * takes the generic path, which is what makes the unit column's bulk fix work at all.
+     */
+    @Override
+    public java.util.Set<String> selfResolvedColumns() {
+        return java.util.Set.of(ImportFields.VENDOR_NAME);
+    }
+
     @Override
     public List<UnresolvedValue> unresolvedValues(BatchContext ctx) {
         boolean mayCreate = hasAuthority("MANAGE_VENDORS");
@@ -597,15 +868,30 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return preview.build();
     }
 
+    /**
+     * The opening-balance total, in ledger terms - UNIT_UX_CONTRACT.md section 6.3 applied to the
+     * catalog import.
+     *
+     * <h2>What this used to say, and why it was the same defect as P0-4</h2>
+     * It summed every row's opening stock into one number and then labelled it with the single
+     * unit if the file happened to use one, else the bare word "units". A catalog of rice in
+     * kilograms and cartons of oil previewed as "3,400 units" - a quantity that is not recorded
+     * anywhere, cannot be checked against anything, and reads as though we had understood the
+     * file. Section 6.3 forbids exactly that: "a bare sum of mixed entered quantities must not
+     * appear anywhere", and the catalog import is named in the following sentence.
+     *
+     * <p>The totals are in stock units even though the cells are in packs, and that is section
+     * 6.3's rule rather than a convenience: "a bare sum of mixed entered quantities must not
+     * appear anywhere", and since section 9.1 a column of bare numbers on a catalog file IS
+     * mixed - thirty kegs on one row, six hundred pieces on the next. Each stock unit gets its
+     * own total, converted through the same factor the commit will use.
+     *
+     * <p>There is no bracketed "(190 kegs)" half at the summary level, and its absence is
+     * deliberate: it would have to name a different pack for every row it summed. The per-row
+     * pairing non-negotiable 3 asks for lives on the row, as {@code _base_quantity_text}.
+     */
     private String quantityPhrase(Tally tally) {
-        // One unit across the whole batch reads naturally ("3,400 kg"); a mix does not, and
-        // inventing a total across kilograms and cartons would be a lie, so it falls back to
-        // plain units.
-        if (tally.openingUnits.size() == 1) {
-            String unit = tally.openingUnits.iterator().next();
-            return ImportCopy.count(tally.openingQuantity) + " " + ImportCopy.unitSymbol(unit);
-        }
-        return ImportCopy.count(tally.openingQuantity) + " units";
+        return ImportCopy.quantityTotals(tally.openingByStockUnit);
     }
 
     private static final class Tally {
@@ -614,8 +900,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         int skipped;
         int vendorsToCreate;
         int openingProducts;
-        long openingQuantity;
-        final Set<String> openingUnits = new LinkedHashSet<>();
+        /** Stock-unit symbol to the opening stock counted in it. Insertion-ordered by file order. */
+        final Map<String, Long> openingByStockUnit = new LinkedHashMap<>();
     }
 
     private Tally tally(BatchContext ctx) {
@@ -630,12 +916,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             }
             if (state.getResolvedEntityId() == null) {
                 tally.creates++;
-                Object quantity = state.value(ImportFields.QUANTITY_ON_HAND);
-                if (quantity instanceof Number number && number.intValue() > 0) {
+                // Summed in LEDGER terms - section 6.3 - which since section 9.1 means
+                // converting the row's pack count first. A preview that added up bags and
+                // millilitres because both cells happen to hold a bare number would be the exact
+                // "bare sum of mixed entered quantities" 6.3 forbids.
+                Integer quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
+                if (quantity != null && quantity > 0) {
                     tally.openingProducts++;
-                    tally.openingQuantity += number.intValue();
-                    String unit = state.text(ImportFields.UNIT_OF_MEASURE);
-                    tally.openingUnits.add(unit == null ? "unit" : unit);
+                    tally.openingByStockUnit.merge(
+                            symbolOrUnits(state.text(ImportFields.STOCK_UNIT)), (long) quantity, Long::sum);
                 }
             } else {
                 tally.updates++;
@@ -808,16 +1097,20 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 .sku(state.text(ImportFields.SKU))
                 .description(state.text(ImportFields.DESCRIPTION))
                 .unitPrice(seller ? decimalOf(state, ImportFields.UNIT_PRICE) : null)
-                .costPrice(decimalOf(state, ImportFields.COST_PRICE))
+                .costPrice(perStockUnitPriceOf(state, ImportFields.COST_PRICE))
                 // Zero, always. Contract section 8.1: no quantity reaches quantity_on_hand
                 // without a StockMovement, and the opening-balance stockIn below is the only
                 // thing allowed to move it.
                 .quantityOnHand(0)
                 .incomingQuantity(0)
-                .lowStockThreshold(intOf(state, ImportFields.LOW_STOCK_THRESHOLD))
-                .unitOfMeasure(state.text(ImportFields.UNIT_OF_MEASURE))
-                .packagingUnit(state.text(ImportFields.PACKAGING_UNIT))
-                .packagingSize(decimalOf(state, ImportFields.PACKAGING_SIZE))
+                // Section 9.1: the cell counts packs when the row declares one, and
+                // products.low_stock_threshold is compared against quantity_on_hand, which is in
+                // stock units. Converting here rather than storing what was typed is what stops
+                // a 5-keg alert firing at 5 ml.
+                .lowStockThreshold(stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT))
+                .unitOfMeasure(state.text(ImportFields.STOCK_UNIT))
+                .packagingUnit(state.text(ImportFields.PACK))
+                .packagingSize(decimalOf(state, ImportFields.UNITS_PER_PACK))
                 .active(true)
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
                 .importBatchId(batchId)
@@ -841,10 +1134,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         before.put(ImportFields.NAME, product.getName());
         before.put(ImportFields.DESCRIPTION, product.getDescription());
         before.put(ImportFields.UNIT_PRICE, product.getUnitPrice() == null ? null : product.getUnitPrice().toPlainString());
-        before.put(ImportFields.LOW_STOCK_THRESHOLD, product.getLowStockThreshold());
-        before.put(ImportFields.UNIT_OF_MEASURE, product.getUnitOfMeasure());
-        before.put(ImportFields.PACKAGING_UNIT, product.getPackagingUnit());
-        before.put(ImportFields.PACKAGING_SIZE,
+        before.put(ImportFields.LOW_STOCK_ALERT_AT, product.getLowStockThreshold());
+        before.put(ImportFields.STOCK_UNIT, product.getUnitOfMeasure());
+        before.put(ImportFields.PACK, product.getPackagingUnit());
+        before.put(ImportFields.UNITS_PER_PACK,
                 product.getPackagingSize() == null ? null : product.getPackagingSize().toPlainString());
         state.getNormalized().put(ImportFields.BEFORE, before);
     }
@@ -870,17 +1163,18 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (seller && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
             product.setUnitPrice(decimalOf(state, ImportFields.UNIT_PRICE));
         }
-        if (intOf(state, ImportFields.LOW_STOCK_THRESHOLD) != null) {
-            product.setLowStockThreshold(intOf(state, ImportFields.LOW_STOCK_THRESHOLD));
+        Integer alertAt = stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
+        if (alertAt != null) {
+            product.setLowStockThreshold(alertAt);
         }
-        if (state.text(ImportFields.UNIT_OF_MEASURE) != null) {
-            product.setUnitOfMeasure(state.text(ImportFields.UNIT_OF_MEASURE));
+        if (state.text(ImportFields.STOCK_UNIT) != null) {
+            product.setUnitOfMeasure(state.text(ImportFields.STOCK_UNIT));
         }
-        if (state.text(ImportFields.PACKAGING_UNIT) != null) {
-            product.setPackagingUnit(state.text(ImportFields.PACKAGING_UNIT));
+        if (state.text(ImportFields.PACK) != null) {
+            product.setPackagingUnit(state.text(ImportFields.PACK));
         }
-        if (decimalOf(state, ImportFields.PACKAGING_SIZE) != null) {
-            product.setPackagingSize(decimalOf(state, ImportFields.PACKAGING_SIZE));
+        if (decimalOf(state, ImportFields.UNITS_PER_PACK) != null) {
+            product.setPackagingSize(decimalOf(state, ImportFields.UNITS_PER_PACK));
         }
     }
 
@@ -919,7 +1213,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (state.text(ImportFields.VENDOR_SKU) != null) {
             line.setVendorSku(state.text(ImportFields.VENDOR_SKU));
         }
-        BigDecimal costPrice = decimalOf(state, ImportFields.COST_PRICE);
+        BigDecimal costPrice = perStockUnitPriceOf(state, ImportFields.COST_PRICE);
         if (costPrice != null) {
             line.setLastCostPrice(costPrice);
         }
@@ -988,7 +1282,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             Product product,
             Map<String, CompanyVendor> createdVendors,
             UUID batchId) {
-        Integer quantity = intOf(state, ImportFields.QUANTITY_ON_HAND);
+        // In STOCK units, converted once, here. Section 9.1's cell counts packs.
+        Integer quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
         if (product == null || quantity == null || quantity <= 0) {
             return false;
         }
@@ -1005,7 +1300,26 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 product.getId(),
                 new StockInRequest(
                         quantity,
-                        decimalOf(state, ImportFields.COST_PRICE),
+                        // The quantity above is ALREADY in stock units and the unit below is
+                        // therefore null - factor 1, stockIn converts nothing. That is not a
+                        // shortcut, it is the only shape that can carry this row.
+                        //
+                        // A StockInRequest has ONE unit for both of its numbers: the quantity is
+                        // per that unit and the price is per that unit (section 3.2). Section 9.1
+                        // puts the catalog row's quantity in PACKS while section 9.2 keeps its
+                        // cost_price per STOCK UNIT - deliberately, because a per-stock-unit cost
+                        // is the only figure comparable across suppliers whose packs differ. A
+                        // mixed-basis pair like that cannot travel through one `unit` field:
+                        // passing "KEG" would make stockIn divide a price that is already per ml
+                        // by fifty, which is P0-1 in the opposite direction.
+                        //
+                        // (It would also refuse 30.5 kegs outright - StockInRequest.quantity is
+                        // an Integer, and section 9.1 accepts decimals. Widening that field to a
+                        // BigDecimal is M1's call and would let this call site hand over what the
+                        // user typed, which is what StockMovement's entered_quantity/entered_unit
+                        // display columns want; until then those two stay null for a catalog
+                        // opening balance, and the review grid carries the echo instead.)
+                        perStockUnitPriceOf(state, ImportFields.COST_PRICE),
                         OPENING_BALANCE_NOTE,
                         null,
                         vendor == null ? null : vendor.getId(),
@@ -1151,10 +1465,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             product.setName(asString(snapshot.get(ImportFields.NAME)));
             product.setDescription(asString(snapshot.get(ImportFields.DESCRIPTION)));
             product.setUnitPrice(asDecimal(snapshot.get(ImportFields.UNIT_PRICE)));
-            product.setLowStockThreshold(asInteger(snapshot.get(ImportFields.LOW_STOCK_THRESHOLD)));
-            product.setUnitOfMeasure(asString(snapshot.get(ImportFields.UNIT_OF_MEASURE)));
-            product.setPackagingUnit(asString(snapshot.get(ImportFields.PACKAGING_UNIT)));
-            product.setPackagingSize(asDecimal(snapshot.get(ImportFields.PACKAGING_SIZE)));
+            product.setLowStockThreshold(asInteger(snapshot.get(ImportFields.LOW_STOCK_ALERT_AT)));
+            product.setUnitOfMeasure(asString(snapshot.get(ImportFields.STOCK_UNIT)));
+            product.setPackagingUnit(asString(snapshot.get(ImportFields.PACK)));
+            product.setPackagingSize(asDecimal(snapshot.get(ImportFields.UNITS_PER_PACK)));
             reverted++;
         }
         return reverted;

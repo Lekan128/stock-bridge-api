@@ -50,7 +50,7 @@ public enum UnitOfMeasure {
      * base unit (e.g. "a carton of 24 PIECE") rather than inventing a second constant for the
      * same idea.
      */
-    PIECE("PIECE", "Piece", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.BASE),
+    PIECE("PIECE", "Piece", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.BASE, "1"),
     PACK("PACK", "Pack", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
     DOZEN("DOZEN", "Dozen", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
     BOX("BOX", "Box", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
@@ -71,19 +71,19 @@ public enum UnitOfMeasure {
     BASKET("BASKET", "Basket", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
 
     // =========================================================== WEIGHT ====
-    MILLIGRAM("MG", "Milligram (mg)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE),
-    GRAM("G", "Gram (g)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE),
-    KILOGRAM("KG", "Kilogram (kg)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE),
-    METRIC_TON("T", "Metric Ton (t)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE),
+    MILLIGRAM("MG", "Milligram (mg)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE, "0.000001"),
+    GRAM("G", "Gram (g)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE, "0.001"),
+    KILOGRAM("KG", "Kilogram (kg)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE, "1"),
+    METRIC_TON("T", "Metric Ton (t)", UnitOfMeasureCategory.WEIGHT, UnitOfMeasureRole.BASE, "1000"),
 
     // =========================================================== VOLUME ====
-    MILLILITER("ML", "Milliliter (ml)", UnitOfMeasureCategory.VOLUME, UnitOfMeasureRole.BASE),
-    LITER("LITER", "Liter (L)", UnitOfMeasureCategory.VOLUME, UnitOfMeasureRole.BASE),
+    MILLILITER("ML", "Milliliter (ml)", UnitOfMeasureCategory.VOLUME, UnitOfMeasureRole.BASE, "0.001"),
+    LITER("LITER", "Liter (L)", UnitOfMeasureCategory.VOLUME, UnitOfMeasureRole.BASE, "1"),
 
     // =========================================================== LENGTH ====
-    MILLIMETER("MM", "Millimeter (mm)", UnitOfMeasureCategory.LENGTH, UnitOfMeasureRole.BASE),
-    CENTIMETER("CM", "Centimeter (cm)", UnitOfMeasureCategory.LENGTH, UnitOfMeasureRole.BASE),
-    METER("M", "Meter (m)", UnitOfMeasureCategory.LENGTH, UnitOfMeasureRole.BASE);
+    MILLIMETER("MM", "Millimeter (mm)", UnitOfMeasureCategory.LENGTH, UnitOfMeasureRole.BASE, "0.001"),
+    CENTIMETER("CM", "Centimeter (cm)", UnitOfMeasureCategory.LENGTH, UnitOfMeasureRole.BASE, "0.01"),
+    METER("M", "Meter (m)", UnitOfMeasureCategory.LENGTH, UnitOfMeasureRole.BASE, "1");
 
     /**
      * Short, stable, uppercase identifier - what the bulk-upload spreadsheet column and the
@@ -108,14 +108,50 @@ public enum UnitOfMeasure {
      */
     private final UnitOfMeasureRole role;
 
+    /**
+     * How many of this category's CANONICAL unit one of this unit is - {@code KG} for WEIGHT,
+     * {@code LITER} for VOLUME, {@code M} for LENGTH, {@code PIECE} for COUNT. So
+     * {@link #METRIC_TON} is {@code 1000} and {@link #GRAM} is {@code 0.001}. Added by
+     * UNIT_UX_CONTRACT.md section 2.2, which pins these exact values.
+     *
+     * <h2>Null for every PACKAGING-role constant, and that is the whole point</h2>
+     * A Bag is not a fixed amount of anything. How much one holds is a fact about a PRODUCT
+     * ({@code Product.packagingSize}) or about one supplier's line
+     * ({@code ProductVendor.defaultPackagingSize}), never about the word "bag", which is why
+     * UNIT_UX_REMEDIATION_PLAN.md section 3 P1-1 records the old "full list of ~30 units" picker
+     * as a defect rather than a feature: offering CARTON as an alternative unit for a KG product
+     * asks a question that has no answer. A null here is that "no answer", stated once, so
+     * {@link #factorTo} can refuse rather than invent.
+     *
+     * <h2>Meaningful only within one {@link UnitOfMeasureCategory}</h2>
+     * Comparing a WEIGHT factor to a VOLUME factor is meaningless - grams to millilitres needs a
+     * density, which is a property of the goods, not of the units. {@link #factorTo} enforces the
+     * same-category rule so no caller has to remember it.
+     */
+    private final java.math.BigDecimal factorToCanonical;
+
     private static final Map<String, UnitOfMeasure> BY_CODE =
             Arrays.stream(values()).collect(Collectors.toMap(UnitOfMeasure::code, Function.identity()));
 
+    /**
+     * The PACKAGING-role form: no {@link #factorToCanonical}, because a container word has no
+     * fixed size. See that field's javadoc.
+     */
     UnitOfMeasure(String code, String label, UnitOfMeasureCategory category, UnitOfMeasureRole role) {
+        this(code, label, category, role, null);
+    }
+
+    private UnitOfMeasure(
+            String code,
+            String label,
+            UnitOfMeasureCategory category,
+            UnitOfMeasureRole role,
+            String factorToCanonical) {
         this.code = code;
         this.label = label;
         this.category = category;
         this.role = role;
+        this.factorToCanonical = factorToCanonical == null ? null : new java.math.BigDecimal(factorToCanonical);
     }
 
     public String code() {
@@ -132,6 +168,74 @@ public enum UnitOfMeasure {
 
     public UnitOfMeasureRole role() {
         return role;
+    }
+
+    /** See the field's javadoc. Null for every PACKAGING-role constant. */
+    public java.math.BigDecimal factorToCanonical() {
+        return factorToCanonical;
+    }
+
+    /**
+     * The short form a person writes after a number - {@code "kg"}, {@code "L"}, {@code "Piece"}
+     * - pulled out of {@link #label()}'s parenthetical, falling back to the whole label when
+     * there is none. UNIT_UX_CONTRACT.md section 2.1 step 1 pins both halves of that rule:
+     * {@code "Kilogram (kg)"} becomes {@code "kg"}, {@code "Piece"} stays {@code "Piece"}.
+     *
+     * <p>Deliberately preserves the fallback's case, unlike {@code ImportCopy.unitSymbol}, which
+     * lower-cases it because it is composing the middle of a sentence. This one is composing a
+     * {@code UnitOption.label} - the text a picker shows on its own - and a lone lower-case
+     * "piece" in a select box reads as a typo. The two are not redundant; they answer the same
+     * question for two different positions in the UI.
+     */
+    public String symbol() {
+        int open = label.indexOf('(');
+        int close = label.indexOf(')', open + 1);
+        if (open >= 0 && close > open) {
+            return label.substring(open + 1, close);
+        }
+        return label;
+    }
+
+    /**
+     * Whether {@link #symbol()} came from a parenthetical abbreviation ({@code kg}, {@code L})
+     * rather than from the whole label ({@code Piece}, {@code Bag}). The distinction is a
+     * grammar fact a message composer needs: you write "3 kg", never "3 kgs", but you do write
+     * "3 pieces" - see {@code UnitOptions.spokenPhrase}.
+     */
+    public boolean hasSymbolAbbreviation() {
+        int open = label.indexOf('(');
+        return open >= 0 && label.indexOf(')', open + 1) > open;
+    }
+
+    /**
+     * How many of {@code stockUnit} one of THIS unit is - the number a quantity entered in this
+     * unit is multiplied by to reach the product's stock unit. {@code T.factorTo(KG)} is
+     * {@code 1000}; {@code G.factorTo(KG)} is {@code 0.001}. Scale 9, HALF_UP, as
+     * UNIT_UX_CONTRACT.md section 2.2 pins.
+     *
+     * <p>Empty - not an exception, and never a guessed 1 - when either side has no
+     * {@link #factorToCanonical} (any PACKAGING constant) or when the two sit in different
+     * {@link UnitOfMeasureCategory categories}. Cross-category is not a conversion: kilograms to
+     * litres needs a density, which belongs to the goods and not to the units, and section 2.2
+     * is explicit that it "must never be offered". An empty result is the signal that this pair
+     * simply is not an alternative-unit relationship, which is exactly what a unit-set builder
+     * needs to hear in order to leave the unit off the list.
+     */
+    public Optional<java.math.BigDecimal> factorTo(UnitOfMeasure stockUnit) {
+        if (stockUnit == null
+                || factorToCanonical == null
+                || stockUnit.factorToCanonical == null
+                || category != stockUnit.category) {
+            return Optional.empty();
+        }
+        java.math.BigDecimal factor = factorToCanonical
+                .divide(stockUnit.factorToCanonical, 9, java.math.RoundingMode.HALF_UP)
+                .stripTrailingZeros();
+        // stripTrailingZeros turns 1000.000000000 into 1E+3, which Jackson writes to the wire
+        // verbatim as "1E+3" - a number no spreadsheet cell and no select-box value should ever
+        // contain. Pulling a negative scale back to zero restores the plain 1000 without
+        // touching the value; 0.001 keeps its scale of 3 and is unaffected.
+        return Optional.of(factor.scale() < 0 ? factor.setScale(0) : factor);
     }
 
     /**
@@ -208,7 +312,51 @@ public enum UnitOfMeasure {
      * compare.
      */
     public static Optional<UnitOfMeasure> fromCodeOrLabel(String codeOrLabel, UnitOfMeasureRole requiredRole) {
-        return fromCodeOrLabel(codeOrLabel).filter(unit -> unit.role() == requiredRole);
+        return fromCodeOrLabel(codeOrLabel).filter(unit -> unit.canServeAs(requiredRole));
+    }
+
+    /**
+     * Whether this unit may play {@code wanted} for some product - the question every role check
+     * in the system actually means, replacing {@code role() == wanted}.
+     *
+     * <h2>Why the declared role is not the answer on its own</h2>
+     * {@link #role()} is a property of the CODE. The thing callers need is a property of the
+     * USAGE, and for the {@link UnitOfMeasureCategory#COUNT} category the two come apart: "piece"
+     * is the stock unit of a phone (there is nothing underneath it) and the pack of a turmeric
+     * sold in 34 g pieces ({@code G} + {@code PIECE} + 34). Same code, different job, same
+     * catalog. {@code PAIR} and {@code SET} are the same story from the other side - declared
+     * PACKAGING, yet a shoe shop's stock unit is plausibly the pair.
+     *
+     * <p>So COUNT units may serve either role. Everything else stays strict: a kilogram is never
+     * a container, and letting {@code packagingUnit=KG} through would resurrect exactly the "50kg
+     * bag" ambiguity {@link UnitOfMeasureRole} exists to remove.
+     *
+     * <h2>What replaces the guarantee this weakens</h2>
+     * The strict split was silently guaranteeing that a product's pack differed from its stock
+     * unit. Once COUNT units can be both, "Piece of 34 Pieces" becomes expressible, so that
+     * invariant is now stated where it belongs - in product validation - rather than falling out
+     * of the enum by accident.
+     *
+     * <h2>On the "modelled on Odoo" claim</h2>
+     * {@link UnitOfMeasureRole}'s javadoc says the split follows Odoo. Odoo has no such split:
+     * {@code uom.uom} is one flat list per category with conversion ratios (Units and Dozens both
+     * sit in the Unit category), and containers are a separate {@code product.packaging} entity.
+     * NetSuite likewise keeps Each, Dozen and Case in one Units Type. The role flag is ours, and
+     * this method is where it stops being a gate and becomes what it is genuinely good for -
+     * grouping and ordering the pickers.
+     */
+    public boolean canServeAs(UnitOfMeasureRole wanted) {
+        if (role == wanted) {
+            return true;
+        }
+        // Deliberately one-directional. A COUNT unit may serve as a PACK even when its declared
+        // role is BASE - that is the reported case, "turmeric sold in 34 g pieces". The reverse is
+        // NOT opened up here: making BAG a legal stock unit is a wider change than anyone asked
+        // for, it widens the stock-unit picker from ten options to twenty-eight, and it is the
+        // shape UnitOfMeasureRole's javadoc argues hardest against. If a business that genuinely
+        // counts bags and never cares about weight turns up, this is the one line to revisit -
+        // and the pack-differs-from-stock-unit invariant is already in place to make it safe.
+        return wanted == UnitOfMeasureRole.PACKAGING && category == UnitOfMeasureCategory.COUNT;
     }
 
     /** Every unit, in declaration order - COUNT, then WEIGHT, then VOLUME, then LENGTH. */
@@ -233,7 +381,12 @@ public enum UnitOfMeasure {
         return byRole(UnitOfMeasureRole.PACKAGING);
     }
 
+    /**
+     * Every unit that may serve {@code role} - see {@link #canServeAs}. Declaration order, so the
+     * units whose declared role this IS come out grouped by category as before, with the COUNT
+     * dual-role ones in their natural place rather than appended.
+     */
     private static List<UnitOfMeasure> byRole(UnitOfMeasureRole role) {
-        return Arrays.stream(values()).filter(unit -> unit.role == role).toList();
+        return Arrays.stream(values()).filter(unit -> unit.canServeAs(role)).toList();
     }
 }

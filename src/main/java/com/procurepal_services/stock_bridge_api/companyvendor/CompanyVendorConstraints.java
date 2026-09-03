@@ -60,7 +60,7 @@ final class CompanyVendorConstraints {
                 "chk_company_vendors_external_shape",
                 new Violation(
                         HttpStatus.BAD_REQUEST,
-                        "A vendor you add yourself needs a contact number, and cannot be linked to a "
+                        "A supplier you add yourself needs a contact number, and cannot be linked to a "
                                 + "ProcurePaddy seller account."));
 
         // Reachable only if something writes a VERIFIED row without naming the
@@ -69,11 +69,11 @@ final class CompanyVendorConstraints {
                 "chk_company_vendors_verified_shape",
                 new Violation(
                         HttpStatus.BAD_REQUEST,
-                        "A verified vendor entry must name the ProcurePaddy seller it refers to."));
+                        "A verified supplier entry must name the ProcurePaddy seller it refers to."));
 
         messages.put(
                 "chk_company_vendors_kind",
-                new Violation(HttpStatus.BAD_REQUEST, "That is not a kind of vendor this directory holds."));
+                new Violation(HttpStatus.BAD_REQUEST, "That is not a kind of supplier this directory holds."));
 
         // A company buying from itself - the one nonsense row the auto-create on
         // purchase could otherwise produce.
@@ -86,7 +86,7 @@ final class CompanyVendorConstraints {
         // on purchase is there to prevent and what a race can still produce.
         messages.put(
                 "uq_company_vendors_client_id_platform_client_id",
-                new Violation(HttpStatus.CONFLICT, "That ProcurePaddy seller is already in your vendor directory."));
+                new Violation(HttpStatus.CONFLICT, "That ProcurePaddy seller is already in your supplier directory."));
 
         return Map.copyOf(messages);
     }

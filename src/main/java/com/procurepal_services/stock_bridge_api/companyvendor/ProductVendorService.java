@@ -101,10 +101,22 @@ public class ProductVendorService {
     }
 
     /**
-     * "+ Add price break". {@code minQuantity} is expected in the product's base unit - see
-     * {@code ProductVendorPriceTier.minQuantity}'s javadoc; converting from a vendor's packaging
-     * unit (the "+ Add price break" form's own unit-toggle, MULTI_VENDOR_INVENTORY_DESIGN.md
-     * section 5.1a) is the caller's job before this is invoked.
+     * "+ Add price break". <b>Both</b> numbers are in the product's stock unit terms:
+     * {@code minQuantity} is a count of stock units (already the case - see
+     * {@code ProductVendorPriceTier.minQuantity}'s javadoc) and {@code unitPrice} is money per
+     * ONE stock unit, which UNIT_UX_CONTRACT.md section 3.2 now pins alongside it.
+     *
+     * <p>That second half is P0-2 (UNIT_UX_REMEDIATION_PLAN.md section 3). The design doc stated
+     * the basis of {@code minQuantity} and was silent on {@code unitPrice}'s, and the tier form
+     * duly converted the quantity to base units while sending the price straight through from a
+     * field labelled "per bag" - so a stored tier meant "at 500 kg, &#8358;44,000 per bag", and
+     * {@link #cheaperVendorHint} then compared that against figures that were per kg. The silence
+     * was the defect; this javadoc and the contract end it.
+     *
+     * <p>Conversion stays the caller's job, deliberately and unchanged: this method takes no
+     * {@code unit}, because a price break is configuration set on a form that knows the vendor's
+     * pack, not an entry made in a unit the request has to name. The form divides by the pack's
+     * factor before it posts - the same factor {@code UnitOptions} publishes to it.
      */
     @Transactional
     public ProductVendorPriceTier addPriceTier(UUID productId, UUID vendorId, BigDecimal minQuantity, BigDecimal unitPrice) {
@@ -140,16 +152,44 @@ public class ProductVendorService {
     }
 
     /**
-     * Find-or-create the (product, vendor) line for a receipt and roll the delivery's cost,
-     * packaging and quantity into it - the one place {@code StockManagementService.stockIn} and
-     * the {@code initialVendor} path on product creation both funnel through, so the "first
-     * vendor on a product is automatically preferred" rule
-     * (MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1/7.3) has exactly one implementation.
+     * Find-or-create the (product, vendor) line for a receipt and roll the delivery's cost and
+     * quantity into it - the one place {@code StockManagementService.stockIn} and the
+     * {@code initialVendor} path on product creation both funnel through, so the "first vendor
+     * on a product is automatically preferred" rule (MULTI_VENDOR_INVENTORY_DESIGN.md section
+     * 5.1/7.3) has exactly one implementation.
      *
      * <p>{@code quantityReceivedBaseUnits} is added to BOTH {@code quantityOnHandFromVendor} and
      * {@code totalQuantityReceived} - see {@code ProductVendor}'s own javadoc for why stock-in
      * always bumps both while a later stock-out only ever decrements the first.
      *
+     * <h2>V21: a per-delivery pack no longer rewrites the supplier's standing default</h2>
+     * {@code packagingUnit}/{@code packagingSize} used to be applied unconditionally, which is
+     * UNIT_UX_REMEDIATION_PLAN.md section 3's P0-5 - and the reason it is listed as a P0 rather
+     * than a nuisance is that the stock-in modal told the user, in as many words, "the vendor's
+     * default stays unchanged" while these four lines changed it. One delivery that happened to
+     * arrive in 25 kg bags silently redefined what "a bag" meant for that supplier from then on,
+     * including in the pre-filled quantities of every later form and spreadsheet.
+     *
+     * <p>They are now applied only when {@code saveAsSupplierDefault} is true - contract section
+     * 3.4 and non-negotiable 7, "a per-delivery override never mutates stored configuration
+     * without an explicit opt-in on the same screen". The per-delivery fact is not lost by this:
+     * it is snapshotted onto the {@code StockMovement} row itself, which is where a fact about
+     * one delivery belongs and where it already went.
+     *
+     * <p>{@code costPrice} is deliberately NOT behind the flag. A price paid is a running fact
+     * about the relationship, not a configuration choice somebody makes - contract section 3.4
+     * draws the line there explicitly.
+     *
+     * @param costPrice what was paid, <b>per ONE of the product's stock units</b> - per kg, never
+     *     per bag. It lands in {@code ProductVendor.lastCostPrice}, which contract section 3.2
+     *     pins to that basis so it is comparable with {@code Product.costPrice}, with this line's
+     *     price tiers, and with other suppliers' figures in {@link #cheaperVendorHint}. The
+     *     caller converts (see {@code StockManagementService.resolveEntry}); passing a
+     *     per-pack figure here is P0-1 and was how a &#8358;45,000 bag became a &#8358;45,000
+     *     kilogram. Null when the delivery had no price, and then nothing is written.
+     * @param quantityReceivedBaseUnits how much arrived, in the product's stock unit.
+     * @param saveAsSupplierDefault whether this delivery's pack should also become this
+     *     supplier's standing default. False for every ordinary receipt.
      * @return the (possibly newly-created) vendor line, and whether it was new - the "Vendor B
      *     is new to this product" confirmation line in MULTI_VENDOR_INVENTORY_DESIGN.md section
      *     7.3 is exactly this flag.
@@ -162,7 +202,8 @@ public class ProductVendorService {
             BigDecimal costPrice,
             String packagingUnit,
             BigDecimal packagingSize,
-            int quantityReceivedBaseUnits) {
+            int quantityReceivedBaseUnits,
+            boolean saveAsSupplierDefault) {
         UUID tenantId = requireTenantId();
         CompanyVendor companyVendor =
                 companyVendorLookup.find(companyVendorId).orElseThrow(InvalidProductVendorException::new);
@@ -191,11 +232,16 @@ public class ProductVendorService {
         if (costPrice != null) {
             vendor.setLastCostPrice(costPrice);
         }
-        if (packagingUnit != null) {
-            vendor.setDefaultPackagingUnit(packagingUnit);
-        }
-        if (packagingSize != null) {
-            vendor.setDefaultPackagingSize(packagingSize);
+        // Contract section 3.4: configuration changes only on an explicit opt-in. A brand-new
+        // vendor line is not an exception - it has no default to protect, but silently seeding
+        // one from a single delivery is the same act, and the same screen offers the checkbox.
+        if (saveAsSupplierDefault) {
+            if (packagingUnit != null) {
+                vendor.setDefaultPackagingUnit(packagingUnit);
+            }
+            if (packagingSize != null) {
+                vendor.setDefaultPackagingSize(packagingSize);
+            }
         }
         vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor() + quantityReceivedBaseUnits);
         vendor.setTotalQuantityReceived(vendor.getTotalQuantityReceived() + quantityReceivedBaseUnits);
@@ -214,6 +260,16 @@ public class ProductVendorService {
      * section 5.1a/7.3: tiers only ever feed a comparison shown alongside the chosen vendor, they
      * never auto-switch it. Returns null when no OTHER vendor on this product beats the chosen
      * price at this quantity (including when the product has only one vendor).
+     *
+     * <h2>Everything compared here is per stock unit</h2>
+     * {@code quantity} is a count of the product's stock units; {@code chosenUnitPrice}, every
+     * candidate's {@code lastCostPrice}, every tier's {@code unitPrice}, and the returned
+     * {@code unitPrice}/{@code savingsPerUnit} are all money per ONE stock unit (contract section
+     * 3.2). The caller must pass the RESOLVED price, not the one typed - see
+     * {@code StockManagementService.stockIn}. Before that was true this method was comparing a
+     * per-bag receipt price against per-kg tier prices, so the hint fired, or failed to, for
+     * reasons unrelated to which supplier was actually cheaper (P0-2). A hint that is sometimes
+     * right by accident is worse than none, because a user cannot tell the two cases apart.
      *
      * <p>Returns the structured facts rather than a pre-formatted sentence - the frontend's
      * receipt step ({@code StockInModal}) renders its own copy from {@code companyVendorName}/

@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports.dto;
 
 import com.procurepal_services.stock_bridge_api.entity.ImportRowStatus;
+import com.procurepal_services.stock_bridge_api.imports.ImportFieldDescriptor;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -30,6 +31,19 @@ import java.util.UUID;
  *     row - a repeated SKU carrying a second supplier. The grid nests on it, which is what makes
  *     the file's structure legible to a user who has never heard of the convention.
  * @param outcome null until the commit has run.
+ * @param fieldOptions per-row narrowing of an ENUM column's choices, keyed by field key -
+ *     UNIT_UX_CONTRACT.md section 6.2. Null or absent for a row that has nothing to narrow, and
+ *     the grid then falls back to the field descriptor's kind-wide {@code options}. Populated for
+ *     {@code counted_in} on every stock-in row whose product resolved, which turns a thirty-option
+ *     select into a two-option one - the Flatfile pattern BULK_IMPORT_DESIGN.md section 4 already
+ *     cites, applied to the column that needed it.
+ *     <p>It lives on the ROW and not on {@link ImportFieldDescriptor} because the answer is a fact
+ *     about this row's product, and section 6.1 keeps the descriptor's {@code options} as the
+ *     kind-wide fallback precisely so the two cannot be confused.
+ * @param baseQuantityText the server-composed {@code "= 2,000 kg"} rendered under the quantity
+ *     cell - section 6.2, and non-negotiable 3 on the review grid: what the user typed and what
+ *     the ledger will record, together. Null when there is nothing to convert, which is the
+ *     ordinary case of a row counted in its product's own stock unit.
  */
 public record ImportRowResponse(
         UUID id,
@@ -42,7 +56,9 @@ public record ImportRowResponse(
         UUID resolvedEntityId,
         String resolvedEntityLabel,
         Integer continuationOf,
-        String outcome) {
+        String outcome,
+        Map<String, List<ImportFieldDescriptor.Option>> fieldOptions,
+        String baseQuantityText) {
 
     /**
      * @param suggestion the one-click fix, or null when there is nothing to guess.
@@ -52,7 +68,28 @@ public record ImportRowResponse(
     public record Error(String column, String message, Suggestion suggestion, Integer bulkFixCount) {
     }
 
-    public record Warning(String column, String message) {
+    /**
+     * A non-blocking problem.
+     *
+     * <h2>Why this gained a suggestion and a count, when the contract said warnings would not</h2>
+     * BULK_IMPORT_CONTRACT.md section 4 states that warnings deliberately carry no
+     * {@code bulkFixCount}, and the reasoning was sound for the only warning that existed then:
+     * an update row's ignored quantity is informational, and there is nothing for a bulk form to
+     * apply. UNIT_UX_CONTRACT.md section 5.1 then introduced a warning that is the opposite shape
+     * - "20 kg - did you mean 20 bags (1,000 kg)?" - and asks for it to carry a one-click bulk
+     * fix, because a file where one row means packs almost always has forty more like it.
+     *
+     * <p>So both fields are nullable and additive: every warning that predates this change sends
+     * both as null and behaves exactly as it did. A warning carries a count only when it also
+     * carries a suggestion, i.e. only when there is a concrete value a click would apply. That
+     * rule is what keeps section 4's intent - no bulk button on a warning with nothing to fix -
+     * while letting the one warning that does have something to fix offer it.
+     *
+     * @param suggestion the value one click would write into the cell, or null.
+     * @param bulkFixCount how many rows share this same (column, code, raw value), non-null only
+     *     alongside a suggestion.
+     */
+    public record Warning(String column, String message, Suggestion suggestion, Integer bulkFixCount) {
     }
 
     public record Suggestion(String value, String label) {
