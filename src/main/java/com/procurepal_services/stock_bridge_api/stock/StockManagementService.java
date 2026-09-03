@@ -9,12 +9,15 @@ import com.procurepal_services.stock_bridge_api.entity.StockMovementAllocation;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.product.ProductNotFoundException;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementAllocationRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
+import com.procurepal_services.stock_bridge_api.stock.dto.ProductLotResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockAdjustmentRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
@@ -26,12 +29,14 @@ import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -58,6 +63,27 @@ import org.springframework.transaction.annotation.Transactional;
  * "advanced" manual override (design doc section 6). {@code Product.quantityOnHand} stays the
  * fast cached counter it always was; the lot ledger is the source of truth underneath it, not a
  * replacement for it.
+ *
+ * <h2>V21: quantity and price are converted by the SAME factor, or neither is</h2>
+ * Read {@link #resolveEntry} before changing anything in {@code stockIn}/{@code stockOut}. Until
+ * V21 this class converted the quantity half of an entry into base units and passed the price
+ * half through untouched, so "20 bags at &#8358;45,000 per bag" on a 50 kg-bag product recorded
+ * 1,000 kg at &#8358;45,000 <em>per kg</em> - a fifty-fold error, written silently by
+ * {@link #recomputeWeightedAverageCost} and by {@code ProductVendor.lastCostPrice}, and then
+ * compounded into every later weighted average (UNIT_UX_REMEDIATION_PLAN.md section 3, P0-1).
+ *
+ * <p>There is now exactly one place a request's {@code unit} is interpreted -
+ * {@link #resolveEntry} - it resolves against the product's derived unit set rather than a
+ * hand-rolled comparison, and it returns the quantity and the price already converted by the one
+ * factor it found. Everything downstream of it consumes only per-stock-unit figures:
+ * {@code Product.costPrice}, {@code ProductVendor.lastCostPrice},
+ * {@code StockMovement.unitPriceAtTime} and the cheaper-vendor hint (UNIT_UX_CONTRACT.md section
+ * 3.2). What the user actually typed is preserved on the movement's {@code entered*} columns as
+ * a display fact that nothing computes from (section 3.3).
+ *
+ * <p>A request that omits {@code unit} resolves to the stock unit, whose factor is 1, and both
+ * conversions become identities - which is why closing a fifty-fold hole changed no existing
+ * caller (contract non-negotiable 8).
  */
 @Service
 @RequiredArgsConstructor
@@ -111,6 +137,16 @@ public class StockManagementService {
      * so a movement's provenance is fixed at insert and cannot be quietly re-attributed later,
      * which is exactly what makes the undo in section 6.6 trustworthy.
      *
+     * <h2>V21: the unit basis of every number this method touches</h2>
+     * {@code request.quantity()} and {@code request.unitPrice()} are both expressed in whatever
+     * {@code request.unit()} names - bags, tonnes, kg - and BOTH are converted by the one factor
+     * {@link #resolveEntry} resolves, never one without the other. What is written is therefore:
+     * {@code StockMovement.quantity} and {@code Product.quantityOnHand} in the product's stock
+     * unit; {@code StockMovement.unitPriceAtTime}, {@code Product.costPrice} and
+     * {@code ProductVendor.lastCostPrice} as money per ONE stock unit; and the entry as typed,
+     * untouched, on the movement's {@code entered*} columns for display only. See
+     * UNIT_UX_CONTRACT.md sections 3.1-3.3.
+     *
      * @param importBatchId the {@code import_sessions.id} this receipt belongs to, or null for
      *     every ordinary hand-entered stock-in.
      */
@@ -121,8 +157,14 @@ public class StockManagementService {
         UUID tenantId = requireTenantId();
         OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
 
-        int quantityBaseUnits =
-                resolveBaseQuantity(product, request.quantity(), request.unit(), request.packagingUnit(), request.packagingSize());
+        ResolvedEntry entry = resolveEntry(
+                product,
+                request.quantity(),
+                request.unitPrice(),
+                request.unit(),
+                request.packagingUnit(),
+                request.packagingSize());
+        int quantityBaseUnits = entry.baseQuantity();
 
         if (request.companyVendorId() == null
                 && productVendorRepository.countByClientIdAndProductId(tenantId, productId) > 0) {
@@ -137,15 +179,25 @@ public class StockManagementService {
                     product,
                     request.companyVendorId(),
                     null,
-                    request.unitPrice(),
+                    // Per STOCK UNIT, not per the unit typed - contract section 3.2. Passing
+                    // request.unitPrice() here is exactly what made lastCostPrice mean "per bag"
+                    // on one row and "per kg" on the next (P0-1/P0-2).
+                    entry.basePrice(),
                     request.packagingUnit(),
                     request.packagingSize(),
-                    quantityBaseUnits);
+                    quantityBaseUnits,
+                    // Contract section 3.4 / non-negotiable 7: this delivery's pack becomes the
+                    // supplier's standing default ONLY on an explicit opt-in. Absent means false.
+                    request.savesAsSupplierDefault());
             vendorIsNewToProduct = receipt.vendorIsNewToProduct();
             companyVendor = receipt.vendor().getCompanyVendor();
-            if (request.unitPrice() != null) {
+            if (entry.basePrice() != null) {
+                // Both sides of this comparison are now per stock unit: the candidate vendors'
+                // tiers and lastCostPrice already were, and this receipt's price now is too.
+                // Comparing a per-bag figure against per-kg ones is what made the hint fire
+                // essentially at random before (P0-2).
                 ProductVendorService.CheaperVendorHint hint = productVendorService.cheaperVendorHint(
-                        productId, request.companyVendorId(), BigDecimal.valueOf(quantityBaseUnits), request.unitPrice());
+                        productId, request.companyVendorId(), BigDecimal.valueOf(quantityBaseUnits), entry.basePrice());
                 cheaperVendorHint = hint == null
                         ? null
                         : new StockMutationResponse.CheaperVendorHint(
@@ -153,14 +205,14 @@ public class StockManagementService {
             }
         }
 
-        product.setCostPrice(recomputeWeightedAverageCost(product, quantityBaseUnits, request.unitPrice()));
+        product.setCostPrice(recomputeWeightedAverageCost(product, quantityBaseUnits, entry.basePrice()));
         product.setQuantityOnHand(product.getQuantityOnHand() + quantityBaseUnits);
 
         StockMovement movement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
                 .movementType(MovementType.IN)
                 .quantity(quantityBaseUnits)
-                .unitPriceAtTime(request.unitPrice())
+                .unitPriceAtTime(entry.basePrice())
                 .note(request.note())
                 .createdBy(reference(actingUserId))
                 .companyVendor(companyVendor)
@@ -168,6 +220,9 @@ public class StockManagementService {
                 .packagingSize(request.packagingSize())
                 .occurredAt(occurredAt)
                 .importBatchId(importBatchId)
+                .enteredUnit(entry.enteredUnit())
+                .enteredQuantity(entry.enteredQuantity())
+                .enteredUnitPrice(entry.enteredUnitPrice())
                 .build());
 
         return StockMutationResponse.ofStockIn(product, movement, vendorIsNewToProduct, cheaperVendorHint);
@@ -214,18 +269,35 @@ public class StockManagementService {
      * absent (a stock-in recorded with no {@code unitPrice}, e.g. a free sample or a correction),
      * the prior cost is left untouched rather than blending a null in as zero, which would drag
      * the average down for no economic reason.
+     *
+     * <h2>Every one of these four numbers is per stock unit, and that is new</h2>
+     * {@code product.getCostPrice()} and the returned value are money per ONE stock unit;
+     * {@code inQuantityBaseUnits} and {@code product.getQuantityOnHand()} are counts of that same
+     * unit. {@code inPriceBaseUnits} must therefore ALSO be per stock unit - it is
+     * {@link ResolvedEntry#basePrice()}, never {@code request.unitPrice()}.
+     *
+     * <p>That parameter is the whole of P0-1 (UNIT_UX_REMEDIATION_PLAN.md section 3). It used to
+     * receive the price exactly as typed while {@code inQuantityBaseUnits} arrived converted, so
+     * a delivery of "20 bags at &#8358;45,000 per bag" blended &#8358;45,000 against 1,000 kg and
+     * set the catalog cost price to &#8358;45,000 per kg - fifty times the truth, silently, and
+     * then averaged into every later delivery so the error never washed out. The rename in this
+     * signature is deliberate: the old name said nothing about basis, and the basis was the bug.
+     *
+     * <p>Blending is done at the incoming price's own scale and the result rounded to 2, the
+     * column's scale - contract section 3.2's "do the arithmetic at scale 6 first, persist at
+     * each column's own scale".
      */
-    private BigDecimal recomputeWeightedAverageCost(Product product, int inQuantityBaseUnits, BigDecimal inPrice) {
-        if (inPrice == null) {
+    private BigDecimal recomputeWeightedAverageCost(Product product, int inQuantityBaseUnits, BigDecimal inPriceBaseUnits) {
+        if (inPriceBaseUnits == null) {
             return product.getCostPrice();
         }
         int oldQty = product.getQuantityOnHand();
         BigDecimal oldCost = product.getCostPrice();
         if (oldQty <= 0 || oldCost == null) {
-            return inPrice;
+            return inPriceBaseUnits;
         }
         BigDecimal oldValue = oldCost.multiply(BigDecimal.valueOf(oldQty));
-        BigDecimal inValue = inPrice.multiply(BigDecimal.valueOf(inQuantityBaseUnits));
+        BigDecimal inValue = inPriceBaseUnits.multiply(BigDecimal.valueOf(inQuantityBaseUnits));
         BigDecimal totalQty = BigDecimal.valueOf((long) oldQty + inQuantityBaseUnits);
         return oldValue.add(inValue).divide(totalQty, 2, RoundingMode.HALF_UP);
     }
@@ -238,26 +310,39 @@ public class StockManagementService {
      * movement for this product is row-locked first via {@link
      * StockMovementRepository#findInMovementsForUpdate} - see that method's javadoc for why the
      * lock has to happen before any remaining-balance number is trusted.
+     *
+     * <h2>V21: the unit basis of every number here</h2>
+     * {@code request.quantity()} and {@code request.unitPrice()} are in whatever
+     * {@code request.unit()} names and are both converted by the same factor
+     * ({@link #resolveEntry}); {@code request.allocations()[].quantity} is - and stays - in the
+     * product's STOCK unit with no unit of its own, because a lot's remaining balance is a
+     * base-unit figure and rounding each line separately could not be made to sum back to the
+     * request's own total (see {@code StockOutRequest}'s javadoc). No pack override is accepted
+     * and none ever was: which supplier's stock a sale draws from is unknown until FIFO resolves
+     * it, so stock-out can only offer the PRODUCT's units (design doc section 5.3).
      */
     @Transactional
     public StockMutationResponse stockOut(UUID productId, StockOutRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
 
-        int quantityBaseUnits = resolveBaseQuantity(product, request.quantity(), request.unit(), null, null);
+        ResolvedEntry entry =
+                resolveEntry(product, request.quantity(), request.unitPrice(), request.unit(), null, null);
+        int quantityBaseUnits = entry.baseQuantity();
 
         // The authoritative ceiling is still Product.quantityOnHand - see the class javadoc's
         // "cached counter, lot ledger is the source of truth underneath it, not a replacement"
         // and the reasoning below for why the ledger alone cannot be trusted as the ceiling yet.
         if (quantityBaseUnits > product.getQuantityOnHand()) {
-            throw new InsufficientStockException(product.getQuantityOnHand(), quantityBaseUnits, unitLabel(product));
+            throw new InsufficientStockException(product.getQuantityOnHand(), quantityBaseUnits, unitSymbol(product));
         }
 
         List<StockMovement> lockedLotsOldestFirst = stockMovementRepository.findInMovementsForUpdate(productId, tenantId);
 
         List<LotDraw> draws = (request.allocations() == null || request.allocations().isEmpty())
                 ? resolveFifoAllocations(lockedLotsOldestFirst, quantityBaseUnits)
-                : resolveManualAllocations(lockedLotsOldestFirst, request.allocations(), quantityBaseUnits);
+                : resolveManualAllocations(
+                        lockedLotsOldestFirst, request.allocations(), quantityBaseUnits, unitSymbol(product));
 
         product.setQuantityOnHand(product.getQuantityOnHand() - quantityBaseUnits);
 
@@ -265,9 +350,12 @@ public class StockManagementService {
                 .product(product)
                 .movementType(MovementType.OUT)
                 .quantity(quantityBaseUnits)
-                .unitPriceAtTime(request.unitPrice())
+                .unitPriceAtTime(entry.basePrice())
                 .note(request.note())
                 .createdBy(reference(actingUserId))
+                .enteredUnit(entry.enteredUnit())
+                .enteredQuantity(entry.enteredQuantity())
+                .enteredUnitPrice(entry.enteredUnitPrice())
                 .build());
 
         List<StockMutationResponse.AllocationBreakdown> breakdown = new ArrayList<>();
@@ -291,7 +379,11 @@ public class StockManagementService {
                     lotVendor == null ? null : lotVendor.getName(),
                     draw.quantity(),
                     draw.lot().getCreatedAt(),
-                    draw.lot().getOccurredAt()));
+                    draw.lot().getOccurredAt(),
+                    // Composed here, by the same method the lot picker's rows use, so the
+                    // receipt names a delivery with the exact phrase the user clicked on.
+                    ProductLotResponse.label(
+                            draw.lot().getOccurredAt(), lotVendor == null ? null : lotVendor.getName())));
         }
 
         return StockMutationResponse.ofStockOut(product, outMovement, breakdown);
@@ -366,9 +458,29 @@ public class StockManagementService {
      * query) and must have enough remaining balance; the allocations must sum to exactly the
      * requested quantity, since a manual list that under- or over-specifies the total has no
      * defined meaning.
+     *
+     * <h2>Units, and the ids that used to leak</h2>
+     * Every quantity in this method - each {@code allocation.quantity()}, each lot's remaining
+     * balance, {@code quantityNeeded} - is in the product's STOCK unit. {@code quantityNeeded}
+     * arrives already converted from whatever the caller typed, which is why
+     * {@code unitSymbol} is threaded in: a refusal has to state what its numbers are counted in,
+     * or it recreates P1-4, where a client validated the same comparison in bags and the server
+     * answered in kg.
+     *
+     * <p>The three refusals no longer name a lot by its {@code inMovementId}. That was P1-6 - a
+     * UUID in a sentence a user reads, forbidden by contract non-negotiable 6, and useless
+     * besides, since the id is not on the screen they are looking at. A lot is named by the date
+     * and supplier its own picker row shows, composed by {@code ProductLotResponse.label}. See
+     * {@link InvalidStockAllocationException}.
+     *
+     * @param unitSymbol the product's stock unit, short form ("kg"), for the refusal messages
+     *     only - it has no effect on any arithmetic here.
      */
     private List<LotDraw> resolveManualAllocations(
-            List<StockMovement> lockedLotsOldestFirst, List<StockOutRequest.Allocation> allocations, int quantityNeeded) {
+            List<StockMovement> lockedLotsOldestFirst,
+            List<StockOutRequest.Allocation> allocations,
+            int quantityNeeded,
+            String unitSymbol) {
         Map<UUID, StockMovement> lockedById = new LinkedHashMap<>();
         for (StockMovement lot : lockedLotsOldestFirst) {
             lockedById.put(lot.getId(), lot);
@@ -379,20 +491,23 @@ public class StockManagementService {
         for (StockOutRequest.Allocation allocation : allocations) {
             StockMovement lot = lockedById.get(allocation.inMovementId());
             if (lot == null) {
-                throw new InvalidStockAllocationException(
-                        "inMovementId " + allocation.inMovementId() + " is not a delivery of this product.");
+                throw InvalidStockAllocationException.notThisProductsDelivery();
             }
             int remaining = lot.getQuantity() - stockMovementAllocationRepository.sumQuantityByInMovementId(lot.getId());
             if (allocation.quantity() > remaining) {
-                throw new InvalidStockAllocationException("Only " + remaining + " remaining from that delivery ("
-                        + lot.getId() + "), " + allocation.quantity() + " requested.");
+                CompanyVendor lotVendor = lot.getCompanyVendor();
+                throw InvalidStockAllocationException.notEnoughInLot(
+                        Math.max(0, remaining),
+                        allocation.quantity(),
+                        unitSymbol,
+                        lot.getOccurredAt(),
+                        lotVendor == null ? null : lotVendor.getName());
             }
             draws.add(new LotDraw(lot, allocation.quantity()));
             total += allocation.quantity();
         }
         if (total != quantityNeeded) {
-            throw new InvalidStockAllocationException(
-                    "allocations sum to " + total + " but the requested quantity is " + quantityNeeded + ".");
+            throw InvalidStockAllocationException.totalMismatch(total, quantityNeeded, unitSymbol);
         }
         return draws;
     }
@@ -402,27 +517,122 @@ public class StockManagementService {
     }
 
     /**
-     * {@code unit} names either the product's base {@code unitOfMeasure} (no conversion) or its
-     * packaging unit (multiply by packaging size to reach base units) - design doc section 6's
-     * "kg <-> bag" toggle. {@code requestPackagingUnit}/{@code requestPackagingSize} are this
-     * specific delivery's own snapshot (only ever supplied by {@code stockIn}; {@code stockOut}
-     * always passes null for both, since which vendor a sale will draw from - and therefore
-     * which packaging - is not known until FIFO resolves it, so stock-out's toggle can only ever
-     * read the PRODUCT's own default - design doc section 5.3). Either way, a request-level
-     * value wins over the product's own packagingUnit/packagingSize when both are present, since
-     * a per-delivery snapshot is more specific than the product's standing default.
+     * <b>The one place a request's {@code unit} is interpreted.</b> Resolves it against this
+     * product's closed unit set ({@code UnitOptions}, UNIT_UX_CONTRACT.md section 2.1) and
+     * returns the entry converted once, by one factor, into everything the ledger needs:
+     * a quantity in the product's stock unit, a price per ONE stock unit, and the three
+     * display-only facts about what was actually typed.
+     *
+     * <h2>Why quantity and price are resolved together and not in two methods</h2>
+     * Because they were, and that is P0-1. The old {@code resolveBaseQuantity} converted the
+     * quantity and there was no counterpart for the price, so {@code unitPrice} travelled the
+     * whole stack unconverted while the quantity underneath it did not - and every price surface
+     * downstream had to guess what the number was "per", and they guessed differently
+     * (UNIT_UX_REMEDIATION_PLAN.md section 1). Returning both from one call makes the two halves
+     * structurally inseparable: there is no longer a way to convert one and forget the other,
+     * because there is no longer a method that converts only one.
+     *
+     * <h2>Resolution, per contract section 3.1</h2>
+     * <ul>
+     *   <li>{@code unit} null or blank ⇒ the stock unit, factor 1. Byte-for-byte today's
+     *       behaviour, which is contract non-negotiable 8 and the reason the existing callers,
+     *       the marketplace receipt path and the whole existing test suite are untouched by
+     *       this change.</li>
+     *   <li>{@code unit} present ⇒ it must match a {@code code} in the set, case-insensitively.
+     *       {@code baseQuantity = round(quantity × factorToStockUnit)}, HALF_UP, scale 0;
+     *       {@code basePrice = enteredPrice / factorToStockUnit}, scale 6, HALF_UP.</li>
+     *   <li>no match ⇒ 400 naming every valid option, because a rejection that does not say what
+     *       WOULD have worked is the defect that was reported, not a fix for it.</li>
+     *   <li>a conversion that rounds to zero ⇒ 400, never a silent 0 - recording "this delivery
+     *       contained nothing" for a delivery somebody just typed is the same class of error as
+     *       recording the wrong amount.</li>
+     * </ul>
+     *
+     * <h2>The per-request pack EXTENDS the set rather than bypassing it</h2>
+     * {@code requestPackagingUnit}/{@code requestPackagingSize} are this one delivery's pack
+     * (only {@code stockIn} ever supplies them; {@code stockOut} passes null for both - design
+     * doc section 5.3). They add one option to the set for this request and matching then
+     * happens against the set exactly as it does for every other request - contract section 3.1.
+     * The pre-V21 fallbacks are preserved deliberately, so a request that supplies only a size,
+     * or only a unit, still resolves against the product's own other half exactly as it did
+     * before: a request-level value wins over the product's standing default, because a
+     * per-delivery snapshot is the more specific fact.
+     *
+     * @param quantity the number typed, counted in {@code unit}.
+     * @param enteredPrice the price typed, per ONE {@code unit} - per bag when {@code unit} is
+     *     BAG. Null is ordinary (a free sample, a correction) and stays null throughout.
+     * @param unit which of this product's units the two numbers above are in; null/blank is the
+     *     stock unit.
      */
-    private int resolveBaseQuantity(
-            Product product, int quantity, String unit, String requestPackagingUnit, BigDecimal requestPackagingSize) {
-        if (unit == null || unit.isBlank() || unit.equalsIgnoreCase(product.getUnitOfMeasure())) {
-            return quantity;
+    private ResolvedEntry resolveEntry(
+            Product product,
+            int quantity,
+            BigDecimal enteredPrice,
+            String unit,
+            String requestPackagingUnit,
+            BigDecimal requestPackagingSize) {
+
+        // Pre-V21 fallback semantics, preserved exactly: a request-level packaging value wins,
+        // and either half may be omitted so long as the product supplies the other.
+        String overridePackagingUnit =
+                requestPackagingUnit != null ? requestPackagingUnit : product.getPackagingUnit();
+        BigDecimal overridePackagingSize =
+                requestPackagingSize != null ? requestPackagingSize : product.getPackagingSize();
+        List<UnitOption> options = requestPackagingUnit == null && requestPackagingSize == null
+                ? UnitOptions.forProduct(product)
+                : UnitOptions.extendedWith(
+                        UnitOptions.forProduct(product),
+                        overridePackagingUnit,
+                        overridePackagingSize,
+                        product.getUnitOfMeasure());
+
+        UnitOption option = UnitOptions.resolve(options, unit)
+                .orElseThrow(() -> InvalidStockUnitException.unknownUnit(product.getName(), unit, options));
+
+        int baseQuantity = option.toStockUnitQuantity(quantity);
+        if (baseQuantity == 0 && quantity != 0) {
+            throw InvalidStockUnitException.roundsToZero(quantity, option, unitSymbol(product));
         }
-        String packagingUnit = requestPackagingUnit != null ? requestPackagingUnit : product.getPackagingUnit();
-        BigDecimal packagingSize = requestPackagingSize != null ? requestPackagingSize : product.getPackagingSize();
-        if (packagingUnit == null || packagingSize == null || !unit.equalsIgnoreCase(packagingUnit)) {
-            throw new InvalidStockUnitException(unit);
-        }
-        return packagingSize.multiply(BigDecimal.valueOf(quantity)).setScale(0, RoundingMode.HALF_UP).intValueExact();
+
+        // Section 3.3: what was typed is kept ONLY when it differs from what is stored. An entry
+        // made in the stock unit has nothing extra to say, and writing the stock unit's own code
+        // into entered_unit would turn "the user chose a unit" into a fact we invented for them.
+        boolean typedInAnotherUnit = !option.isStockUnit();
+        return new ResolvedEntry(
+                option,
+                baseQuantity,
+                option.toStockUnitPrice(enteredPrice),
+                typedInAnotherUnit ? option.code() : null,
+                typedInAnotherUnit ? BigDecimal.valueOf(quantity) : null,
+                typedInAnotherUnit ? enteredPrice : null);
+    }
+
+    /**
+     * One request's quantity and price, resolved against the product's unit set - the return of
+     * {@link #resolveEntry}, and the only shape in which a converted entry travels through this
+     * class.
+     *
+     * @param option which member of the set {@code unit} named. Its {@code factorToStockUnit} is
+     *     the single number both conversions below were derived from.
+     * @param baseQuantity the quantity in the product's STOCK unit - what
+     *     {@code StockMovement.quantity} and {@code Product.quantityOnHand} are counted in.
+     * @param basePrice money per ONE stock unit - what {@code StockMovement.unitPriceAtTime},
+     *     {@code Product.costPrice}, {@code ProductVendor.lastCostPrice} and the cheaper-vendor
+     *     comparison all consume, and the ONLY price figure any of them may see. Null when the
+     *     entry carried no price.
+     * @param enteredUnit the unit code as submitted, or null when the stock unit was used.
+     * @param enteredQuantity the number typed, in {@code enteredUnit}; null with it.
+     * @param enteredUnitPrice the price typed, per {@code enteredUnit}; null with it. Display
+     *     only - contract section 3.3 forbids computing a balance or a cost from any of the last
+     *     three.
+     */
+    private record ResolvedEntry(
+            UnitOption option,
+            int baseQuantity,
+            BigDecimal basePrice,
+            String enteredUnit,
+            BigDecimal enteredQuantity,
+            BigDecimal enteredUnitPrice) {
     }
 
     /**
@@ -492,19 +702,99 @@ public class StockManagementService {
     }
 
     /**
-     * A human-readable label for the product's base unit ("Kilogram (kg)"), for {@link
-     * InsufficientStockException}'s message only - see that field's own javadoc for why this is
-     * a nice-to-have rather than load-bearing. Falls back to the raw stored code, or null (the
-     * exception itself falls back further, to "units") when the product has no unit configured
-     * at all.
+     * The product's stock unit written the way a person writes it after a number - {@code "kg"},
+     * not {@code "Kilogram (kg)"} and not {@code "KG"} - for the error messages of
+     * {@link InsufficientStockException}, {@link InvalidStockAllocationException} and
+     * {@link InvalidStockUnitException}. Empty string when the product has no unit configured;
+     * each exception falls back to "units" from there.
+     *
+     * <h2>Why the message copy changed with it</h2>
+     * These messages used to splice in the full catalog label, producing "Only 34 Kilogram (kg)
+     * available" - which is a picker label dropped into a sentence, the same category of tell as
+     * a capitalised unit mid-clause. Contract non-negotiable 2 requires every quantity shown to
+     * state its unit; it does not require it to be stated in our vocabulary rather than the
+     * reader's (BULK_IMPORT_DESIGN.md 9.6: "KG is our vocabulary, not the reader's").
      */
-    private String unitLabel(Product product) {
-        if (product.getUnitOfMeasure() == null) {
-            return null;
+    private String unitSymbol(Product product) {
+        return UnitOptions.symbolOf(product.getUnitOfMeasure());
+    }
+
+    /**
+     * {@code GET /api/products/{productId}/lots} - the open deliveries a stock-out can draw
+     * from, UNIT_UX_CONTRACT.md section 4. Ordered {@code (occurredAt, createdAt)}: the exact
+     * FIFO order {@link #resolveFifoAllocations} consumes in, so the list a user is shown is the
+     * list the system would have picked from itself, in the same order.
+     *
+     * <h2>Why an endpoint rather than another read of history</h2>
+     * UNIT_UX_REMEDIATION_PLAN.md section 3, P1-5: the lot picker was built on the first 50 rows
+     * of movement history filtered to {@code IN}. That shows fully-consumed lots as though they
+     * were available, shows no remaining quantity on any row, and silently omits every lot past
+     * page 50 - so the user picked blind and was answered with a 409 from a screen that had just
+     * told them the lot was there. A remaining balance is derived (lot quantity minus the
+     * allocations against it - MULTI_VENDOR_INVENTORY_DESIGN.md section 5.2a) and no page of
+     * history carries it. Deriving it client-side would mean shipping the allocation ledger to
+     * the browser; deriving it here is one grouped query.
+     *
+     * <h2>Units</h2>
+     * {@code quantity} and {@code remaining} are base units; {@code unitPriceAtTime} is money per
+     * ONE stock unit (contract section 3.2). Nothing is converted for display - a caller that
+     * wants to show bags has the product's unit set and its factor.
+     *
+     * <h2>remaining is clamped at zero, and the clamp is not defensive noise</h2>
+     * A lot's balance is {@code quantity - SUM(allocations)}, and that arithmetic can legitimately
+     * be read while the true figure is in flux; more importantly, stock that predates V19 exists
+     * with NO backing {@code IN} movements at all (see {@link #resolveFifoAllocations}), so lot
+     * balances and {@code quantityOnHand} are not guaranteed to reconcile for older tenants. A
+     * negative number in a picker is not a fact a user can do anything with, and section 4 pins
+     * "never negative" for exactly that reason.
+     *
+     * <p>No pagination. The row set is one product's deliveries, which is small, and a picker
+     * that paginated would reintroduce the "missed every lot past page 50" half of P1-5.
+     *
+     * @param openOnly filter to lots with something left in them. The default and the only
+     *     setting a picker should use; {@code false} is for showing a full lot history.
+     */
+    @Transactional(readOnly = true)
+    public List<ProductLotResponse> lots(UUID productId, boolean openOnly) {
+        UUID tenantId = requireTenantId();
+        if (productRepository.findByIdAndClientId(productId, tenantId).isEmpty()) {
+            throw new ProductNotFoundException();
         }
-        return UnitOfMeasure.fromCode(product.getUnitOfMeasure())
-                .map(UnitOfMeasure::label)
-                .orElse(product.getUnitOfMeasure());
+
+        List<StockMovement> lotsOldestFirst = stockMovementRepository.findAll(
+                StockMovementSpecifications.lotsForProduct(tenantId, productId),
+                Sort.by(Sort.Direction.ASC, "occurredAt", "createdAt"));
+        if (lotsOldestFirst.isEmpty()) {
+            return List.of();
+        }
+
+        // One grouped query for every lot's consumed total, not one per row: a picker opening on
+        // a product with two hundred deliveries would otherwise cost two hundred round trips.
+        Map<UUID, Integer> allocatedByLot = new HashMap<>();
+        for (Object[] row : stockMovementAllocationRepository.sumQuantityByInMovementIds(
+                lotsOldestFirst.stream().map(StockMovement::getId).toList())) {
+            allocatedByLot.put((UUID) row[0], ((Number) row[1]).intValue());
+        }
+
+        List<ProductLotResponse> response = new ArrayList<>();
+        for (StockMovement lot : lotsOldestFirst) {
+            int remaining = Math.max(0, lot.getQuantity() - allocatedByLot.getOrDefault(lot.getId(), 0));
+            if (openOnly && remaining <= 0) {
+                continue;
+            }
+            CompanyVendor vendor = lot.getCompanyVendor();
+            String vendorName = vendor == null ? null : vendor.getName();
+            response.add(new ProductLotResponse(
+                    lot.getId(),
+                    lot.getOccurredAt(),
+                    vendor == null ? null : vendor.getId(),
+                    vendorName,
+                    lot.getQuantity(),
+                    remaining,
+                    lot.getUnitPriceAtTime(),
+                    ProductLotResponse.label(lot.getOccurredAt(), vendorName)));
+        }
+        return List.copyOf(response);
     }
 
     private Product lockProductOrThrow(UUID productId) {

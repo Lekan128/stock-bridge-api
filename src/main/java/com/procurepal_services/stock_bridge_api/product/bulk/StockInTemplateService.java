@@ -109,14 +109,22 @@ public class StockInTemplateService {
     }
 
     /**
-     * The pre-fill, assembled per section 8.1's column table: supplier and cost from the product's
-     * PREFERRED vendor line, unit from its packaging unit falling back to its base unit, packaging
-     * size from the vendor's default falling back to the product's own.
+     * The pre-fill: supplier and cost from the product's PREFERRED vendor line, and the product's
+     * whole unit set - UNIT_UX_CONTRACT.md section 2.1 - from its stock unit, its own pack and that
+     * supplier's pack.
      *
      * <p>Every fallback exists because the alternative is a blank cell the user has to fill, and the
-     * whole argument of section 5.3 is that they should have to fill exactly one. A product with no
-     * vendor line yet still gets its unit and its pack size; only the supplier and the cost are
-     * genuinely unknown, and those are the two the review screen is good at asking about.
+     * whole argument of BULK_IMPORT_DESIGN.md section 5.3 is that they should have to fill exactly
+     * one. A product with no vendor line yet still gets its full unit set; only the supplier and the
+     * cost are genuinely unknown, and those are the two the review screen is good at asking about.
+     *
+     * <h2>The cost handed over is per STOCK UNIT, and stays that way until the cell is written</h2>
+     * {@code ProductVendor.lastCostPrice} and {@code Product.costPrice} are both per stock unit
+     * (contract section 3.2). The sheet's {@code cost_per_unit} column is per the row's
+     * {@code counted_in}, so the two differ by the pre-filled option's factor - and that conversion
+     * is deliberately NOT done here. It depends on which option the sheet chooses to pre-fill, and
+     * that choice belongs to {@link StockInExcelService}, next to the parser that reads the column
+     * back. Doing it here would put the two halves of one round trip in two files.
      */
     private List<StockInTemplateRow> templateRows(UUID tenantId, List<Product> products) {
         if (products.isEmpty()) {
@@ -136,13 +144,13 @@ public class StockInTemplateService {
                             product.getSku(),
                             product.getName(),
                             preferred == null ? null : preferred.getCompanyVendor().getName(),
-                            product.getPackagingUnit() != null
-                                    ? product.getPackagingUnit()
-                                    : product.getUnitOfMeasure(),
-                            preferred == null ? product.getCostPrice() : preferred.getLastCostPrice(),
-                            preferred != null && preferred.getDefaultPackagingSize() != null
-                                    ? preferred.getDefaultPackagingSize()
-                                    : product.getPackagingSize());
+                            SheetUnitOptions.forRow(
+                                    product.getUnitOfMeasure(),
+                                    product.getPackagingUnit(),
+                                    product.getPackagingSize(),
+                                    preferred == null ? null : preferred.getDefaultPackagingUnit(),
+                                    preferred == null ? null : preferred.getDefaultPackagingSize()),
+                            preferred == null ? product.getCostPrice() : preferred.getLastCostPrice());
                 })
                 .toList();
     }

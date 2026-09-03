@@ -8,6 +8,6 @@ package com.procurepal_services.stock_bridge_api.companyvendor;
 public class CompanyVendorNotFoundException extends RuntimeException {
 
     public CompanyVendorNotFoundException() {
-        super("That vendor was not found in your directory.");
+        super("That supplier was not found in your directory.");
     }
 }

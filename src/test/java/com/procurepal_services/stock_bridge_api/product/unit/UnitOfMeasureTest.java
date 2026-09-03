@@ -107,16 +107,31 @@ class UnitOfMeasureTest {
         assertThat(weightVolumeLengthUnits).allSatisfy(unit -> assertThat(unit.role()).isEqualTo(UnitOfMeasureRole.BASE));
 
         assertThat(UnitOfMeasure.baseUnits()).hasSize(10); // PIECE + the 9 weight/volume/length units
-        assertThat(UnitOfMeasure.packagingUnits()).hasSize(18);
-        assertThat(UnitOfMeasure.baseUnits().size() + UnitOfMeasure.packagingUnits().size())
-                .isEqualTo(UnitOfMeasure.all().size());
+        // 18 declared PACKAGING + PIECE, which is declared BASE but may serve as a pack: a
+        // turmeric sold in 34 g pieces is G + PIECE + 34. See UnitOfMeasure.canServeAs.
+        assertThat(UnitOfMeasure.packagingUnits()).hasSize(19);
     }
 
+    /**
+     * The two lists deliberately OVERLAP, and only in one direction.
+     *
+     * <p>They used to partition the enum, because role was a hard gate. That gate also made "a
+     * turmeric sold in 34 g PIECEs" undescribable - role is a property of how a PRODUCT uses a
+     * unit, not of the code. So every COUNT unit may serve as a pack, while the stock-unit list is
+     * untouched: a Bag is still not something a product can be measured in.
+     */
     @Test
-    void baseUnitsAndPackagingUnitsPartitionAllUnits() {
-        assertThat(UnitOfMeasure.baseUnits()).allSatisfy(unit -> assertThat(unit.role()).isEqualTo(UnitOfMeasureRole.BASE));
+    void everyCountUnitMayServeAsAPackButTheStockUnitListIsUnchanged() {
+        assertThat(UnitOfMeasure.baseUnits())
+                .allSatisfy(unit -> assertThat(unit.role()).isEqualTo(UnitOfMeasureRole.BASE));
+
+        assertThat(UnitOfMeasure.packagingUnits()).contains(UnitOfMeasure.PIECE);
         assertThat(UnitOfMeasure.packagingUnits())
-                .allSatisfy(unit -> assertThat(unit.role()).isEqualTo(UnitOfMeasureRole.PACKAGING));
-        assertThat(UnitOfMeasure.baseUnits()).doesNotContainAnyElementsOf(UnitOfMeasure.packagingUnits());
+                .allSatisfy(unit -> assertThat(unit.category()).isEqualTo(UnitOfMeasureCategory.COUNT));
+
+        // The one-directional part: no weight, volume or length unit is ever a container.
+        assertThat(UnitOfMeasure.packagingUnits())
+                .noneMatch(unit -> unit.category() != UnitOfMeasureCategory.COUNT);
+        assertThat(UnitOfMeasure.baseUnits()).doesNotContain(UnitOfMeasure.BAG, UnitOfMeasure.CARTON);
     }
 }

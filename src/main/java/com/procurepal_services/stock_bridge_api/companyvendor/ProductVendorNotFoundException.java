@@ -8,6 +8,6 @@ package com.procurepal_services.stock_bridge_api.companyvendor;
 public class ProductVendorNotFoundException extends RuntimeException {
 
     public ProductVendorNotFoundException() {
-        super("That vendor is not linked to this product.");
+        super("That supplier is not linked to this product.");
     }
 }

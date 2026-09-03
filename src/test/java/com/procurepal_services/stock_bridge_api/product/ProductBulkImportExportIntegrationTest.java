@@ -52,20 +52,38 @@ class ProductBulkImportExportIntegrationTest {
     private static final String PASSWORD = "correct-horse-battery-staple";
     private static final List<String> HEADERS =
             List.of("name", "sku", "description", "unit_price", "cost_price", "quantity_on_hand", "low_stock_threshold");
-    // The company (non-seller) template's column set: same as HEADERS but with unit_price
-    // dropped entirely, plus the unit_of_measure/packaging_unit/packaging_size trio appended at
-    // the end - see ProductExcelService.ALL_HEADER_NAMES.
+    // The company (non-seller) template's column set - UNIT_UX_CONTRACT.md section 9's grouping
+    // with unit_price dropped entirely. See ProductExcelService.ALL_HEADER_NAMES: identity, then
+    // how you count it, then how much, then supplier.
     private static final List<String> COMPANY_HEADERS = List.of(
+            "name", "sku", "description",
+            "stock_unit", "pack", "units_per_pack",
+            "opening_stock", "low_stock_alert_at", "cost_price");
+    // The seller template's full column set - the same, plus unit_price and the vendor trio
+    // (BULK_IMPORT_CONTRACT.md section 5, BULK_IMPORT_DESIGN.md section 7.1).
+    private static final List<String> FULL_HEADERS = List.of(
+            "name", "sku", "description",
+            "stock_unit", "pack", "units_per_pack",
+            "opening_stock", "low_stock_alert_at", "cost_price", "unit_price",
+            "vendor_name", "vendor_sku", "is_preferred_vendor");
+
+    /**
+     * The column sets as uploaded by a tenant whose saved template predates section 9.4's
+     * renames - the OLD spellings, in the OLD order. Every upload fixture below uses these
+     * rather than the template constants, so the whole file doubles as the backwards
+     * compatibility test for the header aliases: a sheet downloaded before the rename must still
+     * parse, by header rather than by position, with nothing for the user to fix.
+     *
+     * <p>Their quantities are read under section 9.1 like any other row, so a fixture carrying a
+     * pack means packs. That is the contract's explicit intent - see ImportFields.OPENING_STOCK.
+     */
+    private static final List<String> COMPANY_UPLOAD_HEADERS = List.of(
             "name", "sku", "description", "cost_price", "quantity_on_hand", "low_stock_threshold",
             "unit_of_measure", "packaging_unit", "packaging_size");
-    // The seller template's full column set. V20 appends the vendor trio (vendor_name,
-    // vendor_sku, is_preferred_vendor) per BULK_IMPORT_CONTRACT.md section 5 and
-    // BULK_IMPORT_DESIGN.md section 7.1 - the first ten are unchanged and in the same order, which
-    // is the column-stability promise this test's containsExactly() is really guarding.
-    private static final List<String> FULL_HEADERS = List.of(
-            "name", "sku", "description", "unit_price", "cost_price", "quantity_on_hand", "low_stock_threshold",
-            "unit_of_measure", "packaging_unit", "packaging_size",
-            "vendor_name", "vendor_sku", "is_preferred_vendor");
+
+    private static final List<String> FULL_UPLOAD_HEADERS = List.of(
+            "name", "sku", "description", "unit_price", "cost_price", "quantity_on_hand",
+            "low_stock_threshold", "unit_of_measure", "packaging_unit", "packaging_size");
 
     @Autowired
     private TestRestTemplate restTemplate;
@@ -106,7 +124,7 @@ class ProductBulkImportExportIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<String> headerNames = readHeaderNames(response.getBody());
         assertThat(headerNames).doesNotContain("unit_price");
-        assertThat(headerNames).containsSequence("unit_of_measure", "packaging_unit", "packaging_size");
+        assertThat(headerNames).containsSequence("stock_unit", "pack", "units_per_pack");
     }
 
     /**
@@ -126,10 +144,14 @@ class ProductBulkImportExportIntegrationTest {
     }
 
     /**
-     * The template's example rows demonstrate the full three-field model - a "50kg bag" (base
-     * unit + packaging unit + packaging size all set) and a "carton of 24 pieces" (same shape,
-     * different units) - so a user can infer the model from the examples alone. See
+     * The template's example rows demonstrate the full three-field model - a "50kg bag" (stock
+     * unit + pack + units per pack all set) and a "carton of 24 pieces" (same shape, different
+     * units) - so a user can infer the model from the examples alone. See
      * ProductExcelService.exampleRowOne/exampleRowTwo.
+     *
+     * <p>The unit cells carry LABELS, not codes - UNIT_UX_CONTRACT.md section 7, non-negotiable 4.
+     * An example row is the one place a user learns what to type, so an example reading "KG" would
+     * teach them our vocabulary rather than their own.
      */
     @Test
     void templateExampleRowsDemonstrateThreeFieldModel() throws IOException {
@@ -141,19 +163,25 @@ class ProductBulkImportExportIntegrationTest {
         try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(response.getBody()))) {
             Sheet sheet = workbook.getSheetAt(0);
             List<String> headerNames = readHeaderNames(response.getBody());
-            int uomCol = headerNames.indexOf("unit_of_measure");
-            int packagingUnitCol = headerNames.indexOf("packaging_unit");
-            int packagingSizeCol = headerNames.indexOf("packaging_size");
+            int uomCol = headerNames.indexOf("stock_unit");
+            int packCol = headerNames.indexOf("pack");
+            int unitsPerPackCol = headerNames.indexOf("units_per_pack");
+            int openingStockCol = headerNames.indexOf("opening_stock");
 
+            // Row one is the pack case, and its numbers teach section 9.1: 30 beside a Keg of
+            // 50 ml is thirty kegs. A row reading 1,000 beside a pack of 50 - which is what this
+            // example used to say - teaches the opposite.
             Row exampleOne = sheet.getRow(1);
-            assertThat(exampleOne.getCell(uomCol).getStringCellValue()).isEqualTo("KG");
-            assertThat(exampleOne.getCell(packagingUnitCol).getStringCellValue()).isEqualTo("BAG");
-            assertThat(exampleOne.getCell(packagingSizeCol).getStringCellValue()).isEqualTo("50");
+            assertThat(exampleOne.getCell(uomCol).getStringCellValue()).isEqualTo("Milliliter (ml)");
+            assertThat(exampleOne.getCell(packCol).getStringCellValue()).isEqualTo("Keg");
+            assertThat(exampleOne.getCell(unitsPerPackCol).getStringCellValue()).isEqualTo("50");
+            assertThat(exampleOne.getCell(openingStockCol).getStringCellValue()).isEqualTo("30");
 
+            // Row two is the no-pack case, so its 600 is 600 pieces.
             Row exampleTwo = sheet.getRow(2);
-            assertThat(exampleTwo.getCell(uomCol).getStringCellValue()).isEqualTo("PIECE");
-            assertThat(exampleTwo.getCell(packagingUnitCol).getStringCellValue()).isEqualTo("CARTON");
-            assertThat(exampleTwo.getCell(packagingSizeCol).getStringCellValue()).isEqualTo("24");
+            assertThat(exampleTwo.getCell(uomCol).getStringCellValue()).isEqualTo("Piece");
+            assertThat(exampleTwo.getCell(packCol).getStringCellValue()).isEmpty();
+            assertThat(exampleTwo.getCell(openingStockCol).getStringCellValue()).isEqualTo("600");
         }
     }
 
@@ -185,7 +213,7 @@ class ProductBulkImportExportIntegrationTest {
         // check for "the header is missing" needs a vendor tenant, not a company.
         TenantLoginResponse admin = createVendor("Missing Header Co");
         byte[] file = workbookWithHeaders(
-                List.of("name", "sku", "description", "cost_price", "quantity_on_hand", "low_stock_threshold"),
+                List.of("name", "sku", "description", "cost_price", "opening_stock", "low_stock_threshold"),
                 List.<Object[]>of(new Object[] {"Widget", "MH-1", "A widget", 4.5, 10, 2}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -318,7 +346,7 @@ class ProductBulkImportExportIntegrationTest {
     void companyBulkUploadSucceedsWithoutUnitPriceColumnAndQuantityStillDefaultsToZero() {
         TenantLoginResponse company = signup("No Price Bulk Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.of(
                         new Object[] {"Widget", "NOPRICE-1", "A widget", 4.5, 10, 2, "KG", "BAG", 50},
                         new Object[] {"Gadget", "NOPRICE-2", "A gadget", null, null, null, null, null, null}));
@@ -355,7 +383,7 @@ class ProductBulkImportExportIntegrationTest {
     void vendorBulkUploadMissingUnitPriceValueIsRejectedWithClearRowError() {
         TenantLoginResponse vendor = createVendor("Vendor No Price Co");
         byte[] file = workbookWithHeaders(
-                FULL_HEADERS,
+                FULL_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Widget", "VNOPRICE-1", "A widget", null, 4.5, 10, 2, null, null, null}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -373,8 +401,13 @@ class ProductBulkImportExportIntegrationTest {
      * unitOfMeasure/packagingUnit/packagingSize round-trip through the manual create endpoint
      * and back out through export - both are open to a buying company exactly as much as a
      * seller, unlike unitPrice. The export spreadsheet's unit_of_measure/packaging_unit/
-     * packaging_size columns (see ProductExcelService.ALL_HEADER_NAMES) read the BASE unit, the
-     * PACKAGING unit and the packaging SIZE respectively.
+     * packaging_size columns (see ProductExcelService.ALL_HEADER_NAMES) read the stock unit, the
+     * pack and the units per pack respectively.
+     *
+     * <p>They read them as LABELS - UNIT_UX_CONTRACT.md section 7, non-negotiable 4. The export and
+     * the template are the same file to a user who exports, edits and re-uploads, so a cell reading
+     * "KG" on one and "Kilogram (kg)" on the other would be two vocabularies in one workflow. It
+     * still round-trips: fromCodeOrLabel resolves the display label back to the same constant.
      */
     @Test
     void unitOfMeasurePackagingUnitAndPackagingSizeRoundTripThroughCreateAndExport() {
@@ -387,9 +420,9 @@ class ProductBulkImportExportIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         Object[] uomPackagingUnitAndSize = readUnitOfMeasurePackagingUnitAndSize(response.getBody(), "UOM-EXPORT-1");
-        // Normalized to the enum's uppercase code, not the "kg"/"bag" casing that was submitted.
-        assertThat(uomPackagingUnitAndSize[0]).isEqualTo("KG");
-        assertThat(uomPackagingUnitAndSize[1]).isEqualTo("BAG");
+        // The stored value is normalized to the enum's uppercase code; the SHEET shows the label.
+        assertThat(uomPackagingUnitAndSize[0]).isEqualTo("Kilogram (kg)");
+        assertThat(uomPackagingUnitAndSize[1]).isEqualTo("Bag");
         assertThat(uomPackagingUnitAndSize[2]).isEqualTo(25.5);
     }
 
@@ -402,7 +435,7 @@ class ProductBulkImportExportIntegrationTest {
     void unitOfMeasurePackagingUnitAndPackagingSizeAllSetUploadSucceeds() {
         TenantLoginResponse company = signup("UOM Upload Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Palm Oil", "UOM-UPLOAD-1", "desc", null, null, null, "kg", "drum", 2.5}));
 
         ResponseEntity<BulkUploadResponse> response = upload(company, file);
@@ -425,7 +458,7 @@ class ProductBulkImportExportIntegrationTest {
     void onlyUnitOfMeasureProvidedUploadsSuccessfullyWithNullPackaging() {
         TenantLoginResponse company = signup("UOM Alone Upload Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Cooking Oil", "UOM-LOOSE-1", "desc", null, null, null, "liter", null, null}));
 
         ResponseEntity<BulkUploadResponse> response = upload(company, file);
@@ -444,7 +477,7 @@ class ProductBulkImportExportIntegrationTest {
     void invalidUnitOfMeasureCodeIsRejectedWithRowErrorNamingTheValue() {
         TenantLoginResponse company = signup("Bad UOM Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Widget", "BADUOM-1", null, null, null, null, "NOT-A-UNIT", null, null}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -461,7 +494,7 @@ class ProductBulkImportExportIntegrationTest {
 
     /**
      * "BAG" resolves against the fixed catalog, but as a PACKAGING-role code - submitting it as
-     * unit_of_measure must be rejected with the same "not a recognized unit of measure" row
+     * unit_of_measure must be rejected with the same "not a recognized stock unit" row
      * error as a code that is not on the list at all, mirroring
      * ProductManagementService.resolveUnitOfMeasure/InvalidUnitOfMeasureException.
      */
@@ -469,7 +502,7 @@ class ProductBulkImportExportIntegrationTest {
     void packagingRoleCodeSubmittedAsUnitOfMeasureIsRejected() {
         TenantLoginResponse company = signup("Wrong Role UOM Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Widget", "WRONGROLE-UOM-1", null, null, null, null, "BAG", null, null}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -495,7 +528,7 @@ class ProductBulkImportExportIntegrationTest {
     void baseRoleCodeSubmittedAsPackagingUnitIsRejected() {
         TenantLoginResponse company = signup("Wrong Role Packaging Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Widget", "WRONGROLE-PKG-1", null, null, null, null, "PIECE", "KG", 5}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -507,7 +540,7 @@ class ProductBulkImportExportIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody())
                 .anyMatch(e -> e.row() == 2 && e.column().equals("packaging_unit")
-                        && e.message().contains("KG") && e.message().toLowerCase().contains("not a recognized packaging unit"));
+                        && e.message().contains("KG") && e.message().toLowerCase().contains("not a recognized pack"));
     }
 
     /**
@@ -520,7 +553,7 @@ class ProductBulkImportExportIntegrationTest {
     void packagingProvidedWithoutUnitOfMeasureIsRejected() {
         TenantLoginResponse company = signup("Packaging No UOM Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Widget", "PKGNOUOM-1", null, null, null, null, null, "BAG", 50}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -548,7 +581,7 @@ class ProductBulkImportExportIntegrationTest {
     void packagingUnitWithoutPackagingSizeIsRejectedPerRow() {
         TenantLoginResponse company = signup("Packaging Unit Alone Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Widget", "PUALONE-1", null, null, null, null, "KG", "BAG", null}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -567,7 +600,7 @@ class ProductBulkImportExportIntegrationTest {
     void packagingSizeWithoutPackagingUnitIsRejectedPerRow() {
         TenantLoginResponse company = signup("Packaging Size Alone Co");
         byte[] file = workbookWithHeaders(
-                COMPANY_HEADERS,
+                COMPANY_UPLOAD_HEADERS,
                 List.<Object[]>of(new Object[] {"Widget", "PSALONE-1", null, null, null, null, "KG", null, 5}));
 
         ResponseEntity<List<ProductRowError>> response = restTemplate.exchange(
@@ -621,12 +654,21 @@ class ProductBulkImportExportIntegrationTest {
     private Object[] readUnitOfMeasurePackagingUnitAndSize(byte[] file, String sku) {
         try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
             Sheet sheet = workbook.getSheetAt(0);
+            // Resolved by header NAME, not by a hardcoded index: the column set grows (V20 added
+            // the vendor trio, the unit remediation added opening_stock_counted_in), and an index
+            // here turns every such addition into a puzzling type error three columns to the right.
+            Row headerRow = sheet.getRow(0);
+            List<String> exportHeaders = new java.util.ArrayList<>();
+            for (int c = 0; c < headerRow.getLastCellNum(); c++) {
+                Cell cell = headerRow.getCell(c);
+                exportHeaders.add(cell == null ? "" : cell.getStringCellValue());
+            }
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
                 if (row != null && row.getCell(1) != null && sku.equals(row.getCell(1).getStringCellValue())) {
-                    Cell uomCell = row.getCell(7);
-                    Cell packagingUnitCell = row.getCell(8);
-                    Cell sizeCell = row.getCell(9);
+                    Cell uomCell = row.getCell(exportHeaders.indexOf("stock_unit"));
+                    Cell packagingUnitCell = row.getCell(exportHeaders.indexOf("pack"));
+                    Cell sizeCell = row.getCell(exportHeaders.indexOf("units_per_pack"));
                     String uom = uomCell == null ? null : uomCell.getStringCellValue();
                     String packagingUnit = packagingUnitCell == null ? null : packagingUnitCell.getStringCellValue();
                     Double size = sizeCell == null ? null : sizeCell.getNumericCellValue();

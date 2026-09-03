@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.repository;
 
 import com.procurepal_services.stock_bridge_api.entity.StockMovementAllocation;
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -41,4 +42,26 @@ public interface StockMovementAllocationRepository extends JpaRepository<StockMo
      */
     @Query("SELECT COALESCE(SUM(a.quantity), 0) FROM StockMovementAllocation a WHERE a.inMovement.id = :inMovementId")
     int sumQuantityByInMovementId(@Param("inMovementId") UUID inMovementId);
+
+    /**
+     * {@link #sumQuantityByInMovementId} for a whole set of lots at once - one grouped query
+     * instead of one per row. Added for {@code GET /api/products/{id}/lots}
+     * (UNIT_UX_CONTRACT.md section 4), which computes a remaining balance for every delivery a
+     * product has: doing that a lot at a time would make the cost of opening the stock-out lot
+     * picker scale with how long the tenant has been buying, on the one screen where a slow
+     * answer means the user guesses instead.
+     *
+     * <p>Returns {@code [inMovementId (UUID), consumedQuantity (Number)]} pairs, and only for
+     * lots that have been drawn from at all - a lot with no allocations produces no row, so the
+     * caller must default a missing key to zero rather than assuming one row per id. Callers
+     * must pass a NON-EMPTY collection: {@code IN ()} is not valid SQL.
+     *
+     * <p>Not locked, unlike the FIFO path's per-lot reads. This backs a display list, and a lot
+     * whose balance moves between the read and the user's click is caught by the locked
+     * re-check inside the stock-out transaction, which is the only place that guarantee can
+     * honestly be made anyway (see {@code StockMovementRepository.findInMovementsForUpdate}).
+     */
+    @Query("SELECT a.inMovement.id, COALESCE(SUM(a.quantity), 0) FROM StockMovementAllocation a "
+            + "WHERE a.inMovement.id IN :inMovementIds GROUP BY a.inMovement.id")
+    List<Object[]> sumQuantityByInMovementIds(@Param("inMovementIds") Collection<UUID> inMovementIds);
 }

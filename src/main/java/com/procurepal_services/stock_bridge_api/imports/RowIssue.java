@@ -69,6 +69,21 @@ public record RowIssue(String column, String message, ImportFieldDescriptor.Opti
         return new RowIssue(column, message, null, code, Severity.WARNING);
     }
 
+    /**
+     * A warning that knows the answer - the shape UNIT_UX_CONTRACT.md section 5.1 asks for:
+     * "20 kg - did you mean 20 bags (1,000 kg)?" with the corrected value one click away.
+     *
+     * <p>Most warnings have nothing to suggest and use the overload above. This one exists
+     * because the opening-stock-looks-like-packs case is the rare warning where the system knows
+     * exactly what the user probably meant but must not apply it unasked: twenty kilograms of
+     * rice is a legal statement, just an unusual one. Offering the value is the whole difference
+     * between a message that helps and a message that worries.
+     */
+    public static RowIssue warning(
+            String column, String code, String message, ImportFieldDescriptor.Option suggestion) {
+        return new RowIssue(column, message, suggestion, code, Severity.WARNING);
+    }
+
     public boolean isError() {
         return severity == Severity.ERROR;
     }

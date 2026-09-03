@@ -51,10 +51,33 @@ public record ImportFieldDescriptor(
         boolean readOnly,
         boolean primaryInput,
         String helpText,
-        List<Option> options) {
+        List<Option> options,
+        String qualifies) {
 
     public ImportFieldDescriptor {
         options = options == null ? null : List.copyOf(options);
+    }
+
+    /**
+     * The field key this one states the unit of, or null - {@code opening_stock_counted_in}
+     * qualifies {@code opening_stock}, {@code counted_in} qualifies {@code quantity}.
+     *
+     * <h2>Why the relationship has to be on the wire</h2>
+     * A unit column is optional, is never the primary input, and - once the guessing warning it
+     * replaced was deleted - is never flagged with an issue either. The review grid hides columns
+     * that are none of those things, so the one control that says what a quantity means was
+     * invisible on any sheet that did not already contain it, and the number could not be
+     * corrected in the UI at all. A user hit exactly that: a file meaning twelve 40 kg bags,
+     * confirmed as 12 kg, with nowhere on screen to say otherwise.
+     *
+     * <p>The grid could have hardcoded the pairing, but "the unit belongs to this number" is a
+     * fact about the FIELD, and this record is where facts about fields live. Encoding it here
+     * fixes the catalog sheet and the stock-in sheet with one rule instead of two lists that can
+     * drift apart - which is the failure this whole remediation exists to stop.
+     */
+    public ImportFieldDescriptor withQualifies(String subject) {
+        return new ImportFieldDescriptor(
+                key, label, type, required, readOnly, primaryInput, helpText, options, subject);
     }
 
     /** Spelled exactly as BULK_IMPORT_CONTRACT.md section 4 lists them; the frontend mirrors these. */
@@ -75,15 +98,15 @@ public record ImportFieldDescriptor(
 
     /** A plain optional text column - the shape most descriptors turn out to be. */
     public static ImportFieldDescriptor text(String key, String label, String helpText) {
-        return new ImportFieldDescriptor(key, label, Type.TEXT, false, false, false, helpText, null);
+        return new ImportFieldDescriptor(key, label, Type.TEXT, false, false, false, helpText, null, null);
     }
 
     public static ImportFieldDescriptor of(String key, String label, Type type, boolean required, String helpText) {
-        return new ImportFieldDescriptor(key, label, type, required, false, false, helpText, null);
+        return new ImportFieldDescriptor(key, label, type, required, false, false, helpText, null, null);
     }
 
     public static ImportFieldDescriptor enumeration(
             String key, String label, boolean required, String helpText, List<Option> options) {
-        return new ImportFieldDescriptor(key, label, Type.ENUM, required, false, false, helpText, options);
+        return new ImportFieldDescriptor(key, label, Type.ENUM, required, false, false, helpText, options, null);
     }
 }

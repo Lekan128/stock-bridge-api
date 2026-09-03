@@ -72,6 +72,31 @@ public class Product extends TenantAwareEntity {
     @Column(name = "unit_price", precision = 14, scale = 2)
     private BigDecimal unitPrice;
 
+    /**
+     * What this stock costs us, as money <b>per ONE {@link #unitOfMeasure}</b> - per kg for a
+     * product counted in kg, never per bag. UNIT_UX_CONTRACT.md section 3.2 pins that basis, and
+     * anything rendering this figure must state it (non-negotiable 2).
+     *
+     * <h2>A weighted average, recalculated on every receipt</h2>
+     * {@code newCost = (oldQty × oldCost + inQty × inPrice) / (oldQty + inQty)}, computed by
+     * {@code StockManagementService.recomputeWeightedAverageCost} on every stock-in
+     * (MULTI_VENDOR_INVENTORY_DESIGN.md section 5.3). Both quantities in that formula are counts
+     * of {@link #unitOfMeasure} and both prices are per one of them - the four numbers only
+     * blend into a meaningful fifth while all of them share a basis.
+     *
+     * <h2>The basis used to be whatever the last delivery happened to be typed in</h2>
+     * Before V21 the incoming price reached that formula exactly as the user typed it while the
+     * incoming quantity reached it converted, so a delivery entered as "20 bags at &#8358;45,000
+     * per bag" on a 50 kg-bag product set this column to &#8358;45,000 per kg - fifty times the
+     * truth, written silently and then averaged into every later delivery, so it never washed
+     * out (UNIT_UX_REMEDIATION_PLAN.md section 3, P0-1). Values written through that path cannot
+     * be told apart from correct ones after the fact; the remediation plan's Phase 0 is explicit
+     * that they are to be REPORTED for a human to resolve, never auto-corrected.
+     *
+     * <p>Nullable: a product may have no cost on record at all (nothing has ever been received
+     * for it, and nobody has typed one). A receipt with no price leaves this untouched rather
+     * than blending a null in as zero.
+     */
     @Column(name = "cost_price", precision = 14, scale = 2)
     private BigDecimal costPrice;
 

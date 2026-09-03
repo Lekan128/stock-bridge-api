@@ -77,17 +77,23 @@ class BulkImportRoundTripIntegrationTest {
      * template and is the property this whole round trip depends on.
      */
     private static final List<String> CATALOG_TEMPLATE_HEADERS = List.of(
-            "name", "sku", "description", "cost_price", "quantity_on_hand", "low_stock_threshold",
-            "unit_of_measure", "packaging_unit", "packaging_size", "vendor_name", "vendor_sku",
-            "is_preferred_vendor");
+            "name", "sku", "description",
+            "stock_unit", "pack", "units_per_pack",
+            "opening_stock", "low_stock_alert_at", "cost_price",
+            "vendor_name", "vendor_sku", "is_preferred_vendor");
 
-    /** Contract section 5's STOCK_IN field keys, in order. */
+    /** UNIT_UX_CONTRACT.md section 5.2's STOCK_IN column set, in order. */
     private static final List<String> STOCK_IN_TEMPLATE_HEADERS = List.of(
-            "sku", "product_name", "vendor_name", "quantity", "unit", "unit_cost",
-            "packaging_size", "received_date", "reference");
+            "sku", "product_name", "how_you_count_it", "vendor_name", "quantity", "counted_in",
+            "cost_per_unit", "received_date", "reference");
 
     private static final String EXAMPLE_MARKER = "EXAMPLE-SKU-DELETE-ME";
 
+    /**
+     * Deliberately still spelled {@code quantity_on_hand}: this is a saved copy of the template as
+     * it was before UNIT_UX_CONTRACT.md section 5.1 renamed the column, and every round trip below
+     * therefore also exercises the permanent read alias that non-negotiable 8 requires.
+     */
     private static final String CATALOG_CSV_HEADERS =
             "name,sku,description,cost_price,quantity_on_hand,low_stock_threshold,unit_of_measure,"
                     + "packaging_unit,packaging_size,vendor_name,vendor_sku,is_preferred_vendor\n";
@@ -116,8 +122,16 @@ class BulkImportRoundTripIntegrationTest {
 
             assertThat(cell(sheet, 1, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
             assertThat(cell(sheet, 2, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
-            assertThat(cell(sheet, 1, "unit_of_measure", CATALOG_TEMPLATE_HEADERS)).isEqualTo("KG");
-            assertThat(cell(sheet, 1, "packaging_unit", CATALOG_TEMPLATE_HEADERS)).isEqualTo("BAG");
+            // Labels, never codes - UNIT_UX_CONTRACT.md section 7, non-negotiable 4. The example
+            // row is the one place a user learns what to type into these columns, so a cell
+            // reading "KG" would teach them our vocabulary instead of their own.
+            assertThat(cell(sheet, 1, "stock_unit", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Milliliter (ml)");
+            assertThat(cell(sheet, 1, "pack", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Keg");
+            // The example teaches section 9.1: 30 beside a Keg of 50 ml is thirty kegs. A row
+            // reading 1,000 beside a pack of 50 - which is what it used to say - teaches the
+            // opposite, and the opposite is what a user actually got wrong.
+            assertThat(cell(sheet, 1, "units_per_pack", CATALOG_TEMPLATE_HEADERS)).isEqualTo("50");
+            assertThat(cell(sheet, 1, "opening_stock", CATALOG_TEMPLATE_HEADERS)).isEqualTo("30");
             assertThat(cell(sheet, 1, "vendor_name", CATALOG_TEMPLATE_HEADERS))
                     .as("the example demonstrates the vendor columns with a supplier this tenant actually has")
                     .isEqualTo("Dangote Nigeria Plc");
@@ -140,10 +154,10 @@ class BulkImportRoundTripIntegrationTest {
         TenantLoginResponse tenant = signup("Catalog Round Trip Co");
 
         byte[] filled = fill(productTemplate(tenant), CATALOG_TEMPLATE_HEADERS, List.of(
-                row("name", "Rice 50kg", "sku", "RT-1", "cost_price", "42000",
-                        "quantity_on_hand", "20", "unit_of_measure", "KG"),
-                row("name", "Beans 100kg", "sku", "RT-2", "cost_price", "52000", "unit_of_measure", "KGX"),
-                row("name", "Salt 25kg", "sku", "RT-3", "cost_price", "12000", "unit_of_measure", "KG",
+                row("name", "Rice 50kg", "sku", "RT-1", "cost_price", "840",
+                        "opening_stock", "20", "stock_unit", "KG"),
+                row("name", "Beans 100kg", "sku", "RT-2", "cost_price", "52000", "stock_unit", "KGX"),
+                row("name", "Salt 25kg", "sku", "RT-3", "cost_price", "12000", "stock_unit", "KG",
                         "vendor_name", "Brand New Supplier Ltd")));
 
         ImportSessionResponse session = upload(tenant, filled, "products.xlsx", "PRODUCT_CATALOG", "CREATE_ONLY");
@@ -154,7 +168,7 @@ class BulkImportRoundTripIntegrationTest {
         assertThat(session.columnMapping())
                 .as("our own template maps to itself, so the mapping step never appears")
                 .containsEntry("sku", "sku")
-                .containsEntry("unit_of_measure", "unit_of_measure");
+                .containsEntry("stock_unit", "stock_unit");
         assertThat(session.needsMapping()).isFalse();
         assertThat(session.status().name()).isEqualTo("NEEDS_REVIEW");
 
@@ -162,11 +176,11 @@ class BulkImportRoundTripIntegrationTest {
         ImportRowResponse broken = rows(tenant, session.id(), "ERROR").stream()
                 .filter(row -> "RT-2".equals(String.valueOf(row.raw().get("sku"))))
                 .findFirst()
-                .orElseThrow(() -> new AssertionError("RT-2 should have been an error on unit_of_measure"));
+                .orElseThrow(() -> new AssertionError("RT-2 should have been an error on stock_unit"));
         assertThat(broken.raw())
                 .as("raw stays populated on an error row so the grid shows what they typed, not an em-dash")
-                .containsEntry("unit_of_measure", "KGX");
-        ImportRowResponse repaired = patchRow(tenant, session.id(), broken.id(), Map.of("unit_of_measure", "KG"));
+                .containsEntry("stock_unit", "KGX");
+        ImportRowResponse repaired = patchRow(tenant, session.id(), broken.id(), Map.of("stock_unit", "KG"));
         assertThat(repaired.status().name())
                 .as("PATCH returns the REVALIDATED row - the grid does not refetch")
                 .isEqualTo("VALID");
@@ -282,8 +296,13 @@ class BulkImportRoundTripIntegrationTest {
             assertThat(cell(sheet, rice, "vendor_name", STOCK_IN_TEMPLATE_HEADERS))
                     .as("pre-filled with the product's preferred supplier - design 8.1")
                     .isEqualTo("Dangote Nigeria Plc");
-            assertThat(cell(sheet, rice, "unit", STOCK_IN_TEMPLATE_HEADERS)).isEqualTo("KG");
-            assertThat(numericCell(sheet, rice, "unit_cost", STOCK_IN_TEMPLATE_HEADERS))
+            assertThat(cell(sheet, rice, "counted_in", STOCK_IN_TEMPLATE_HEADERS))
+                    .as("the label a person reads, never the internal code - contract 7.4")
+                    .isEqualTo("kg");
+            assertThat(cell(sheet, rice, "how_you_count_it", STOCK_IN_TEMPLATE_HEADERS))
+                    .as("a product with no pack has exactly one way to count it, and the row says so")
+                    .isEqualTo("kg");
+            assertThat(numericCell(sheet, rice, "cost_per_unit", STOCK_IN_TEMPLATE_HEADERS))
                     .as("what they last paid, from the vendor line the catalog import wrote - written as a "
                             + "real number in a money-formatted column, not as text")
                     .isEqualTo(42000d);
@@ -296,7 +315,7 @@ class BulkImportRoundTripIntegrationTest {
             assertThat(cell(sheet, salt, "vendor_name", STOCK_IN_TEMPLATE_HEADERS))
                     .as("a product with no supplier yet leaves that cell blank rather than inventing one")
                     .isEmpty();
-            assertThat(cell(sheet, salt, "unit", STOCK_IN_TEMPLATE_HEADERS)).isEqualTo("KG");
+            assertThat(cell(sheet, salt, "counted_in", STOCK_IN_TEMPLATE_HEADERS)).isEqualTo("kg");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

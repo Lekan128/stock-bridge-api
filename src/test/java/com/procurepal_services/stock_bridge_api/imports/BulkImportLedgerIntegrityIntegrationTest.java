@@ -140,6 +140,56 @@ class BulkImportLedgerIntegrityIntegrationTest {
      * a compensating {@code ADJUSTMENT} - so this asserts both halves at once: the ledger got
      * longer rather than shorter, and it still sums to what the product says it holds.
      */
+    /**
+     * UNIT_UX_CONTRACT.md section 9.1 at the ledger: "12" beside a Bag of 40 kg reaches the
+     * ledger as <b>480 kg</b> because the row SAYS so - the pack columns beside the number are
+     * the declaration - and the identical 12 on a row with no pack is 12 kg.
+     *
+     * <p>This replaced an {@code opening_stock_counted_in} column, which had itself replaced a
+     * warning whose predicate ({@code opening <= packaging_size}) questioned somebody who
+     * genuinely had 12 kg and stayed silent for somebody who typed 60 meaning 60 bags. The column
+     * was the right instinct - never infer a unit - applied to a case where the unit was not
+     * being inferred: "30 bags" declares its unit in English, and so does a row saying Bag, 40,
+     * 12. Section 9.1 reads the row and deletes the column.
+     *
+     * <p>{@code cost_price} follows the SAME pack, and this is the amended section 9.2. It used to
+     * be anchored to the stock unit on entry as well as in storage, which put a quantity in packs
+     * beside a price per stock unit in two adjacent cells - the mixed basis this whole remediation
+     * exists to remove. A user found it immediately: a mango row of 45 baskets and 78,000 echoed
+     * "= N2,340,000.00 / basket", which is exactly 78,000 x 30 and exactly not what they meant,
+     * because 78,000 was the price of one basket. Entry now follows the pack, like every other
+     * number on the row; STORAGE is still per stock unit, which is what actually delivers the
+     * comparability across suppliers that the old rule was reaching for.
+     */
+    @Test
+    void anOpeningStockCountedInPacksReachesTheLedgerConvertedToStockUnits() {
+        TenantLoginResponse tenant = signup("Opening Stock Unit Co");
+        ImportSessionResponse session = upload(
+                tenant,
+                "name,sku,description,cost_price,opening_stock,low_stock_alert_at,"
+                        + "stock_unit,pack,units_per_pack,vendor_name,vendor_sku,is_preferred_vendor\n"
+                        + "Mango,OSU-BAGS,,36000,12,,KG,BAG,40,,,\n"
+                        + "Cassava,OSU-KG,,900,12,,KG,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+        ImportResultResponse result = commit(tenant, session.id());
+        assertThat(result.movementsCreated()).isEqualTo(2);
+
+        // 12 bags of 40 kg = 480 kg. Declared by the row, not inferred by a heuristic.
+        assertThat(productBySku(tenant, "OSU-BAGS").quantityOnHand()).isEqualTo(480);
+        // The identical number on a row that declares no pack is 12 kg.
+        assertThat(productBySku(tenant, "OSU-KG").quantityOnHand()).isEqualTo(12);
+
+        // N36,000 for one 40 kg bag, stored as N900 per kg. Typed in the same unit as the
+        // quantity beside it; stored in the unit that makes two suppliers comparable.
+        assertThat(productBySku(tenant, "OSU-BAGS").costPrice()).isEqualByComparingTo("900");
+        // A row with no pack declares nothing to convert by, so 900 was already per kg.
+        assertThat(productBySku(tenant, "OSU-KG").costPrice()).isEqualByComparingTo("900");
+
+        assertLedgerReconciles(tenant, "OSU-BAGS");
+        assertLedgerReconciles(tenant, "OSU-KG");
+    }
+
     @Test
     void undoingACatalogImportReversesTheOpeningStockWithoutDeletingLedgerRows() {
         TenantLoginResponse tenant = signup("Ledger Catalog Undo Co");

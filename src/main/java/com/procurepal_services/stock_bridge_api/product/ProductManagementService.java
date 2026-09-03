@@ -232,6 +232,17 @@ public class ProductManagementService {
             // which this - the product's very first vendor - makes preferred automatically.
             // "unit" is left null: initialVendor.quantity() is already in the product's own
             // unitOfMeasure, there being no other configured unit yet to offer a toggle for.
+            // initialVendor.cost() is therefore already per stock unit, factor 1, and stockIn's
+            // V21 price conversion is an identity on this path - contract non-negotiable 8.
+            //
+            // saveAsSupplierDefault = TRUE, the one place in the codebase that passes it. The
+            // guard it opts out of (contract section 3.4) exists to stop a DELIVERY silently
+            // redefining a supplier's standing pack; this is not a delivery, it is the form on
+            // which the user is configuring the product and its first supplier together, and
+            // initialVendor.packagingUnit()/packagingSize() are fields they filled in for
+            // exactly that purpose. Defaulting to false here would mean a pack typed on the
+            // create-product screen vanished on save - a different broken promise, in the
+            // opposite direction.
             stockManagementService.stockIn(
                     product.getId(),
                     new StockInRequest(
@@ -241,7 +252,9 @@ public class ProductManagementService {
                             null,
                             initialVendor.companyVendorId(),
                             initialVendor.packagingUnit(),
-                            initialVendor.packagingSize()),
+                            initialVendor.packagingSize(),
+                            null,
+                            true),
                     actingUserId);
             preferredVendorName = productVendorRepository
                     .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, product.getId())
@@ -678,7 +691,7 @@ public class ProductManagementService {
             return null;
         }
         return UnitOfMeasure.fromCode(code)
-                .filter(unit -> unit.role() == UnitOfMeasureRole.BASE)
+                .filter(unit -> unit.canServeAs(UnitOfMeasureRole.BASE))
                 .map(UnitOfMeasure::code)
                 .orElseThrow(() -> new InvalidUnitOfMeasureException(code));
     }
@@ -687,7 +700,7 @@ public class ProductManagementService {
      * {@code resolveUnitOfMeasure}'s counterpart for {@code packagingUnit}: same normalization,
      * same blank-is-null treatment, same "not on the list" handling - but requires
      * {@link UnitOfMeasureRole#PACKAGING} instead of {@code BASE}, and names the field
-     * "packaging unit" in the exception message so a caller can tell the two validation
+     * "pack" in the exception message (UNIT_UX_CONTRACT.md section 1) so a caller can tell the two validation
      * failures apart even though they share one exception class.
      */
     private String resolvePackagingUnit(String code) {
@@ -695,9 +708,9 @@ public class ProductManagementService {
             return null;
         }
         return UnitOfMeasure.fromCode(code)
-                .filter(unit -> unit.role() == UnitOfMeasureRole.PACKAGING)
+                .filter(unit -> unit.canServeAs(UnitOfMeasureRole.PACKAGING))
                 .map(UnitOfMeasure::code)
-                .orElseThrow(() -> new InvalidUnitOfMeasureException(code, "packaging unit"));
+                .orElseThrow(() -> new InvalidUnitOfMeasureException(code, "pack"));
     }
 
     /**
@@ -727,6 +740,13 @@ public class ProductManagementService {
             String unitOfMeasure, String packagingUnit, BigDecimal packagingSize) {
         if (unitOfMeasure == null && (packagingUnit != null || packagingSize != null)) {
             throw new PackagingRequiresUnitOfMeasureException();
+        }
+        // The invariant the BASE/PACKAGING split used to guarantee by accident. Now that COUNT
+        // units serve either role (UnitOfMeasure.canServeAs), "a Piece of 34 Pieces" is
+        // expressible and has to be refused explicitly - a pack of itself converts nothing.
+        if (packagingUnit != null && packagingUnit.equalsIgnoreCase(unitOfMeasure)) {
+            throw new PackagingUnitSameAsStockUnitException(
+                    UnitOfMeasure.fromCode(packagingUnit).map(UnitOfMeasure::label).orElse(packagingUnit));
         }
     }
 

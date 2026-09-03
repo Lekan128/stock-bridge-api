@@ -48,6 +48,18 @@ public record StockMutationResponse(
      * a delivery that arrived last month. Both are published rather than one replaced: the
      * write-time fact is still the FIFO tiebreak and still what an audit reads, so it has not
      * stopped being worth knowing - it has stopped being the answer to this particular question.
+     *
+     * <h2>V21: {@code label}, so the receipt is not string-built by the client</h2>
+     * "12 kg from <b>3 Jan 2026 · Dangote Nigeria Plc</b>" - the delivery half of that sentence,
+     * composed by {@link ProductLotResponse#label}, the same method the lot picker's rows and the
+     * stock-out error messages use. Publishing the date and the supplier name separately and
+     * leaving a client to join them looks harmless and is not: it is three surfaces each choosing
+     * a date format, and it is how a UI with only {@code inMovementId} to hand ends up printing
+     * a UUID, which contract non-negotiable 6 forbids. Section 4 puts it plainly - "server-
+     * composed, never string-built by the UI".
+     *
+     * <p>{@code quantity} is in the product's STOCK unit, like every other quantity on this
+     * response. A caller rendering it must say so (non-negotiable 2).
      */
     public record AllocationBreakdown(
             UUID inMovementId,
@@ -55,7 +67,8 @@ public record StockMutationResponse(
             String companyVendorName,
             int quantity,
             java.time.OffsetDateTime inMovementCreatedAt,
-            java.time.OffsetDateTime inMovementOccurredAt) {
+            java.time.OffsetDateTime inMovementOccurredAt,
+            String label) {
     }
 
     public static StockMutationResponse of(Product product, StockMovement movement) {
