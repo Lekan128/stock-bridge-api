@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports;
 
+import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_NAME_MARKER_PREFIX;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_SKU_MARKER_PREFIX;
 
 import com.procurepal_services.stock_bridge_api.entity.ImportKind;
@@ -207,8 +208,17 @@ public class ImportSessionService {
      * screen of the single most common stock-in journey there is.
      *
      * <p>Matched on the mapped {@code sku} column rather than on a fixed index, so it still works
-     * on a file whose columns have been rearranged or renamed and then mapped by hand - and does
-     * nothing at all to a file with no sku column, where there is no marker to find.
+     * on a file whose columns have been rearranged or renamed and then mapped by hand.
+     *
+     * <p>Falls back to matching {@link #EXAMPLE_NAME_MARKER_PREFIX} on the mapped {@code name}
+     * column when there is no {@code sku} column to find a marker on at all - which is not just "a
+     * file with no sku column" any more as of automatic SKU generation
+     * ({@code ProductSkuSettings}): {@code ProductExcelService.headerNamesFor} omits {@code sku}
+     * from the template entirely for a tenant with it on, and that template's own example rows
+     * carry the marker on {@code name} instead - see {@code
+     * ProductExcelService#EXAMPLE_NAME_MARKER_PREFIX}'s javadoc. Still falls through to returning
+     * every row when neither column is mapped, for a genuinely custom file with no name column
+     * either.
      */
     private List<SheetRow> withoutExampleRows(SheetTable table, Map<String, String> columnMapping) {
         String skuHeader = columnMapping.entrySet().stream()
@@ -216,14 +226,29 @@ public class ImportSessionService {
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElse(null);
-        if (skuHeader == null) {
+        if (skuHeader != null) {
+            return table.rows().stream()
+                    .filter(row -> {
+                        String sku = table.value(row, skuHeader);
+                        return sku == null
+                                || !sku.trim().toUpperCase(Locale.ROOT).startsWith(EXAMPLE_SKU_MARKER_PREFIX);
+                    })
+                    .toList();
+        }
+
+        String nameHeader = columnMapping.entrySet().stream()
+                .filter(entry -> ImportFields.NAME.equals(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+        if (nameHeader == null) {
             return table.rows();
         }
         return table.rows().stream()
                 .filter(row -> {
-                    String sku = table.value(row, skuHeader);
-                    return sku == null
-                            || !sku.trim().toUpperCase(Locale.ROOT).startsWith(EXAMPLE_SKU_MARKER_PREFIX);
+                    String name = table.value(row, nameHeader);
+                    return name == null
+                            || !name.trim().toUpperCase(Locale.ROOT).startsWith(EXAMPLE_NAME_MARKER_PREFIX);
                 })
                 .toList();
     }

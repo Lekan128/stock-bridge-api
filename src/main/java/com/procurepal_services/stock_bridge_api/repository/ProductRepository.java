@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.repository;
 
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import jakarta.persistence.LockModeType;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -15,6 +16,12 @@ import org.springframework.data.repository.query.Param;
 public interface ProductRepository extends TenantScopedRepository<Product, UUID>, JpaSpecificationExecutor<Product> {
 
     Optional<Product> findByClientIdAndSku(UUID clientId, String sku);
+
+    /**
+     * Batch collision check for {@code SkuGenerationService.generateAndReserveBlock} - one query
+     * for a whole reserved block instead of one {@link #findByClientIdAndSku} per row.
+     */
+    List<Product> findAllByClientIdAndSkuIn(UUID clientId, Collection<String> skus);
 
     long countByClientIdAndActive(UUID clientId, boolean active);
 
