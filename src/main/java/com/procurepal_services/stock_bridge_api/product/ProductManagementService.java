@@ -24,12 +24,18 @@ import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
+import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
+import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationService;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.ProductSkuSettingsResponse;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.SkuPreviewResponse;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.UpdateProductSkuSettingsRequest;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
+import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.storage.S3ImageService;
@@ -107,6 +113,8 @@ public class ProductManagementService {
     private final CompanyVendorRepository companyVendorRepository;
     private final ImportSessionService importSessionService;
     private final ImportCommitExecutor importCommitExecutor;
+    private final ProductSkuSettingsService productSkuSettingsService;
+    private final SkuGenerationService skuGenerationService;
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
@@ -144,6 +152,22 @@ public class ProductManagementService {
     }
 
     @Transactional(readOnly = true)
+    public ProductSkuSettingsResponse getSkuSettings() {
+        return productSkuSettingsService.get(requireTenantId());
+    }
+
+    @Transactional
+    public ProductSkuSettingsResponse updateSkuSettings(UpdateProductSkuSettingsRequest request) {
+        return productSkuSettingsService.update(requireTenantId(), request);
+    }
+
+    @Transactional(readOnly = true)
+    public SkuPreviewResponse previewSku() {
+        SkuGenerationService.Preview preview = skuGenerationService.preview(requireTenantId());
+        return new SkuPreviewResponse(preview.sku(), preview.nextSequence());
+    }
+
+    @Transactional(readOnly = true)
     public List<ProductResponse> lowStock() {
         return productRepository.findLowStockByClientId(requireTenantId()).stream()
                 .map(ProductResponse::from)
@@ -167,7 +191,20 @@ public class ProductManagementService {
     @Transactional
     public ProductResponse create(CreateProductRequest request, MultipartFile image, UUID actingUserId) {
         UUID tenantId = requireTenantId();
-        assertSkuAvailable(tenantId, request.sku(), null);
+
+        // See CreateProductRequest's "sku is conditionally required" javadoc: whichever branch
+        // runs, request.sku() plays no further part below - `sku` is the one value this method
+        // actually uses.
+        String sku;
+        if (productSkuSettingsService.isEnabled(tenantId)) {
+            sku = skuGenerationService.generateAndReserveOne(tenantId, request.name());
+        } else {
+            if (request.sku() == null || request.sku().isBlank()) {
+                throw new SkuRequiredException();
+            }
+            assertSkuAvailable(tenantId, request.sku(), null);
+            sku = request.sku();
+        }
 
         // One lookup answers two questions: initialStatusFor below (existing) and isSeller
         // here (new) - see the class javadoc on "this is also a SELLER's catalogue editor".
@@ -193,7 +230,7 @@ public class ProductManagementService {
         // product created with none, later through ProductVendorService/StockManagementService.
         Product product = Product.builder()
                 .name(request.name())
-                .sku(request.sku())
+                .sku(sku)
                 .description(request.description())
                 .unitPrice(isSeller ? request.unitPrice() : null)
                 .lowStockThreshold(request.lowStockThreshold())
@@ -265,8 +302,15 @@ public class ProductManagementService {
         return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
     }
 
+    /** Delegates to {@link #update(UUID, UpdateProductRequest, MultipartFile, AuthenticatedUserPrincipal)} with no principal - the sku-override permission check treats that as "not permitted." */
     @Transactional
     public ProductResponse update(UUID id, UpdateProductRequest request, MultipartFile image) {
+        return update(id, request, image, null);
+    }
+
+    @Transactional
+    public ProductResponse update(
+            UUID id, UpdateProductRequest request, MultipartFile image, AuthenticatedUserPrincipal principal) {
         Product product = findTenantProductOrThrow(id);
 
         // Same lookup create() makes, against the product's own tenant rather than the
@@ -290,6 +334,13 @@ public class ProductManagementService {
         BigDecimal beforePackagingSize = product.getPackagingSize();
 
         if (request.sku() != null && !request.sku().equals(product.getSku())) {
+            // Auto-generation locks the field client-side, but the server is the actual
+            // enforcement - see SkuOverrideNotPermittedException. Disabled tenants are
+            // unaffected: any MANAGE_PRODUCTS holder may still edit sku freely, exactly as
+            // before this feature existed.
+            if (productSkuSettingsService.isEnabled(product.getClientId()) && !hasSkuOverrideAuthority(principal)) {
+                throw new SkuOverrideNotPermittedException();
+            }
             assertSkuAvailable(product.getClientId(), request.sku(), id);
             product.setSku(request.sku());
         }
@@ -454,7 +505,8 @@ public class ProductManagementService {
                 .stream()
                 .map(CompanyVendor::getName)
                 .toList();
-        return productExcelService.generateTemplate(new ProductTemplateContext(isSeller, vendorNames));
+        return productExcelService.generateTemplate(
+                new ProductTemplateContext(isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId)));
     }
 
     /**
@@ -529,19 +581,26 @@ public class ProductManagementService {
         // created row gets.
         Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
         boolean isSeller = owner != null && owner.canSell();
+        boolean skuAutoGenerated = productSkuSettingsService.isEnabled(tenantId);
 
         // Phase one: the frozen validation. See the method javadoc for why this still runs
         // through M2's parser rather than through the engine's own validation pass.
-        List<ParsedProductRow> parsedRows = productExcelService.parse(file, isSeller);
-        List<ProductRowError> duplicateSkuErrors = new ArrayList<>();
-        for (ParsedProductRow row : parsedRows) {
-            if (productRepository.findByClientIdAndSku(tenantId, row.sku()).isPresent()) {
-                duplicateSkuErrors.add(
-                        new ProductRowError(row.excelRow(), "sku", "SKU already exists in your product catalog"));
+        List<ParsedProductRow> parsedRows = productExcelService.parse(file, isSeller, skuAutoGenerated);
+        // Moot, and skipped outright, when auto-generated: parse() above never read a sku cell
+        // (row.sku() is null on every row), so there is nothing here to check against the
+        // catalog - the server's own generated values are checked for collisions later, inside
+        // SkuGenerationService, not against a value that was never supplied.
+        if (!skuAutoGenerated) {
+            List<ProductRowError> duplicateSkuErrors = new ArrayList<>();
+            for (ParsedProductRow row : parsedRows) {
+                if (productRepository.findByClientIdAndSku(tenantId, row.sku()).isPresent()) {
+                    duplicateSkuErrors.add(new ProductRowError(
+                            row.excelRow(), "sku", "SKU already exists in your product catalog"));
+                }
             }
-        }
-        if (!duplicateSkuErrors.isEmpty()) {
-            throw new BulkUploadValidationException(duplicateSkuErrors);
+            if (!duplicateSkuErrors.isEmpty()) {
+                throw new BulkUploadValidationException(duplicateSkuErrors);
+            }
         }
 
         // Phase two: the write, through the session engine. Design 10's "POST /api/imports +
@@ -666,6 +725,13 @@ public class ProductManagementService {
                 throw new SkuTakenException(sku);
             }
         });
+    }
+
+    /** V23's escape hatch for {@link #update} - see {@code SkuOverrideNotPermittedException} and the migration's role rationale. */
+    private boolean hasSkuOverrideAuthority(AuthenticatedUserPrincipal principal) {
+        return principal != null
+                && principal.getAuthorities().stream()
+                        .anyMatch(granted -> "PRODUCT_SKU_OVERRIDE".equals(granted.getAuthority()));
     }
 
     /**

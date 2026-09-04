@@ -3,6 +3,9 @@ package com.procurepal_services.stock_bridge_api.product;
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadValidationException;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
+import com.procurepal_services.stock_bridge_api.product.sku.InvalidSkuPatternException;
+import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationExhaustedException;
+import com.procurepal_services.stock_bridge_api.product.sku.SkuPatternTooLongException;
 import java.util.List;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
@@ -21,6 +24,31 @@ public class ProductManagementExceptionHandler {
 
     @ExceptionHandler(SkuTakenException.class)
     public ResponseEntity<ApiError> handleSkuTaken(SkuTakenException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SkuRequiredException.class)
+    public ResponseEntity<ApiError> handleSkuRequired(SkuRequiredException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SkuOverrideNotPermittedException.class)
+    public ResponseEntity<ApiError> handleSkuOverrideNotPermitted(SkuOverrideNotPermittedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidSkuPatternException.class)
+    public ResponseEntity<ApiError> handleInvalidSkuPattern(InvalidSkuPatternException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SkuPatternTooLongException.class)
+    public ResponseEntity<ApiError> handleSkuPatternTooLong(SkuPatternTooLongException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SkuGenerationExhaustedException.class)
+    public ResponseEntity<ApiError> handleSkuGenerationExhausted(SkuGenerationExhaustedException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
 

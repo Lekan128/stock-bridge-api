@@ -72,10 +72,19 @@ import java.util.UUID;
  * was not). A product created with no {@code initialVendor} simply has no cost price at all
  * until its first real stock-in - the same "absent until purchased" state this field's
  * removal now makes the ONLY way to end up there.
+ *
+ * <h2>sku is conditionally required, and not by an annotation</h2>
+ * {@code @NotBlank} does not appear on this field anymore, for the same reason it never
+ * appeared on {@code unitPrice}: whether a SKU is required depends on a runtime tenant
+ * setting ({@code ProductSkuSettingsService.isEnabled}), not on the shape of the request, and
+ * Bean Validation cannot see that. {@code ProductManagementService.create} checks it: when
+ * automatic SKU generation is on for the tenant, this field is ignored entirely (the server
+ * generates and reserves the SKU itself - see {@code SkuGenerationService}); when it is off, a
+ * blank value is rejected with {@code SkuRequiredException}, same as {@code @NotBlank} used to.
  */
 public record CreateProductRequest(
         @NotBlank String name,
-        @NotBlank String sku,
+        String sku,
         String description,
         @DecimalMin(value = "0", inclusive = true) BigDecimal unitPrice,
         @Min(0) Integer lowStockThreshold,
