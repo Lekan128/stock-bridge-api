@@ -100,6 +100,20 @@ public final class ImportFields {
      */
     public static final String PACKAGING_SIZE = UNITS_PER_PACK;
 
+    /**
+     * Read-only reference column on the product-catalog template - UNIT_UX_CONTRACT.md section
+     * 9.5. A live Excel formula, never a value we read: it restates {@link #OPENING_STOCK},
+     * {@link #UNITS_PER_PACK}, {@link #STOCK_UNIT}, {@link #PACK} and {@link #COST_PRICE} as one
+     * sentence - "40 50kg Bag @ 3,000.00 per Bag" - so a reader can check their own row against
+     * the invoice in their other hand before uploading, rather than after.
+     *
+     * <p>Declared here only so {@link ImportColumnMapper} recognises the header instead of
+     * reporting it as a column we did not understand, and so the review grid can render it behind
+     * "Show every column" - same reason {@link #HOW_YOU_COUNT_IT} is. {@code
+     * ProductCatalogRowHandler} never reads a value from it.
+     */
+    public static final String WHAT_YOU_ARE_ADDING = "what_you_are_adding";
+
     public static final String VENDOR_NAME = "vendor_name";
     public static final String VENDOR_SKU = "vendor_sku";
     public static final String IS_PREFERRED_VENDOR = "is_preferred_vendor";

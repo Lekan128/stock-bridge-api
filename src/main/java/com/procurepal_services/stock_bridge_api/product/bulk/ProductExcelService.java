@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.product.bulk;
 
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
+import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
 import com.procurepal_services.stock_bridge_api.imports.io.LookupSheetWriter;
 import com.procurepal_services.stock_bridge_api.imports.io.NumberValues;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetRow;
@@ -24,8 +25,15 @@ import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.apache.poi.ss.usermodel.Cell;
+import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.util.AreaReference;
+import org.apache.poi.ss.util.CellReference;
+import org.apache.poi.xssf.usermodel.XSSFSheet;
+import org.apache.poi.xssf.usermodel.XSSFTable;
+import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTTable;
+import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTTableStyleInfo;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -140,7 +148,7 @@ public class ProductExcelService {
     static final List<String> ALL_HEADER_NAMES = List.of(
             "name", "sku", "description",
             "stock_unit", "pack", "units_per_pack",
-            "opening_stock", "low_stock_alert_at", "cost_price", "unit_price",
+            "opening_stock", "low_stock_alert_at", "cost_price", "what_you_are_adding", "unit_price",
             "vendor_name", "vendor_sku", "is_preferred_vendor");
 
     /**
@@ -179,6 +187,7 @@ public class ProductExcelService {
             Map.entry("opening_stock", 18),
             Map.entry("low_stock_alert_at", 22),
             Map.entry("cost_price", 14),
+            Map.entry("what_you_are_adding", 42),
             Map.entry("unit_price", 14),
             Map.entry("vendor_name", 30),
             Map.entry("vendor_sku", 18),
@@ -216,6 +225,7 @@ public class ProductExcelService {
             Map.entry("opening_stock", "How much you have right now, counted in PACKS when this row has one - 30 beside Keg means 30 kegs, not 30 ml. No pack? Then it is 30 ml. Half-packs are fine: 30.5."),
             Map.entry("low_stock_alert_at", "Optional. Tell us when to warn you that stock is running low. Counted the same way as opening stock - in kegs if this row has a pack."),
             Map.entry("cost_price", "What you pay for ONE of what the opening stock counts - one keg if this row has a pack, one ml if it does not. Optional. If the row also has an opening stock, this becomes that stock's cost."),
+            Map.entry("what_you_are_adding", "Read only - a live summary of this row, built from the five columns before it. Blank until enough of them are filled in to make sense. Not read when you upload; check it against your invoice before you do."),
             Map.entry("vendor_name", "Optional. Who you buy this from. Pick from your suppliers, or type a new name and we will ask about it."),
             Map.entry("vendor_sku", "Optional. That supplier's own code for this product, if it differs from yours."),
             Map.entry("is_preferred_vendor", "Optional. Type TRUE if this is your main supplier for the product. Leave blank otherwise."));
@@ -295,6 +305,7 @@ public class ProductExcelService {
             List<String> vendorNames = context.vendorDropdownNames();
             writeExampleRow(builder, 1, headers, exampleRowOne(vendorNames));
             writeExampleRow(builder, 2, headers, exampleRowTwo());
+            addCalculatedColumn(builder, headers, 2);
 
             LookupSheetWriter lookups = new LookupSheetWriter(builder.workbook());
             addDropdown(builder, headers, "stock_unit",
@@ -409,6 +420,7 @@ public class ProductExcelService {
                     }
                 }
             }
+            addCalculatedColumn(builder, ALL_HEADER_NAMES, rowIndex - 1);
             return builder.toBytes();
         }
     }
@@ -976,6 +988,146 @@ public class ProductExcelService {
             }
             cell.setCellStyle(builder.exampleStyle());
         }
+    }
+
+    /**
+     * Puts a live formula under {@code what_you_are_adding} on every row the sheet has so far,
+     * and makes the column self-extending for whatever the user adds after - UNIT_UX_CONTRACT.md
+     * section 9.5.
+     *
+     * <h2>Why this is an Excel Table, not a flat pre-fill down to {@code MAX_ROWS}</h2>
+     * The first version of this method pre-wrote the formula into every row up to {@link
+     * ImportLimits#MAX_ROWS}, mirroring how {@link WorkbookBuilder#addDropdown} extends the unit
+     * and vendor dropdowns to the same ceiling. It does not work here, and
+     * {@code aFilledInTemplateRoundTripsThroughItsOwnParser} is what caught it: {@code
+     * SpreadsheetReader.countDataRows} counts the sheet's LAST WRITTEN ROW, not rows with real
+     * business data in them - it is a cheap pre-parse check, by design, so it has to be (contract
+     * section 11). Five thousand pre-written formula cells make every template and every export
+     * report 5,000 rows before a user has typed a single product, which means one real row pushes
+     * the file over its own upload cap. A dropdown validation rule is one line in the file
+     * regardless of how many rows it covers; a formula is a cell in every one of those rows, and
+     * that difference is exactly what breaks here.
+     *
+     * <p>An Excel Table's calculated column has no such cost: the formula is declared ONCE, on the
+     * table's own column definition, and real Excel fills it into a row itself the moment someone
+     * types into - or pastes a block into - the row immediately below the table. No pre-written
+     * rows, so {@code countDataRows} sees only the rows that are actually there. The trade-off
+     * (recorded when this was prototyped) is that the auto-fill is Excel's own feature: Google
+     * Sheets and Apple Numbers do not reproduce it, so a user on those apps adding a row past the
+     * table gets a blank cell there rather than a computed one - a soft gap, not a wall, and
+     * nothing an unrecognised-column error or a broken upload.
+     *
+     * <p>A formula, not a value baked in at generation time (unlike {@code how_you_count_it} on
+     * the stock-in sheet): a catalog row is blank until the user fills it, where a stock-in row
+     * already names a real product, so there is nothing here to compute until Excel itself
+     * recalculates against whatever the user has typed.
+     *
+     * @param lastDataRow the 0-indexed POI row of the last row already written (the second
+     *     example row on the template, the last product row on an export) - the table covers the
+     *     header plus every row through this one.
+     */
+    private void addCalculatedColumn(WorkbookBuilder builder, List<String> headers, int lastDataRow) {
+        int column = headers.indexOf("what_you_are_adding");
+        if (column < 0) {
+            return;
+        }
+        if (lastDataRow < 1) {
+            return; // no data row to grow a table from yet - see exportProducts of an empty catalog
+        }
+        XSSFSheet sheet = (XSSFSheet) builder.sheet();
+        CellStyle reference = builder.referenceStyle();
+
+        // The formula on every row the table starts with - createTable does not retroactively
+        // populate cells that already exist, it only teaches Excel to fill the NEXT one.
+        for (int r = 1; r <= lastDataRow; r++) {
+            Row row = sheet.getRow(r);
+            if (row == null) {
+                row = sheet.createRow(r);
+            }
+            Cell cell = row.createCell(column);
+            cell.setCellFormula(whatYouAreAddingFormula(headers, r + 1));
+            cell.setCellStyle(reference);
+        }
+
+        AreaReference area = new AreaReference(
+                new CellReference(0, 0), new CellReference(lastDataRow, headers.size() - 1),
+                builder.workbook().getSpreadsheetVersion());
+        XSSFTable table = sheet.createTable(area);
+        // Excel requires a workbook-unique table name distinct from any sheet name; "Products" is
+        // already the sheet's own name (WorkbookBuilder's constructor call in generateTemplate).
+        table.setName("ProductRows");
+        table.setDisplayName("ProductRows");
+        CTTable ctTable = table.getCTTable();
+        CTTableStyleInfo styleInfo = ctTable.addNewTableStyleInfo();
+        styleInfo.setName("TableStyleLight1");
+        styleInfo.setShowRowStripes(false);
+        // createTable does not read the header text back off the cells it was given - each
+        // column's name has to be told to the table definition separately, or Excel renames every
+        // column "Column1", "Column2"... on open.
+        for (int c = 0; c < headers.size(); c++) {
+            ctTable.getTableColumns().getTableColumnArray(c).setName(headers.get(c));
+        }
+        // The one line that makes this an auto-filling column rather than a static formula:
+        // row-relative, adjusted by Excel itself for whichever row it fills next.
+        ctTable.getTableColumns().getTableColumnArray(column)
+                .addNewCalculatedColumnFormula()
+                .setStringValue(whatYouAreAddingFormula(headers, lastDataRow + 2));
+    }
+
+    /**
+     * {@code "40 50kg Bag @ 3,000.00 per Bag"} - only the parts that have something to say, with
+     * no currency symbol (the tenant's currency is not the sheet's business - the same rule
+     * {@link WorkbookBuilder#moneyStyle} states for every other money column).
+     *
+     * <h2>One question, asked once</h2>
+     * {@code pack} and {@code units_per_pack} mean nothing alone -
+     * {@code ProductCatalogRowHandler}'s {@code PACKAGING_SIZE_REQUIRED}/
+     * {@code PACKAGING_UNIT_REQUIRED} errors agree: a pack is real only when BOTH are filled, and
+     * a row with exactly one is not "no pack", it is a row the server already rejects. {@code
+     * hasPack} asks that question exactly once and every branch below reuses the answer - a first
+     * draft of this formula asked it twice, differently, in the quantity phrase and the cost
+     * phrase, and a row with {@code pack} set and {@code units_per_pack} blank came out reading
+     * "1,500 kg @ 23,000.00 per Basket", two different bases stated for the one row.
+     *
+     * <p>When the row disagrees with itself - exactly one of the two filled - the whole cell
+     * renders nothing rather than a confident-looking sentence built from half the story, the same
+     * "nothing sensible to say" rule the review grid's own echoes use ({@code unitCopy.ts}'s
+     * {@code formatStockUnitCostEcho}). The server's own error on that row is the right place for
+     * the sentence about what to fix; this column's job is to be silent rather than wrong.
+     */
+    private String whatYouAreAddingFormula(List<String> headers, int excelRow) {
+        String qty = ref(headers, "opening_stock", excelRow);
+        String perPack = ref(headers, "units_per_pack", excelRow);
+        String unit = ref(headers, "stock_unit", excelRow);
+        String pack = ref(headers, "pack", excelRow);
+        String cost = ref(headers, "cost_price", excelRow);
+
+        String hasPack = "AND(" + perPack + "<>\"\"," + pack + "<>\"\")";
+        String noPack = "AND(" + perPack + "=\"\"," + pack + "=\"\")";
+        String packUsable = "OR(" + hasPack + "," + noPack + ")";
+
+        String sizedPack = "IF(" + hasPack + "," + perPack + "&" + unit + "&\" \"&" + pack + "," + unit + ")";
+        String costBasis = "IF(" + hasPack + "," + pack + "," + unit + ")";
+        String costPhrase =
+                "IF(" + cost + "<>\"\",\" @ \"&TEXT(" + cost + ",\"#,##0.00\")&\" per \"&" + costBasis + ",\"\")";
+
+        String sentence = qty + "&\" \"&" + sizedPack + "&" + costPhrase;
+        return "IF(" + qty + "=\"\",\"\",IF(" + packUsable + "," + sentence + ",\"\"))";
+    }
+
+    /**
+     * One cell reference for a formula, resolved by header name rather than a hand-counted
+     * position - the same reason {@link #cell} is: a block of hand-counted column letters is
+     * exactly the thing that silently points a formula at the wrong cell the next time
+     * {@link #ALL_HEADER_NAMES} moves, and section 9's regrouping is proof that it does move.
+     */
+    private String ref(List<String> headers, String header, int excelRow) {
+        int column = headers.indexOf(header);
+        if (column < 0) {
+            throw new IllegalStateException(
+                    "Column '" + header + "' is missing from the template's own header list");
+        }
+        return new CellReference(excelRow - 1, column).formatAsString();
     }
 
     /**

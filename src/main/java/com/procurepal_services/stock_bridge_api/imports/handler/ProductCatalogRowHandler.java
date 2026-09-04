@@ -198,6 +198,14 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 "What you pay for ONE of whatever the opening stock counts - one keg if this row has a "
                         + "pack, one ml if it does not. On a new product with an opening stock, this becomes "
                         + "that stock's cost."));
+        // Read-only and never read for a value - UNIT_UX_CONTRACT.md section 9.5. A live Excel
+        // formula that restates the five columns above it as one sentence, so it is declared here
+        // only so ImportColumnMapper recognises the header and the grid can show it behind "Show
+        // every column"; ProductCatalogRowHandler.validate() never looks it up.
+        fields.add(new ImportFieldDescriptor(ImportFields.WHAT_YOU_ARE_ADDING, "What you're adding",
+                ImportFieldDescriptor.Type.TEXT, false, true, false,
+                "For your reference: a live summary of this row, built from the columns to its left. "
+                        + "It updates itself in Excel and is not read when you upload.", null, null));
         if (seller) {
             fields.add(ImportFieldDescriptor.of(ImportFields.UNIT_PRICE, "Selling price",
                     ImportFieldDescriptor.Type.MONEY, true,

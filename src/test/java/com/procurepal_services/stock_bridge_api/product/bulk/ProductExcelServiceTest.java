@@ -68,7 +68,7 @@ class ProductExcelServiceTest {
         assertThat(headers).containsExactly(
                 "name", "sku", "description",
                 "stock_unit", "pack", "units_per_pack",
-                "opening_stock", "low_stock_alert_at", "cost_price", "unit_price",
+                "opening_stock", "low_stock_alert_at", "cost_price", "what_you_are_adding", "unit_price",
                 "vendor_name", "vendor_sku", "is_preferred_vendor");
     }
 
