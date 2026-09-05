@@ -1043,9 +1043,7 @@ public class ImportSessionService {
      * a place you can act from rather than only read.
      */
     private String targetUrlFor(ImportSession session) {
-        return session.getKind() == ImportKind.STOCK_IN
-                ? "/app/stock/movements?importBatchId=" + session.getId()
-                : "/app/products?importBatchId=" + session.getId();
+        return "/app/products?importBatchId=" + session.getId();
     }
 
     @SuppressWarnings("unchecked")
