@@ -87,7 +87,7 @@ public final class UnitOptions {
      * @param packagingSize how many stock units one pack holds - the factor of the pack option.
      */
     public static List<UnitOption> forProduct(String stockUnitCode, String packagingUnit, BigDecimal packagingSize) {
-        return build(stockUnitCode, packagingUnit, packagingSize, null, null);
+        return build(stockUnitCode, packagingUnit, packagingSize, List.of());
     }
 
     /**
@@ -96,19 +96,33 @@ public final class UnitOptions {
      * chosen, because "how this arrives" is a fact about the supplier at least as often as about
      * the product: the same rice comes from one mill in 50 kg bags and from another in 25 kg bags.
      *
-     * <p>The supplier's pack is added only when it genuinely differs from the product's own
-     * (same container AND same size means one option, not two identical ones), and it never
-     * becomes the default - section 2.1 pins the default to the product's own pack. Changing
-     * which pack is preselected because of who is delivering would silently rewrite what the
-     * number in an already-typed quantity box means.
+     * <p>Every one of the supplier's packs is added (MULTI_PACK_PER_VENDOR_DESIGN.md sections
+     * 4-5) - a vendor is no longer limited to one. A pack that genuinely matches the product's own
+     * (same container AND same size) still collapses to that one entry rather than a duplicate;
+     * see {@link #build}'s dedup key. None of a supplier's packs ever becomes the default -
+     * section 2.1 pins the default to the product's own pack. Changing which pack is preselected
+     * because of who is delivering would silently rewrite what the number in an already-typed
+     * quantity box means.
+     *
+     * @param supplierPacks that vendor's packs, in any order; a null or blank
+     *     {@code packagingUnit}/non-positive {@code packagingSize} entry is skipped, same as a
+     *     product with no pack configured at all. Pass an empty list for a vendor priced only in
+     *     the bare stock unit (a {@code ProductVendorPack} row with no container contributes
+     *     nothing here - it carries a cost, not a conversion factor).
      */
     public static List<UnitOption> forProductAndSupplier(
             String stockUnitCode,
             String packagingUnit,
             BigDecimal packagingSize,
-            String supplierPackagingUnit,
-            BigDecimal supplierPackagingSize) {
-        return build(stockUnitCode, packagingUnit, packagingSize, supplierPackagingUnit, supplierPackagingSize);
+            List<PackSpec> supplierPacks) {
+        return build(stockUnitCode, packagingUnit, packagingSize, supplierPacks);
+    }
+
+    /** One pack's container and size - the two fields {@link #build} step 3 needs per pack,
+     *  independent of whether the caller holds a {@code ProductVendorPack} entity, a parsed
+     *  spreadsheet row, or a not-yet-saved form value. Same reasoning {@link #forProduct(String,
+     *  String, BigDecimal)}'s own javadoc gives for taking raw fields rather than an entity. */
+    public record PackSpec(String packagingUnit, BigDecimal packagingSize) {
     }
 
     /**
@@ -283,11 +297,7 @@ public final class UnitOptions {
     // ---------------------------------------------------------------------------------------
 
     private static List<UnitOption> build(
-            String stockUnitCode,
-            String packagingUnit,
-            BigDecimal packagingSize,
-            String supplierPackagingUnit,
-            BigDecimal supplierPackagingSize) {
+            String stockUnitCode, String packagingUnit, BigDecimal packagingSize, List<PackSpec> supplierPacks) {
 
         Optional<UnitOfMeasure> stockUnit = UnitOfMeasure.fromCode(stockUnitCode);
         boolean hasOwnPack = isRealPack(packagingUnit, packagingSize);
@@ -295,28 +305,36 @@ public final class UnitOptions {
         // supplier's pack and never a base unit - see forProductAndSupplier and step 4.
         boolean stockUnitIsDefault = !hasOwnPack;
 
-        Map<String, UnitOption> byCode = new LinkedHashMap<>();
+        // Keyed by (code, normalised size) rather than code alone - MULTI_PACK_PER_VENDOR_DESIGN.md
+        // section 5. Code alone was the bug: a supplier pack sharing a container CODE with the
+        // product's own pack but a different SIZE silently lost, because the two are genuinely
+        // different units that happened to collide on one field of their identity. Two entries
+        // with the same code AND the same size really are the same unit and still collapse to
+        // one - see putPack.
+        Map<String, UnitOption> byKey = new LinkedHashMap<>();
 
         // ---- 1. the stock unit itself.
         if (stockUnitCode == null || stockUnitCode.isBlank()) {
             // The pre-V17 product that never got a unit. It still has to be countable, so it
             // gets one nameless option rather than an empty set a form could not render.
-            byCode.put(
+            byKey.put(
                     NO_STOCK_UNIT_CODE,
                     new UnitOption(NO_STOCK_UNIT_CODE, NO_STOCK_UNIT_LABEL, BigDecimal.ONE, true, stockUnitIsDefault, false));
         } else {
             String code = stockUnit.map(UnitOfMeasure::code).orElse(stockUnitCode);
-            byCode.put(code, new UnitOption(code, symbolOf(stockUnitCode), BigDecimal.ONE, true, stockUnitIsDefault, false));
+            byKey.put(code, new UnitOption(code, symbolOf(stockUnitCode), BigDecimal.ONE, true, stockUnitIsDefault, false));
         }
 
         // ---- 2. the product's own pack.
         if (hasOwnPack) {
-            putPack(byCode, packagingUnit, packagingSize, stockUnitCode, true);
+            putPack(byKey, packagingUnit, packagingSize, stockUnitCode, true);
         }
 
-        // ---- 3. this supplier's pack, when it differs from step 2's.
-        if (isRealPack(supplierPackagingUnit, supplierPackagingSize)) {
-            putPack(byCode, supplierPackagingUnit, supplierPackagingSize, stockUnitCode, false);
+        // ---- 3. every one of this supplier's packs that differs from what's already in the set.
+        for (PackSpec pack : supplierPacks) {
+            if (isRealPack(pack.packagingUnit(), pack.packagingSize())) {
+                putPack(byKey, pack.packagingUnit(), pack.packagingSize(), stockUnitCode, false);
+            }
         }
 
         // ---- 4. same-category base units with a static factor (section 2.2).
@@ -326,32 +344,36 @@ public final class UnitOptions {
                     continue;
                 }
                 candidate.factorTo(base)
-                        .ifPresent(factor -> byCode.putIfAbsent(
+                        .ifPresent(factor -> byKey.putIfAbsent(
                                 candidate.code(),
                                 new UnitOption(candidate.code(), candidate.symbol(), factor, false, false, false)));
             }
         });
 
-        return List.copyOf(new ArrayList<>(byCode.values()));
+        return List.copyOf(new ArrayList<>(byKey.values()));
     }
 
     /**
-     * Adds a pack option under the container's canonical code. {@code putIfAbsent}, so section
-     * 2.1's "deduplicated by code, first occurrence wins" holds without the caller checking:
-     * a supplier whose default pack matches the product's contributes nothing, and one whose
-     * pack uses the same container in a different size is deliberately NOT a second entry -
-     * two options both labelled "Bag of ..." in one picker is a question with no readable answer.
+     * Adds a pack option keyed by (container code, normalised size). {@code putIfAbsent}, so
+     * first occurrence wins when - and only when - both halves match: a supplier whose pack
+     * matches the product's exactly contributes nothing new, and two of a supplier's own packs
+     * that happened to be declared as duplicates collapse to one. A pack sharing a code with
+     * something already in the set but differing in size is a genuinely different key and both
+     * survive, distinguished in the UI by their label - "Bag of 25 kg" vs "Bag of 50 kg" - which
+     * already states the size and needs no other change.
      */
     private static void putPack(
-            Map<String, UnitOption> byCode,
+            Map<String, UnitOption> byKey,
             String packagingUnit,
             BigDecimal packagingSize,
             String stockUnitCode,
             boolean isDefault) {
         Optional<UnitOfMeasure> container = UnitOfMeasure.fromCode(packagingUnit);
         String code = container.map(UnitOfMeasure::code).orElse(packagingUnit.trim().toUpperCase(Locale.ROOT));
+        BigDecimal size = normalise(packagingSize);
         String label = packLabel(container.map(UnitOfMeasure::label).orElse(code), packagingSize, stockUnitCode);
-        byCode.putIfAbsent(code, new UnitOption(code, label, normalise(packagingSize), false, isDefault, true));
+        String key = code + "|" + size.toPlainString();
+        byKey.putIfAbsent(key, new UnitOption(code, label, size, false, isDefault, true));
     }
 
     /** A pack is only a conversion when it names a container AND says how much it holds. */

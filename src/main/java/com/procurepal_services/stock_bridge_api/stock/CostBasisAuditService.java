@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.stock;
 
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
@@ -336,7 +337,8 @@ public class CostBasisAuditService {
 
         List<CostBasisAnomalyResponse.SuspectSupplierLine> lines = new ArrayList<>();
         for (ProductVendor vendor : productVendorRepository.findAllByClientIdAndProductId(tenantId, product.getId())) {
-            BigDecimal lastCostPrice = vendor.getLastCostPrice();
+            ProductVendorPack defaultPack = vendor.getDefaultPack();
+            BigDecimal lastCostPrice = defaultPack == null ? null : defaultPack.getLastCostPrice();
             if (lastCostPrice == null || lastCostPrice.signum() <= 0) {
                 continue;
             }

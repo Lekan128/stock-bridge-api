@@ -8,9 +8,11 @@ import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendorKind;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.io.ByteArrayInputStream;
@@ -60,6 +62,9 @@ class StockInTemplateServiceIntegrationTest {
     @Autowired
     private ProductVendorRepository productVendorRepository;
 
+    @Autowired
+    private ProductVendorPackRepository productVendorPackRepository;
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();
@@ -83,7 +88,7 @@ class StockInTemplateServiceIntegrationTest {
         tenant("Stock In Template Co");
         CompanyVendor vendor = vendor("Dangote Nigeria Plc");
         Product rice = product("RICE-50", "Rice 50kg", "KG", "BAG", new BigDecimal("50"), 40, null);
-        vendorLine(rice, vendor, new BigDecimal("900"), new BigDecimal("50"));
+        vendorLine(rice, vendor, new BigDecimal("900"));
         product("OIL-5L", "Groundnut Oil 5L", "LITER", null, null, 10, null);
 
         Sheet sheet = firstSheetOf(stockInTemplateService.generate(List.of(), StockInTemplateFilter.ALL, null, null));
@@ -146,7 +151,7 @@ class StockInTemplateServiceIntegrationTest {
         tenant("By Vendor Filter Co");
         CompanyVendor dangote = vendor("Dangote Nigeria Plc");
         Product theirs = product("THEIRS-1", "From Dangote", "KG", null, null, 5, null);
-        vendorLine(theirs, dangote, new BigDecimal("100"), null);
+        vendorLine(theirs, dangote, new BigDecimal("100"));
         product("OURS-1", "From nobody", "KG", null, null, 5, null);
 
         Sheet sheet = firstSheetOf(stockInTemplateService.generate(
@@ -217,15 +222,22 @@ class StockInTemplateServiceIntegrationTest {
         return productRepository.saveAndFlush(product);
     }
 
-    /** @param lastCost per STOCK UNIT, which is what {@code ProductVendor.lastCostPrice} is - contract 3.2. */
-    private void vendorLine(Product product, CompanyVendor vendor, BigDecimal lastCost, BigDecimal packagingSize) {
+    /** @param lastCost per STOCK UNIT, which is what {@code ProductVendorPack.lastCostPrice} is - contract 3.2.
+     *  A bare (no packaging) default pack - the product's own BAG/50 pack, set separately via
+     *  {@link #product}, is what actually contributes "Bag of 50 kg" to the unit set; this pack
+     *  exists only to carry the vendor's cost. */
+    private void vendorLine(Product product, CompanyVendor vendor, BigDecimal lastCost) {
         ProductVendor line = new ProductVendor();
         line.setProduct(product);
         line.setCompanyVendor(vendor);
-        line.setLastCostPrice(lastCost);
-        line.setDefaultPackagingSize(packagingSize);
         line.setPreferred(true);
-        productVendorRepository.saveAndFlush(line);
+        line = productVendorRepository.saveAndFlush(line);
+
+        ProductVendorPack pack = new ProductVendorPack();
+        pack.setProductVendor(line);
+        pack.setLastCostPrice(lastCost);
+        pack.setDefault(true);
+        productVendorPackRepository.saveAndFlush(pack);
     }
 
     /**

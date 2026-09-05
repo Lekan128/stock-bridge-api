@@ -118,17 +118,58 @@ class UnitOptionsTest {
     }
 
     @Test
-    void aSupplierPackIsAddedOnlyWhenItDiffersAndNeverBecomesTheDefault() {
-        // Same container, different size: section 2.1 dedupes by code, first occurrence wins,
-        // so the product's own pack survives and the supplier's is not a second "Bag of ..."
-        // entry - two of those in one picker is a question with no readable answer.
-        List<UnitOption> sameContainer = UnitOptions.forProductAndSupplier(
-                "KG", "BAG", new BigDecimal("50"), "BAG", new BigDecimal("25"));
-        assertThat(sameContainer).extracting(UnitOption::code).containsExactly("KG", "BAG", "MG", "G", "T");
-        assertThat(sameContainer.get(1).label()).isEqualTo("Bag of 50 kg");
+    void aSupplierPackMatchingTheProductsOwnExactlyIsNotDuplicated() {
+        // Same container AND same size really is the same unit - MULTI_PACK_PER_VENDOR_DESIGN.md
+        // section 5. Dedup key is (code, size), not code alone.
+        List<UnitOption> options = UnitOptions.forProductAndSupplier(
+                "KG", "BAG", new BigDecimal("50"), List.of(new UnitOptions.PackSpec("BAG", new BigDecimal("50"))));
+        assertThat(options).extracting(UnitOption::code).containsExactly("KG", "BAG", "MG", "G", "T");
+        assertThat(options.get(1).label()).isEqualTo("Bag of 50 kg");
+    }
 
+    @Test
+    void aSupplierPackSharingTheProductsContainerCodeButADifferentSizeSurvivesAsItsOwnOption() {
+        // The bug this whole feature fixes (UNIT_UX_REMEDIATION_PLAN.md section 11.1): a supplier
+        // pack sharing a CODE with the product's own pack but differing in SIZE used to be
+        // silently dropped. Dedup key is now (code, size), so both survive, distinguished by
+        // their label - "Bag of 50 kg" vs "Bag of 25 kg" - which already states the size.
+        List<UnitOption> options = UnitOptions.forProductAndSupplier(
+                "KG", "BAG", new BigDecimal("50"), List.of(new UnitOptions.PackSpec("BAG", new BigDecimal("25"))));
+        assertThat(options).extracting(UnitOption::label)
+                .containsExactly("kg", "Bag of 50 kg", "Bag of 25 kg", "mg", "g", "t");
+
+        UnitOption productsOwnBag = options.get(1);
+        assertThat(productsOwnBag.factorToStockUnit()).isEqualByComparingTo("50");
+        assertThat(productsOwnBag.isDefault()).isTrue();
+
+        UnitOption suppliersBag = options.get(2);
+        assertThat(suppliersBag.code()).isEqualTo("BAG");
+        assertThat(suppliersBag.factorToStockUnit()).isEqualByComparingTo("25");
+        assertThat(suppliersBag.isDefault()).isFalse();
+        assertThat(suppliersBag.isPack()).isTrue();
+
+        // Exactly one default in the set regardless - section 2.1's closing rule, unaffected by
+        // how many packs share a code.
+        assertThat(options.stream().filter(UnitOption::isDefault)).hasSize(1);
+    }
+
+    @Test
+    void aVendorWithMoreThanOnePackContributesEveryOneOfThem() {
+        // The actual feature: a vendor is no longer limited to one pack.
+        List<UnitOption> options = UnitOptions.forProductAndSupplier(
+                "KG", null, null, List.of(
+                        new UnitOptions.PackSpec("BAG", new BigDecimal("50")),
+                        new UnitOptions.PackSpec("BAG", new BigDecimal("25"))));
+        assertThat(options).extracting(UnitOption::label).contains("Bag of 50 kg", "Bag of 25 kg");
+        // Neither of a supplier's packs ever becomes the default when the product has none of its
+        // own - the stock unit wins, per section 2.1.
+        assertThat(UnitOptions.defaultOption(options).orElseThrow().code()).isEqualTo("KG");
+    }
+
+    @Test
+    void aSupplierPackWithADifferentContainerIsAddedAndNeverBecomesTheDefault() {
         List<UnitOption> differentContainer = UnitOptions.forProductAndSupplier(
-                "KG", "BAG", new BigDecimal("50"), "CARTON", new BigDecimal("12"));
+                "KG", "BAG", new BigDecimal("50"), List.of(new UnitOptions.PackSpec("CARTON", new BigDecimal("12"))));
         assertThat(differentContainer).extracting(UnitOption::code).containsExactly("KG", "BAG", "CARTON", "MG", "G", "T");
         UnitOption carton = differentContainer.get(2);
         assertThat(carton.label()).isEqualTo("Carton of 12 kg");

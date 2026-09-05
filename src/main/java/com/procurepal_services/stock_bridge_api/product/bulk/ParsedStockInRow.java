@@ -48,5 +48,5 @@ public record ParsedStockInRow(
         String countedIn,
         BigDecimal costPerUnit,
         LocalDate receivedDate,
-        String reference) {
+        String waybillOrInvoiceNo) {
 }
