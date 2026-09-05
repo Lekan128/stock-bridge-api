@@ -62,4 +62,11 @@ public interface ProductVendorPackRepository extends JpaRepository<ProductVendor
 
     /** Rejects a second bare-stock-unit ("no container") pack on the same vendor line. */
     boolean existsByProductVendorIdAndPackagingUnitIsNull(UUID productVendorId);
+
+    /**
+     * What a discard needs to know before it deletes an import session: every pack that session's
+     * review screen confirmed into existence, so it can offer to take them with it - V25,
+     * {@code ImportSessionService.linkedPacks}/{@code discard}.
+     */
+    List<ProductVendorPack> findAllByCreatedFromImportSessionId(UUID importSessionId);
 }

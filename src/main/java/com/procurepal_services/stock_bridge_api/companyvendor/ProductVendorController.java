@@ -88,7 +88,11 @@ public class ProductVendorController {
     public ResponseEntity<ProductVendorPackResponse> addPack(
             @PathVariable UUID productId, @PathVariable UUID vendorId, @RequestBody AddPackRequest request) {
         ProductVendorPack pack = productVendorService.addPack(
-                productId, vendorId, request.packagingUnit(), request.packagingSize(), request.vendorSku(), request.lastCostPrice());
+                productId, vendorId, request.packagingUnit(), request.packagingSize(), request.vendorSku(),
+                request.lastCostPrice(),
+                // A deliberate Vendors-tab action already IS the confirmation - see addPack's own
+                // doc comment on this parameter.
+                null);
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(ProductVendorPackResponse.from(pack, List.of(), productVendorService.stockUnitCodeForProduct(productId)));
     }

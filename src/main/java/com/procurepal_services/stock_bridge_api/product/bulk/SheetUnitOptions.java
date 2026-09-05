@@ -46,11 +46,15 @@ public final class SheetUnitOptions {
     private static final String OPTION_SEPARATOR = " · or ";
 
     /**
-     * Splits a pack label back into the container that starts it: {@code "Bag of 50 kg"} to
-     * {@code "Bag"}. See {@link #resolve} for why the reader needs this and why
-     * {@code UnitOfMeasure.fromCodeOrLabel} cannot supply it.
+     * Splits a pack label back into the container that starts it and the size that names it:
+     * {@code "Bag of 50 kg"} to {@code "Bag"} and {@code 50}. See {@link #resolve} for why the
+     * reader needs the container and why {@code UnitOfMeasure.fromCodeOrLabel} cannot supply it;
+     * see {@link #resolvePack} for why {@link #resolve} alone is not enough to accept a cell
+     * safely. The number is required, not optional: every label this pattern is meant to read
+     * back is one {@code UnitOptions.packLabel} itself composed, and that method never omits it.
      */
-    private static final Pattern PACK_LABEL = Pattern.compile("^(.*?)\\s+of\\s+.+$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern PACK_LABEL =
+            Pattern.compile("^(.*?)\\s+of\\s+([\\d,]+(?:\\.\\d+)?)\\s*\\S+$", Pattern.CASE_INSENSITIVE);
 
     private SheetUnitOptions() {
     }
@@ -124,22 +128,58 @@ public final class SheetUnitOptions {
      * and that file belongs to M1. So the composition is undone here and the remainder goes to the
      * existing resolver unchanged.
      *
-     * <p>The size in the label is ignored, not verified. It describes the product's configured
-     * pack, not a per-delivery override: section 5.2 removed {@code packaging_size} from the sheet
-     * precisely so a delivery row can no longer redefine a stored product attribute.
+     * <p>The size in the label is not checked <em>here</em> - it cannot be, because this
+     * method has no product's set to check it against (see the note above on why this is not
+     * {@code UnitOptions.resolve}). A caller that DOES have that set in hand - {@code
+     * StockInRowHandler.validateCountedIn} - must use {@link #resolvePack} instead and compare
+     * the size itself: a cell reading "Bag of 50 g" whose product's BAG pack has since become
+     * 1,000 g, at a different vendor or on the product's own configuration, would otherwise
+     * resolve on the container word alone and silently record 1,000 g for a delivery that said
+     * 50 - the exact silent-wrong-number failure mode this whole remediation exists to prevent,
+     * reached here from a stale or hand-typed cell instead of a first-time guess.
      */
     public static Optional<UnitOfMeasure> resolve(String rawCellValue) {
         Optional<UnitOfMeasure> direct = UnitOfMeasure.fromCodeOrLabel(rawCellValue);
         if (direct.isPresent() || rawCellValue == null) {
             return direct;
         }
+        return resolvePack(rawCellValue).flatMap(pack -> UnitOfMeasure.fromCode(pack.code()));
+    }
+
+    /**
+     * {@link #resolve}'s size-aware sibling: a composed pack label read back with the number
+     * still attached, so {@code StockInRowHandler.validateCountedIn} can require it to match
+     * the option it resolves to rather than accepting any pack that merely shares its
+     * container word.
+     *
+     * @return empty for a bare unit cell ({@code "kg"} - use {@link #resolve} instead, there
+     *     is no size to compare) or for text that does not parse as {@code
+     *     UnitOptions.packLabel}'s own "container of size unit" shape.
+     */
+    public static Optional<ParsedPackLabel> resolvePack(String rawCellValue) {
+        if (rawCellValue == null) {
+            return Optional.empty();
+        }
         // A non-breaking space is what a paste out of a browser or a Numbers export leaves
         // behind, and it would stop " of " matching for a reason nobody could see.
         Matcher matcher = PACK_LABEL.matcher(rawCellValue.replace(' ', ' ').trim());
-        if (matcher.matches()) {
-            return UnitOfMeasure.fromCodeOrLabel(matcher.group(1));
+        if (!matcher.matches()) {
+            return Optional.empty();
         }
-        return Optional.empty();
+        Optional<UnitOfMeasure> container = UnitOfMeasure.fromCodeOrLabel(matcher.group(1));
+        if (container.isEmpty()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(new ParsedPackLabel(
+                    container.get().code(), new java.math.BigDecimal(matcher.group(2).replace(",", ""))));
+        } catch (NumberFormatException notActuallyNumeric) {
+            return Optional.empty();
+        }
+    }
+
+    /** {@link #resolvePack}'s result: which container, and which size the cell named it with. */
+    public record ParsedPackLabel(String code, java.math.BigDecimal size) {
     }
 
     /** Steps 1 to 3 of section 2.1 - this product's stock unit and its packs, never step 4's base units. */
