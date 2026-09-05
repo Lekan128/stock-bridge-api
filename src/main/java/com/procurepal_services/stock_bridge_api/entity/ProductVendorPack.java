@@ -12,6 +12,7 @@ import jakarta.persistence.Table;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -112,4 +113,21 @@ public class ProductVendorPack {
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;
+
+    /**
+     * The import session whose review screen confirmed this pack into existence, or {@code null}
+     * for a pack added directly on the Vendors tab. V25 - see that migration for why this exists.
+     */
+    @Column(name = "created_from_import_session_id")
+    private UUID createdFromImportSessionId;
+
+    /**
+     * {@code true} for a pack accepted with one click during import review rather than added
+     * deliberately via "+ Add pack" - cleared the moment that one click is explicitly given, by
+     * {@code StockInRowHandler.confirmPack}. See {@code StockInRowHandler.validateCountedIn}'s
+     * {@code COUNTED_IN_PACK_UNCONFIRMED} issue, which is the only thing that reads this.
+     */
+    @Builder.Default
+    @Column(name = "needs_review", nullable = false)
+    private boolean needsReview = false;
 }

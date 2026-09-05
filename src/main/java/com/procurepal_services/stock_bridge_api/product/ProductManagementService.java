@@ -626,7 +626,9 @@ public class ProductManagementService {
         ImportSessionResponse session =
                 importSessionService.create(file, ImportKind.PRODUCT_CATALOG, ImportMode.CREATE_ONLY, actingUserId);
         if (session.status() != ImportStatus.READY) {
-            importSessionService.discard(session.id());
+            // A catalog-kind session confirms no packs (ImportRowHandler.confirmPack is stock-in
+            // only), so there is never anything for the discard to be offered a choice about.
+            importSessionService.discard(session.id(), java.util.List.of());
             throw new BulkUploadValidationException(engineErrors(session.id()));
         }
 

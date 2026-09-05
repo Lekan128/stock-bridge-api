@@ -3,14 +3,17 @@ package com.procurepal_services.stock_bridge_api.imports;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_NAME_MARKER_PREFIX;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_SKU_MARKER_PREFIX;
 
+import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportMode;
 import com.procurepal_services.stock_bridge_api.entity.ImportRowStatus;
 import com.procurepal_services.stock_bridge_api.entity.ImportSession;
 import com.procurepal_services.stock_bridge_api.entity.ImportSessionRow;
 import com.procurepal_services.stock_bridge_api.entity.ImportStatus;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportLinkedPackResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
@@ -25,8 +28,11 @@ import com.procurepal_services.stock_bridge_api.imports.io.SheetRow;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetTable;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReadException;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReader;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRepository;
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
@@ -100,6 +106,8 @@ public class ImportSessionService {
 
     private final ImportSessionRepository importSessionRepository;
     private final ImportSessionRowRepository importSessionRowRepository;
+    private final ProductVendorPackRepository productVendorPackRepository;
+    private final ProductVendorService productVendorService;
     private final UserRepository userRepository;
     private final SpreadsheetReader spreadsheetReader;
     private final ImportColumnMapper columnMapper;
@@ -1035,9 +1043,7 @@ public class ImportSessionService {
      * a place you can act from rather than only read.
      */
     private String targetUrlFor(ImportSession session) {
-        return session.getKind() == ImportKind.STOCK_IN
-                ? "/app/stock/movements?importBatchId=" + session.getId()
-                : "/app/products?importBatchId=" + session.getId();
+        return "/app/products?importBatchId=" + session.getId();
     }
 
     @SuppressWarnings("unchecked")
@@ -1191,13 +1197,60 @@ public class ImportSessionService {
 
     // ----------------------------------------------------------------- discard
 
+    /**
+     * The packs this session's review screen confirmed into existence - {@code GET
+     * /api/imports/{id}/linked-packs}, called before a discard so the confirmation dialog can
+     * name them rather than the plain-discard copy silently claiming nothing will change (V25).
+     */
+    public List<ImportLinkedPackResponse> linkedPacks(UUID id) {
+        ImportSession session = require(id);
+        return productVendorPackRepository.findAllByCreatedFromImportSessionId(session.getId()).stream()
+                .map(pack -> new ImportLinkedPackResponse(
+                        pack.getId(),
+                        pack.getProductVendor().getProduct().getName(),
+                        pack.getProductVendor().getCompanyVendor().getName(),
+                        UnitOptions.packLabel(
+                                UnitOfMeasure.fromCode(pack.getPackagingUnit())
+                                        .map(UnitOfMeasure::label)
+                                        .orElse(pack.getPackagingUnit()),
+                                pack.getPackagingSize(),
+                                pack.getProductVendor().getProduct().getUnitOfMeasure())))
+                .toList();
+    }
+
+    /**
+     * @param removePackIds packs to take with the session, from {@link #linkedPacks}. Each is
+     *     re-checked against this exact session before deletion - never trusted bare off the
+     *     wire - so a stale or tampered id can only ever be a no-op, never someone else's pack.
+     *     A pack {@link com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService
+     *     #deletePack} refuses (already gone, or reused since the dialog was shown) is skipped
+     *     rather than failing the whole discard over one pack that can no longer be pulled back.
+     */
     @Transactional
-    public void discard(UUID id) {
+    public void discard(UUID id, List<UUID> removePackIds) {
         ImportSession session = require(id);
         if (!session.isUncommitted()) {
             throw new ImportExceptions.NotCommittable(
                     "This file has already been imported, so it cannot be thrown away. Undo it instead if you want "
                             + "to reverse it.");
+        }
+        if (removePackIds != null && !removePackIds.isEmpty()) {
+            Map<UUID, ProductVendorPack> eligible = productVendorPackRepository
+                    .findAllByCreatedFromImportSessionId(session.getId())
+                    .stream()
+                    .collect(java.util.stream.Collectors.toMap(ProductVendorPack::getId, pack -> pack));
+            for (UUID packId : removePackIds) {
+                ProductVendorPack pack = eligible.get(packId);
+                if (pack == null) {
+                    continue;
+                }
+                try {
+                    productVendorService.deletePack(
+                            pack.getProductVendor().getProduct().getId(), pack.getProductVendor().getId(), packId);
+                } catch (RuntimeException stillInUse) {
+                    // Left in place - see the javadoc on removePackIds.
+                }
+            }
         }
         importSessionRowRepository.deleteAllBySessionId(session.getId());
         importSessionRepository.delete(session);

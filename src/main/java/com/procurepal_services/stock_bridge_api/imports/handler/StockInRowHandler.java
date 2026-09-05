@@ -208,8 +208,30 @@ public class StockInRowHandler implements ImportRowHandler {
                             .build());
                 });
 
-        ProductVendorPack pack = productVendorService.addPack(
-                productId, productVendor.getId(), packagingUnit, packagingSize, null, null);
+        // Find-or-create, same reasoning as resolveVendorForConfirm's re-check above: a retried
+        // or double-clicked Confirm on a row whose pack already went in must land back on the
+        // pack that exists, not throw ProductVendorService.addPack's duplicate-pack rejection
+        // (InvalidProductVendorPackException) - which, thrown from this call graph rather than
+        // ProductVendorController's, was reaching the client as a raw unhandled 500 instead of
+        // any answer naming the conflict, because ImportExceptionHandler's advice is scoped to
+        // ImportController and had no handler for it.
+        ProductVendorPack pack = (packagingUnit == null
+                        ? productVendorPackRepository.findByProductVendorIdAndPackagingUnitIsNull(
+                                productVendor.getId())
+                        : productVendorPackRepository.findByProductVendorIdAndPackagingUnitAndPackagingSize(
+                                productVendor.getId(), packagingUnit, packagingSize))
+                .orElseGet(() -> productVendorService.addPack(
+                        productId, productVendor.getId(), packagingUnit, packagingSize, null, null,
+                        row.getSession().getId()));
+        // Confirming IS the acknowledgement COUNTED_IN_PACK_UNCONFIRMED exists to collect, whether
+        // this pack was just created above or already existed with needsReview still true from an
+        // earlier, uncompleted pass - see validateCountedIn's use of the flag. A pack that was
+        // never unreviewed in the first place (needsReview already false) is left untouched rather
+        // than rewritten and reflushed for nothing.
+        if (pack.isNeedsReview()) {
+            pack.setNeedsReview(false);
+            productVendorPackRepository.saveAndFlush(pack);
+        }
         return UnitOptions.packLabel(
                 UnitOfMeasure.fromCode(pack.getPackagingUnit()).map(UnitOfMeasure::label).orElse(pack.getPackagingUnit()),
                 pack.getPackagingSize(),
@@ -466,15 +488,17 @@ public class StockInRowHandler implements ImportRowHandler {
 
     private void readRemainingColumns(
             RowContext ctx, RowValidation.Builder out, String subject, Product product, Integer quantity) {
-        List<UnitOption> options = product == null
-                ? List.of()
-                : unitOptionsFor(
+        UnitOptionsAndPacks unitContext = product == null
+                ? new UnitOptionsAndPacks(List.of(), List.of())
+                : unitOptionsWithPacksFor(
                         ctx.tenantId(),
                         ctx.cache(),
                         product,
                         ctx.text(ImportFields.VENDOR_NAME),
                         ctx.resolution(ImportFields.VENDOR_NAME));
-        UnitOption countedIn = validateCountedIn(ctx, out, product, options, subject);
+        List<UnitOption> options = unitContext.options();
+        UnitOption countedIn =
+                validateCountedIn(ctx, out, product, options, unitContext.packEntities(), subject);
         RowValues.money(ctx, out, ImportFields.COST_PER_UNIT, ImportCopy.Labels.COST_PER_COUNTED_IN_UNIT, subject);
         warnOnIgnoredPackagingSize(ctx, out);
         validateReceivedDate(ctx, out, subject);
@@ -510,6 +534,7 @@ public class StockInRowHandler implements ImportRowHandler {
             RowValidation.Builder out,
             Product product,
             List<UnitOption> options,
+            List<ProductVendorPack> packEntities,
             String subject) {
         String raw = ctx.text(ImportFields.COUNTED_IN);
         if (raw == null) {
@@ -554,7 +579,7 @@ public class StockInRowHandler implements ImportRowHandler {
         }
 
         Optional<UnitOption> option = UnitOptions.resolve(options, code);
-        if (option.isEmpty()) {
+        if (option.isEmpty() || sizeDisagreesWithOption(raw, option.get())) {
             // Same second chance section 6a already gives unparseable text (above): a composed
             // label that DOES resolve to a real unit but not to one this row currently has on
             // file is exactly as much a re-declarable candidate as raw text was. Without this, a
@@ -580,8 +605,79 @@ public class StockInRowHandler implements ImportRowHandler {
             out.value(ImportFields.COUNTED_IN, null);
             return null;
         }
-        out.value(ImportFields.COUNTED_IN, option.get().code());
-        return option.get();
+
+        UnitOption resolvedOption = option.get();
+        // A pack that resolves cleanly here can still be one nobody has actually looked at -
+        // MULTI_PACK_PER_VENDOR_DESIGN.md section 6a's "Confirm" persists the pack independently
+        // of the import session that proposed it (StockInRowHandler.confirmPack's own doc
+        // comment), so discarding that session and re-uploading the identical file used to land
+        // right back here with the row now resolving silently, no different on screen from a
+        // pack that had been correct for years. needsReview is what keeps this from flying by:
+        // the same Confirm/Edit affordance COUNTED_IN_NEW_PACK already renders, asked again until
+        // someone actually clicks it.
+        if (resolvedOption.isPack()) {
+            Optional<ProductVendorPack> unreviewed = packEntities.stream()
+                    .filter(pack -> pack.isNeedsReview() && matchesOption(pack, resolvedOption))
+                    .findFirst();
+            if (unreviewed.isPresent()) {
+                out.issue(RowIssue.error(
+                        ImportFields.COUNTED_IN, "COUNTED_IN_PACK_UNCONFIRMED",
+                        "%s reads as %s - a pack added recently that hasn't been confirmed or used in a "
+                                        .formatted(subject, resolvedOption.label())
+                                + "finished delivery yet. Confirm to keep using it, or edit if that's not right.",
+                        new ImportFieldDescriptor.Option(
+                                resolvedOption.code() + "|" + resolvedOption.factorToStockUnit() + "|true",
+                                resolvedOption.label())));
+                out.value(ImportFields.COUNTED_IN, null);
+                return null;
+            }
+        }
+        out.value(ImportFields.COUNTED_IN, resolvedOption.code());
+        return resolvedOption;
+    }
+
+    /**
+     * Whether {@code raw} named a size that disagrees with the option it otherwise resolved to by
+     * container word alone - {@code SheetUnitOptions.resolvePack}'s whole reason to exist.
+     *
+     * <p>{@code UnitOptions.resolve(options, code)} matches by container code only (a code has no
+     * size to compare), so on its own it would accept "Bag of 50 g" against a BAG option whose
+     * factor is 1,000 - wrong by twenty times, and silently, because the container word did
+     * match. That container can carry a different size than what THIS cell typed for several
+     * ordinary reasons: it is the preferred supplier's pack rather than this row's own vendor's
+     * (contract section 2.1, always folded in), a different vendor's pack fell back to it because
+     * this row's vendor has none of its own yet, or the pack itself was edited or replaced since
+     * this file was downloaded. None of those make the typed number right, and a match this
+     * method rejects falls through to exactly the same "reads as a new pack, confirm or edit"
+     * question a genuinely new size gets (this method's caller), rather than a silent accept.
+     *
+     * <p>Never true for a non-pack option (the stock unit, or a same-category base unit like G
+     * for a KG product) - {@code resolvePack}'s "container of size unit" grammar does not produce
+     * a false match against either, so there is nothing to disagree with.
+     */
+    private static boolean sizeDisagreesWithOption(String raw, UnitOption option) {
+        if (!option.isPack()) {
+            return false;
+        }
+        return SheetUnitOptions.resolvePack(raw)
+                .map(pack -> pack.size().compareTo(option.factorToStockUnit()) != 0)
+                .orElse(false);
+    }
+
+    /**
+     * Whether {@code pack} is the entity behind {@code option} - matched by container code and
+     * size, the same identity {@code confirmPack} already looks packs up by, since
+     * {@link UnitOption} carries neither a pack's row id nor its owning {@code ProductVendor}.
+     */
+    private static boolean matchesOption(ProductVendorPack pack, UnitOption option) {
+        if (pack.getPackagingUnit() == null || pack.getPackagingSize() == null) {
+            return false;
+        }
+        String code = UnitOfMeasure.fromCode(pack.getPackagingUnit())
+                .map(UnitOfMeasure::code)
+                .orElse(pack.getPackagingUnit());
+        return option.code().equalsIgnoreCase(code)
+                && pack.getPackagingSize().compareTo(option.factorToStockUnit()) == 0;
     }
 
     /**
@@ -1490,19 +1586,31 @@ public class StockInRowHandler implements ImportRowHandler {
             return Optional.empty();
         }
 
+        // Whether the container WORD itself is one this catalog knows, not merely whether a
+        // container ended up assigned - "no word at all" (bare "100 kg") is just as fine a
+        // one-click accept as a matched word, because nothing the person typed is being
+        // overridden. Only a word that was typed and did NOT match anything is a guess: falling
+        // back to the generic Pack there is still the right recovery, but it is now the SYSTEM's
+        // label standing in for a word the person chose, not a confirmation of what they said -
+        // see {@link #emitCandidatePackIssue}'s use of this flag to withhold one-click Confirm.
         String word = matcher.group(1);
-        UnitOfMeasure container = word == null
-                ? UnitOfMeasure.PACK
-                : UnitOfMeasure.fromCodeOrLabel(word.trim())
-                        .filter(u -> u.canServeAs(UnitOfMeasureRole.PACKAGING))
-                        .orElse(UnitOfMeasure.PACK);
+        Optional<UnitOfMeasure> matchedContainer = word == null
+                ? Optional.empty()
+                : UnitOfMeasure.fromCodeOrLabel(word.trim()).filter(u -> u.canServeAs(UnitOfMeasureRole.PACKAGING));
+        boolean recognized = word == null || matchedContainer.isPresent();
+        UnitOfMeasure container = matchedContainer.orElse(UnitOfMeasure.PACK);
 
         String label = UnitOptions.packLabel(container.label(), size, product.getUnitOfMeasure());
-        return Optional.of(new CandidatePack(container.code(), size, label));
+        return Optional.of(new CandidatePack(container.code(), size, label, recognized));
     }
 
-    /** A pack parsed from free text, not yet confirmed or persisted - see {@link #parseCandidatePack}. */
-    private record CandidatePack(String packagingUnit, BigDecimal packagingSize, String label) {
+    /**
+     * A pack parsed from free text, not yet confirmed or persisted - see {@link #parseCandidatePack}.
+     *
+     * @param recognized whether the container word the person typed (if any) matched a real
+     *     packaging unit - see {@link #parseCandidatePack}'s doc comment on the flag.
+     */
+    private record CandidatePack(String packagingUnit, BigDecimal packagingSize, String label, boolean recognized) {
     }
 
     /**
@@ -1511,6 +1619,16 @@ public class StockInRowHandler implements ImportRowHandler {
      * but does not match anything this row currently has on file. Returns whether it fired, so
      * each call site can {@code return null} in the same breath rather than repeating the issue
      * and the early return around two different callers.
+     *
+     * <h2>One-click Confirm is withheld on an unrecognised container word</h2>
+     * {@code "100 kg"} and {@code "Bag of 50 g"} both name a size the system can act on
+     * immediately - the first states no container at all, the second names one this catalog
+     * knows. {@code "Cart of 90 kg"} is different: the person DID name a container, and "Cart" is
+     * not one of ours, so silently accepting it as a generic "Pack" would rename what they typed
+     * without them noticing. The suggestion's {@code value} therefore carries a third,
+     * pipe-delimited segment - {@code "{packagingUnit}|{packagingSize}|{recognized}"} - so the
+     * review grid (`CellFix.tsx`'s {@code parseCandidatePackSuggestion}) can show only "Edit" in
+     * that case rather than "Confirm" beside it.
      */
     private boolean emitCandidatePackIssue(RowValidation.Builder out, Optional<CandidatePack> candidate) {
         if (candidate.isEmpty()) {
@@ -1519,9 +1637,13 @@ public class StockInRowHandler implements ImportRowHandler {
         CandidatePack pack = candidate.get();
         out.issue(RowIssue.error(
                 ImportFields.COUNTED_IN, "COUNTED_IN_NEW_PACK",
-                "Reads as a new pack: %s. Confirm to add it, or edit if that's not right."
-                        .formatted(pack.label()),
-                new ImportFieldDescriptor.Option(pack.packagingUnit() + "|" + pack.packagingSize(), pack.label())));
+                pack.recognized()
+                        ? "Reads as a new pack: %s. Confirm to add it, or edit if that's not right."
+                                .formatted(pack.label())
+                        : "We don't recognise that as a pack. Edit to add it as %s or something else."
+                                .formatted(pack.label()),
+                new ImportFieldDescriptor.Option(
+                        pack.packagingUnit() + "|" + pack.packagingSize() + "|" + pack.recognized(), pack.label())));
         out.value(ImportFields.COUNTED_IN, null);
         return true;
     }
@@ -1554,7 +1676,29 @@ public class StockInRowHandler implements ImportRowHandler {
      * whole file on every cell repair, so an un-cached query here would be paid on every
      * keystroke-settle rather than once per upload.
      */
+    /**
+     * {@link #unitOptionsWithPacksFor}'s options alone, for the batch phases (preview/commit),
+     * which have no cell to attach a {@code needsReview} issue to and so never need the entities.
+     */
     private List<UnitOption> unitOptionsFor(
+            UUID tenantId,
+            ImportBatchCache cache,
+            Product product,
+            String vendorName,
+            Optional<ValueResolution> vendorResolution) {
+        return unitOptionsWithPacksFor(tenantId, cache, product, vendorName, vendorResolution).options();
+    }
+
+    /** {@link #unitOptionsWithPacksFor}'s result: the derived set, and what it was derived from. */
+    private record UnitOptionsAndPacks(List<UnitOption> options, List<ProductVendorPack> packEntities) {}
+
+    /**
+     * Section 2.1's set, AND the raw {@code ProductVendorPack} rows it was built from - the entity
+     * list {@link #validateCountedIn} needs to check {@code needsReview} without a second query,
+     * since {@link UnitOption} itself carries neither a pack's row id nor which entity produced
+     * it.
+     */
+    private UnitOptionsAndPacks unitOptionsWithPacksFor(
             UUID tenantId,
             ImportBatchCache cache,
             Product product,
@@ -1567,31 +1711,32 @@ public class StockInRowHandler implements ImportRowHandler {
         // Every one of the preferred supplier's packs (MULTI_PACK_PER_VENDOR_DESIGN.md sections
         // 4-6), not just a single default - a vendor is no longer limited to one, and this is the
         // one place that needs to know, since it feeds both how_you_count_it and counted_in.
-        List<UnitOptions.PackSpec> preferredPacks = preferred == null
+        List<ProductVendorPack> preferredPackEntities = preferred == null
                 ? List.of()
                 : cache.get(CACHE_PREFERRED_VENDOR_PACKS, preferred.getId(),
-                                id -> productVendorPackRepository.findAllByProductVendorIdOrderByIsDefaultDescCreatedAtAsc(id))
-                        .stream()
-                        .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
-                        .toList();
-        List<UnitOptions.PackSpec> rowPacks =
-                rowVendorPacks(tenantId, cache, product.getId(), vendorName, vendorResolution);
-        List<UnitOptions.PackSpec> packs = rowPacks.isEmpty()
-                ? preferredPacks
-                : Stream.concat(preferredPacks.stream(), rowPacks.stream()).toList();
-        return UnitOptions.forProductAndSupplier(
+                        id -> productVendorPackRepository.findAllByProductVendorIdOrderByIsDefaultDescCreatedAtAsc(id));
+        List<ProductVendorPack> rowPackEntities =
+                rowVendorPackEntities(tenantId, cache, product.getId(), vendorName, vendorResolution);
+        List<ProductVendorPack> packEntities = rowPackEntities.isEmpty()
+                ? preferredPackEntities
+                : Stream.concat(preferredPackEntities.stream(), rowPackEntities.stream()).toList();
+        List<UnitOptions.PackSpec> packs = packEntities.stream()
+                .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
+                .toList();
+        List<UnitOption> options = UnitOptions.forProductAndSupplier(
                 product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize(), packs);
+        return new UnitOptionsAndPacks(options, packEntities);
     }
 
     /**
      * The packs of whichever {@code CompanyVendor} this specific row names, when that resolves to
-     * a real, already-persisted one - see {@link #unitOptionsFor}. Read-only, deliberately: {@code
-     * validate} must stay pure (the class javadoc's own rule), so a {@code CREATE_NEW} answer that
-     * has not been materialised yet (only {@link #confirmPack} does that, on demand) simply
-     * contributes nothing here, which is the correct answer for a supplier with no packs on file
-     * yet anyway.
+     * a real, already-persisted one - see {@link #unitOptionsWithPacksFor}. Read-only,
+     * deliberately: {@code validate} must stay pure (the class javadoc's own rule), so a
+     * {@code CREATE_NEW} answer that has not been materialised yet (only {@link #confirmPack}
+     * does that, on demand) simply contributes nothing here, which is the correct answer for a
+     * supplier with no packs on file yet anyway.
      */
-    private List<UnitOptions.PackSpec> rowVendorPacks(
+    private List<ProductVendorPack> rowVendorPackEntities(
             UUID tenantId,
             ImportBatchCache cache,
             UUID productId,
@@ -1619,10 +1764,7 @@ public class StockInRowHandler implements ImportRowHandler {
             return List.of();
         }
         return cache.get(CACHE_ROW_VENDOR_PACKS, productVendor.getId(),
-                        id -> productVendorPackRepository.findAllByProductVendorIdOrderByIsDefaultDescCreatedAtAsc(id))
-                .stream()
-                .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
-                .toList();
+                id -> productVendorPackRepository.findAllByProductVendorIdOrderByIsDefaultDescCreatedAtAsc(id));
     }
 
     /** {@link #unitOptionsFor} plus section 3.1's resolution, for the batch phases. */

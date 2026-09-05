@@ -135,6 +135,12 @@ public class ProductVendorService {
      * automatically, the same "first one wins" rule {@link #findOrCreateForReceipt} already uses
      * one level up for {@code isPreferred}; every pack after that stays non-default until an
      * explicit {@link #updatePack} swap.
+     *
+     * @param createdFromImportSessionId null for this, the deliberate Vendors-tab action - which
+     *     already IS the confirmation a bulk-import guess still needs, so {@code needsReview}
+     *     starts false here and only here. Non-null only from {@code StockInRowHandler
+     *     .confirmPack}, which is a one-click accept of a guess rather than someone opening a
+     *     packaging picker and choosing on purpose - see V25's migration comment.
      */
     @Transactional
     public ProductVendorPack addPack(
@@ -143,7 +149,8 @@ public class ProductVendorService {
             String packagingUnit,
             BigDecimal packagingSize,
             String vendorSku,
-            BigDecimal lastCostPrice) {
+            BigDecimal lastCostPrice,
+            UUID createdFromImportSessionId) {
         UUID tenantId = requireTenantId();
         requireProductVendor(tenantId, productId, vendorId);
         validatePackagingPair(packagingUnit, packagingSize);
@@ -166,6 +173,8 @@ public class ProductVendorService {
                 .vendorSku(vendorSku)
                 .lastCostPrice(lastCostPrice)
                 .isDefault(firstPackForVendor)
+                .createdFromImportSessionId(createdFromImportSessionId)
+                .needsReview(createdFromImportSessionId != null)
                 .build();
         return productVendorPackRepository.saveAndFlush(pack);
     }
