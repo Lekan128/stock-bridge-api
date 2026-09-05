@@ -33,6 +33,16 @@ public class ProductVendorExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(ProductVendorPackNotFoundException.class)
+    public ResponseEntity<ApiError> handlePackNotFound(ProductVendorPackNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidProductVendorPackException.class)
+    public ResponseEntity<ApiError> handleInvalidPack(InvalidProductVendorPackException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ValidationErrors.describe(ex)));

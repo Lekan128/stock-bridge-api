@@ -11,29 +11,30 @@ import org.springframework.data.repository.query.Param;
 
 /**
  * {@code ProductVendorPriceTier} has no {@code client_id} of its own - see its class javadoc -
- * so every finder here is reached through {@code productVendorId}, itself already resolved
- * against the caller's tenant by {@code ProductVendorRepository} before this is ever queried.
- * There is no lookup by tier id alone with no product_vendor_id alongside it, on purpose.
+ * so every finder here is reached through {@code productVendorPackId}, itself already resolved
+ * against the caller's tenant by {@code ProductVendorRepository}/{@code ProductVendorPackRepository}
+ * before this is ever queried. There is no lookup by tier id alone with no pack id alongside it,
+ * on purpose.
  */
 public interface ProductVendorPriceTierRepository extends JpaRepository<ProductVendorPriceTier, UUID> {
 
-    /** The expanded Vendors-tab row: this vendor's price breaks, cheapest quantity first. */
-    List<ProductVendorPriceTier> findAllByProductVendorIdOrderByMinQuantityAsc(UUID productVendorId);
+    /** The expanded pack row's price breaks, cheapest quantity first. */
+    List<ProductVendorPriceTier> findAllByProductVendorPackIdOrderByMinQuantityAsc(UUID productVendorPackId);
 
-    Optional<ProductVendorPriceTier> findByIdAndProductVendorId(UUID id, UUID productVendorId);
+    Optional<ProductVendorPriceTier> findByIdAndProductVendorPackId(UUID id, UUID productVendorPackId);
 
     /**
-     * Every tier across every vendor of one product, ordered so "cheapest applicable price at
-     * this quantity" can be resolved with a single linear scan (highest {@code minQuantity} not
-     * exceeding the requested quantity wins) - see {@code ProductVendorService.cheaperVendorHint}.
-     * Written as an explicit JPQL join rather than a derived two-level-nested-property method
-     * name - explicit is how this codebase writes anything past one hop, matching
-     * {@code ProductVendorRepository}'s own queries.
+     * Every tier across every pack of every vendor of one product, ordered so "cheapest
+     * applicable price at this quantity" can be resolved with a single linear scan (highest
+     * {@code minQuantity} not exceeding the requested quantity wins) - see
+     * {@code ProductVendorService.cheaperVendorHint}. Written as an explicit JPQL join rather
+     * than a derived three-level-nested-property method name - explicit is how this codebase
+     * writes anything past one hop, matching {@code ProductVendorRepository}'s own queries.
      */
-    @Query("SELECT t FROM ProductVendorPriceTier t WHERE t.productVendor.product.id = :productId "
+    @Query("SELECT t FROM ProductVendorPriceTier t WHERE t.productVendorPack.productVendor.product.id = :productId "
             + "ORDER BY t.minQuantity ASC")
     List<ProductVendorPriceTier> findAllByProductVendorProductIdOrderByMinQuantityAsc(@Param("productId") UUID productId);
 
-    /** Rejects a duplicate breakpoint on the same vendor line before the DB's own UNIQUE does. */
-    boolean existsByProductVendorIdAndMinQuantity(UUID productVendorId, BigDecimal minQuantity);
+    /** Rejects a duplicate breakpoint on the same pack before the DB's own UNIQUE does. */
+    boolean existsByProductVendorPackIdAndMinQuantity(UUID productVendorPackId, BigDecimal minQuantity);
 }

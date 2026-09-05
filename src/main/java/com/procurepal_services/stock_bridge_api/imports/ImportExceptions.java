@@ -91,4 +91,18 @@ public final class ImportExceptions {
             super(message);
         }
     }
+
+    /**
+     * 409 on {@code confirm-pack} (MULTI_PACK_PER_VENDOR_DESIGN.md section 6a) - the row's
+     * {@code sku} or {@code vendor_name} cell has not resolved yet, so there is no product or
+     * vendor line for the new pack to hang off. Not a validation failure of the pack itself; a
+     * precondition the review grid's ordinary cell-fix flow already asks for on the other two
+     * cells. The message names which one, so "fix the vendor_name cell first" sends the user to
+     * the right place rather than a bare "conflict".
+     */
+    public static class RowNotReady extends RuntimeException {
+        public RowNotReady(String message) {
+            super(message);
+        }
+    }
 }

@@ -1,11 +1,16 @@
 package com.procurepal_services.stock_bridge_api.companyvendor;
 
+import com.procurepal_services.stock_bridge_api.companyvendor.dto.AddPackRequest;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.AddPriceTierRequest;
+import com.procurepal_services.stock_bridge_api.companyvendor.dto.ProductVendorPackResponse;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.ProductVendorPriceTierResponse;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.ProductVendorResponse;
+import com.procurepal_services.stock_bridge_api.companyvendor.dto.UpdatePackRequest;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.UpdateProductVendorRequest;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendorPriceTier;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorPriceTierRepository;
 import jakarta.validation.Valid;
 import java.util.List;
@@ -26,18 +31,18 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * The product detail page's Vendors tab (MULTI_VENDOR_INVENTORY_DESIGN.md section 7.4) - every
- * {@code ProductVendor} line for one product, plus its price-break children. See {@link
- * ProductVendorService} for the tenant-scoped logic this only shapes into a response; this class
- * follows the same thin-controller-plus-one-service pattern {@code ProductController}/{@code
- * StockController} already use, gated the same way {@code CompanyVendorController} gates its own
- * VIEW_VENDORS/MANAGE_VENDORS split - reads open to whoever can see the supplier directory,
- * the preferred-swap and price-tier writes reserved for whoever manages it.
+ * The product detail page's Vendors tab (MULTI_VENDOR_INVENTORY_DESIGN.md section 7.4), now one
+ * level deeper - every {@code ProductVendor} line for one product, each with its packs
+ * (MULTI_PACK_PER_VENDOR_DESIGN.md sections 4-7), each pack with its price-break children. See
+ * {@link ProductVendorService} for the tenant-scoped logic this only shapes into a response; this
+ * class follows the same thin-controller-plus-one-service pattern {@code ProductController}/
+ * {@code StockController} already use, gated the same way {@code CompanyVendorController} gates
+ * its own VIEW_VENDORS/MANAGE_VENDORS split - reads open to whoever can see the supplier
+ * directory, every write reserved for whoever manages it.
  *
- * <h2>{@code {vendorId}} is the ProductVendor row's own id, not companyVendorId</h2>
- * Confirmed against the frontend's already-built Vendors tab module, which addresses these
- * routes by {@code ProductVendor.id} - the same "address a resource by its own primary key"
- * convention {@code CompanyVendorController} uses for {@code /api/company-vendors/{id}}.
+ * <h2>{@code {vendorId}}/{@code {packId}} are each row's OWN id</h2>
+ * Same "address a resource by its own primary key" convention as before V24 - never
+ * {@code companyVendorId}, a different id present only for display/linking.
  */
 @RestController
 @RequestMapping("/api/products/{productId}/vendors")
@@ -45,18 +50,18 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProductVendorController {
 
     private final ProductVendorService productVendorService;
+    private final ProductVendorPackRepository packRepository;
     private final ProductVendorPriceTierRepository priceTierRepository;
 
     @GetMapping
     @PreAuthorize("hasAuthority('VIEW_VENDORS')")
     public List<ProductVendorResponse> list(@PathVariable UUID productId) {
         List<ProductVendor> vendors = productVendorService.list(productId);
-        Map<UUID, List<ProductVendorPriceTier>> tiersByVendor = priceTierRepository
-                .findAllByProductVendorProductIdOrderByMinQuantityAsc(productId)
-                .stream()
-                .collect(Collectors.groupingBy(tier -> tier.getProductVendor().getId()));
+        Map<UUID, List<ProductVendorPack>> packsByVendor = packsByVendor(productId);
+        Map<UUID, List<ProductVendorPriceTier>> tiersByPack = tiersByPack(productId);
         return vendors.stream()
-                .map(vendor -> ProductVendorResponse.from(vendor, tiersByVendor.getOrDefault(vendor.getId(), List.of())))
+                .map(vendor -> ProductVendorResponse.from(
+                        vendor, packsByVendor.getOrDefault(vendor.getId(), List.of()), tiersByPack))
                 .toList();
     }
 
@@ -75,23 +80,86 @@ public class ProductVendorController {
                 request.defaultPackagingUnit(),
                 request.defaultPackagingSize(),
                 request.isPreferred());
-        return ProductVendorResponse.from(vendor, priceTierRepository.findAllByProductVendorIdOrderByMinQuantityAsc(vendorId));
+        return toResponse(vendor);
     }
 
-    @PostMapping("/{vendorId}/price-tiers")
+    @PostMapping("/{vendorId}/packs")
+    @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
+    public ResponseEntity<ProductVendorPackResponse> addPack(
+            @PathVariable UUID productId, @PathVariable UUID vendorId, @RequestBody AddPackRequest request) {
+        ProductVendorPack pack = productVendorService.addPack(
+                productId, vendorId, request.packagingUnit(), request.packagingSize(), request.vendorSku(), request.lastCostPrice());
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(ProductVendorPackResponse.from(pack, List.of(), productVendorService.stockUnitCodeForProduct(productId)));
+    }
+
+    @PatchMapping("/{vendorId}/packs/{packId}")
+    @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
+    public ProductVendorPackResponse updatePack(
+            @PathVariable UUID productId,
+            @PathVariable UUID vendorId,
+            @PathVariable UUID packId,
+            @RequestBody UpdatePackRequest request) {
+        ProductVendorPack pack = productVendorService.updatePack(
+                productId, vendorId, packId, request.vendorSku(), request.lastCostPrice(), request.isDefault());
+        List<ProductVendorPriceTierResponse> tiers = priceTierRepository
+                .findAllByProductVendorPackIdOrderByMinQuantityAsc(packId)
+                .stream()
+                .map(ProductVendorPriceTierResponse::from)
+                .toList();
+        return ProductVendorPackResponse.from(pack, tiers, productVendorService.stockUnitCodeForProduct(productId));
+    }
+
+    @DeleteMapping("/{vendorId}/packs/{packId}")
+    @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
+    public ResponseEntity<Void> deletePack(
+            @PathVariable UUID productId, @PathVariable UUID vendorId, @PathVariable UUID packId) {
+        productVendorService.deletePack(productId, vendorId, packId);
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{vendorId}/packs/{packId}/price-tiers")
     @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
     public ResponseEntity<ProductVendorPriceTierResponse> addPriceTier(
-            @PathVariable UUID productId, @PathVariable UUID vendorId, @Valid @RequestBody AddPriceTierRequest request) {
+            @PathVariable UUID productId,
+            @PathVariable UUID vendorId,
+            @PathVariable UUID packId,
+            @Valid @RequestBody AddPriceTierRequest request) {
         ProductVendorPriceTier tier =
-                productVendorService.addPriceTier(productId, vendorId, request.minQuantity(), request.unitPrice());
+                productVendorService.addPriceTier(productId, vendorId, packId, request.minQuantity(), request.unitPrice());
         return ResponseEntity.status(HttpStatus.CREATED).body(ProductVendorPriceTierResponse.from(tier));
     }
 
-    @DeleteMapping("/{vendorId}/price-tiers/{tierId}")
+    @DeleteMapping("/{vendorId}/packs/{packId}/price-tiers/{tierId}")
     @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
     public ResponseEntity<Void> deletePriceTier(
-            @PathVariable UUID productId, @PathVariable UUID vendorId, @PathVariable UUID tierId) {
-        productVendorService.deletePriceTier(productId, vendorId, tierId);
+            @PathVariable UUID productId,
+            @PathVariable UUID vendorId,
+            @PathVariable UUID packId,
+            @PathVariable UUID tierId) {
+        productVendorService.deletePriceTier(productId, vendorId, packId, tierId);
         return ResponseEntity.noContent().build();
+    }
+
+    private ProductVendorResponse toResponse(ProductVendor vendor) {
+        List<ProductVendorPack> packs =
+                packRepository.findAllByProductVendorIdOrderByIsDefaultDescCreatedAtAsc(vendor.getId());
+        Map<UUID, List<ProductVendorPriceTier>> tiersByPack = packs.isEmpty()
+                ? Map.of()
+                : packs.stream()
+                        .collect(Collectors.toMap(
+                                ProductVendorPack::getId,
+                                pack -> priceTierRepository.findAllByProductVendorPackIdOrderByMinQuantityAsc(pack.getId())));
+        return ProductVendorResponse.from(vendor, packs, tiersByPack);
+    }
+
+    private Map<UUID, List<ProductVendorPack>> packsByVendor(UUID productId) {
+        return packRepository.findAllByProductVendorProductIdOrderByIsDefaultDescCreatedAtAsc(productId).stream()
+                .collect(Collectors.groupingBy(pack -> pack.getProductVendor().getId()));
+    }
+
+    private Map<UUID, List<ProductVendorPriceTier>> tiersByPack(UUID productId) {
+        return priceTierRepository.findAllByProductVendorProductIdOrderByMinQuantityAsc(productId).stream()
+                .collect(Collectors.groupingBy(tier -> tier.getProductVendorPack().getId()));
     }
 }

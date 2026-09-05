@@ -1264,15 +1264,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                     .quantityOnHandFromVendor(0)
                     .totalQuantityReceived(0)
                     .build();
+            // Persisted before its pack is touched below - a pack's FK needs a parent id, and
+            // vendorSku/lastCostPrice no longer live on this row itself (V24).
+            line = productVendorRepository.saveAndFlush(line);
         }
-        if (state.text(ImportFields.VENDOR_SKU) != null) {
-            line.setVendorSku(state.text(ImportFields.VENDOR_SKU));
-        }
+        // vendorSku/lastCostPrice moved onto this vendor's default pack
+        // (MULTI_PACK_PER_VENDOR_DESIGN.md section 4.2); a catalog row has no notion of "which
+        // pack", so - like every other pre-V24 caller of this row - it means the default one.
         BigDecimal costPrice = perStockUnitPriceOf(state, ImportFields.COST_PRICE);
-        if (costPrice != null) {
-            line.setLastCostPrice(costPrice);
-        }
-        productVendorRepository.saveAndFlush(line);
+        productVendorService.applyDefaultPackFields(line, state.text(ImportFields.VENDOR_SKU), costPrice);
 
         if (Boolean.TRUE.equals(state.value(ImportFields.IS_PREFERRED_VENDOR)) && !line.isPreferred()) {
             // Demote first, flush, then promote. uq_product_vendors_preferred is a partial

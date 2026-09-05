@@ -1,7 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product.bulk;
 
 import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
-import com.procurepal_services.stock_bridge_api.imports.io.LookupSheetWriter;
 import com.procurepal_services.stock_bridge_api.imports.io.NumberValues;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetRow;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetTable;
@@ -17,7 +16,6 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -88,15 +86,21 @@ import org.springframework.web.multipart.MultipartFile;
  * are still reported ({@link ParsedStockInSheet}) so the confirm screen and the result report can
  * account for the whole file; they are simply never a problem the user is asked to solve.
  *
- * <h2>No per-row dependent dropdowns</h2>
+ * <h2>No dropdown at all on {@code counted_in} or {@code vendor_name}</h2>
  * Each row's {@code counted_in} could, in Excel alone, be a dropdown filtered to that product's own
  * unit set, via {@code INDIRECT} over a named range per product. BULK_IMPORT_DESIGN.md section 8.3
  * says don't: {@code INDIRECT} breaks in Google Sheets, Numbers and LibreOffice - so the feature
  * would work for some users and produce an empty dropdown for others, which is worse than not
- * having it. Instead: the right answer is already in the cell, the row's other answers are in
- * {@code how_you_count_it} beside it, the column carries a flat dropdown of every label in use for
- * the rare row that needs changing, and the server checks the value against that specific product's
- * set and names the valid ones when it does not match (see {@link #unitNotStockedMessage}).
+ * having it. A flat, product-agnostic dropdown was tried next, and failed the same test in a
+ * subtler way: those same apps commonly enforce any list-validated cell as a hard picker regardless
+ * of the dismissible {@code WARNING} error style {@code WorkbookBuilder.addDropdown} deliberately
+ * sets, so a user on LibreOffice, Numbers or WPS could not type a value the list did not already
+ * contain - which is exactly the escape hatch MULTI_PACK_PER_VENDOR_DESIGN.md section 6a's new-pack
+ * flow and the {@code vendor_name} "or type a new name" comment both depend on. Both columns
+ * therefore carry no data validation at all: the right answer is already in the cell, the row's
+ * other answers are in {@code how_you_count_it} beside it, and the server checks the value against
+ * that specific product's set and names the valid ones when it does not match (see
+ * {@link #unitNotStockedMessage}).
  */
 @Service
 @RequiredArgsConstructor
@@ -108,15 +112,18 @@ public class StockInExcelService {
      * UNIT_UX_CONTRACT.md section 5.2's STOCK_IN column set, in order - and, as before, the field
      * key and the column header are the same string.
      *
-     * <p>Three changes from the set BULK_IMPORT_CONTRACT.md section 5 froze, each one required by
-     * the contract and each one covered by a permanent read alias or a warning so that no saved
-     * copy of the old sheet stops working: {@code how_you_count_it} is new,
-     * {@code unit}/{@code unit_cost} are renamed to {@code counted_in}/{@code cost_per_unit}, and
-     * {@code packaging_size} is gone.
+     * <p>Four changes from the set BULK_IMPORT_CONTRACT.md section 5 froze: {@code how_you_count_it}
+     * is new, {@code unit}/{@code unit_cost} are renamed to {@code counted_in}/{@code cost_per_unit},
+     * {@code packaging_size} is gone, and {@code reference} is renamed to
+     * {@code waybill_or_invoice_no} - a column asked "what kind of note is this" and answered
+     * "optional", which told nobody what to type without opening its comment. The first three
+     * predate this feature's production release and so each carries a permanent read alias
+     * ({@link #HEADER_ALIASES}) so no saved copy of the old sheet stops working; the last does not,
+     * because nothing has shipped against {@code reference} yet.
      */
     static final List<String> HEADER_NAMES = List.of(
             "sku", "product_name", "how_you_count_it", "vendor_name", "quantity", "counted_in",
-            "cost_per_unit", "received_date", "reference");
+            "cost_per_unit", "received_date", "waybill_or_invoice_no");
 
     /**
      * Headers this parser still answers to, and always will: the old spelling on the left, the
@@ -147,7 +154,7 @@ public class StockInExcelService {
             Map.entry("counted_in", 18),
             Map.entry("cost_per_unit", 16),
             Map.entry("received_date", 16),
-            Map.entry("reference", 24));
+            Map.entry("waybill_or_invoice_no", 26));
 
     /**
      * One sentence per column, in the user's words, at the column it is about - the same rule the
@@ -169,12 +176,12 @@ public class StockInExcelService {
             Map.entry("sku", "Your product code. Do not change it - it is how we match the row to your product."),
             Map.entry("product_name", "For your reference only. We ignore whatever is in this column."),
             Map.entry("how_you_count_it", "For your reference: the ways you can count this product. Copy one of them into 'counted in'. Other sizes of the same measure work too - g or t for a product counted in kg."),
-            Map.entry("vendor_name", "Who this delivery came from. Already filled with your usual supplier - change it if it was someone else."),
+            Map.entry("vendor_name", "Who this delivery came from. Already filled with your usual supplier - change it if it was someone else, or type a new supplier's name."),
             Map.entry("quantity", "The only column you have to fill. How much of this product arrived. Leave it blank for products you did not receive - those rows are simply ignored."),
-            Map.entry("counted_in", "Which of the ways in 'how you count it' the number beside it is in. Already set to how you usually buy this product."),
+            Map.entry("counted_in", "Which of the ways in 'how you count it' the number beside it is in. Already set to how you usually buy this product. If this delivery came in a pack you don't see there, type its size instead - e.g. \"100 kg\" or \"Jumbo bag of 100 kg\"."),
             Map.entry("cost_per_unit", "Per whatever this row's 'counted in' says - per bag if it says Bag, per kg if it says kg. Already filled with what you last paid."),
             Map.entry("received_date", "When the delivery actually arrived. Change it if you are recording an older delivery - we use this to work out which stock was sold first."),
-            Map.entry("reference", "Optional. The waybill or invoice number, so you can find this delivery again."));
+            Map.entry("waybill_or_invoice_no", "Optional. So you can find this delivery again later."));
 
     /**
      * The one sentence a row filled in on an old saved template hears about its {@code
@@ -189,10 +196,6 @@ public class StockInExcelService {
     public static final String PACKAGING_SIZE_IGNORED_WARNING =
             "We now take the pack from your product setup, so this column is ignored. Tell us on the "
                     + "review screen if this delivery came in a different pack.";
-
-    private static final String UNITS_RANGE = "stock_in_units";
-
-    private static final String VENDOR_NAMES_RANGE = "vendor_names";
 
     /**
      * Date spellings accepted on the way in, tried in order. ISO first because that is what the
@@ -235,15 +238,12 @@ public class StockInExcelService {
      * Generates the pre-filled sheet.
      *
      * @param catalogRows the tenant's products, already resolved and in the order they should
-     *     appear. Empty is legitimate - a tenant with no products yet gets the headers, the example
-     *     row and the dropdowns, which is exactly the blank template they need.
-     * @param vendorNames the tenant's active suppliers for the {@code vendor_name} dropdown, capped
-     *     by the caller (see {@code ProductTemplateContext.vendorDropdownNames}). Empty leaves the
-     *     column as free text.
+     *     appear. Empty is legitimate - a tenant with no products yet gets the headers and the
+     *     example row, which is exactly the blank template they need.
      * @param today the date every row is pre-filled with. Passed in rather than read from the clock
      *     here so the generated file is a pure function of its inputs and a test can assert on it.
      */
-    public byte[] generateTemplate(List<StockInTemplateRow> catalogRows, List<String> vendorNames, LocalDate today) {
+    public byte[] generateTemplate(List<StockInTemplateRow> catalogRows, LocalDate today) {
         try (WorkbookBuilder builder = new WorkbookBuilder("Stock in")) {
             builder.writeHeaderRow(HEADER_NAMES, COLUMN_WIDTHS_CHARS_BY_HEADER, HEADER_COMMENTS);
             applyNumberFormats(builder);
@@ -253,26 +253,6 @@ public class StockInExcelService {
             for (StockInTemplateRow catalogRow : catalogRows) {
                 writeCatalogRow(builder, rowIndex++, catalogRow, today);
             }
-
-            LookupSheetWriter lookups = new LookupSheetWriter(builder.workbook());
-            // Labels, never codes - contract section 5, non-negotiable 4 - and one flat list, per
-            // BULK_IMPORT_DESIGN.md section 8.3. It carries every pack in use on this sheet plus
-            // every base unit's symbol, because a delivery is legitimately counted in either
-            // ("150 kg" or "3 bags") and filtering by role would remove the correct answer for
-            // half the rows.
-            builder.addDropdown(
-                    HEADER_NAMES.indexOf("counted_in"),
-                    lookups.addList(UNITS_RANGE, SheetUnitOptions.dropdownLabels(allOptions(catalogRows))),
-                    "Counted in",
-                    "This is already set to how you usually buy this product, and the ways you can count it are "
-                            + "in the 'how you count it' column on this row. Change it only if this delivery was "
-                            + "counted differently.");
-            builder.addDropdown(
-                    HEADER_NAMES.indexOf("vendor_name"),
-                    lookups.addList(VENDOR_NAMES_RANGE, vendorNames),
-                    "Supplier",
-                    "Pick one of your suppliers, or type a new name - we will ask whether to add it after you upload.");
-            lookups.hide();
 
             return builder.toBytes();
         }
@@ -443,13 +423,13 @@ public class StockInExcelService {
         BigDecimal costPerUnit =
                 nonNegativeDecimal(table.value(row, costColumn.header()), excelRow, costColumn.header(), errors);
         LocalDate receivedDate = receivedDateOf(table.value(row, "received_date"), excelRow, errors);
-        String reference = table.value(row, "reference");
+        String waybillOrInvoiceNo = table.value(row, "waybill_or_invoice_no");
 
         if (errors.size() > errorsBefore) {
             return null;
         }
         return new ParsedStockInRow(
-                excelRow, sku, vendorName, quantity, countedIn, costPerUnit, receivedDate, reference);
+                excelRow, sku, vendorName, quantity, countedIn, costPerUnit, receivedDate, waybillOrInvoiceNo);
     }
 
     /** A column and the header the file actually spelled it with - see {@link #column}. */
@@ -581,7 +561,7 @@ public class StockInExcelService {
                 "counted_in", "Bag of 50 kg",
                 "cost_per_unit", "42000",
                 "received_date", today.toString(),
-                "reference", "WB-00123");
+                "waybill_or_invoice_no", "WB-00123");
         for (int i = 0; i < HEADER_NAMES.size(); i++) {
             Cell cell = row.createCell(i);
             String value = values.get(HEADER_NAMES.get(i));
@@ -660,13 +640,6 @@ public class StockInExcelService {
         return costPerStockUnit.multiply(preselected.factorToStockUnit()).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
     }
 
-    /** Every option on the sheet, in first-seen order, for the {@code counted_in} dropdown. */
-    private List<UnitOption> allOptions(List<StockInTemplateRow> catalogRows) {
-        LinkedHashSet<UnitOption> options = new LinkedHashSet<>();
-        catalogRows.forEach(row -> options.addAll(row.unitOptions()));
-        return List.copyOf(options);
-    }
-
     private void applyNumberFormats(WorkbookBuilder builder) {
         for (int i = 0; i < HEADER_NAMES.size(); i++) {
             switch (HEADER_NAMES.get(i)) {
@@ -674,8 +647,9 @@ public class StockInExcelService {
                 case "cost_per_unit" -> builder.formatColumn(i, builder.moneyStyle());
                 case "received_date" -> builder.formatColumn(i, builder.dateStyle());
                 default -> {
-                    // sku, product_name, how_you_count_it, vendor_name, counted_in and reference are
-                    // text. sku especially: a number format would turn 00123 into 123.
+                    // sku, product_name, how_you_count_it, vendor_name, counted_in and
+                    // waybill_or_invoice_no are text. sku especially: a number format would turn
+                    // 00123 into 123.
                 }
             }
         }

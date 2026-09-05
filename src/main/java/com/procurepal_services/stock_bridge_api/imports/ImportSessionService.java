@@ -29,6 +29,7 @@ import com.procurepal_services.stock_bridge_api.repository.ImportSessionReposito
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -372,6 +373,38 @@ public class ImportSessionService {
             normalized.put(entry.getKey(), entry.getValue());
             edited.add(entry.getKey());
         }
+        normalized.put(ImportFields.EDITED, new ArrayList<>(edited));
+        row.setNormalized(normalized);
+        importSessionRowRepository.saveAndFlush(row);
+
+        revalidate(session, allRows(session), null);
+        return toRowResponse(requireRow(session, rowId), session.getColumnMapping());
+    }
+
+    /**
+     * The review grid's one-click "Confirm" on a candidate pack
+     * (MULTI_PACK_PER_VENDOR_DESIGN.md section 6a) - a {@code counted_in} cell that parsed as a
+     * deliberate size declaration ("100 kg") rather than a plain mistake. Delegates the actual
+     * resolution and pack creation to the session's kind-specific handler
+     * ({@link ImportRowHandler#confirmPack}, unsupported by every kind except stock-in), then
+     * patches the row exactly like {@link #patchRow} does - same revalidation, same response
+     * shape - so the confirmed pack resolves cleanly on the pass that follows.
+     */
+    @Transactional
+    public ImportRowResponse confirmCountedInPack(
+            UUID sessionId, UUID rowId, String packagingUnit, BigDecimal packagingSize) {
+        ImportSession session = requireEditable(sessionId);
+        ImportSessionRow row = requireRow(session, rowId);
+        ValueMappings valueMappings = new ValueMappings(session.getValueMappings());
+
+        String label = handlerFor(session.getKind())
+                .confirmPack(row, requireTenantId(), valueMappings, packagingUnit, packagingSize);
+
+        Map<String, Object> normalized =
+                new LinkedHashMap<>(row.getNormalized() == null ? Map.of() : row.getNormalized());
+        Set<String> edited = new LinkedHashSet<>(editedKeys(row));
+        normalized.put(ImportFields.COUNTED_IN, label);
+        edited.add(ImportFields.COUNTED_IN);
         normalized.put(ImportFields.EDITED, new ArrayList<>(edited));
         row.setNormalized(normalized);
         importSessionRowRepository.saveAndFlush(row);

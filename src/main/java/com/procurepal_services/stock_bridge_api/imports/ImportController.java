@@ -4,6 +4,7 @@ import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportMode;
 import com.procurepal_services.stock_bridge_api.imports.dto.ColumnMappingRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ConfirmPackRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
@@ -137,6 +138,17 @@ public class ImportController {
     public ImportRowResponse patchRow(
             @PathVariable UUID id, @PathVariable UUID rowId, @Valid @RequestBody PatchRowRequest request) {
         return importSessionService.patchRow(id, rowId, request.normalized());
+    }
+
+    /**
+     * "Confirm" on a candidate pack (MULTI_PACK_PER_VENDOR_DESIGN.md section 6a) - creates the
+     * pack the {@code COUNTED_IN_NEW_PACK} error's suggestion named, then patches and re-validates
+     * the row exactly like {@link #patchRow}. Stock-in only; every other kind's handler throws.
+     */
+    @PostMapping("/{id}/rows/{rowId}/confirm-pack")
+    public ImportRowResponse confirmPack(
+            @PathVariable UUID id, @PathVariable UUID rowId, @Valid @RequestBody ConfirmPackRequest request) {
+        return importSessionService.confirmCountedInPack(id, rowId, request.packagingUnit(), request.packagingSize());
     }
 
     @PatchMapping("/{id}/rows/{rowId}/skip")

@@ -57,6 +57,11 @@ public class ImportExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(ImportExceptions.RowNotReady.class)
+    public ResponseEntity<ApiError> handleRowNotReady(ImportExceptions.RowNotReady ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
     /**
      * A commit that threw. 500 rather than 4xx because it is our fault, not the file's - the file
      * had already passed validation - and the message says "nothing was changed" because the

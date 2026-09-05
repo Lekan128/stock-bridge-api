@@ -19,6 +19,8 @@ import com.procurepal_services.stock_bridge_api.imports.ImportSessionService;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductVendorSnapshot;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
@@ -33,6 +35,7 @@ import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
@@ -94,6 +97,7 @@ public class ProductManagementService {
      * {@code companyvendor.ProductVendorService} instead.
      */
     private final ProductVendorRepository productVendorRepository;
+    private final ProductVendorPackRepository productVendorPackRepository;
     /** Backs the V19 {@code unitOfMeasure} immutability guard in {@link #update}. */
     private final StockMovementRepository stockMovementRepository;
     /**
@@ -476,11 +480,23 @@ public class ProductManagementService {
             return Map.of();
         }
         List<UUID> productIds = products.stream().map(Product::getId).toList();
-        return productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds).stream()
+        List<ProductVendor> preferred = productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds);
+        // Batched, same N+1-avoidance reasoning findPreferredByClientIdAndProductIdIn already
+        // states for itself - vendorSku moved onto ProductVendorPack (V24) and is no longer a
+        // field this join fetches directly.
+        // Collectors.toMap rejects a null VALUE (Objects.requireNonNull inside its accumulator),
+        // and a pack's vendorSku is routinely null - the common case is a vendor line with no
+        // code recorded at all - so this collects by hand rather than via toMap.
+        Map<UUID, String> vendorSkuByVendorId = new HashMap<>();
+        for (ProductVendorPack pack : productVendorPackRepository
+                .findAllByProductVendorIdInAndIsDefaultTrue(preferred.stream().map(ProductVendor::getId).toList())) {
+            vendorSkuByVendorId.put(pack.getProductVendor().getId(), pack.getVendorSku());
+        }
+        return preferred.stream()
                 .collect(Collectors.toMap(
                         vendor -> vendor.getProduct().getId(),
                         vendor -> new ProductVendorSnapshot(
-                                vendor.getCompanyVendor().getName(), vendor.getVendorSku(), vendor.isPreferred())));
+                                vendor.getCompanyVendor().getName(), vendorSkuByVendorId.get(vendor.getId()), vendor.isPreferred())));
     }
 
     /**

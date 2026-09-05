@@ -269,9 +269,13 @@ class MultiVendorInventoryIntegrationTest {
         CompanyVendorResponse vendorA = createCompanyVendor(admin, "Vendor A");
         ProductResponse product = createProductWithInitialVendor(admin, "MV-7", vendorA.id(), new BigDecimal("100.00"), 5);
         ProductVendorResponse line = findVendorLine(admin, product.id(), vendorA.id());
+        // The initial vendor's receipt has no packaging, so it lands on the bare-stock-unit
+        // default pack (MULTI_PACK_PER_VENDOR_DESIGN.md sections 4-6) - price tiers now hang off
+        // a pack, not the vendor line directly (V24).
+        UUID packId = line.packs().get(0).id();
 
         ResponseEntity<ProductVendorPriceTierResponse> addResponse = restTemplate.exchange(
-                "/api/products/" + product.id() + "/vendors/" + line.id() + "/price-tiers",
+                "/api/products/" + product.id() + "/vendors/" + line.id() + "/packs/" + packId + "/price-tiers",
                 HttpMethod.POST,
                 new HttpEntity<>(new AddPriceTierRequest(new BigDecimal("10"), new BigDecimal("90.00")), authHeaders(admin)),
                 ProductVendorPriceTierResponse.class);
@@ -281,7 +285,7 @@ class MultiVendorInventoryIntegrationTest {
         assertThat(findVendorLine(admin, product.id(), vendorA.id()).priceTiers()).hasSize(1);
 
         ResponseEntity<Void> deleteResponse = restTemplate.exchange(
-                "/api/products/" + product.id() + "/vendors/" + line.id() + "/price-tiers/" + tierId,
+                "/api/products/" + product.id() + "/vendors/" + line.id() + "/packs/" + packId + "/price-tiers/" + tierId,
                 HttpMethod.DELETE,
                 new HttpEntity<>(authHeaders(admin)),
                 Void.class);
@@ -297,6 +301,7 @@ class MultiVendorInventoryIntegrationTest {
         CompanyVendorResponse vendorA = createCompanyVendor(tenantA, "Vendor A");
         ProductResponse product = createProductWithInitialVendor(tenantA, "MV-ISO-1", vendorA.id(), new BigDecimal("100.00"), 10);
         ProductVendorResponse line = findVendorLine(tenantA, product.id(), vendorA.id());
+        UUID packId = line.packs().get(0).id();
         UUID inMovementId = history(tenantA, product.id()).get(0).id();
 
         ResponseEntity<ApiError> listAsB = restTemplate.exchange(
@@ -314,14 +319,14 @@ class MultiVendorInventoryIntegrationTest {
         assertThat(patchAsB.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
 
         ResponseEntity<ApiError> addTierAsB = restTemplate.exchange(
-                "/api/products/" + product.id() + "/vendors/" + line.id() + "/price-tiers",
+                "/api/products/" + product.id() + "/vendors/" + line.id() + "/packs/" + packId + "/price-tiers",
                 HttpMethod.POST,
                 new HttpEntity<>(new AddPriceTierRequest(new BigDecimal("10"), new BigDecimal("90.00")), authHeaders(tenantB)),
                 ApiError.class);
         assertThat(addTierAsB.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
 
         ResponseEntity<ApiError> deleteTierAsB = restTemplate.exchange(
-                "/api/products/" + product.id() + "/vendors/" + line.id() + "/price-tiers/" + UUID.randomUUID(),
+                "/api/products/" + product.id() + "/vendors/" + line.id() + "/packs/" + packId + "/price-tiers/" + UUID.randomUUID(),
                 HttpMethod.DELETE,
                 new HttpEntity<>(authHeaders(tenantB)),
                 ApiError.class);

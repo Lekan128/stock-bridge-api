@@ -2,7 +2,10 @@ package com.procurepal_services.stock_bridge_api.imports;
 
 import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportSession;
+import com.procurepal_services.stock_bridge_api.entity.ImportSessionRow;
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * The only thing that differs between a product-catalog import and a stock-in import.
@@ -108,6 +111,32 @@ public interface ImportRowHandler {
      */
     default java.util.Set<String> selfResolvedColumns() {
         return java.util.Set.of();
+    }
+
+    /**
+     * Turns a parsed-but-unconfirmed pack declaration into a real, persisted fact, for a handler
+     * whose column can name one (MULTI_PACK_PER_VENDOR_DESIGN.md section 6a - a stock-in row's
+     * {@code counted_in} cell typed as {@code "100 kg"}, a size nobody has configured a pack for
+     * yet). Returns the label to write back into the row's own field so the next validation pass
+     * resolves it against the newly-created fact instead of re-raising the same question.
+     *
+     * <p>Unsupported by default - a product-catalog row's columns never name a pack this way.
+     * Throwing rather than returning null keeps "this handler has nothing to confirm" and "this
+     * specific confirmation failed" from being confused by a caller.
+     *
+     * @param valueMappings the session's own answers, so a row whose {@code vendor_name} was
+     *     resolved by the "unrecognised supplier" card (a {@code CREATE_NEW} promise that
+     *     otherwise only materialises at commit, per {@link #selfResolvedColumns}'s own doc) can
+     *     still be confirmed now - the pack needs a real vendor to hang off immediately, not at
+     *     the end of the file.
+     */
+    default String confirmPack(
+            ImportSessionRow row,
+            UUID tenantId,
+            ValueMappings valueMappings,
+            String packagingUnit,
+            BigDecimal packagingSize) {
+        throw new UnsupportedOperationException("This import kind has no pack to confirm.");
     }
 
     /**

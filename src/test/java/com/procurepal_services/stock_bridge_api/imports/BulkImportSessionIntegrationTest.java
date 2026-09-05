@@ -1328,7 +1328,7 @@ class BulkImportSessionIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant,
                 "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
-                        + "received_date,reference\n"
+                        + "received_date,waybill_or_invoice_no\n"
                         + "REFC-1,Rice 50kg,kg · or Bag of 50 kg,,2,Bag of 50 kg,45000,,\n",
                 "STOCK_IN",
                 null);
@@ -1342,6 +1342,222 @@ class BulkImportSessionIntegrationTest {
         ImportRowResponse row = firstRow(tenant, session, "ALL");
         assertThat(row.normalized().get("counted_in")).isEqualTo("BAG");
         assertThat(row.baseQuantityText()).isEqualTo("= 100 kg");
+    }
+
+    /**
+     * MULTI_PACK_PER_VENDOR_DESIGN.md section 6a's whole point: typing a size the parser can turn
+     * into a pack must reach the review grid with a {@code suggestion} the frontend can recognise
+     * as a candidate ({@code CellFix.tsx}'s {@code parseCandidatePackSuggestion} - "{unit}|{size}",
+     * never a bare unit code) so it renders the one-click Confirm/Edit affordance instead of the
+     * plain "did you mean" repair editor.
+     */
+    @Test
+    void aTypedSizeThatReadsAsANewPackCarriesAConfirmableSuggestion() {
+        TenantLoginResponse tenant = signup("Candidate Pack Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Carrot,CARROT-1,,900,,,KG,BASKET,30,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,waybill_or_invoice_no\n"
+                        + "CARROT-1,Carrot,kg · or Basket of 30 kg,,12,Cart of 90 kg,90000,,\n",
+                "STOCK_IN",
+                null);
+
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        assertThat(row.errors()).extracting(ImportRowResponse.Error::column).contains("counted_in");
+        ImportRowResponse.Error error = row.errors().stream()
+                .filter(candidate -> "counted_in".equals(candidate.column()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(error.message()).startsWith("Reads as a new pack: Pack of 90 kg");
+        assertThat(error.suggestion())
+                .as("a bare unit code never contains '|' - this is what tells the frontend it is a "
+                        + "candidate pack rather than an ordinary \"did you mean\" guess")
+                .isNotNull();
+        assertThat(error.suggestion().value()).contains("|");
+        assertThat(error.suggestion().label()).isEqualTo("Pack of 90 kg");
+    }
+
+    /**
+     * The happy path behind the review grid's "Confirm"/"Edit" buttons on a candidate pack: once
+     * the row's vendor has resolved, confirming creates the pack, patches {@code counted_in} to
+     * its label, and clears the error.
+     */
+    @Test
+    void confirmingACandidatePackResolvesTheRowOnceItsVendorIsKnown() {
+        TenantLoginResponse tenant = signup("Confirm Pack Co");
+        ImportSessionResponse catalog = upload(
+                tenant, CATALOG_HEADERS + "Carrot,CARROT-2,,900,,,KG,BASKET,30,Dangote Ltd,,\n", "PRODUCT_CATALOG", "CREATE_ONLY");
+        resolveValue(
+                tenant,
+                catalog.id(),
+                new ValueMappingRequest(
+                        "vendor_name",
+                        "Dangote Ltd",
+                        new ValueResolution("CREATE_NEW", null, null, Map.of("name", "Dangote Ltd"))));
+        commit(tenant, catalog.id());
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,waybill_or_invoice_no\n"
+                        + "CARROT-2,Carrot,kg · or Basket of 30 kg,Dangote Ltd,12,Cart of 90 kg,90000,,\n",
+                "STOCK_IN",
+                null);
+
+        ImportRowResponse before = firstRow(tenant, session, "ALL");
+        assertThat(before.errors()).extracting(ImportRowResponse.Error::column).contains("counted_in");
+
+        ResponseEntity<String> response = confirmPackRaw(tenant, session.id(), before.id(), "PACK", 90);
+        assertThat(response.getStatusCode()).as(response.getBody()).isEqualTo(HttpStatus.OK);
+
+        // `normalized.counted_in` is always the bare unit code once a row validates clean -
+        // matching `theStockInSheetsReferenceColumnIsRecognisedRatherThanReportedAsUnknown`'s
+        // "BAG" above. The composed label ("Pack of 90 kg") is what `confirmPack` returns and
+        // what gets written back into the CELL's raw text, never the normalized value.
+        ImportRowResponse after = firstRow(tenant, session, "ALL");
+        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK");
+        assertThat(after.errors()).extracting(ImportRowResponse.Error::column).doesNotContain("counted_in");
+    }
+
+    /**
+     * Confirming a candidate pack before the row's supplier has resolved must fail with a status
+     * the frontend (and a human) can act on, not the blank 500 an unhandled {@code
+     * IllegalStateException} used to produce here - the exact bug the review screen hit in
+     * practice: a row can carry an unresolved {@code vendor_name} and a candidate {@code
+     * counted_in} at once, and clicking Confirm before fixing the supplier cell is the ordinary
+     * order a user tries things in, not a misuse worth a 500 for.
+     */
+    @Test
+    void confirmingACandidatePackWithAnUnresolvedVendorFailsCleanlyRatherThanWithA500() {
+        TenantLoginResponse tenant = signup("Unresolved Vendor Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Carrot,CARROT-3,,900,,,KG,BASKET,30,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,waybill_or_invoice_no\n"
+                        + "CARROT-3,Carrot,kg · or Basket of 30 kg,John's Stores,12,Cart of 90 kg,90000,,\n",
+                "STOCK_IN",
+                null);
+
+        // An unresolved supplier is a warning, not an error (persist()'s documented fallback -
+        // "imported without a supplier") - it is the candidate pack that blocks the commit here.
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        assertThat(row.warnings()).extracting(ImportRowResponse.Warning::column).contains("vendor_name");
+        assertThat(row.errors()).extracting(ImportRowResponse.Error::column).contains("counted_in");
+
+        ResponseEntity<String> response = confirmPackRaw(tenant, session.id(), row.id(), "PACK", 90);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).contains("vendor_name");
+    }
+
+    /**
+     * The exact sequence the review screen produces in practice: a brand-new supplier's name has
+     * no existing {@code CompanyVendor} to match, so the only card the "unrecognised supplier"
+     * resolution offers is {@code CREATE_NEW} - and {@code CREATE_NEW} is, by design, "a promise
+     * to write one inside the commit transaction" ({@code ImportRowHandler#selfResolvedColumns}),
+     * not an immediate write. Confirming a pack needs a real vendor row to hang it off *before*
+     * that commit ever runs, so {@code confirmPack} must materialise the promise itself rather
+     * than only ever finding a vendor that commit hasn't created yet.
+     */
+    @Test
+    void confirmingACandidatePackMaterialisesAFreshlyCreatedNewSupplierBeforeCommit() {
+        TenantLoginResponse tenant = signup("Create New Supplier Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Carrot,CARROT-4,,900,,,KG,BASKET,30,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,waybill_or_invoice_no\n"
+                        + "CARROT-4,Carrot,kg · or Basket of 30 kg,John's Stores,12,Cart of 90 kg,90000,,\n",
+                "STOCK_IN",
+                null);
+
+        resolveValue(
+                tenant,
+                session.id(),
+                new ValueMappingRequest(
+                        "vendor_name",
+                        "John's Stores",
+                        new ValueResolution("CREATE_NEW", null, null, Map.of("name", "John's Stores"))));
+
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        ResponseEntity<String> response = confirmPackRaw(tenant, session.id(), row.id(), "PACK", 90);
+        assertThat(response.getStatusCode()).as(response.getBody()).isEqualTo(HttpStatus.OK);
+
+        ImportRowResponse after = firstRow(tenant, session, "ALL");
+        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK");
+        assertThat(after.errors()).extracting(ImportRowResponse.Error::column).doesNotContain("counted_in");
+        assertThat(after.warnings()).extracting(ImportRowResponse.Warning::column).doesNotContain("vendor_name");
+    }
+
+    /**
+     * The shape that actually surfaced this: a product that already has a DIFFERENT, preferred
+     * supplier, so the vendor a confirmed pack gets created against is never the preferred one.
+     * {@code unitOptionsFor} used to build a row's valid {@code counted_in} set from only the
+     * product's preferred supplier's packs - correct for the common case, but it meant a pack
+     * {@code confirmPack} had just created for a non-preferred supplier was invisible to the very
+     * next validation pass, and the row that "Confirm" was supposed to resolve came back reading
+     * "we don't know how to count it in 'Pack of 90 kg'" for the pack it had just made. The fix
+     * folds the ROW's own named supplier's packs into the set alongside the preferred supplier's.
+     */
+    @Test
+    void confirmingACandidatePackForANonPreferredSupplierStillResolvesTheRow() {
+        TenantLoginResponse tenant = signup("Non Preferred Supplier Co");
+        ImportSessionResponse catalog = upload(
+                tenant,
+                CATALOG_HEADERS + "Carrot,CARROT-5,,900,,,KG,BASKET,30,Procure Vendor,,TRUE\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+        resolveValue(
+                tenant,
+                catalog.id(),
+                new ValueMappingRequest(
+                        "vendor_name",
+                        "Procure Vendor",
+                        new ValueResolution("CREATE_NEW", null, null, Map.of("name", "Procure Vendor"))));
+        commit(tenant, catalog.id());
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,waybill_or_invoice_no\n"
+                        + "CARROT-5,Carrot,kg · or Basket of 30 kg,John's Stores,12,Cart of 90 kg,90000,,\n",
+                "STOCK_IN",
+                null);
+
+        resolveValue(
+                tenant,
+                session.id(),
+                new ValueMappingRequest(
+                        "vendor_name",
+                        "John's Stores",
+                        new ValueResolution("CREATE_NEW", null, null, Map.of("name", "John's Stores"))));
+
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        ResponseEntity<String> response = confirmPackRaw(tenant, session.id(), row.id(), "PACK", 90);
+        assertThat(response.getStatusCode()).as(response.getBody()).isEqualTo(HttpStatus.OK);
+
+        ImportRowResponse after = firstRow(tenant, session, "ALL");
+        assertThat(after.errors())
+                .as("the newly-confirmed pack belongs to John's Stores, not Carrot's preferred Procure "
+                        + "Vendor, and must still be recognised")
+                .extracting(ImportRowResponse.Error::column)
+                .doesNotContain("counted_in");
+        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK");
+    }
+
+    private ResponseEntity<String> confirmPackRaw(
+            TenantLoginResponse tenant, UUID sessionId, UUID rowId, String packagingUnit, Number packagingSize) {
+        HttpHeaders headers = authHeaders(tenant);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return restTemplate.exchange(
+                "/api/imports/" + sessionId + "/rows/" + rowId + "/confirm-pack",
+                HttpMethod.POST,
+                new HttpEntity<>(Map.of("packagingUnit", packagingUnit, "packagingSize", packagingSize), headers),
+                String.class);
     }
 
     // ------------------------------------------------- the bulk fix actually fixing

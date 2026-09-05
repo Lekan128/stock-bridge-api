@@ -11,7 +11,6 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
-import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -32,8 +31,9 @@ import org.hibernate.annotations.UpdateTimestamp;
  * A tenant that buys the same real-world item from two suppliers used to need two
  * {@link Product} rows to record that, because {@code company_vendor_id} was a single
  * {@code @ManyToOne}. This table is what lets one {@link Product} carry any number of supplier
- * lines instead, each with its own cost, packaging default and running quantity - the same
- * shape Odoo's vendor pricelist and NetSuite's "Multiple Vendors" feature both use.
+ * lines instead, each with its own packs (cost, packaging, vendor code - see
+ * {@link ProductVendorPack}) and running quantity - the same shape Odoo's vendor pricelist and
+ * NetSuite's "Multiple Vendors" feature both use.
  *
  * <h2>Tenant-scoped, and safe to map directly</h2>
  * Extends {@link TenantAwareEntity} like {@link Product}, {@link StockMovement} and
@@ -81,32 +81,6 @@ public class ProductVendor extends TenantAwareEntity {
     @JoinColumn(name = "company_vendor_id", nullable = false)
     private CompanyVendor companyVendor;
 
-    /** That vendor's own code for this item, if the buyer has recorded one. Purely descriptive. */
-    @Column(name = "vendor_sku", length = 100)
-    private String vendorSku;
-
-    /**
-     * Refreshed on every stock-in from this vendor - see {@code StockManagementService.stockIn}.
-     * Nullable: a vendor line can exist (added by hand, or as the sole vendor on a brand-new
-     * product via {@code CreateProductRequest.initialVendor}) before any stock has actually
-     * arrived from them yet.
-     */
-    @Column(name = "last_cost_price", precision = 14, scale = 2)
-    private BigDecimal lastCostPrice;
-
-    /**
-     * Prefills the stock-in form for this vendor; overridable per delivery via {@link
-     * StockMovement#getPackagingUnit()}. Same fixed-list validation as {@code
-     * Product.packagingUnit} (PACKAGING role in {@code product.unit.UnitOfMeasure}), enforced by
-     * the service layer rather than a schema CHECK.
-     */
-    @Column(name = "default_packaging_unit", length = 50)
-    private String defaultPackagingUnit;
-
-    /** Pairs with {@link #defaultPackagingUnit} - how many of the product's base unit it holds. */
-    @Column(name = "default_packaging_size", precision = 14, scale = 2)
-    private BigDecimal defaultPackagingSize;
-
     /**
      * NetSuite-style manual pin - which vendor defaults into the stock-in form when nothing else
      * disambiguates. See the class javadoc's "isPreferred is a swap, never a bare set" section;
@@ -133,12 +107,27 @@ public class ProductVendor extends TenantAwareEntity {
     private int totalQuantityReceived;
 
     /**
-     * This vendor's quantity-break pricing (MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1a).
-     * Purely additive - most vendor lines have none. LAZY so listing a product's vendors never
-     * pulls every tier row along for the ride; load explicitly on the Vendors tab's expanded row.
+     * This vendor's priced offerings - a real pack, or the bare stock unit, or both
+     * (MULTI_PACK_PER_VENDOR_DESIGN.md sections 4-5). Purely additive in the sense that most
+     * vendor lines have exactly one; LAZY so listing a product's vendors never pulls every pack
+     * (and its price tiers) along for the ride - load explicitly on the Vendors tab's expanded
+     * row, the same discipline {@link ProductVendorPriceTier} already required one level down.
      */
     @OneToMany(mappedBy = "productVendor", fetch = FetchType.LAZY)
-    private List<ProductVendorPriceTier> priceTiers;
+    private List<ProductVendorPack> packs;
+
+    /**
+     * Convenience accessor for a caller that has not been updated to think in terms of more than
+     * one pack - the same "computed from the collection, not a duplicated FK" pattern this file's
+     * own {@code Product.getPreferredVendor()} sibling already uses. {@code null} when this
+     * vendor line has no pack on file at all yet, same as today.
+     */
+    public ProductVendorPack getDefaultPack() {
+        if (packs == null) {
+            return null;
+        }
+        return packs.stream().filter(ProductVendorPack::isDefault).findFirst().orElse(null);
+    }
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

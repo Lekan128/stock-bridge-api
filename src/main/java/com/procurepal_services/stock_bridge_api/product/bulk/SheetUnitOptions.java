@@ -4,7 +4,6 @@ import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -35,7 +34,6 @@ import java.util.regex.Pattern;
  *       composes the middle of an error message ("kg or bags of 50 kg") in a different grammar.</li>
  *   <li>{@link #resolve} - reading a {@code counted_in} cell back when there is no product in hand
  *       yet, which is a question only a file parser asks.</li>
- *   <li>{@link #dropdownLabels} - the flat validation list, which is a spreadsheet mechanic.</li>
  * </ol>
  */
 public final class SheetUnitOptions {
@@ -58,10 +56,12 @@ public final class SheetUnitOptions {
     }
 
     /**
-     * A product's unit set for the stock-in sheet - section 2.1 steps 1 to 4, including the
-     * preferred supplier's own pack, because "how this arrives" is a fact about the supplier at
-     * least as often as about the product and the sheet already knows which supplier the row is
-     * for.
+     * A product's unit set for the stock-in sheet - section 2.1 steps 1 to 4, including EVERY ONE
+     * of the preferred supplier's packs (MULTI_PACK_PER_VENDOR_DESIGN.md sections 4-6), because
+     * "how this arrives" is a fact about the supplier at least as often as about the product, and
+     * a supplier is no longer limited to one pack. This is the concrete payoff of that design's
+     * finding that the sheet's column "is built to accept it later without another rewrite" - it
+     * was telling the truth, and this list is the only change that was needed to cash it in.
      *
      * <p>A one-line delegation kept as a named method rather than inlined at the call site: it is
      * the single place the sheets decide <em>which</em> of {@link UnitOptions}' entry points is
@@ -71,10 +71,8 @@ public final class SheetUnitOptions {
             String stockUnitCode,
             String packagingUnitCode,
             java.math.BigDecimal packagingSize,
-            String supplierPackagingUnitCode,
-            java.math.BigDecimal supplierPackagingSize) {
-        return UnitOptions.forProductAndSupplier(
-                stockUnitCode, packagingUnitCode, packagingSize, supplierPackagingUnitCode, supplierPackagingSize);
+            List<UnitOptions.PackSpec> supplierPacks) {
+        return UnitOptions.forProductAndSupplier(stockUnitCode, packagingUnitCode, packagingSize, supplierPacks);
     }
 
     /**
@@ -142,27 +140,6 @@ public final class SheetUnitOptions {
             return UnitOfMeasure.fromCodeOrLabel(matcher.group(1));
         }
         return Optional.empty();
-    }
-
-    /**
-     * Every label the {@code counted_in} dropdown offers - UNIT_UX_CONTRACT.md section 5.2: the
-     * packs actually in use across the sheet's products, then every base unit's symbol.
-     *
-     * <p>Flat, not per-row, and BULK_IMPORT_DESIGN.md section 8.3 has not changed its mind about
-     * why: per-row {@code INDIRECT} dropdowns break in Google Sheets, Numbers and LibreOffice.
-     * What HAS changed is that the flat list is no longer the only guidance on the row -
-     * {@link #howYouCountIt} now carries the per-row answer, so the dropdown can afford to be the
-     * generous fallback it always was rather than the only thing standing between the user and a
-     * wrong cell.
-     */
-    public static List<String> dropdownLabels(List<UnitOption> optionsInUse) {
-        LinkedHashSet<String> labels = new LinkedHashSet<>();
-        optionsInUse.stream()
-                .filter(UnitOption::isPack)
-                .map(UnitOption::label)
-                .forEach(labels::add);
-        UnitOfMeasure.baseUnits().stream().map(UnitOfMeasure::symbol).forEach(labels::add);
-        return List.copyOf(labels);
     }
 
     /** Steps 1 to 3 of section 2.1 - this product's stock unit and its packs, never step 4's base units. */

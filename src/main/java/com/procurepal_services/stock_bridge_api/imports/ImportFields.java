@@ -139,7 +139,15 @@ public final class ImportFields {
      */
     public static final String COST_PER_UNIT = "cost_per_unit";
     public static final String RECEIVED_DATE = "received_date";
-    public static final String REFERENCE = "reference";
+
+    /**
+     * Renamed from {@code reference} while this sheet is still pre-production - no saved copy to
+     * carry an alias for. Optional; the waybill or invoice number for this delivery, stored as the
+     * resulting {@code StockMovement}'s {@code note}. {@code reference} answered "what kind of
+     * column is this generically" (a free-text note); this answers "what do I actually type here"
+     * without needing the header comment to say so.
+     */
+    public static final String WAYBILL_OR_INVOICE_NO = "waybill_or_invoice_no";
 
     /**
      * Reserved keys inside {@code import_session_rows.normalized}.
