@@ -208,8 +208,20 @@ public class StockInRowHandler implements ImportRowHandler {
                             .build());
                 });
 
-        ProductVendorPack pack = productVendorService.addPack(
-                productId, productVendor.getId(), packagingUnit, packagingSize, null, null);
+        // Find-or-create, same reasoning as resolveVendorForConfirm's re-check above: a retried
+        // or double-clicked Confirm on a row whose pack already went in must land back on the
+        // pack that exists, not throw ProductVendorService.addPack's duplicate-pack rejection
+        // (InvalidProductVendorPackException) - which, thrown from this call graph rather than
+        // ProductVendorController's, was reaching the client as a raw unhandled 500 instead of
+        // any answer naming the conflict, because ImportExceptionHandler's advice is scoped to
+        // ImportController and had no handler for it.
+        ProductVendorPack pack = (packagingUnit == null
+                        ? productVendorPackRepository.findByProductVendorIdAndPackagingUnitIsNull(
+                                productVendor.getId())
+                        : productVendorPackRepository.findByProductVendorIdAndPackagingUnitAndPackagingSize(
+                                productVendor.getId(), packagingUnit, packagingSize))
+                .orElseGet(() -> productVendorService.addPack(
+                        productId, productVendor.getId(), packagingUnit, packagingSize, null, null));
         return UnitOptions.packLabel(
                 UnitOfMeasure.fromCode(pack.getPackagingUnit()).map(UnitOfMeasure::label).orElse(pack.getPackagingUnit()),
                 pack.getPackagingSize(),
@@ -1490,19 +1502,31 @@ public class StockInRowHandler implements ImportRowHandler {
             return Optional.empty();
         }
 
+        // Whether the container WORD itself is one this catalog knows, not merely whether a
+        // container ended up assigned - "no word at all" (bare "100 kg") is just as fine a
+        // one-click accept as a matched word, because nothing the person typed is being
+        // overridden. Only a word that was typed and did NOT match anything is a guess: falling
+        // back to the generic Pack there is still the right recovery, but it is now the SYSTEM's
+        // label standing in for a word the person chose, not a confirmation of what they said -
+        // see {@link #emitCandidatePackIssue}'s use of this flag to withhold one-click Confirm.
         String word = matcher.group(1);
-        UnitOfMeasure container = word == null
-                ? UnitOfMeasure.PACK
-                : UnitOfMeasure.fromCodeOrLabel(word.trim())
-                        .filter(u -> u.canServeAs(UnitOfMeasureRole.PACKAGING))
-                        .orElse(UnitOfMeasure.PACK);
+        Optional<UnitOfMeasure> matchedContainer = word == null
+                ? Optional.empty()
+                : UnitOfMeasure.fromCodeOrLabel(word.trim()).filter(u -> u.canServeAs(UnitOfMeasureRole.PACKAGING));
+        boolean recognized = word == null || matchedContainer.isPresent();
+        UnitOfMeasure container = matchedContainer.orElse(UnitOfMeasure.PACK);
 
         String label = UnitOptions.packLabel(container.label(), size, product.getUnitOfMeasure());
-        return Optional.of(new CandidatePack(container.code(), size, label));
+        return Optional.of(new CandidatePack(container.code(), size, label, recognized));
     }
 
-    /** A pack parsed from free text, not yet confirmed or persisted - see {@link #parseCandidatePack}. */
-    private record CandidatePack(String packagingUnit, BigDecimal packagingSize, String label) {
+    /**
+     * A pack parsed from free text, not yet confirmed or persisted - see {@link #parseCandidatePack}.
+     *
+     * @param recognized whether the container word the person typed (if any) matched a real
+     *     packaging unit - see {@link #parseCandidatePack}'s doc comment on the flag.
+     */
+    private record CandidatePack(String packagingUnit, BigDecimal packagingSize, String label, boolean recognized) {
     }
 
     /**
@@ -1511,6 +1535,16 @@ public class StockInRowHandler implements ImportRowHandler {
      * but does not match anything this row currently has on file. Returns whether it fired, so
      * each call site can {@code return null} in the same breath rather than repeating the issue
      * and the early return around two different callers.
+     *
+     * <h2>One-click Confirm is withheld on an unrecognised container word</h2>
+     * {@code "100 kg"} and {@code "Bag of 50 g"} both name a size the system can act on
+     * immediately - the first states no container at all, the second names one this catalog
+     * knows. {@code "Cart of 90 kg"} is different: the person DID name a container, and "Cart" is
+     * not one of ours, so silently accepting it as a generic "Pack" would rename what they typed
+     * without them noticing. The suggestion's {@code value} therefore carries a third,
+     * pipe-delimited segment - {@code "{packagingUnit}|{packagingSize}|{recognized}"} - so the
+     * review grid (`CellFix.tsx`'s {@code parseCandidatePackSuggestion}) can show only "Edit" in
+     * that case rather than "Confirm" beside it.
      */
     private boolean emitCandidatePackIssue(RowValidation.Builder out, Optional<CandidatePack> candidate) {
         if (candidate.isEmpty()) {
@@ -1519,9 +1553,13 @@ public class StockInRowHandler implements ImportRowHandler {
         CandidatePack pack = candidate.get();
         out.issue(RowIssue.error(
                 ImportFields.COUNTED_IN, "COUNTED_IN_NEW_PACK",
-                "Reads as a new pack: %s. Confirm to add it, or edit if that's not right."
-                        .formatted(pack.label()),
-                new ImportFieldDescriptor.Option(pack.packagingUnit() + "|" + pack.packagingSize(), pack.label())));
+                pack.recognized()
+                        ? "Reads as a new pack: %s. Confirm to add it, or edit if that's not right."
+                                .formatted(pack.label())
+                        : "We don't recognise that as a pack. Edit to add it as %s or something else."
+                                .formatted(pack.label()),
+                new ImportFieldDescriptor.Option(
+                        pack.packagingUnit() + "|" + pack.packagingSize() + "|" + pack.recognized(), pack.label())));
         out.value(ImportFields.COUNTED_IN, null);
         return true;
     }
