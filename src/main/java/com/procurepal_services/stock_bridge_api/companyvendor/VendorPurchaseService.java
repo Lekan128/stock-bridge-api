@@ -1,7 +1,6 @@
 package com.procurepal_services.stock_bridge_api.companyvendor;
 
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorProductPriceResponse;
-import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorPurchaseResponse;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorSpendSummary;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Order;
@@ -16,11 +15,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
-import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,24 +35,26 @@ import org.springframework.transaction.annotation.Transactional;
  * companies bought from this seller", which is a different question, is not this
  * company's business, and is the leak CompanyVendorRepository's javadoc rules out.
  *
- * <h2>EXTERNAL vendors have no history, and that is the finished answer</h2>
- * A supplier the company deals with entirely off-platform has no orders in this
- * system and never will. Every method here returns the empty/zero answer for them
- * immediately, without a query, because there is no seller id to filter on -
- * {@code platform_client_id} is NULL for EXTERNAL by CHECK constraint. The screens
- * render a purpose-written empty state saying why rather than an empty table.
+ * <h2>EXTERNAL vendors have zero spend here, and that is the finished answer for THIS class</h2>
+ * A supplier the company deals with entirely off-platform has no orders in this system and
+ * never will. Both methods below return the empty/zero answer for them immediately, without a
+ * query, because there is no seller id to filter on - {@code platform_client_id} is NULL for
+ * EXTERNAL by CHECK constraint.
  *
- * <p>Recording off-platform purchases by hand would give those rows a history, and
- * is deliberately NOT built: it is a second, unverified source of truth about money
- * next to a verified one, and it needs its own decisions about who may enter a
- * price and whether it moves stock. Out of scope by explicit instruction.
+ * <p>This is deliberately narrower than "this vendor has no purchase history" - a manual
+ * stock-in records a real, priced delivery against ANY company vendor, EXTERNAL included (see
+ * {@code StockMovement.companyVendor}), and {@code PurchaseHistoryService} surfaces those
+ * alongside orders on the purchase-history screen. What stays order-only here is spend-to-date
+ * and last purchase price: a manual entry is not run through the same checkout/payment path an
+ * order is, so folding it into "spend" would blend two different kinds of fact. If that is ever
+ * wanted, it is a deliberate widening of THIS class, not a bug in it.
  *
  * <h2>What counts as a purchase</h2>
  * One rule, applied everywhere here: the order reached PLACED
  * ({@code placed_at IS NOT NULL}). Cancelled orders are then excluded from the
- * MONEY (spend, last price) but kept in the history LIST, badged with their status.
- * See VendorSpendSummary and VendorPurchaseResponse for the reasoning behind each
- * half.
+ * MONEY (spend, last price) but kept in the purchase-history LIST, badged with their status -
+ * see {@code PurchaseHistoryService} and {@code VendorSpendSummary} for the reasoning behind
+ * each half.
  */
 @Service
 @RequiredArgsConstructor
@@ -141,37 +138,6 @@ public class VendorPurchaseService {
                             last.order().getOrderNumber());
                 })
                 .toList();
-    }
-
-    /**
-     * The purchase-history screen: this company's orders from this supplier,
-     * newest first, with their lines.
-     *
-     * <p>One query for the page of orders and one for all their lines together,
-     * rather than a lines query per order. With open-in-view on, the lazy
-     * {@code order.items} route would be an N+1 that only shows up under a buyer
-     * with real history - which is the buyer it matters for.
-     */
-    @Transactional(readOnly = true)
-    public Page<VendorPurchaseResponse> purchaseHistory(CompanyVendor vendor, Pageable pageable) {
-        UUID sellerClientId = vendor.getPlatformClientId();
-        if (sellerClientId == null) {
-            return Page.empty(pageable);
-        }
-
-        Page<Order> orders = orderRepository.findAllByClientIdAndSellerClientIdAndPlacedAtIsNotNullOrderByPlacedAtDesc(
-                vendor.getClientId(), sellerClientId, pageable);
-        if (orders.isEmpty()) {
-            return new PageImpl<>(List.of(), pageable, orders.getTotalElements());
-        }
-
-        Map<UUID, List<OrderItem>> linesByOrderId = orderItemRepository
-                .findAllByOrderIdInOrderByCreatedAtAsc(orders.map(Order::getId).getContent())
-                .stream()
-                .collect(Collectors.groupingBy(item -> item.getOrder().getId()));
-
-        return orders.map(order ->
-                VendorPurchaseResponse.from(order, linesByOrderId.getOrDefault(order.getId(), List.of())));
     }
 
     /**
