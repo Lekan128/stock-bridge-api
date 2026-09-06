@@ -69,4 +69,25 @@ public interface ProductVendorPackRepository extends JpaRepository<ProductVendor
      * {@code ImportSessionService.linkedPacks}/{@code discard}.
      */
     List<ProductVendorPack> findAllByCreatedFromImportSessionId(UUID importSessionId);
+
+    /** One row per pack, shaped for {@code ProductManagementService}'s "does this product have
+     *  more than one pack shape in play" check - see {@link PackShape}. */
+    @Query("SELECT p.productVendor.product.id AS productId, p.packagingUnit AS packagingUnit, "
+            + "p.packagingSize AS packagingSize FROM ProductVendorPack p "
+            + "WHERE p.productVendor.product.id IN :productIds")
+    List<PackShape> findPackShapesByProductIdIn(@Param("productIds") List<UUID> productIds);
+
+    /**
+     * Projection for {@link #findPackShapesByProductIdIn} - just enough to group packs by
+     * product and tell two shapes apart, never a full {@code ProductVendorPack}. Grouping happens
+     * in Java (a product's packs across all its vendors number in the single digits in practice),
+     * which is what keeps this ONE query for a whole page rather than a `GROUP BY` per shape.
+     */
+    interface PackShape {
+        UUID getProductId();
+
+        String getPackagingUnit();
+
+        BigDecimal getPackagingSize();
+    }
 }

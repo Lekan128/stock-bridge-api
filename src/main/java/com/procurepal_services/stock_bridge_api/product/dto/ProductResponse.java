@@ -81,7 +81,16 @@ public record ProductResponse(
         boolean isLowStock,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt,
-        List<String> warnings) {
+        List<String> warnings,
+        // True when this product's own pack (above) is one of more than one distinct
+        // (container, size) shape in play for it - its own plus every one of its vendors'
+        // `ProductVendorPack` rows (MULTI_PACK_PER_VENDOR_DESIGN.md section 4.1). A product's
+        // own pack stays deliberately singular by design (that design's section 3), but a reader
+        // of THIS field alone has no way to tell "the only pack" from "the default among several,
+        // the rest living on the Vendors tab" - which is exactly the ambiguity a product page
+        // surfaced (the Apple/Carrot review, 2026-09-06). False, never null, for a product with
+        // no pack of its own: the field the caller would annotate with it does not render either.
+        boolean hasMultiplePacks) {
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -91,6 +100,14 @@ public record ProductResponse(
      * {@link #from(Product, String, List)} when the caller has already resolved the preferred
      * vendor's name some other way (a targeted or batched query - see
      * {@code ProductManagementService.list}/{@code .get} for the two patterns).
+     *
+     * <p>{@code hasMultiplePacks} is always {@code false} through every overload below except
+     * {@link #from(Product, String, List, boolean)} for the same N+1 reason: it takes a query
+     * against {@code product_vendor_packs} to know, so only a caller that has already run
+     * {@code ProductManagementService}'s batched or single-product check may report it truthfully.
+     * A product fresh off a create/update, or reported back from a stock mutation, cannot yet
+     * have more than one vendor pack in any real workflow, so {@code false} here is accurate, not
+     * merely a placeholder.
      */
     public static ProductResponse from(Product product) {
         return from(product, null, null);
@@ -101,6 +118,11 @@ public record ProductResponse(
     }
 
     public static ProductResponse from(Product product, String preferredVendorName, List<String> warnings) {
+        return from(product, preferredVendorName, warnings, false);
+    }
+
+    public static ProductResponse from(
+            Product product, String preferredVendorName, List<String> warnings, boolean hasMultiplePacks) {
         boolean lowStock = product.getLowStockThreshold() != null
                 && product.getQuantityOnHand() <= product.getLowStockThreshold();
         return new ProductResponse(
@@ -125,6 +147,7 @@ public record ProductResponse(
                 lowStock,
                 product.getCreatedAt(),
                 product.getUpdatedAt(),
-                warnings);
+                warnings,
+                hasMultiplePacks);
     }
 }

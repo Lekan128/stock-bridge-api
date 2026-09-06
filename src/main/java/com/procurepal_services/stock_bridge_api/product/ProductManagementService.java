@@ -48,10 +48,12 @@ import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -125,7 +127,12 @@ public class ProductManagementService {
         UUID tenantId = requireTenantId();
         Page<Product> page = productRepository.findAll(ProductSpecifications.forTenant(tenantId, search, active), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
-        return page.map(product -> ProductResponse.from(product, preferredVendorNames.get(product.getId()), null));
+        Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
+        return page.map(product -> ProductResponse.from(
+                product,
+                preferredVendorNames.get(product.getId()),
+                null,
+                hasMultiplePacks.getOrDefault(product.getId(), false)));
     }
 
     @Transactional(readOnly = true)
@@ -136,7 +143,8 @@ public class ProductManagementService {
                 .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, id)
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
-        return ProductResponse.from(product, preferredVendorName, null);
+        boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
+        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks);
     }
 
     /**
@@ -153,6 +161,45 @@ public class ProductManagementService {
         return productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds).stream()
                 .collect(Collectors.toMap(
                         vendor -> vendor.getProduct().getId(), vendor -> vendor.getCompanyVendor().getName()));
+    }
+
+    /**
+     * Batched, same N+1-avoidance shape as {@link #preferredVendorNamesFor}: one query against
+     * {@code product_vendor_packs} for the whole page rather than one per row.
+     *
+     * <p>A product "has multiple packs" when more than one distinct (container, size) shape is
+     * in play for it - its own catalog pack (a fact independent of any vendor,
+     * MULTI_PACK_PER_VENDOR_DESIGN.md section 3) plus every one of its vendors' packs. A product
+     * whose only pack is its own, with zero vendor-specific overrides, reports {@code false} -
+     * that field is not "a default among several", it is the only one.
+     */
+    private Map<UUID, Boolean> hasMultiplePacksFor(List<Product> products) {
+        if (products.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, Set<String>> shapesByProduct = new HashMap<>();
+        for (Product product : products) {
+            if (product.getPackagingUnit() == null) continue;
+            shapesByProduct
+                    .computeIfAbsent(product.getId(), id -> new HashSet<>())
+                    .add(packShapeKey(product.getPackagingUnit(), product.getPackagingSize()));
+        }
+        List<UUID> productIds = products.stream().map(Product::getId).toList();
+        for (ProductVendorPackRepository.PackShape shape :
+                productVendorPackRepository.findPackShapesByProductIdIn(productIds)) {
+            shapesByProduct
+                    .computeIfAbsent(shape.getProductId(), id -> new HashSet<>())
+                    .add(packShapeKey(shape.getPackagingUnit(), shape.getPackagingSize()));
+        }
+        Map<UUID, Boolean> result = new HashMap<>();
+        shapesByProduct.forEach((id, shapes) -> result.put(id, shapes.size() > 1));
+        return result;
+    }
+
+    private static String packShapeKey(String packagingUnit, BigDecimal packagingSize) {
+        String unit = packagingUnit == null ? "NONE" : packagingUnit;
+        String size = packagingSize == null ? "" : packagingSize.stripTrailingZeros().toPlainString();
+        return unit + "|" + size;
     }
 
     @Transactional(readOnly = true)
