@@ -13,7 +13,6 @@ import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorD
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorRequest;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorResponse;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorProductPriceResponse;
-import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorPurchaseResponse;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendorKind;
 import com.procurepal_services.stock_bridge_api.entity.PaymentMethod;
@@ -24,9 +23,13 @@ import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.ReceiveOrderRequest;
+import com.procurepal_services.stock_bridge_api.purchase.dto.PurchaseHistoryEntry;
+import com.procurepal_services.stock_bridge_api.purchase.dto.PurchaseSource;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
@@ -255,7 +258,7 @@ class CompanyVendorIntegrationTest {
         // directory and could have got their predicate backwards independently.
         assertThat(restTemplate
                         .exchange(
-                                "/api/company-vendors/" + firstsVendor.id() + "/purchases",
+                                "/api/purchases?companyVendorId=" + firstsVendor.id(),
                                 HttpMethod.GET,
                                 new HttpEntity<>(second.headers()),
                                 ApiError.class)
@@ -494,15 +497,16 @@ class CompanyVendorIntegrationTest {
         OrderResponse second = placeCodOrder(buyer, catalogProduct, 3, addressId);
 
         CompanyVendorResponse vendor = listVendors(buyer).getFirst();
-        List<VendorPurchaseResponse> purchases = purchases(buyer, vendor.id());
+        List<PurchaseHistoryEntry> purchases = purchases(buyer, vendor.id());
 
         assertThat(purchases).hasSize(2);
         // Newest first - the order the screen renders.
         assertThat(purchases.getFirst().orderNumber()).isEqualTo(second.orderNumber());
         assertThat(purchases.get(1).orderNumber()).isEqualTo(first.orderNumber());
 
-        VendorPurchaseResponse newest = purchases.getFirst();
-        assertThat(newest.placedAt()).isNotNull();
+        PurchaseHistoryEntry newest = purchases.getFirst();
+        assertThat(newest.source()).isEqualTo(PurchaseSource.MARKETPLACE_ORDER);
+        assertThat(newest.occurredAt()).isNotNull();
         assertThat(newest.lines()).hasSize(1);
         assertThat(newest.lines().getFirst().quantity()).isEqualTo(3);
         assertThat(newest.lines().getFirst().productSku()).isEqualTo(catalogProduct.getSku());
@@ -510,9 +514,11 @@ class CompanyVendorIntegrationTest {
     }
 
     /**
-     * An external supplier has no platform orders and never will. The empty answer
-     * is the finished, correct one rather than a gap waiting for a feature -
-     * recording off-platform purchases by hand is deliberately out of scope.
+     * An external supplier has no platform orders and never will, and while it has no
+     * stock recorded against it either, its history and spend are both the finished,
+     * correct empty/zero answer rather than a gap waiting for a feature. See
+     * {@link #aManualStockInAgainstAnExternalVendorAppearsInPurchaseHistoryButNotSpend()}
+     * for the moment a real delivery is recorded and the two screens diverge.
      */
     @Test
     void anExternalVendorHasNoPurchaseHistoryAndNoSpend() {
@@ -528,6 +534,74 @@ class CompanyVendorIntegrationTest {
         assertThat(detail.spend().lastPurchasedAt()).isNull();
 
         assertThat(purchases(buyer, vendor.id())).isEmpty();
+    }
+
+    /**
+     * The bug PurchaseHistoryService was built to fix: purchase history used to read only
+     * {@code orders}, so a supplier bought from exclusively through manual stock-in - which is
+     * every EXTERNAL vendor, by construction, since it has no platform account to place an
+     * order against - never showed anything there no matter how much stock was actually
+     * recorded against it. A manual stock-in freezes the vendor, quantity and price onto the
+     * {@code StockMovement} row itself (see its own class javadoc, V19), so there was always a
+     * real record to show; nothing was reading it.
+     *
+     * <p>Spend and last-purchase-price stay order-only by design - see
+     * {@code VendorPurchaseService}'s class javadoc for why a manual entry is not run through
+     * the same checkout/payment path an order is, and so is not folded into "spend".
+     */
+    @Test
+    void aManualStockInAgainstAnExternalVendorAppearsInPurchaseHistoryButNotSpend() {
+        Buyer buyer = signupBuyer("Manual Stock-in History Co");
+        CompanyVendorResponse vendor = createVendor(buyer, vendorRequest("Corner Shop Diesel", "0801 234 5678"));
+        Product product = plantBuyerProduct(buyer, "MANUAL-STOCKIN-1", "BAG");
+
+        stockIn(buyer, product.getId(), vendor.id(), 10, new BigDecimal("4500.00"), "First delivery");
+
+        List<PurchaseHistoryEntry> purchases = purchases(buyer, vendor.id());
+        assertThat(purchases).hasSize(1);
+        PurchaseHistoryEntry entry = purchases.getFirst();
+        assertThat(entry.source()).isEqualTo(PurchaseSource.MANUAL_STOCK_IN);
+        assertThat(entry.orderNumber()).isNull();
+        assertThat(entry.note()).isEqualTo("First delivery");
+        assertThat(entry.occurredAt()).isNotNull();
+        assertThat(entry.lines()).hasSize(1);
+        assertThat(entry.lines().getFirst().quantity()).isEqualTo(10);
+        assertThat(entry.lines().getFirst().unitPrice()).isEqualByComparingTo(new BigDecimal("4500.00"));
+        assertThat(entry.total()).isEqualByComparingTo(new BigDecimal("45000.00"));
+
+        // Spend stays order-only by design (see class javadoc above) - a manual entry never
+        // touches it, even though it now appears in the history list right beside it.
+        CompanyVendorDetailResponse detail = getVendor(buyer, vendor.id());
+        assertThat(detail.spend().totalSpend()).isEqualByComparingTo(BigDecimal.ZERO);
+    }
+
+    /**
+     * The company-wide feed above the per-vendor screen: {@code /api/purchases} with no
+     * {@code companyVendorId} is every supplier's history, merged into one date-ordered list -
+     * which is the whole reason the merge happens in a single database query rather than in the
+     * frontend (see {@code PurchaseHistoryRepository}'s class javadoc). {@code source} narrows
+     * it to one ledger, for the screen's own filter.
+     */
+    @Test
+    void theCompanyWideFeedMergesBothLedgersAcrossVendorsAndCanBeFilteredBySource() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Company Wide Purchases Co");
+        Product catalogProduct = plantCatalogProduct(50, 1);
+        placeCodOrder(buyer, catalogProduct, 2, createAddress(buyer).id());
+
+        CompanyVendorResponse externalVendor = createVendor(buyer, vendorRequest("Corner Shop Diesel", "0801 234 5678"));
+        Product buyerProduct = plantBuyerProduct(buyer, "MANUAL-GLOBAL-1", "BAG");
+        stockIn(buyer, buyerProduct.getId(), externalVendor.id(), 5, new BigDecimal("2000.00"), null);
+
+        assertThat(purchasesGlobal(buyer, null))
+                .extracting(PurchaseHistoryEntry::source)
+                .containsExactlyInAnyOrder(PurchaseSource.MARKETPLACE_ORDER, PurchaseSource.MANUAL_STOCK_IN);
+
+        assertThat(purchasesGlobal(buyer, PurchaseSource.MARKETPLACE_ORDER))
+                .extracting(PurchaseHistoryEntry::source)
+                .containsExactly(PurchaseSource.MARKETPLACE_ORDER);
+        assertThat(purchasesGlobal(buyer, PurchaseSource.MANUAL_STOCK_IN))
+                .extracting(PurchaseHistoryEntry::source)
+                .containsExactly(PurchaseSource.MANUAL_STOCK_IN);
     }
 
     // ------------------------------------------------------------------------
@@ -579,7 +653,7 @@ class CompanyVendorIntegrationTest {
         // Denied on every endpoint, read and write alike.
         assertForbidden(HttpMethod.GET, "/api/company-vendors", null, storekeeper);
         assertForbidden(HttpMethod.GET, "/api/company-vendors/" + existing.id(), null, storekeeper);
-        assertForbidden(HttpMethod.GET, "/api/company-vendors/" + existing.id() + "/purchases", null, storekeeper);
+        assertForbidden(HttpMethod.GET, "/api/purchases?companyVendorId=" + existing.id(), null, storekeeper);
         assertForbidden(
                 HttpMethod.POST, "/api/company-vendors", vendorRequest("Sneaky Ltd", "0800 000 0000"), storekeeper);
         assertForbidden(
@@ -713,15 +787,64 @@ class CompanyVendorIntegrationTest {
                 "/api/company-vendors/" + id, HttpMethod.GET, new HttpEntity<>(buyer.headers()), ApiError.class);
     }
 
-    private List<VendorPurchaseResponse> purchases(Buyer buyer, UUID vendorId) {
+    private List<PurchaseHistoryEntry> purchases(Buyer buyer, UUID vendorId) {
         return restTemplate
                 .exchange(
-                        "/api/company-vendors/" + vendorId + "/purchases?size=100",
+                        "/api/purchases?companyVendorId=" + vendorId + "&size=100",
                         HttpMethod.GET,
                         new HttpEntity<>(buyer.headers()),
-                        new ParameterizedTypeReference<TestPage<VendorPurchaseResponse>>() {})
+                        new ParameterizedTypeReference<TestPage<PurchaseHistoryEntry>>() {})
                 .getBody()
                 .content();
+    }
+
+    /** The company-wide feed - no {@code companyVendorId}, optionally narrowed to one source. */
+    private List<PurchaseHistoryEntry> purchasesGlobal(Buyer buyer, PurchaseSource source) {
+        String query = source == null ? "" : "&source=" + source;
+        return restTemplate
+                .exchange(
+                        "/api/purchases?size=100" + query,
+                        HttpMethod.GET,
+                        new HttpEntity<>(buyer.headers()),
+                        new ParameterizedTypeReference<TestPage<PurchaseHistoryEntry>>() {})
+                .getBody()
+                .content();
+    }
+
+    /**
+     * A product in the BUYER's own inventory, planted directly rather than through the
+     * multipart {@code POST /api/products} endpoint - this suite has no other reason to touch
+     * file upload, and a direct save is what {@link #plantCatalogProduct} already does for the
+     * seller side of the same problem.
+     */
+    private Product plantBuyerProduct(Buyer buyer, String sku, String unitOfMeasure) {
+        String unique = UUID.randomUUID().toString().substring(0, 8);
+        Product product = Product.builder()
+                .name(sku + " product")
+                .sku(sku + "-" + unique)
+                .quantityOnHand(0)
+                .active(true)
+                .marketplaceListed(false)
+                .unitOfMeasure(unitOfMeasure)
+                .build();
+        TenantContext.set(buyer.clientId());
+        try {
+            return productRepository.saveAndFlush(product);
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    /** Records a manual delivery against a company vendor - {@code note} may be null. */
+    private void stockIn(Buyer buyer, UUID productId, UUID companyVendorId, int quantity, BigDecimal unitPrice, String note) {
+        ResponseEntity<StockMutationResponse> response = restTemplate.exchange(
+                "/api/products/" + productId + "/stock/stock-in",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        new StockInRequest(quantity, unitPrice, note, null, companyVendorId, null, null),
+                        buyer.headers()),
+                StockMutationResponse.class);
+        assertThat(response.getStatusCode()).as("stock-in").isEqualTo(HttpStatus.OK);
     }
 
     private void assertForbidden(HttpMethod method, String path, Object body, HttpHeaders caller) {

@@ -3,7 +3,6 @@ package com.procurepal_services.stock_bridge_api.companyvendor;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorDetailResponse;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorRequest;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorResponse;
-import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorPurchaseResponse;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendorKind;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -58,8 +57,6 @@ import org.springframework.web.bind.annotation.RestController;
 public class CompanyVendorController {
 
     private final CompanyVendorService companyVendorService;
-    private final VendorPurchaseService vendorPurchaseService;
-    private final CompanyVendorLookup companyVendorLookup;
 
     /**
      * The directory list. Both kinds together by default - a buyer's supplier list
@@ -86,22 +83,6 @@ public class CompanyVendorController {
     @PreAuthorize("hasAuthority('VIEW_VENDORS')")
     public CompanyVendorDetailResponse get(@PathVariable UUID id) {
         return companyVendorService.get(id);
-    }
-
-    /**
-     * Purchase history, on its own endpoint feeding its own screen - the
-     * stakeholder asked for it separately and it is paginated, so folding it into
-     * the detail response would either truncate it silently or make the detail
-     * screen pay for a page nobody scrolled to.
-     *
-     * <p>Always empty for an EXTERNAL vendor, by definition rather than by
-     * accident: they have no orders on this platform. The screen says so.
-     */
-    @GetMapping("/{id}/purchases")
-    @PreAuthorize("hasAuthority('VIEW_VENDORS')")
-    public Page<VendorPurchaseResponse> purchases(
-            @PathVariable UUID id, @PageableDefault(size = 20) Pageable pageable) {
-        return vendorPurchaseService.purchaseHistory(companyVendorLookup.require(id), pageable);
     }
 
     /**
