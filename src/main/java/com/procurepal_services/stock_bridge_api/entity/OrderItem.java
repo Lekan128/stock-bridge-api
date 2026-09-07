@@ -84,6 +84,18 @@ public class OrderItem {
     @Column(name = "received_quantity", nullable = false)
     private int receivedQuantity;
 
+    /**
+     * Set alongside buyerProductId when {@code IncomingStockService} resolves it: true when no
+     * source-product or SKU match existed and a brand new {@code Product} row had to be created,
+     * false when an existing row was reused. Drives the MULTI_VENDOR_INVENTORY_DESIGN.md
+     * section 7.2 duplicate nudge at receipt time - there is nothing to ask about a line that
+     * already matched cleanly, and once anything has been received against this line a relink
+     * would mean moving ledger history rather than just a reservation, so the nudge only ever
+     * looks at lines where this is still true AND receivedQuantity is still zero.
+     */
+    @Column(name = "buyer_product_newly_created", nullable = false)
+    private boolean buyerProductNewlyCreated;
+
     @Column(name = "line_total", nullable = false, precision = 14, scale = 2)
     private BigDecimal lineTotal;
 

@@ -87,6 +87,17 @@ import java.util.UUID;
  * with a message that is simply false from where the user is sitting. Same reasoning
  * {@code companyVendorId} above gives for why its own conditional requirement is not a static
  * annotation either.
+ *
+ * <h2>vendorSku - the SUPPLIER's own code for this product, added for marketplace receipts</h2>
+ * Optional, and completely independent of {@code Product.sku} - that field is this tenant's OWN
+ * identifier and, once SKU generation is enabled, is never something a caller like a marketplace
+ * receipt should be choosing. This is the other half: {@code ProductVendorPack.vendorSku},
+ * "Supplier's code" in the locked vocabulary (MULTI_VENDOR_INVENTORY_DESIGN.md section 4a) -
+ * written onto the pack this receipt resolves to (see {@code ProductVendorService
+ * .applyReceiptToPack}), same as {@code lastCostPrice}. Null leaves whatever the pack already
+ * has untouched; non-null overwrites it every time, on the same reasoning {@code lastCostPrice}
+ * does - it is a running fact about the relationship, and the supplier's most recent delivery
+ * note is more likely correct than whatever an earlier one said.
  */
 public record StockInRequest(
         @NotNull @Positive Integer quantity,
@@ -97,11 +108,32 @@ public record StockInRequest(
         String packagingUnit,
         @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
         OffsetDateTime occurredAt,
-        Boolean saveAsSupplierDefault) {
+        Boolean saveAsSupplierDefault,
+        String vendorSku) {
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockInRequest(Integer quantity, BigDecimal unitPrice, String note) {
-        this(quantity, unitPrice, note, null, null, null, null, null, null);
+        this(quantity, unitPrice, note, null, null, null, null, null, null, null);
+    }
+
+    /**
+     * Convenience for the pre-{@code vendorSku} nine-field shape - additive, same reasoning as
+     * every other constructor here: a diff that rewrote every existing {@code new
+     * StockInRequest(...)} to trail a null would have obscured that nothing about their meaning
+     * changed.
+     */
+    public StockInRequest(
+            Integer quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt,
+            Boolean saveAsSupplierDefault) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+                saveAsSupplierDefault, null);
     }
 
     /**
