@@ -6,6 +6,7 @@ import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.auth.dto.LoginRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
@@ -43,6 +44,9 @@ class RootUserProtectionIntegrationTest {
     @Autowired
     private TestRestTemplate restTemplate;
 
+    @Autowired
+    private RoleRepository roleRepository;
+
     @Test
     void signupOwnerIsFlaggedAsRootAndSubUsersAreNot() {
         TenantLoginResponse root = signup("Root Flag Co");
@@ -69,7 +73,7 @@ class RootUserProtectionIntegrationTest {
                 "/api/users/" + root.user().id(),
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateUserRequest("PROCUREMENT_MANAGER", null, null, null, null, null, null), coOwner),
+                        new UpdateUserRequest(roleId("PROCUREMENT_MANAGER"), null, null, null, null, null, null), coOwner),
                 ApiError.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -139,12 +143,12 @@ class RootUserProtectionIntegrationTest {
                 "/api/users/" + coOwner.user().id(),
                 HttpMethod.PUT,
                 new HttpEntity<>(
-                        new UpdateUserRequest("FINANCE_OFFICER", null, null, null, null, null, null),
+                        new UpdateUserRequest(roleId("FINANCE_OFFICER"), null, null, null, null, null, null),
                         authHeaders(root)),
                 UserSummaryResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(response.getBody().role()).isEqualTo("FINANCE_OFFICER");
+        assertThat(response.getBody().roleName()).isEqualTo("FINANCE_OFFICER");
         assertThat(response.getBody().root()).isFalse();
     }
 
@@ -160,10 +164,14 @@ class RootUserProtectionIntegrationTest {
                         "/api/users",
                         HttpMethod.POST,
                         new HttpEntity<>(
-                                new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                                new CreateUserRequest(username, PASSWORD, roleId(role), null, null, null, null, null),
                                 authHeaders(asOwner)),
                         UserSummaryResponse.class)
                 .getBody();
+    }
+
+    private UUID roleId(String name) {
+        return roleRepository.findByName(name).orElseThrow().getId();
     }
 
     private TenantLoginResponse signup(String name) {

@@ -72,14 +72,14 @@ class UserManagementIntegrationTest {
         ResponseEntity<UserSummaryResponse> response = restTemplate.exchange(
                 "/api/users",
                 HttpMethod.POST,
-                new HttpEntity<>(new CreateUserRequest("bob", PASSWORD, "STOREKEEPER", "Bob", "Barker", "bob@example.com", "+2348012345678", "Storekeeper"), authHeaders(admin)),
+                new HttpEntity<>(new CreateUserRequest("bob", PASSWORD, roleId("STOREKEEPER"), "Bob", "Barker", "bob@example.com", "+2348012345678", "Storekeeper"), authHeaders(admin)),
                 UserSummaryResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
         UserSummaryResponse created = response.getBody();
         assertThat(created).isNotNull();
         assertThat(created.username()).isEqualTo("bob");
-        assertThat(created.role()).isEqualTo("STOREKEEPER");
+        assertThat(created.roleName()).isEqualTo("STOREKEEPER");
         assertThat(created.firstName()).isEqualTo("Bob");
         assertThat(created.lastName()).isEqualTo("Barker");
         assertThat(created.email()).isEqualTo("bob@example.com");
@@ -123,12 +123,12 @@ class UserManagementIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 staffAuth,
-                new CreateUserRequest("x", PASSWORD, "STOREKEEPER", null, null, null, null, null));
+                new CreateUserRequest("x", PASSWORD, roleId("STOREKEEPER"), null, null, null, null, null));
         assertForbidden(
                 "/api/users/" + someUserId,
                 HttpMethod.PUT,
                 staffAuth,
-                new UpdateUserRequest("PROCUREMENT_MANAGER", null, null, null, null, null, null));
+                new UpdateUserRequest(roleId("PROCUREMENT_MANAGER"), null, null, null, null, null, null));
         assertForbidden(
                 "/api/users/" + someUserId + "/reset-password",
                 HttpMethod.POST,
@@ -146,7 +146,7 @@ class UserManagementIntegrationTest {
         ResponseEntity<ApiError> roleChangeResponse = restTemplate.exchange(
                 "/api/users/" + ownId,
                 HttpMethod.PUT,
-                new HttpEntity<>(new UpdateUserRequest("PROCUREMENT_MANAGER", null, null, null, null, null, null), auth),
+                new HttpEntity<>(new UpdateUserRequest(roleId("PROCUREMENT_MANAGER"), null, null, null, null, null, null), auth),
                 ApiError.class);
         assertThat(roleChangeResponse.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(roleChangeResponse.getBody().message()).contains("own role");
@@ -221,7 +221,7 @@ class UserManagementIntegrationTest {
                                 new CreateUserRequest(
                                         "sub-" + UUID.randomUUID(),
                                         PASSWORD,
-                                        "STOREKEEPER",
+                                        roleId("STOREKEEPER"),
                                         "Original",
                                         "Name",
                                         "original@example.com",
@@ -244,17 +244,17 @@ class UserManagementIntegrationTest {
         assertThat(afterNameChange.lastName()).isEqualTo("Name");
         assertThat(afterNameChange.email()).isEqualTo("original@example.com");
         assertThat(afterNameChange.phone()).isEqualTo("+2340000000000");
-        assertThat(afterNameChange.role()).isEqualTo("STOREKEEPER");
+        assertThat(afterNameChange.roleName()).isEqualTo("STOREKEEPER");
         assertThat(afterNameChange.active()).isTrue();
 
         UserSummaryResponse afterRoleChange = restTemplate.exchange(
                         "/api/users/" + created.id(),
                         HttpMethod.PUT,
                         new HttpEntity<>(
-                                new UpdateUserRequest("FINANCE_OFFICER", false, null, null, null, null, null), auth),
+                                new UpdateUserRequest(roleId("FINANCE_OFFICER"), false, null, null, null, null, null), auth),
                         UserSummaryResponse.class)
                 .getBody();
-        assertThat(afterRoleChange.role()).isEqualTo("FINANCE_OFFICER");
+        assertThat(afterRoleChange.roleName()).isEqualTo("FINANCE_OFFICER");
         assertThat(afterRoleChange.active()).isFalse();
         assertThat(afterRoleChange.firstName()).isEqualTo("Renamed");
         assertThat(afterRoleChange.email()).isEqualTo("original@example.com");
@@ -308,9 +308,13 @@ class UserManagementIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, "STOREKEEPER", null, null, null, null, null),
+                        new CreateUserRequest(username, PASSWORD, roleId("STOREKEEPER"), null, null, null, null, null),
                         authHeaders(asAdmin)),
                 UserSummaryResponse.class);
+    }
+
+    private UUID roleId(String name) {
+        return roleRepository.findByName(name).orElseThrow().getId();
     }
 
     private HttpHeaders authHeaders(TenantLoginResponse response) {

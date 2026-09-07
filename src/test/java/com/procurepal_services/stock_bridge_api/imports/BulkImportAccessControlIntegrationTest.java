@@ -10,6 +10,7 @@ import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.PatchRowRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.ValueMappingRequest;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
 import java.nio.charset.StandardCharsets;
@@ -74,6 +75,9 @@ class BulkImportAccessControlIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     // ------------------------------------------------------------ tenant isolation
 
@@ -455,7 +459,15 @@ class BulkImportAccessControlIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                        new CreateUserRequest(
+                                username,
+                                PASSWORD,
+                                roleRepository.findByName(role).orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         authHeaders(owner)),
                 UserSummaryResponse.class);
         return restTemplate.postForObject(

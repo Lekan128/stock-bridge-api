@@ -12,6 +12,9 @@ public interface UserRepository extends TenantScopedRepository<User, UUID> {
 
     long countByClientIdAndRole_NameAndActiveTrue(UUID clientId, String roleName);
 
+    /** Whether any user (active or not) still holds this role - the guard on RoleManagementService.delete. */
+    long countByClientIdAndRole_Id(UUID clientId, UUID roleId);
+
     long countByClientId(UUID clientId);
 
     long countByClientIdAndActiveTrue(UUID clientId);

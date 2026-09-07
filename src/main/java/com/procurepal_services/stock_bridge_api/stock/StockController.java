@@ -29,10 +29,16 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Tenant-scoped stock ledger - see StockManagementService for isolation and concurrency handling. */
+/**
+ * Tenant-scoped stock ledger - see StockManagementService for isolation and concurrency handling.
+ *
+ * <p>No class-level {@code @PreAuthorize}: since STOCK_IN and STOCK_OUT (V27) split out of
+ * MANAGE_INVENTORY, receiving and issuing stock are independently grantable - see the
+ * separation-of-duties reasoning in the Roles & Privileges design - so each mutating endpoint
+ * gates on its own privilege rather than sharing one.
+ */
 @RestController
 @RequiredArgsConstructor
-@PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
 public class StockController {
 
     private final StockManagementService stockManagementService;
@@ -40,6 +46,7 @@ public class StockController {
     private final CostBasisAuditService costBasisAuditService;
 
     @PostMapping("/api/products/{productId}/stock/stock-in")
+    @PreAuthorize("hasAuthority('STOCK_IN')")
     public StockMutationResponse stockIn(
             @PathVariable UUID productId,
             @Valid @RequestBody StockInRequest request,
@@ -48,6 +55,7 @@ public class StockController {
     }
 
     @PostMapping("/api/products/{productId}/stock/stock-out")
+    @PreAuthorize("hasAuthority('STOCK_OUT')")
     public StockMutationResponse stockOut(
             @PathVariable UUID productId,
             @Valid @RequestBody StockOutRequest request,
@@ -56,6 +64,7 @@ public class StockController {
     }
 
     @PostMapping("/api/products/{productId}/stock/adjustment")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public StockMutationResponse adjust(
             @PathVariable UUID productId,
             @Valid @RequestBody StockAdjustmentRequest request,
@@ -64,6 +73,7 @@ public class StockController {
     }
 
     @GetMapping("/api/products/{productId}/stock/history")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public Page<StockMovementResponse> history(
             @PathVariable UUID productId,
             @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
@@ -76,10 +86,12 @@ public class StockController {
      * to {@code IN}, which showed consumed lots as available, showed no remaining quantity, and
      * missed everything past page 50 (UNIT_UX_REMEDIATION_PLAN.md section 3, P1-5).
      *
-     * <p>Gated by this class's {@code MANAGE_INVENTORY}, i.e. exactly what {@link #history}
-     * already requires - section 4 asks for it to match, and it is the same data seen from a
-     * different angle, so a second answer about who may see it would be an accident waiting to
-     * be found.
+     * <p>Gated by {@code MANAGE_INVENTORY} or {@code STOCK_OUT} rather than matching {@link
+     * #history} exactly (as it did before V27 split STOCK_OUT out of MANAGE_INVENTORY): this is
+     * what the stock-out lot picker itself calls, so a user who holds only STOCK_OUT - and not
+     * the broader MANAGE_INVENTORY - must still be able to load it, or their own stock-out flow
+     * breaks. It is still the same data seen from a different angle, just with a wider audience
+     * now that receiving and issuing are separately grantable.
      *
      * <p>Sits under {@code /api/products/{id}/...} alongside the stock routes rather than under
      * {@code /stock/**}, because a lot is only ever asked for in the context of one product.
@@ -88,12 +100,14 @@ public class StockController {
      *     case, and the only one that answers "what can I take this from".
      */
     @GetMapping("/api/products/{productId}/lots")
+    @PreAuthorize("hasAnyAuthority('MANAGE_INVENTORY', 'STOCK_OUT')")
     public List<ProductLotResponse> lots(
             @PathVariable UUID productId, @RequestParam(name = "open", defaultValue = "true") boolean open) {
         return stockManagementService.lots(productId, open);
     }
 
     @GetMapping("/api/stock/movements")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public Page<StockMovementResponse> allMovements(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
@@ -123,6 +137,7 @@ public class StockController {
      * to "which of my cost prices are wrong" is worse than a slow one.
      */
     @GetMapping("/api/stock/cost-basis-anomalies")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public List<CostBasisAnomalyResponse> costBasisAnomalies() {
         return costBasisAuditService.costBasisAnomalies();
     }
@@ -135,6 +150,7 @@ public class StockController {
      * directly by its own id rather than through a product.
      */
     @GetMapping("/api/stock-movements/{inMovementId}/allocations")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public List<AllocationResponse> allocations(@PathVariable UUID inMovementId) {
         return stockManagementService.allocationsForInMovement(inMovementId);
     }

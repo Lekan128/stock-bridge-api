@@ -105,7 +105,13 @@ class AuthIntegrationTest {
         assertThat(body.user().username()).isEqualTo("alice");
         assertThat(body.user().role()).isEqualTo("STOREKEEPER");
         assertThat(body.user().permissions())
-                .containsExactly("BROWSE_MARKETPLACE", "MANAGE_INVENTORY", "RECEIVE_DELIVERIES", "VIEW_PRODUCTS");
+                .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_INVENTORY",
+                        "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
+                        "VIEW_PRODUCTS");
         assertThat(body.user().clientName()).isEqualTo(client.getName());
         assertThat(body.user().platformOwner()).isFalse();
     }

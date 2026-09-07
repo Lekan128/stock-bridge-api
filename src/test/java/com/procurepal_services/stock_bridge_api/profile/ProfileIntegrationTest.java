@@ -9,6 +9,7 @@ import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.profile.dto.ChangePasswordRequest;
 import com.procurepal_services.stock_bridge_api.profile.dto.ProfileResponse;
 import com.procurepal_services.stock_bridge_api.profile.dto.UpdateProfileRequest;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
 import java.util.UUID;
@@ -38,6 +39,9 @@ class ProfileIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     @Test
     void meReturnsIdentityPermissionsAndTenantForTheRootOwner() {
@@ -74,6 +78,8 @@ class ProfileIntegrationTest {
                         "MANAGE_VENDORS",
                         "PLACE_ORDERS",
                         "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ALL_BRANCHES",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
@@ -100,7 +106,13 @@ class ProfileIntegrationTest {
         assertThat(response.getBody().role()).isEqualTo("STOREKEEPER");
         assertThat(response.getBody().root()).isFalse();
         assertThat(response.getBody().permissions())
-                .containsExactly("BROWSE_MARKETPLACE", "MANAGE_INVENTORY", "RECEIVE_DELIVERIES", "VIEW_PRODUCTS");
+                .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_INVENTORY",
+                        "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
+                        "VIEW_PRODUCTS");
     }
 
     @Test
@@ -235,7 +247,15 @@ class ProfileIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                        new CreateUserRequest(
+                                username,
+                                PASSWORD,
+                                roleRepository.findByName(role).orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         authHeaders(asOwner)),
                 UserSummaryResponse.class);
     }

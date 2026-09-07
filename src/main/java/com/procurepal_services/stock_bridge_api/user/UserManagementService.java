@@ -73,7 +73,7 @@ public class UserManagementService {
             throw new UsernameTakenException(request.username());
         }
 
-        Role role = resolveRole(request.role());
+        Role role = resolveRole(request.roleId());
 
         User user = userRepository.save(User.builder()
                 .username(request.username())
@@ -115,13 +115,13 @@ public class UserManagementService {
 
         // Checked before the root rules so a root user editing themselves still
         // gets the more specific "you can't change your own role here" message.
-        boolean requestsChange = request.role() != null || request.active() != null;
+        boolean requestsChange = request.roleId() != null || request.active() != null;
         if (requestsChange && user.getId().equals(callerId)) {
             throw new SelfServiceNotAllowedException();
         }
 
         if (user.isRoot()) {
-            if (request.role() != null) {
+            if (request.roleId() != null) {
                 throw new RootUserRoleChangeNotAllowedException();
             }
             if (Boolean.FALSE.equals(request.active())) {
@@ -129,7 +129,7 @@ public class UserManagementService {
             }
         }
 
-        Role newRole = request.role() != null ? resolveRole(request.role()) : user.getRole();
+        Role newRole = request.roleId() != null ? resolveRole(request.roleId()) : user.getRole();
         boolean newActive = request.active() != null ? request.active() : user.isActive();
 
         assertKeepsAtLeastOneActiveOwner(user, newRole.getName(), newActive);
@@ -180,13 +180,20 @@ public class UserManagementService {
         return userRepository.findByIdForCurrentTenant(id).orElseThrow(UserNotFoundException::new);
     }
 
-    private Role resolveRole(String roleName) {
-        if (!TenantRoles.ALL.contains(roleName)) {
-            throw new InvalidRoleException(roleName);
+    /**
+     * A role a user may be assigned: a system role from {@link TenantRoles#ALL} (VENDOR
+     * excluded - see that constant), or a custom role this tenant owns (client_id V27). Neither
+     * branch trusts the id alone - a role id belonging to another tenant's custom role, or to
+     * VENDOR, is rejected exactly like one that doesn't exist at all.
+     */
+    private Role resolveRole(UUID roleId) {
+        Role role = roleRepository.findById(roleId).orElseThrow(() -> new InvalidRoleException(roleId));
+        boolean assignable = role.isSystem() ? TenantRoles.ALL.contains(role.getName())
+                : role.getClientId().equals(requireTenantId());
+        if (!assignable) {
+            throw new InvalidRoleException(roleId);
         }
-        return roleRepository.findByName(roleName)
-                .orElseThrow(
-                        () -> new IllegalStateException(roleName + " role not seeded - run the Flyway migrations"));
+        return role;
     }
 
     /** Null means "leave alone" here, not "clear" - see UpdateUserRequest. */

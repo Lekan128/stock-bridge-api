@@ -307,6 +307,10 @@ class VendorFoundationIntegrationTest {
                         // rather than by this grant.
                         "MANAGE_MARKETPLACE_ORDERS",
                         "MANAGE_PRODUCTS",
+                        // V27. Split out of MANAGE_INVENTORY, which this role already held -
+                        // see StockController.
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ANALYTICS",
                         // V11's new, deliberately distinct code. NOT
                         // VIEW_MARKETPLACE_ANALYTICS - see below.

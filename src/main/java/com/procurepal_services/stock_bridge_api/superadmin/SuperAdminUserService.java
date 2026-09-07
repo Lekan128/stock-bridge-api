@@ -19,9 +19,9 @@ import com.procurepal_services.stock_bridge_api.user.RootUserRoleChangeNotAllowe
 import com.procurepal_services.stock_bridge_api.user.TenantRoles;
 import com.procurepal_services.stock_bridge_api.user.UserNotFoundException;
 import com.procurepal_services.stock_bridge_api.user.UsernameTakenException;
-import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerCreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
-import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerUpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
 import com.procurepal_services.stock_bridge_api.vendor.VendorSingleAccountRule;
 import java.util.UUID;
@@ -203,7 +203,7 @@ public class SuperAdminUserService {
      * under the same condition - a client that has no users yet needs an account
      * holder, and only a privileged server-side flow can say who it is. What has
      * NOT changed is the rule that comment was protecting: root is never something
-     * a caller can ask for. CreateUserRequest still has no {@code root} component
+     * a caller can ask for. PlatformOwnerCreateUserRequest still has no {@code root} component
      * (see its Javadoc), UserManagementService still hardcodes {@code root(false)}
      * because nothing created through the tenant-facing API is ever the account
      * holder, and the flag is derived here from a count the caller cannot influence
@@ -220,7 +220,7 @@ public class SuperAdminUserService {
      * makes both land inside this request rather than at an unrelated commit.
      */
     @Transactional
-    public UserSummaryResponse createPlatformOwnerUser(CreateUserRequest request) {
+    public UserSummaryResponse createPlatformOwnerUser(PlatformOwnerCreateUserRequest request) {
         Client platformOwner = requirePlatformOwner();
         UUID clientId = platformOwner.getId();
 
@@ -269,10 +269,10 @@ public class SuperAdminUserService {
     /**
      * Patch semantics, exactly like PUT /api/users/{id}: a body of
      * {@code {"active": false}} must not blank out the user's name and phone as a
-     * side effect. See UpdateUserRequest.
+     * side effect. See PlatformOwnerUpdateUserRequest.
      */
     @Transactional
-    public UserSummaryResponse updatePlatformOwnerUser(UUID userId, UpdateUserRequest request) {
+    public UserSummaryResponse updatePlatformOwnerUser(UUID userId, PlatformOwnerUpdateUserRequest request) {
         Client platformOwner = requirePlatformOwner();
         UUID clientId = platformOwner.getId();
 
@@ -389,8 +389,8 @@ public class SuperAdminUserService {
                         () -> new IllegalStateException(roleName + " role not seeded - run the Flyway migrations"));
     }
 
-    /** Null means "leave alone" here, not "clear" - see UpdateUserRequest. */
-    private void applyProfilePatch(User user, UpdateUserRequest request) {
+    /** Null means "leave alone" here, not "clear" - see PlatformOwnerUpdateUserRequest. */
+    private void applyProfilePatch(User user, PlatformOwnerUpdateUserRequest request) {
         if (request.firstName() != null) {
             user.setFirstName(normalize(request.firstName()));
         }
