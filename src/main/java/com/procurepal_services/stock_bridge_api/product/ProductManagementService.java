@@ -19,17 +19,26 @@ import com.procurepal_services.stock_bridge_api.imports.ImportSessionService;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductVendorSnapshot;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
+import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
+import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationService;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.ProductSkuSettingsResponse;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.SkuPreviewResponse;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.UpdateProductSkuSettingsRequest;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
+import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.storage.S3ImageService;
@@ -39,10 +48,12 @@ import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
@@ -88,6 +99,7 @@ public class ProductManagementService {
      * {@code companyvendor.ProductVendorService} instead.
      */
     private final ProductVendorRepository productVendorRepository;
+    private final ProductVendorPackRepository productVendorPackRepository;
     /** Backs the V19 {@code unitOfMeasure} immutability guard in {@link #update}. */
     private final StockMovementRepository stockMovementRepository;
     /**
@@ -107,13 +119,20 @@ public class ProductManagementService {
     private final CompanyVendorRepository companyVendorRepository;
     private final ImportSessionService importSessionService;
     private final ImportCommitExecutor importCommitExecutor;
+    private final ProductSkuSettingsService productSkuSettingsService;
+    private final SkuGenerationService skuGenerationService;
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
         UUID tenantId = requireTenantId();
         Page<Product> page = productRepository.findAll(ProductSpecifications.forTenant(tenantId, search, active), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
-        return page.map(product -> ProductResponse.from(product, preferredVendorNames.get(product.getId()), null));
+        Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
+        return page.map(product -> ProductResponse.from(
+                product,
+                preferredVendorNames.get(product.getId()),
+                null,
+                hasMultiplePacks.getOrDefault(product.getId(), false)));
     }
 
     @Transactional(readOnly = true)
@@ -124,7 +143,8 @@ public class ProductManagementService {
                 .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, id)
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
-        return ProductResponse.from(product, preferredVendorName, null);
+        boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
+        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks);
     }
 
     /**
@@ -141,6 +161,61 @@ public class ProductManagementService {
         return productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds).stream()
                 .collect(Collectors.toMap(
                         vendor -> vendor.getProduct().getId(), vendor -> vendor.getCompanyVendor().getName()));
+    }
+
+    /**
+     * Batched, same N+1-avoidance shape as {@link #preferredVendorNamesFor}: one query against
+     * {@code product_vendor_packs} for the whole page rather than one per row.
+     *
+     * <p>A product "has multiple packs" when more than one distinct (container, size) shape is
+     * in play for it - its own catalog pack (a fact independent of any vendor,
+     * MULTI_PACK_PER_VENDOR_DESIGN.md section 3) plus every one of its vendors' packs. A product
+     * whose only pack is its own, with zero vendor-specific overrides, reports {@code false} -
+     * that field is not "a default among several", it is the only one.
+     */
+    private Map<UUID, Boolean> hasMultiplePacksFor(List<Product> products) {
+        if (products.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, Set<String>> shapesByProduct = new HashMap<>();
+        for (Product product : products) {
+            if (product.getPackagingUnit() == null) continue;
+            shapesByProduct
+                    .computeIfAbsent(product.getId(), id -> new HashSet<>())
+                    .add(packShapeKey(product.getPackagingUnit(), product.getPackagingSize()));
+        }
+        List<UUID> productIds = products.stream().map(Product::getId).toList();
+        for (ProductVendorPackRepository.PackShape shape :
+                productVendorPackRepository.findPackShapesByProductIdIn(productIds)) {
+            shapesByProduct
+                    .computeIfAbsent(shape.getProductId(), id -> new HashSet<>())
+                    .add(packShapeKey(shape.getPackagingUnit(), shape.getPackagingSize()));
+        }
+        Map<UUID, Boolean> result = new HashMap<>();
+        shapesByProduct.forEach((id, shapes) -> result.put(id, shapes.size() > 1));
+        return result;
+    }
+
+    private static String packShapeKey(String packagingUnit, BigDecimal packagingSize) {
+        String unit = packagingUnit == null ? "NONE" : packagingUnit;
+        String size = packagingSize == null ? "" : packagingSize.stripTrailingZeros().toPlainString();
+        return unit + "|" + size;
+    }
+
+    @Transactional(readOnly = true)
+    public ProductSkuSettingsResponse getSkuSettings() {
+        return productSkuSettingsService.get(requireTenantId());
+    }
+
+    @Transactional
+    public ProductSkuSettingsResponse updateSkuSettings(UpdateProductSkuSettingsRequest request) {
+        return productSkuSettingsService.update(requireTenantId(), request);
+    }
+
+    @Transactional(readOnly = true)
+    public SkuPreviewResponse previewSku() {
+        SkuGenerationService.Preview preview = skuGenerationService.preview(requireTenantId());
+        return new SkuPreviewResponse(preview.sku(), preview.nextSequence());
     }
 
     @Transactional(readOnly = true)
@@ -167,7 +242,20 @@ public class ProductManagementService {
     @Transactional
     public ProductResponse create(CreateProductRequest request, MultipartFile image, UUID actingUserId) {
         UUID tenantId = requireTenantId();
-        assertSkuAvailable(tenantId, request.sku(), null);
+
+        // See CreateProductRequest's "sku is conditionally required" javadoc: whichever branch
+        // runs, request.sku() plays no further part below - `sku` is the one value this method
+        // actually uses.
+        String sku;
+        if (productSkuSettingsService.isEnabled(tenantId)) {
+            sku = skuGenerationService.generateAndReserveOne(tenantId, request.name());
+        } else {
+            if (request.sku() == null || request.sku().isBlank()) {
+                throw new SkuRequiredException();
+            }
+            assertSkuAvailable(tenantId, request.sku(), null);
+            sku = request.sku();
+        }
 
         // One lookup answers two questions: initialStatusFor below (existing) and isSeller
         // here (new) - see the class javadoc on "this is also a SELLER's catalogue editor".
@@ -193,7 +281,7 @@ public class ProductManagementService {
         // product created with none, later through ProductVendorService/StockManagementService.
         Product product = Product.builder()
                 .name(request.name())
-                .sku(request.sku())
+                .sku(sku)
                 .description(request.description())
                 .unitPrice(isSeller ? request.unitPrice() : null)
                 .lowStockThreshold(request.lowStockThreshold())
@@ -220,7 +308,7 @@ public class ProductManagementService {
         // StockMovement through StockManagementService.stockIn in the SAME transaction, and
         // that service locks the product row with a SELECT ... FOR UPDATE against the database
         // - it must already be able to find this row. Same reasoning
-        // IncomingStockService.findOrCreateBuyerProduct's own saveAndFlush documents.
+        // IncomingStockService.matchOrCreateBuyerProduct's own saveAndFlush documents.
         product = productRepository.saveAndFlush(product);
 
         String preferredVendorName = null;
@@ -265,8 +353,15 @@ public class ProductManagementService {
         return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
     }
 
+    /** Delegates to {@link #update(UUID, UpdateProductRequest, MultipartFile, AuthenticatedUserPrincipal)} with no principal - the sku-override permission check treats that as "not permitted." */
     @Transactional
     public ProductResponse update(UUID id, UpdateProductRequest request, MultipartFile image) {
+        return update(id, request, image, null);
+    }
+
+    @Transactional
+    public ProductResponse update(
+            UUID id, UpdateProductRequest request, MultipartFile image, AuthenticatedUserPrincipal principal) {
         Product product = findTenantProductOrThrow(id);
 
         // Same lookup create() makes, against the product's own tenant rather than the
@@ -290,6 +385,13 @@ public class ProductManagementService {
         BigDecimal beforePackagingSize = product.getPackagingSize();
 
         if (request.sku() != null && !request.sku().equals(product.getSku())) {
+            // Auto-generation locks the field client-side, but the server is the actual
+            // enforcement - see SkuOverrideNotPermittedException. Disabled tenants are
+            // unaffected: any MANAGE_PRODUCTS holder may still edit sku freely, exactly as
+            // before this feature existed.
+            if (productSkuSettingsService.isEnabled(product.getClientId()) && !hasSkuOverrideAuthority(principal)) {
+                throw new SkuOverrideNotPermittedException();
+            }
             assertSkuAvailable(product.getClientId(), request.sku(), id);
             product.setSku(request.sku());
         }
@@ -425,11 +527,23 @@ public class ProductManagementService {
             return Map.of();
         }
         List<UUID> productIds = products.stream().map(Product::getId).toList();
-        return productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds).stream()
+        List<ProductVendor> preferred = productVendorRepository.findPreferredByClientIdAndProductIdIn(tenantId, productIds);
+        // Batched, same N+1-avoidance reasoning findPreferredByClientIdAndProductIdIn already
+        // states for itself - vendorSku moved onto ProductVendorPack (V24) and is no longer a
+        // field this join fetches directly.
+        // Collectors.toMap rejects a null VALUE (Objects.requireNonNull inside its accumulator),
+        // and a pack's vendorSku is routinely null - the common case is a vendor line with no
+        // code recorded at all - so this collects by hand rather than via toMap.
+        Map<UUID, String> vendorSkuByVendorId = new HashMap<>();
+        for (ProductVendorPack pack : productVendorPackRepository
+                .findAllByProductVendorIdInAndIsDefaultTrue(preferred.stream().map(ProductVendor::getId).toList())) {
+            vendorSkuByVendorId.put(pack.getProductVendor().getId(), pack.getVendorSku());
+        }
+        return preferred.stream()
                 .collect(Collectors.toMap(
                         vendor -> vendor.getProduct().getId(),
                         vendor -> new ProductVendorSnapshot(
-                                vendor.getCompanyVendor().getName(), vendor.getVendorSku(), vendor.isPreferred())));
+                                vendor.getCompanyVendor().getName(), vendorSkuByVendorId.get(vendor.getId()), vendor.isPreferred())));
     }
 
     /**
@@ -454,7 +568,8 @@ public class ProductManagementService {
                 .stream()
                 .map(CompanyVendor::getName)
                 .toList();
-        return productExcelService.generateTemplate(new ProductTemplateContext(isSeller, vendorNames));
+        return productExcelService.generateTemplate(
+                new ProductTemplateContext(isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId)));
     }
 
     /**
@@ -529,19 +644,26 @@ public class ProductManagementService {
         // created row gets.
         Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
         boolean isSeller = owner != null && owner.canSell();
+        boolean skuAutoGenerated = productSkuSettingsService.isEnabled(tenantId);
 
         // Phase one: the frozen validation. See the method javadoc for why this still runs
         // through M2's parser rather than through the engine's own validation pass.
-        List<ParsedProductRow> parsedRows = productExcelService.parse(file, isSeller);
-        List<ProductRowError> duplicateSkuErrors = new ArrayList<>();
-        for (ParsedProductRow row : parsedRows) {
-            if (productRepository.findByClientIdAndSku(tenantId, row.sku()).isPresent()) {
-                duplicateSkuErrors.add(
-                        new ProductRowError(row.excelRow(), "sku", "SKU already exists in your product catalog"));
+        List<ParsedProductRow> parsedRows = productExcelService.parse(file, isSeller, skuAutoGenerated);
+        // Moot, and skipped outright, when auto-generated: parse() above never read a sku cell
+        // (row.sku() is null on every row), so there is nothing here to check against the
+        // catalog - the server's own generated values are checked for collisions later, inside
+        // SkuGenerationService, not against a value that was never supplied.
+        if (!skuAutoGenerated) {
+            List<ProductRowError> duplicateSkuErrors = new ArrayList<>();
+            for (ParsedProductRow row : parsedRows) {
+                if (productRepository.findByClientIdAndSku(tenantId, row.sku()).isPresent()) {
+                    duplicateSkuErrors.add(new ProductRowError(
+                            row.excelRow(), "sku", "SKU already exists in your product catalog"));
+                }
             }
-        }
-        if (!duplicateSkuErrors.isEmpty()) {
-            throw new BulkUploadValidationException(duplicateSkuErrors);
+            if (!duplicateSkuErrors.isEmpty()) {
+                throw new BulkUploadValidationException(duplicateSkuErrors);
+            }
         }
 
         // Phase two: the write, through the session engine. Design 10's "POST /api/imports +
@@ -551,7 +673,9 @@ public class ProductManagementService {
         ImportSessionResponse session =
                 importSessionService.create(file, ImportKind.PRODUCT_CATALOG, ImportMode.CREATE_ONLY, actingUserId);
         if (session.status() != ImportStatus.READY) {
-            importSessionService.discard(session.id());
+            // A catalog-kind session confirms no packs (ImportRowHandler.confirmPack is stock-in
+            // only), so there is never anything for the discard to be offered a choice about.
+            importSessionService.discard(session.id(), java.util.List.of());
             throw new BulkUploadValidationException(engineErrors(session.id()));
         }
 
@@ -666,6 +790,13 @@ public class ProductManagementService {
                 throw new SkuTakenException(sku);
             }
         });
+    }
+
+    /** V23's escape hatch for {@link #update} - see {@code SkuOverrideNotPermittedException} and the migration's role rationale. */
+    private boolean hasSkuOverrideAuthority(AuthenticatedUserPrincipal principal) {
+        return principal != null
+                && principal.getAuthorities().stream()
+                        .anyMatch(granted -> "PRODUCT_SKU_OVERRIDE".equals(granted.getAuthority()));
     }
 
     /**

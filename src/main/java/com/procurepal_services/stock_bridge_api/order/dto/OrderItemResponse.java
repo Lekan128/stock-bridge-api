@@ -12,6 +12,13 @@ import java.util.UUID;
  * receivedQuantity/outstandingQuantity are what the "confirm receipt" screen counts
  * down, and outstandingQuantity is exactly the amount still sitting as incoming
  * stock on the buyer's own product row.
+ *
+ * <p>{@code buyerProductNewlyCreated} tells the confirm-receipt screen whether {@code
+ * buyerProductId} is a brand new row materialize() had to create (no source-product or SKU
+ * match), as opposed to one the buyer already had. That is the one window - before this line's
+ * first receipt writes a StockMovement and {@code Product.unitOfMeasure} locks for good - where
+ * offering to edit the SKU/unit/pack {@code IncomingStockService} copied from the seller's
+ * listing is both meaningful and safe; see {@code ReceiveOrderModal}'s customization panel.
  */
 public record OrderItemResponse(
         UUID id,
@@ -25,7 +32,8 @@ public record OrderItemResponse(
         int quantity,
         int receivedQuantity,
         int outstandingQuantity,
-        BigDecimal lineTotal) {
+        BigDecimal lineTotal,
+        boolean buyerProductNewlyCreated) {
 
     public static OrderItemResponse from(OrderItem item) {
         return new OrderItemResponse(
@@ -40,6 +48,7 @@ public record OrderItemResponse(
                 item.getQuantity(),
                 item.getReceivedQuantity(),
                 item.outstandingQuantity(),
-                item.getLineTotal());
+                item.getLineTotal(),
+                item.isBuyerProductNewlyCreated());
     }
 }

@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
+import com.procurepal_services.stock_bridge_api.companyvendor.InvalidProductVendorPackException;
 import com.procurepal_services.stock_bridge_api.imports.dto.UndoBlockedResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -54,6 +55,26 @@ public class ImportExceptionHandler {
 
     @ExceptionHandler(ImportExceptions.BadFile.class)
     public ResponseEntity<ApiError> handleBadFile(ImportExceptions.BadFile ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(ImportExceptions.RowNotReady.class)
+    public ResponseEntity<ApiError> handleRowNotReady(ImportExceptions.RowNotReady ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
+    /**
+     * {@code confirm-pack}'s call into {@code ProductVendorService.addPack} can reject the same
+     * way the Vendors tab's own "+ Add pack" can - a duplicate (container, size), a non-positive
+     * size. {@code StockInRowHandler.confirmPack} now finds-or-creates so a plain retry never
+     * reaches this, but a genuine race (two tabs confirming the same candidate at once) still
+     * can. {@code ProductVendorExceptionHandler} already maps this exception to 400 for
+     * {@code ProductVendorController} - its {@code assignableTypes} scoping does not cover
+     * {@link ImportController}, which is why this needed its own handler here rather than being
+     * already covered.
+     */
+    @ExceptionHandler(InvalidProductVendorPackException.class)
+    public ResponseEntity<ApiError> handleInvalidPack(InvalidProductVendorPackException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 

@@ -85,7 +85,7 @@ class BulkImportRoundTripIntegrationTest {
     /** UNIT_UX_CONTRACT.md section 5.2's STOCK_IN column set, in order. */
     private static final List<String> STOCK_IN_TEMPLATE_HEADERS = List.of(
             "sku", "product_name", "how_you_count_it", "vendor_name", "quantity", "counted_in",
-            "cost_per_unit", "received_date", "reference");
+            "cost_per_unit", "received_date", "waybill_or_invoice_no");
 
     private static final String EXAMPLE_MARKER = "EXAMPLE-SKU-DELETE-ME";
 

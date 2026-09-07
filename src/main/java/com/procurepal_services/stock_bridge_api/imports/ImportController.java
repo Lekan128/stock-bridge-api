@@ -4,6 +4,8 @@ import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportMode;
 import com.procurepal_services.stock_bridge_api.imports.dto.ColumnMappingRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ConfirmPackRequest;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportLinkedPackResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
@@ -139,6 +141,17 @@ public class ImportController {
         return importSessionService.patchRow(id, rowId, request.normalized());
     }
 
+    /**
+     * "Confirm" on a candidate pack (MULTI_PACK_PER_VENDOR_DESIGN.md section 6a) - creates the
+     * pack the {@code COUNTED_IN_NEW_PACK} error's suggestion named, then patches and re-validates
+     * the row exactly like {@link #patchRow}. Stock-in only; every other kind's handler throws.
+     */
+    @PostMapping("/{id}/rows/{rowId}/confirm-pack")
+    public ImportRowResponse confirmPack(
+            @PathVariable UUID id, @PathVariable UUID rowId, @Valid @RequestBody ConfirmPackRequest request) {
+        return importSessionService.confirmCountedInPack(id, rowId, request.packagingUnit(), request.packagingSize());
+    }
+
     @PatchMapping("/{id}/rows/{rowId}/skip")
     public ImportRowResponse skipRow(
             @PathVariable UUID id, @PathVariable UUID rowId, @Valid @RequestBody SkipRowRequest request) {
@@ -217,9 +230,28 @@ public class ImportController {
         return importSessionService.list(kind, pageable);
     }
 
+    /**
+     * What discarding this session would take with it - every pack its review screen confirmed
+     * into existence (V25). The confirm dialog fetches this first so it can name them instead of
+     * the plain-discard copy claiming nothing will change, which stopped being true the moment
+     * MULTI_PACK_PER_VENDOR_DESIGN.md section 6a's "Confirm" started persisting independently of
+     * the session.
+     */
+    @GetMapping("/{id}/linked-packs")
+    public List<ImportLinkedPackResponse> linkedPacks(@PathVariable UUID id) {
+        return importSessionService.linkedPacks(id);
+    }
+
+    /**
+     * {@code removePackIds} - comma-separated, same lenient parsing as {@link #parseIds} - names
+     * which of {@link #linkedPacks} the caller also wants gone. Absent or empty leaves every pack
+     * exactly as before, which is the entire previous behaviour of this endpoint and stays the
+     * default: removal is something the discard dialog offers, never something it does silently.
+     */
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> discard(@PathVariable UUID id) {
-        importSessionService.discard(id);
+    public ResponseEntity<Void> discard(
+            @PathVariable UUID id, @RequestParam(required = false) String removePackIds) {
+        importSessionService.discard(id, parseIds(removePackIds));
         return ResponseEntity.noContent().build();
     }
 

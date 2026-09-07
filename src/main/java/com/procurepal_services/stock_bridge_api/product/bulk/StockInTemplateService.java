@@ -3,9 +3,11 @@ package com.procurepal_services.stock_bridge_api.product.bulk;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
-import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.time.LocalDate;
@@ -15,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -43,7 +46,7 @@ public class StockInTemplateService {
 
     private final ProductRepository productRepository;
     private final ProductVendorRepository productVendorRepository;
-    private final CompanyVendorRepository companyVendorRepository;
+    private final ProductVendorPackRepository productVendorPackRepository;
     private final StockInExcelService stockInExcelService;
 
     /**
@@ -60,8 +63,7 @@ public class StockInTemplateService {
             List<UUID> productIds, StockInTemplateFilter filter, UUID vendorId, UUID categoryId) {
         UUID tenantId = requireTenantId();
         List<Product> products = selectProducts(tenantId, productIds, filter, vendorId, categoryId);
-        return stockInExcelService.generateTemplate(
-                templateRows(tenantId, products), vendorDropdownNames(tenantId), LocalDate.now());
+        return stockInExcelService.generateTemplate(templateRows(tenantId, products), LocalDate.now());
     }
 
     private List<Product> selectProducts(
@@ -136,9 +138,24 @@ public class StockInTemplateService {
             preferredByProductId.put(line.getProduct().getId(), line);
         }
 
+        // Batched, same N+1-avoidance reasoning findPreferredByClientIdAndProductIdIn already
+        // states for itself - a vendor's packs (MULTI_PACK_PER_VENDOR_DESIGN.md sections 4-6) are
+        // a LAZY association, and this page can be a full catalog's worth of preferred vendors.
+        List<UUID> preferredVendorIds = preferredByProductId.values().stream().map(ProductVendor::getId).toList();
+        Map<UUID, List<ProductVendorPack>> packsByVendorId = preferredVendorIds.isEmpty()
+                ? Map.of()
+                : productVendorPackRepository
+                        .findAllByProductVendorIdInOrderByIsDefaultDescCreatedAtAsc(preferredVendorIds)
+                        .stream()
+                        .collect(Collectors.groupingBy(pack -> pack.getProductVendor().getId()));
+
         return products.stream()
                 .map(product -> {
                     ProductVendor preferred = preferredByProductId.get(product.getId());
+                    List<ProductVendorPack> packs =
+                            preferred == null ? List.of() : packsByVendorId.getOrDefault(preferred.getId(), List.of());
+                    ProductVendorPack defaultPack =
+                            packs.stream().filter(ProductVendorPack::isDefault).findFirst().orElse(null);
                     return new StockInTemplateRow(
                             product.getId(),
                             product.getSku(),
@@ -148,19 +165,12 @@ public class StockInTemplateService {
                                     product.getUnitOfMeasure(),
                                     product.getPackagingUnit(),
                                     product.getPackagingSize(),
-                                    preferred == null ? null : preferred.getDefaultPackagingUnit(),
-                                    preferred == null ? null : preferred.getDefaultPackagingSize()),
-                            preferred == null ? product.getCostPrice() : preferred.getLastCostPrice());
+                                    packs.stream()
+                                            .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
+                                            .toList()),
+                            preferred == null ? product.getCostPrice() : (defaultPack == null ? null : defaultPack.getLastCostPrice()));
                 })
                 .toList();
-    }
-
-    /** The tenant's suppliers for the dropdown, subject to the same cap the product template uses. */
-    private List<String> vendorDropdownNames(UUID tenantId) {
-        List<String> names = companyVendorRepository.findAllByClientIdAndActiveTrueOrderByNameAsc(tenantId).stream()
-                .map(CompanyVendor::getName)
-                .toList();
-        return names.size() > ImportLimits.VENDOR_DROPDOWN_CAP ? List.of() : names;
     }
 
     private UUID requireTenantId() {

@@ -63,7 +63,7 @@ class ProductExcelServiceTest {
      */
     @Test
     void theSellerTemplateCarriesEveryContractColumnInOrder() {
-        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS)));
+        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false)));
 
         assertThat(headers).containsExactly(
                 "name", "sku", "description",
@@ -78,7 +78,7 @@ class ProductExcelServiceTest {
      */
     @Test
     void theTemplateSpellsTheColumnsSection94sWayAndHasNoCountedInColumn() {
-        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS)));
+        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false)));
 
         assertThat(headers).doesNotContain(
                 "unit_of_measure", "packaging_unit", "packaging_size", "low_stock_threshold",
@@ -88,7 +88,7 @@ class ProductExcelServiceTest {
     /** A buying company has no selling price at all, so the column is absent rather than optional. */
     @Test
     void theCompanyTemplateDropsUnitPriceAndKeepsEverythingElseInPlace() {
-        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(false, VENDORS)));
+        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(false, VENDORS, false)));
 
         assertThat(headers).doesNotContain("unit_price");
         assertThat(headers).containsSequence("stock_unit", "pack", "units_per_pack");
@@ -105,7 +105,7 @@ class ProductExcelServiceTest {
      */
     @Test
     void theLookupSheetIsPresentHiddenAndItsNamedRangesResolveToTheRealValues() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS));
+        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
 
         try (XSSFWorkbook workbook = open(file)) {
             int lookupIndex = workbook.getSheetIndex(LookupSheetWriter.SHEET_NAME);
@@ -138,7 +138,7 @@ class ProductExcelServiceTest {
      */
     @Test
     void everyIntendedColumnReallyHasADropdownInTheWrittenFile() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS));
+        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
 
         try (XSSFWorkbook workbook = open(file)) {
             XSSFSheet sheet = workbook.getSheetAt(0);
@@ -167,7 +167,7 @@ class ProductExcelServiceTest {
     /** The dropdown must cover the rows the user will paste into, not just the example rows. */
     @Test
     void dropdownsCoverTheWholeImportableRange() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS));
+        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
 
         try (XSSFWorkbook workbook = open(file)) {
             XSSFDataValidation validation = (XSSFDataValidation) workbook.getSheetAt(0).getDataValidations().stream()
@@ -194,7 +194,7 @@ class ProductExcelServiceTest {
                 .mapToObj(i -> "Supplier " + i)
                 .toList();
 
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, tooMany));
+        byte[] file = service.generateTemplate(new ProductTemplateContext(true, tooMany, false));
 
         try (XSSFWorkbook workbook = open(file)) {
             Map<String, String> rangeByColumn = dropdownRangesByColumn(workbook.getSheetAt(0), headersOf(file));
@@ -229,7 +229,7 @@ class ProductExcelServiceTest {
      */
     @Test
     void everyColumnCarriesItsOwnHeaderComment() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS));
+        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
 
         try (XSSFWorkbook workbook = open(file)) {
             Row header = workbook.getSheetAt(0).getRow(0);
@@ -249,7 +249,7 @@ class ProductExcelServiceTest {
     /** Number formats, so a user typing 45,000 gets a number and not a string the parser has to rescue. */
     @Test
     void priceAndQuantityColumnsCarryNumberFormats() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS));
+        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
 
         try (XSSFWorkbook workbook = open(file)) {
             XSSFSheet sheet = workbook.getSheetAt(0);
@@ -378,7 +378,7 @@ class ProductExcelServiceTest {
      */
     @Test
     void theCountedInColumnIsGoneEntirelyAndItsOldSpellingIsNotAnAlias() {
-        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(false, VENDORS)));
+        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(false, VENDORS, false)));
         assertThat(headers).doesNotContain("opening_stock_counted_in");
 
         // Not merely absent from the template - not readable either. A file still carrying the
@@ -526,7 +526,7 @@ class ProductExcelServiceTest {
      */
     @Test
     void aFilledInTemplateRoundTripsThroughItsOwnParser() {
-        byte[] template = service.generateTemplate(new ProductTemplateContext(false, VENDORS));
+        byte[] template = service.generateTemplate(new ProductTemplateContext(false, VENDORS, false));
         byte[] filled = fillIn(template, List.of(
                 Map.of("name", "Rice 50kg", "sku", "RICE-50", "cost_price", "840",
                         "opening_stock", "40", "stock_unit", "Kilogram (kg)", "pack", "Bag",

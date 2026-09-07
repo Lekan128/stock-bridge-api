@@ -22,6 +22,14 @@ import java.util.UUID;
  * user "when did this arrive" wants {@code occurredAt}; anything auditing "when did this get
  * entered" wants {@code createdAt}, and the two must not be used interchangeably now that they
  * can genuinely differ.
+ *
+ * <h2>V21: enteredUnit/enteredQuantity/enteredUnitPrice were captured but never published</h2>
+ * {@code StockMovement} has stored these since V21 specifically so a delivery entered in a
+ * one-off pack (the stock-in modal's "this delivery came in a different pack", left unticked so
+ * it never becomes a persistent {@code ProductVendorPack}) stays legible in the ledger afterward.
+ * Until now they stopped at this DTO's boundary, so the only place that fact could ever resurface
+ * was empty. Null on every OUT/ADJUSTMENT row and on any IN entered directly in the stock unit,
+ * same as {@code packagingUnit}/{@code packagingSize}.
  */
 public record StockMovementResponse(
         UUID id,
@@ -35,6 +43,9 @@ public record StockMovementResponse(
         String companyVendorName,
         String packagingUnit,
         BigDecimal packagingSize,
+        String enteredUnit,
+        BigDecimal enteredQuantity,
+        BigDecimal enteredUnitPrice,
         OffsetDateTime occurredAt,
         OffsetDateTime createdAt) {
 
@@ -53,6 +64,9 @@ public record StockMovementResponse(
                 movement.getCompanyVendor() == null ? null : movement.getCompanyVendor().getName(),
                 movement.getPackagingUnit(),
                 movement.getPackagingSize(),
+                movement.getEnteredUnit(),
+                movement.getEnteredQuantity(),
+                movement.getEnteredUnitPrice(),
                 movement.getOccurredAt(),
                 movement.getCreatedAt());
     }

@@ -185,7 +185,8 @@ public class ImportColumnMapper {
         // an alias here rather than matching by identity as it used to.
         put(aliases, ImportFields.UNITS_PER_PACK, "packaging_size", "pack_size", "package_size", "size", "qty_per_pack");
         put(aliases, ImportFields.RECEIVED_DATE, "date", "received", "delivery_date", "date_received", "invoice_date", "receipt_date");
-        put(aliases, ImportFields.REFERENCE, "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "ref", "doc_no");
+        put(aliases, ImportFields.WAYBILL_OR_INVOICE_NO,
+                "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "ref", "doc_no");
         return Map.copyOf(aliases);
     }
 

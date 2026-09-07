@@ -1,15 +1,19 @@
 package com.procurepal_services.stock_bridge_api.imports;
 
+import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_NAME_MARKER_PREFIX;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_SKU_MARKER_PREFIX;
 
+import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportMode;
 import com.procurepal_services.stock_bridge_api.entity.ImportRowStatus;
 import com.procurepal_services.stock_bridge_api.entity.ImportSession;
 import com.procurepal_services.stock_bridge_api.entity.ImportSessionRow;
 import com.procurepal_services.stock_bridge_api.entity.ImportStatus;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportLinkedPackResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
@@ -24,10 +28,14 @@ import com.procurepal_services.stock_bridge_api.imports.io.SheetRow;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetTable;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReadException;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReader;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRepository;
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -98,6 +106,8 @@ public class ImportSessionService {
 
     private final ImportSessionRepository importSessionRepository;
     private final ImportSessionRowRepository importSessionRowRepository;
+    private final ProductVendorPackRepository productVendorPackRepository;
+    private final ProductVendorService productVendorService;
     private final UserRepository userRepository;
     private final SpreadsheetReader spreadsheetReader;
     private final ImportColumnMapper columnMapper;
@@ -207,8 +217,17 @@ public class ImportSessionService {
      * screen of the single most common stock-in journey there is.
      *
      * <p>Matched on the mapped {@code sku} column rather than on a fixed index, so it still works
-     * on a file whose columns have been rearranged or renamed and then mapped by hand - and does
-     * nothing at all to a file with no sku column, where there is no marker to find.
+     * on a file whose columns have been rearranged or renamed and then mapped by hand.
+     *
+     * <p>Falls back to matching {@link #EXAMPLE_NAME_MARKER_PREFIX} on the mapped {@code name}
+     * column when there is no {@code sku} column to find a marker on at all - which is not just "a
+     * file with no sku column" any more as of automatic SKU generation
+     * ({@code ProductSkuSettings}): {@code ProductExcelService.headerNamesFor} omits {@code sku}
+     * from the template entirely for a tenant with it on, and that template's own example rows
+     * carry the marker on {@code name} instead - see {@code
+     * ProductExcelService#EXAMPLE_NAME_MARKER_PREFIX}'s javadoc. Still falls through to returning
+     * every row when neither column is mapped, for a genuinely custom file with no name column
+     * either.
      */
     private List<SheetRow> withoutExampleRows(SheetTable table, Map<String, String> columnMapping) {
         String skuHeader = columnMapping.entrySet().stream()
@@ -216,14 +235,29 @@ public class ImportSessionService {
                 .map(Map.Entry::getKey)
                 .findFirst()
                 .orElse(null);
-        if (skuHeader == null) {
+        if (skuHeader != null) {
+            return table.rows().stream()
+                    .filter(row -> {
+                        String sku = table.value(row, skuHeader);
+                        return sku == null
+                                || !sku.trim().toUpperCase(Locale.ROOT).startsWith(EXAMPLE_SKU_MARKER_PREFIX);
+                    })
+                    .toList();
+        }
+
+        String nameHeader = columnMapping.entrySet().stream()
+                .filter(entry -> ImportFields.NAME.equals(entry.getValue()))
+                .map(Map.Entry::getKey)
+                .findFirst()
+                .orElse(null);
+        if (nameHeader == null) {
             return table.rows();
         }
         return table.rows().stream()
                 .filter(row -> {
-                    String sku = table.value(row, skuHeader);
-                    return sku == null
-                            || !sku.trim().toUpperCase(Locale.ROOT).startsWith(EXAMPLE_SKU_MARKER_PREFIX);
+                    String name = table.value(row, nameHeader);
+                    return name == null
+                            || !name.trim().toUpperCase(Locale.ROOT).startsWith(EXAMPLE_NAME_MARKER_PREFIX);
                 })
                 .toList();
     }
@@ -347,6 +381,38 @@ public class ImportSessionService {
             normalized.put(entry.getKey(), entry.getValue());
             edited.add(entry.getKey());
         }
+        normalized.put(ImportFields.EDITED, new ArrayList<>(edited));
+        row.setNormalized(normalized);
+        importSessionRowRepository.saveAndFlush(row);
+
+        revalidate(session, allRows(session), null);
+        return toRowResponse(requireRow(session, rowId), session.getColumnMapping());
+    }
+
+    /**
+     * The review grid's one-click "Confirm" on a candidate pack
+     * (MULTI_PACK_PER_VENDOR_DESIGN.md section 6a) - a {@code counted_in} cell that parsed as a
+     * deliberate size declaration ("100 kg") rather than a plain mistake. Delegates the actual
+     * resolution and pack creation to the session's kind-specific handler
+     * ({@link ImportRowHandler#confirmPack}, unsupported by every kind except stock-in), then
+     * patches the row exactly like {@link #patchRow} does - same revalidation, same response
+     * shape - so the confirmed pack resolves cleanly on the pass that follows.
+     */
+    @Transactional
+    public ImportRowResponse confirmCountedInPack(
+            UUID sessionId, UUID rowId, String packagingUnit, BigDecimal packagingSize) {
+        ImportSession session = requireEditable(sessionId);
+        ImportSessionRow row = requireRow(session, rowId);
+        ValueMappings valueMappings = new ValueMappings(session.getValueMappings());
+
+        String label = handlerFor(session.getKind())
+                .confirmPack(row, requireTenantId(), valueMappings, packagingUnit, packagingSize);
+
+        Map<String, Object> normalized =
+                new LinkedHashMap<>(row.getNormalized() == null ? Map.of() : row.getNormalized());
+        Set<String> edited = new LinkedHashSet<>(editedKeys(row));
+        normalized.put(ImportFields.COUNTED_IN, label);
+        edited.add(ImportFields.COUNTED_IN);
         normalized.put(ImportFields.EDITED, new ArrayList<>(edited));
         row.setNormalized(normalized);
         importSessionRowRepository.saveAndFlush(row);
@@ -977,9 +1043,7 @@ public class ImportSessionService {
      * a place you can act from rather than only read.
      */
     private String targetUrlFor(ImportSession session) {
-        return session.getKind() == ImportKind.STOCK_IN
-                ? "/app/stock/movements?importBatchId=" + session.getId()
-                : "/app/products?importBatchId=" + session.getId();
+        return "/app/products?importBatchId=" + session.getId();
     }
 
     @SuppressWarnings("unchecked")
@@ -1133,13 +1197,60 @@ public class ImportSessionService {
 
     // ----------------------------------------------------------------- discard
 
+    /**
+     * The packs this session's review screen confirmed into existence - {@code GET
+     * /api/imports/{id}/linked-packs}, called before a discard so the confirmation dialog can
+     * name them rather than the plain-discard copy silently claiming nothing will change (V25).
+     */
+    public List<ImportLinkedPackResponse> linkedPacks(UUID id) {
+        ImportSession session = require(id);
+        return productVendorPackRepository.findAllByCreatedFromImportSessionId(session.getId()).stream()
+                .map(pack -> new ImportLinkedPackResponse(
+                        pack.getId(),
+                        pack.getProductVendor().getProduct().getName(),
+                        pack.getProductVendor().getCompanyVendor().getName(),
+                        UnitOptions.packLabel(
+                                UnitOfMeasure.fromCode(pack.getPackagingUnit())
+                                        .map(UnitOfMeasure::label)
+                                        .orElse(pack.getPackagingUnit()),
+                                pack.getPackagingSize(),
+                                pack.getProductVendor().getProduct().getUnitOfMeasure())))
+                .toList();
+    }
+
+    /**
+     * @param removePackIds packs to take with the session, from {@link #linkedPacks}. Each is
+     *     re-checked against this exact session before deletion - never trusted bare off the
+     *     wire - so a stale or tampered id can only ever be a no-op, never someone else's pack.
+     *     A pack {@link com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService
+     *     #deletePack} refuses (already gone, or reused since the dialog was shown) is skipped
+     *     rather than failing the whole discard over one pack that can no longer be pulled back.
+     */
     @Transactional
-    public void discard(UUID id) {
+    public void discard(UUID id, List<UUID> removePackIds) {
         ImportSession session = require(id);
         if (!session.isUncommitted()) {
             throw new ImportExceptions.NotCommittable(
                     "This file has already been imported, so it cannot be thrown away. Undo it instead if you want "
                             + "to reverse it.");
+        }
+        if (removePackIds != null && !removePackIds.isEmpty()) {
+            Map<UUID, ProductVendorPack> eligible = productVendorPackRepository
+                    .findAllByCreatedFromImportSessionId(session.getId())
+                    .stream()
+                    .collect(java.util.stream.Collectors.toMap(ProductVendorPack::getId, pack -> pack));
+            for (UUID packId : removePackIds) {
+                ProductVendorPack pack = eligible.get(packId);
+                if (pack == null) {
+                    continue;
+                }
+                try {
+                    productVendorService.deletePack(
+                            pack.getProductVendor().getProduct().getId(), pack.getProductVendor().getId(), packId);
+                } catch (RuntimeException stillInUse) {
+                    // Left in place - see the javadoc on removePackIds.
+                }
+            }
         }
         importSessionRowRepository.deleteAllBySessionId(session.getId());
         importSessionRepository.delete(session);

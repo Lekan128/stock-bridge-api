@@ -4,6 +4,9 @@ import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.ProductSkuSettingsResponse;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.SkuPreviewResponse;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.UpdateProductSkuSettingsRequest;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureResponse;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
@@ -25,6 +28,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
@@ -59,6 +63,36 @@ public class ProductController {
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public ResponseEntity<byte[]> export() {
         return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
+    }
+
+    /**
+     * MANAGE_PRODUCTS, not VIEW_PRODUCTS: unlike the company profile's read side, this is
+     * generation CONFIGURATION - relevant to whoever might change it or the create-product form,
+     * not to every role that can merely see the catalog.
+     */
+    @GetMapping("/sku-settings")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ProductSkuSettingsResponse getSkuSettings() {
+        return productManagementService.getSkuSettings();
+    }
+
+    @PutMapping("/sku-settings")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ProductSkuSettingsResponse updateSkuSettings(@Valid @RequestBody UpdateProductSkuSettingsRequest request) {
+        return productManagementService.updateSkuSettings(request);
+    }
+
+    /**
+     * A non-committing peek - see {@code SkuGenerationService.preview}. Called once per
+     * create-product form load, not per keystroke: the response's {@code nextSequence} is the
+     * only part of the preview the client cannot compute itself, and the create form re-renders
+     * the displayed SKU locally as the product name changes, against the pattern it already has
+     * from {@code GET /api/products/sku-settings}.
+     */
+    @GetMapping("/sku-preview")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public SkuPreviewResponse previewSku() {
+        return productManagementService.previewSku();
     }
 
     /**
@@ -134,8 +168,9 @@ public class ProductController {
     public ProductResponse update(
             @PathVariable UUID id,
             @Valid @RequestPart("product") UpdateProductRequest request,
-            @RequestPart(value = "image", required = false) MultipartFile image) {
-        return productManagementService.update(id, request, image);
+            @RequestPart(value = "image", required = false) MultipartFile image,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return productManagementService.update(id, request, image, principal);
     }
 
     @DeleteMapping("/{id}")

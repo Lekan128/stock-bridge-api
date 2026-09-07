@@ -13,7 +13,6 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -21,7 +20,6 @@ import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellType;
 import org.apache.poi.ss.usermodel.Row;
 import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.xssf.usermodel.XSSFDataValidation;
 import org.apache.poi.xssf.usermodel.XSSFSheet;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
@@ -39,8 +37,6 @@ class StockInExcelServiceTest {
 
     private static final LocalDate TODAY = LocalDate.of(2026, 8, 27);
 
-    private static final List<String> VENDORS = List.of("Dangote Nigeria Plc", "Ade Foods Ltd");
-
     /**
      * Three shapes that between them cover the whole column set: a product with a pack, a second
      * one whose pack is a different size (so the dropdown has to carry both labels), and one sold
@@ -52,29 +48,29 @@ class StockInExcelServiceTest {
      */
     private static final List<StockInTemplateRow> CATALOG = List.of(
             new StockInTemplateRow(UUID.randomUUID(), "RICE-50", "Rice 50kg", "Dangote Nigeria Plc",
-                    SheetUnitOptions.forRow("KG", "BAG", new BigDecimal("50"), null, null),
+                    SheetUnitOptions.forRow("KG", "BAG", new BigDecimal("50"), List.of()),
                     new BigDecimal("900")),
             new StockInTemplateRow(UUID.randomUUID(), "GARRI-25", "Garri 25kg", "Dangote Nigeria Plc",
-                    SheetUnitOptions.forRow("KG", "BAG", new BigDecimal("25"), null, null),
+                    SheetUnitOptions.forRow("KG", "BAG", new BigDecimal("25"), List.of()),
                     new BigDecimal("740")),
             // A product with no supplier line yet - its unit set still pre-fills, and only the two
             // genuinely unknown columns are left blank.
             new StockInTemplateRow(UUID.randomUUID(), "OIL-5L", "Groundnut Oil 5L", null,
-                    SheetUnitOptions.forRow("LITER", null, null, null, null), null));
+                    SheetUnitOptions.forRow("LITER", null, null, List.of()), null));
 
     // ---------------------------------------------------------------------------- the columns ----
 
     @Test
     void theSheetCarriesTheContractsStockInColumnsInOrder() {
-        assertThat(headersOf(service.generateTemplate(CATALOG, VENDORS, TODAY)))
+        assertThat(headersOf(service.generateTemplate(CATALOG, TODAY)))
                 .containsExactly("sku", "product_name", "how_you_count_it", "vendor_name", "quantity",
-                        "counted_in", "cost_per_unit", "received_date", "reference");
+                        "counted_in", "cost_per_unit", "received_date", "waybill_or_invoice_no");
     }
 
     /** The removed column is gone from the sheet - contract section 5.2, plan P3-3. */
     @Test
     void packagingSizeIsNoLongerAColumnOnTheSheet() {
-        assertThat(headersOf(service.generateTemplate(CATALOG, VENDORS, TODAY))).doesNotContain("packaging_size");
+        assertThat(headersOf(service.generateTemplate(CATALOG, TODAY))).doesNotContain("packaging_size");
     }
 
     /**
@@ -83,7 +79,7 @@ class StockInExcelServiceTest {
      */
     @Test
     void theTemplateIsTheTenantsCatalogWithOnlyQuantityLeftBlank() {
-        byte[] file = service.generateTemplate(CATALOG, VENDORS, TODAY);
+        byte[] file = service.generateTemplate(CATALOG, TODAY);
 
         try (XSSFWorkbook workbook = open(file)) {
             Sheet sheet = workbook.getSheetAt(0);
@@ -112,7 +108,7 @@ class StockInExcelServiceTest {
      */
     @Test
     void howYouCountItStatesTheValidAnswersOnTheRowThatAsksTheQuestion() {
-        byte[] file = service.generateTemplate(CATALOG, VENDORS, TODAY);
+        byte[] file = service.generateTemplate(CATALOG, TODAY);
 
         try (XSSFWorkbook workbook = open(file)) {
             Sheet sheet = workbook.getSheetAt(0);
@@ -139,7 +135,7 @@ class StockInExcelServiceTest {
      */
     @Test
     void costPerUnitIsPreFilledInTheTermsOfTheRowsCountedIn() {
-        byte[] file = service.generateTemplate(CATALOG, VENDORS, TODAY);
+        byte[] file = service.generateTemplate(CATALOG, TODAY);
 
         try (XSSFWorkbook workbook = open(file)) {
             Sheet sheet = workbook.getSheetAt(0);
@@ -160,7 +156,7 @@ class StockInExcelServiceTest {
     /** A product with no vendor line still gets its unit set and its date; only what we do not know is blank. */
     @Test
     void aProductWithNoSupplierStillPreFillsEverythingWeDoKnow() {
-        byte[] file = service.generateTemplate(CATALOG, VENDORS, TODAY);
+        byte[] file = service.generateTemplate(CATALOG, TODAY);
 
         try (XSSFWorkbook workbook = open(file)) {
             List<String> headers = headersOf(file);
@@ -182,7 +178,7 @@ class StockInExcelServiceTest {
      */
     @Test
     void noCellOnTheSheetContainsAnInternalUnitCode() {
-        byte[] file = service.generateTemplate(CATALOG, VENDORS, TODAY);
+        byte[] file = service.generateTemplate(CATALOG, TODAY);
 
         try (XSSFWorkbook workbook = open(file)) {
             Sheet sheet = workbook.getSheetAt(0);
@@ -198,61 +194,27 @@ class StockInExcelServiceTest {
         }
     }
 
-    // -------------------------------------------------------------------------- the dropdowns ----
+    // ---------------------------------------------------------------- no dropdown, on purpose ----
 
     /**
-     * Read back out of the written file, for the reason {@code ProductExcelServiceTest} states: a
-     * validation that failed to attach is invisible to a test that only checks cell values.
-     *
-     * <p>Flat lists only. A per-row dependent dropdown via {@code INDIRECT} would show up here as
-     * one validation region per row, and BULK_IMPORT_DESIGN.md section 8.3 forbids it because it
-     * breaks everywhere except Excel.
+     * {@code counted_in} and {@code vendor_name} used to carry a flat, {@code WARNING}-style
+     * dropdown - Excel treats that as dismissible, but LibreOffice, Numbers and WPS commonly
+     * enforce any list-validated cell as a hard picker regardless of the error style, which made
+     * both columns silently un-typable outside Excel. Neither column carries any data validation
+     * now, precisely so a user on any of those apps can still type a new pack size
+     * (MULTI_PACK_PER_VENDOR_DESIGN.md section 6a) or a new supplier's name.
      */
     @Test
-    void theCountedInAndVendorColumnsHaveFlatDropdownsInTheWrittenFile() {
-        byte[] file = service.generateTemplate(CATALOG, VENDORS, TODAY);
+    void countedInAndVendorNameCarryNoDataValidationInAnyApp() {
+        byte[] file = service.generateTemplate(CATALOG, TODAY);
 
         try (XSSFWorkbook workbook = open(file)) {
             XSSFSheet sheet = workbook.getSheetAt(0);
-            List<String> headers = headersOf(file);
-            Map<String, String> rangeByColumn = new LinkedHashMap<>();
-            for (XSSFDataValidation validation : sheet.getDataValidations()) {
-                assertThat(validation.getValidationConstraint().getFormula1())
-                        .as("a formula constraint over a named range, never an INDIRECT")
-                        .doesNotContain("INDIRECT");
-                for (int i = 0; i < validation.getRegions().countRanges(); i++) {
-                    rangeByColumn.put(
-                            headers.get(validation.getRegions().getCellRangeAddress(i).getFirstColumn()),
-                            validation.getValidationConstraint().getFormula1());
-                }
-            }
-
-            assertThat(rangeByColumn)
-                    .containsEntry("counted_in", "stock_in_units")
-                    .containsEntry("vendor_name", "vendor_names");
-            assertThat(rangeByColumn.keySet())
-                    .doesNotContain("sku", "product_name", "how_you_count_it", "quantity", "cost_per_unit",
-                            "received_date", "reference");
-
-            assertThat(workbook.getName("stock_in_units")).isNotNull();
-            int lookups = workbook.getSheetIndex(LookupSheetWriter.SHEET_NAME);
-            assertThat(lookups).isNotNegative();
-            assertThat(workbook.isSheetHidden(lookups)).isTrue();
+            assertThat(sheet.getDataValidations()).isEmpty();
+            assertThat(workbook.getSheetIndex(LookupSheetWriter.SHEET_NAME)).isNegative();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-    }
-
-    /**
-     * The dropdown carries the same strings the cells do - the packs actually in use on this sheet,
-     * then every base unit's symbol. A user who opens it sees "Bag of 50 kg", not "BAG".
-     */
-    @Test
-    void theCountedInDropdownOffersLabelsNotCodes() {
-        assertThat(lookupList(service.generateTemplate(CATALOG, VENDORS, TODAY), "stock_in_units"))
-                .startsWith("Bag of 50 kg", "Bag of 25 kg")
-                .contains("kg", "L", "Piece")
-                .doesNotContain("KG", "BAG", "LITER");
     }
 
     // ------------------------------------------------------------------------ the silent skip ----
@@ -264,7 +226,7 @@ class StockInExcelServiceTest {
      */
     @Test
     void rowsWithNoQuantityAreSkippedSilentlyRatherThanErrored() {
-        byte[] filled = fillQuantities(service.generateTemplate(CATALOG, VENDORS, TODAY), Map.of("GARRI-25", "12"));
+        byte[] filled = fillQuantities(service.generateTemplate(CATALOG, TODAY), Map.of("GARRI-25", "12"));
 
         ParsedStockInSheet sheet = service.parse(multipart("stock-in.xlsx", filled));
 
@@ -333,7 +295,7 @@ class StockInExcelServiceTest {
     @Test
     void aTemplateSavedBeforeTheRenameStillParsesThroughTheAliases() {
         ParsedStockInSheet sheet = service.parse(multipart("old-stock-in.csv", csv(
-                "sku,product_name,vendor_name,quantity,unit,unit_cost,packaging_size,received_date,reference\n"
+                "sku,product_name,vendor_name,quantity,unit,unit_cost,packaging_size,received_date,waybill_or_invoice_no\n"
                         + "RICE-50,Rice 50kg,Dangote Nigeria Plc,20,BAG,45000,50,2026-01-31,WB-1\n")));
 
         assertThat(sheet.rows()).singleElement().satisfies(row -> {
@@ -341,7 +303,7 @@ class StockInExcelServiceTest {
             assertThat(row.costPerUnit()).isEqualByComparingTo("45000");
             assertThat(row.vendorName()).isEqualTo("Dangote Nigeria Plc");
             assertThat(row.receivedDate()).isEqualTo(LocalDate.of(2026, 1, 31));
-            assertThat(row.reference()).isEqualTo("WB-1");
+            assertThat(row.waybillOrInvoiceNo()).isEqualTo("WB-1");
         });
     }
 
@@ -481,7 +443,7 @@ class StockInExcelServiceTest {
     @Test
     void theExampleRowIsSkippedEvenThoughItHasAQuantity() {
         ParsedStockInSheet sheet = service.parse(multipart(
-                "stock-in.xlsx", fillQuantities(service.generateTemplate(CATALOG, VENDORS, TODAY), Map.of())));
+                "stock-in.xlsx", fillQuantities(service.generateTemplate(CATALOG, TODAY), Map.of())));
 
         assertThat(sheet.rows()).isEmpty();
         assertThat(sheet.skippedExcelRows()).hasSize(3);
@@ -518,7 +480,7 @@ class StockInExcelServiceTest {
     /** A tenant with no products yet gets a usable blank sheet rather than a failure. */
     @Test
     void anEmptyCatalogStillProducesAUsableSheet() {
-        byte[] file = service.generateTemplate(List.of(), List.of(), TODAY);
+        byte[] file = service.generateTemplate(List.of(), TODAY);
 
         assertThat(headersOf(file)).hasSize(9);
         assertThat(service.parse(multipart("stock-in.xlsx", file)).rows()).isEmpty();
@@ -537,24 +499,6 @@ class StockInExcelServiceTest {
     private String text(Row row, int columnIndex) {
         Cell cell = row.getCell(columnIndex);
         return cell == null || cell.getCellType() != CellType.STRING ? null : cell.getStringCellValue();
-    }
-
-    /** The values behind one defined name on the hidden lookup sheet, i.e. what a dropdown offers. */
-    private List<String> lookupList(byte[] file, String definedName) {
-        try (XSSFWorkbook workbook = open(file)) {
-            String formula = workbook.getName(definedName).getRefersToFormula();
-            org.apache.poi.ss.util.AreaReference area =
-                    new org.apache.poi.ss.util.AreaReference(formula, workbook.getSpreadsheetVersion());
-            Sheet lookups = workbook.getSheet(LookupSheetWriter.SHEET_NAME);
-            List<String> values = new ArrayList<>();
-            for (int r = area.getFirstCell().getRow(); r <= area.getLastCell().getRow(); r++) {
-                Cell cell = lookups.getRow(r).getCell(area.getFirstCell().getCol());
-                values.add(cell.getStringCellValue());
-            }
-            return values;
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 
     /** Types a quantity into the rows the user cared about, exactly as they would in Excel. */

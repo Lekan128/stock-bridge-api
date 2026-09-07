@@ -123,6 +123,32 @@ public class StockManagementService {
     }
 
     /**
+     * Converts a quantity expressed in {@code unit} into this product's stock-unit quantity,
+     * via the exact same {@link #resolveEntry} resolution {@link #stockIn}/{@code stockOut} use
+     * for the ledger itself - null/blank {@code unit} for "already the stock unit", an unknown
+     * or unconvertible one for {@link InvalidStockUnitException}, never a silent guess.
+     *
+     * <p>For a caller that has to move a bare quantity between two DIFFERENT products'
+     * {@code incomingQuantity} counters before a {@link #stockIn} call ever runs - see
+     * {@code IncomingStockService.receive}'s marketplace-receipt relink, where the order line's
+     * unit is the SELLER's catalog product's, not necessarily the buyer-chosen product's it is
+     * now being counted against.
+     *
+     * @param packagingUnit/{@code packagingSize} the same per-request pack EXTENSION {@link
+     *     #resolveEntry} itself takes - null when the buyer hasn't had to define one, or the
+     *     conversion they just supplied for a unit their chosen product doesn't already accept.
+     */
+    public int toStockUnitQuantity(
+            Product product, int quantity, String unit, String packagingUnit, BigDecimal packagingSize) {
+        return resolveEntry(product, quantity, null, unit, packagingUnit, packagingSize).baseQuantity();
+    }
+
+    /** {@link #toStockUnitQuantity(Product, int, String, String, BigDecimal)} with no pack extension. */
+    public int toStockUnitQuantity(Product product, int quantity, String unit) {
+        return toStockUnitQuantity(product, quantity, unit, null, null);
+    }
+
+    /**
      * Stock-in, stamped with the import that caused it - the one addition BULK_IMPORT_DESIGN.md
      * section 8.2 asks for ("the only additions are the batch transaction and the
      * {@code import_batch_id} stamp"), and deliberately the only change this class needed to
@@ -178,7 +204,7 @@ public class StockManagementService {
             ProductVendorService.ReceiptResult receipt = productVendorService.findOrCreateForReceipt(
                     product,
                     request.companyVendorId(),
-                    null,
+                    request.vendorSku(),
                     // Per STOCK UNIT, not per the unit typed - contract section 3.2. Passing
                     // request.unitPrice() here is exactly what made lastCostPrice mean "per bag"
                     // on one row and "per kg" on the next (P0-1/P0-2).

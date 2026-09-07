@@ -20,20 +20,28 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 /**
- * One quantity-break price on a {@link ProductVendor} line - "under 10 bags at X, 10+ at Y".
- * See MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1a.
+ * One quantity-break price on a {@link ProductVendorPack} - "under 10 bags at X, 10+ at Y".
+ * See MULTI_VENDOR_INVENTORY_DESIGN.md section 5.1a and MULTI_PACK_PER_VENDOR_DESIGN.md
+ * section 4.3.
  *
  * <h2>Purely additive</h2>
- * A vendor with zero rows here is the common case and stays exactly as simple as before -
- * {@link ProductVendor#getLastCostPrice()} alone. This table only exists for the vendors that
+ * A pack with zero rows here is the common case and stays exactly as simple as before -
+ * {@link ProductVendorPack#getLastCostPrice()} alone. This table only exists for the packs that
  * genuinely price by volume; most never get one.
  *
+ * <h2>Why this hangs off the PACK, not the vendor (V24)</h2>
+ * A tier is a property of a specific priced offering, and a pack is now that offering - "10+
+ * bags of 50 kg" and "10+ bags of 25 kg" are different breaks a vendor might set independently.
+ * Before V24 a vendor line had only ever had one pack, so keying a tier by
+ * {@code product_vendor_id} or by {@code product_vendor_pack_id} meant the same thing; V24
+ * re-pointed every existing row at its vendor's (sole, at the time) pack.
+ *
  * <h2>NOT a TenantAwareEntity</h2>
- * Unlike {@link ProductVendor}, this class carries no {@code clientId}. It is reached only
- * through {@link #productVendor}, itself already a tenant-scoped row - the same
+ * Carries no {@code clientId}. It is reached only through {@link #productVendorPack}, itself
+ * reached only through a tenant-scoped {@link ProductVendor} row - the same
  * non-tenant-scoped-child pattern {@code OrderItem} follows relative to {@code Order}. A direct
- * lookup by this row's id with no join back to its {@link ProductVendor} would be a mistake
- * regardless of tenancy, so there is nothing for a second client_id predicate to add.
+ * lookup by this row's id with no join back to its pack would be a mistake regardless of
+ * tenancy, so there is nothing for a second client_id predicate to add.
  *
  * <h2>minQuantity is in the product's BASE unit, and is INCLUSIVE</h2>
  * Stored in the owning product's {@code unitOfMeasure}, not whatever unit a given purchase or
@@ -54,8 +62,8 @@ public class ProductVendorPriceTier {
     private UUID id;
 
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
-    @JoinColumn(name = "product_vendor_id", nullable = false)
-    private ProductVendor productVendor;
+    @JoinColumn(name = "product_vendor_pack_id", nullable = false)
+    private ProductVendorPack productVendorPack;
 
     /**
      * In the product's base {@code unitOfMeasure}, so tiers compare consistently regardless of
