@@ -23,19 +23,26 @@ import com.procurepal_services.stock_bridge_api.entity.PaymentTerms;
 import com.procurepal_services.stock_bridge_api.entity.PaymentVerificationSource;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
+import com.procurepal_services.stock_bridge_api.entity.SkuResetCadence;
 import com.procurepal_services.stock_bridge_api.marketplace.dto.AdvanceOrderStatusRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.CheckoutQuoteRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.CheckoutQuoteResponse;
+import com.procurepal_services.stock_bridge_api.order.dto.OrderItemMatchSuggestionResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderItemResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderSummaryResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.PlaceOrderRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.ReceiveOrderRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.ReorderResponse;
+import com.procurepal_services.stock_bridge_api.product.sku.dto.UpdateProductSkuSettingsRequest;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import jakarta.persistence.EntityManager;
@@ -98,6 +105,12 @@ class MarketplaceOrderIntegrationTest {
 
     @Autowired
     private OrderItemRepository orderItemRepository;
+
+    @Autowired
+    private ProductVendorRepository productVendorRepository;
+
+    @Autowired
+    private ProductVendorPackRepository productVendorPackRepository;
 
     @Autowired
     private OrderPaymentApplication orderPaymentApplication;
@@ -324,6 +337,10 @@ class MarketplaceOrderIntegrationTest {
         assertThat(afterReceipt.getIncomingQuantity()).isZero();
         assertThat(afterReceipt.getQuantityOnHand()).isEqualTo(quantity);
         assertThat(stockMovementsFor(buyer)).isEqualTo(quantity);
+
+        // The seller's own code for this item lands on the ProductVendor pairing's default
+        // pack - never on the buyer's own Product.sku, which this receipt must not touch.
+        assertThat(defaultPackVendorSku(buyer, afterReceipt.getId())).isEqualTo(catalogProduct.getSku());
     }
 
     /** 8 of 10 bags today, 2 tomorrow: the order stays DELIVERED and the remainder stays incoming. */
@@ -347,7 +364,7 @@ class MarketplaceOrderIntegrationTest {
         OrderResponse partial = receive(
                 buyer,
                 order.id(),
-                new ReceiveOrderRequest(List.of(new ReceiveOrderRequest.ReceiveOrderLine(lineId, half))));
+                new ReceiveOrderRequest(List.of(new ReceiveOrderRequest.ReceiveOrderLine(lineId, half, null))));
 
         assertThat(partial.status()).isEqualTo(OrderStatus.DELIVERED);
         assertThat(partial.fullyReceived()).isFalse();
@@ -365,6 +382,196 @@ class MarketplaceOrderIntegrationTest {
         Product settled = productRepository.findById(buyerProduct.getId()).orElseThrow();
         assertThat(settled.getIncomingQuantity()).isZero();
         assertThat(settled.getQuantityOnHand()).isEqualTo(quantity);
+    }
+
+    /**
+     * A buyer with SKU auto-generation turned on gets a marketplace purchase's first-ever product
+     * numbered under their OWN scheme, exactly as ProductManagementService.create() would number
+     * a product they typed in by hand - never the seller's raw catalog SKU. The seller's code is
+     * not lost, though: it lands as the "supplier's code" on the resulting vendor pairing, which
+     * is where every other vendor's own code for an item already lives.
+     */
+    @Test
+    void aBuyersOwnSkuSchemeNumbersAFreshMarketplacePurchaseAndTheSellersCodeSurvivesAsTheVendorsSku() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Own Sku Scheme Co");
+        enableSkuGeneration(buyer, "OSC-{SEQ:4}");
+        Product catalogProduct = plantCatalogProduct(40, 1);
+        int quantity = catalogProduct.getMinOrderQuantity();
+        addToCart(buyer, catalogProduct, quantity);
+        DeliveryAddressResponse address = createAddress(buyer);
+        OrderResponse order = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, address.id());
+
+        Product buyerProduct = buyerProductFor(buyer, catalogProduct);
+        assertThat(buyerProduct.getSku()).isNotEqualTo(catalogProduct.getSku());
+        assertThat(buyerProduct.getSku()).startsWith("OSC-");
+
+        Buyer operator = loginAsPlatformOwner();
+        advance(operator, order.id(), OrderStatus.CONFIRMED);
+        advance(operator, order.id(), OrderStatus.PROCESSING);
+        advance(operator, order.id(), OrderStatus.OUT_FOR_DELIVERY);
+        advance(operator, order.id(), OrderStatus.DELIVERED);
+        receive(buyer, order.id(), null);
+
+        // Own SKU stays exactly what was generated at PLACED - a receipt never touches it.
+        Product afterReceipt = productRepository.findById(buyerProduct.getId()).orElseThrow();
+        assertThat(afterReceipt.getSku()).isEqualTo(buyerProduct.getSku());
+        assertThat(defaultPackVendorSku(buyer, afterReceipt.getId())).isEqualTo(catalogProduct.getSku());
+    }
+
+    /**
+     * MULTI_VENDOR_INVENTORY_DESIGN.md section 7.2 - the "two bags of rice" bug this whole
+     * mechanism exists to close. A buyer who already tracks an item under their own SKU, then
+     * buys the same real-world product from the marketplace, gets a second, unmatched Product
+     * row from materialize() (different SKU, no source-product link yet). The receive-suggestions
+     * endpoint should surface the buyer's existing row as a candidate, and answering "yes, same
+     * item" on receipt should fold the delivery into it and remove the auto-created duplicate
+     * rather than leaving it behind as empty clutter.
+     */
+    @Test
+    void receivingAMarketplaceOrderCanBeLinkedToAnExistingProductInsteadOfLeavingADuplicate() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Duplicate Rice Co");
+        Product catalogProduct = plantCatalogProduct(40, 1);
+        // Same name AND same stock unit as the catalog product but a different SKU - exactly
+        // what defeats matchOrCreateBuyerProduct's SKU match and forces it to create a second
+        // row, while still being a unit the relink can convert onto trivially (factor 1).
+        Product existingProduct =
+                ownProductNamed(buyer.clientId(), catalogProduct.getName(), catalogProduct.getUnitOfMeasure());
+
+        int quantity = catalogProduct.getMinOrderQuantity();
+        addToCart(buyer, catalogProduct, quantity);
+        DeliveryAddressResponse address = createAddress(buyer);
+        OrderResponse order = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, address.id());
+
+        Product autoCreated = buyerProductFor(buyer, catalogProduct);
+        assertThat(autoCreated.getId()).isNotEqualTo(existingProduct.getId());
+
+        Buyer operator = loginAsPlatformOwner();
+        advance(operator, order.id(), OrderStatus.CONFIRMED);
+        advance(operator, order.id(), OrderStatus.PROCESSING);
+        advance(operator, order.id(), OrderStatus.OUT_FOR_DELIVERY);
+        advance(operator, order.id(), OrderStatus.DELIVERED);
+
+        List<OrderItemMatchSuggestionResponse> suggestions = receiveSuggestions(buyer, order.id());
+        assertThat(suggestions).hasSize(1);
+        UUID lineId = order.items().getFirst().id();
+        assertThat(suggestions.getFirst().orderItemId()).isEqualTo(lineId);
+        assertThat(suggestions.getFirst().candidates())
+                .extracting(OrderItemMatchSuggestionResponse.ProductMatchCandidateResponse::id)
+                .contains(existingProduct.getId());
+
+        OrderResponse received = receive(
+                buyer,
+                order.id(),
+                new ReceiveOrderRequest(
+                        List.of(new ReceiveOrderRequest.ReceiveOrderLine(lineId, quantity, existingProduct.getId()))));
+
+        assertThat(received.status()).isEqualTo(OrderStatus.RECEIVED);
+        assertThat(received.items().getFirst().buyerProductId()).isEqualTo(existingProduct.getId());
+
+        Product merged = productRepository.findById(existingProduct.getId()).orElseThrow();
+        assertThat(merged.getQuantityOnHand()).isEqualTo(10 + quantity);
+        assertThat(merged.getIncomingQuantity()).isZero();
+        assertThat(merged.getSourceProductId()).isEqualTo(catalogProduct.getId());
+
+        // Nothing but this one reservation ever touched the auto-created row, so relinking
+        // should have removed it rather than leaving an empty ghost product behind.
+        assertThat(productRepository.findById(autoCreated.getId())).isEmpty();
+    }
+
+    /**
+     * The other half of the same fix: a buyer answering "yes, same item" must not be able to
+     * silently write the wrong quantity into a product tracked in an incompatible unit (a bag
+     * count landing straight in a kg counter with no conversion). IncomingStockService.receive
+     * converts through StockManagementService's own unit resolution rather than copying the
+     * quantity raw, so an unconvertible unit has to fail loudly (400) instead - and nothing
+     * about either product's stock may change when it does.
+     */
+    @Test
+    void relinkingToAProductWithAnIncompatibleUnitFailsRatherThanCorruptingQuantities() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Incompatible Unit Co");
+        Product catalogProduct = plantCatalogProduct(40, 1);
+        // Same name, but a stock unit the order line's ("bag (25kg)", an arbitrary free-text
+        // base unit - see plantCatalogProduct) cannot resolve against at all: no matching code,
+        // no shared static category to fall back on.
+        Product existingProduct = ownProductNamed(buyer.clientId(), catalogProduct.getName(), "LITER");
+
+        int quantity = catalogProduct.getMinOrderQuantity();
+        addToCart(buyer, catalogProduct, quantity);
+        DeliveryAddressResponse address = createAddress(buyer);
+        OrderResponse order = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, address.id());
+        Product autoCreated = buyerProductFor(buyer, catalogProduct);
+
+        Buyer operator = loginAsPlatformOwner();
+        advance(operator, order.id(), OrderStatus.CONFIRMED);
+        advance(operator, order.id(), OrderStatus.PROCESSING);
+        advance(operator, order.id(), OrderStatus.OUT_FOR_DELIVERY);
+        advance(operator, order.id(), OrderStatus.DELIVERED);
+
+        UUID lineId = order.items().getFirst().id();
+        ResponseEntity<ApiError> response = restTemplate.exchange(
+                "/api/orders/" + order.id() + "/receive",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        new ReceiveOrderRequest(
+                                List.of(new ReceiveOrderRequest.ReceiveOrderLine(lineId, quantity, existingProduct.getId()))),
+                        buyer.headers()),
+                ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("counted in");
+
+        // The whole attempt rolled back - neither product moved, the auto-created row is still
+        // there, and the line is still unreceived and still open to try again.
+        Product untouchedExisting = productRepository.findById(existingProduct.getId()).orElseThrow();
+        assertThat(untouchedExisting.getQuantityOnHand()).isEqualTo(10);
+        assertThat(untouchedExisting.getIncomingQuantity()).isZero();
+        Product untouchedAutoCreated = productRepository.findById(autoCreated.getId()).orElseThrow();
+        assertThat(untouchedAutoCreated.getIncomingQuantity()).isEqualTo(quantity);
+        OrderItem line = orderItemRepository.findById(lineId).orElseThrow();
+        assertThat(line.getReceivedQuantity()).isZero();
+        assertThat(line.isBuyerProductNewlyCreated()).isTrue();
+    }
+
+    /**
+     * The recovery path for the failure above: the buyer answers "1 {sellerUnit} = N
+     * {myUnit}" themselves, the same per-delivery pack override a manual stock-in's "this
+     * delivery came in a different pack" disclosure already offers, and the relink succeeds
+     * using exactly that conversion - no support ticket, no giving up and creating a duplicate.
+     */
+    @Test
+    void relinkingWithABuyerSuppliedConversionSucceedsOnAnOtherwiseIncompatibleUnit() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Manual Conversion Co");
+        Product catalogProduct = plantCatalogProduct(40, 1);
+        Product existingProduct = ownProductNamed(buyer.clientId(), catalogProduct.getName(), "LITER");
+
+        int quantity = catalogProduct.getMinOrderQuantity();
+        addToCart(buyer, catalogProduct, quantity);
+        DeliveryAddressResponse address = createAddress(buyer);
+        OrderResponse order = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, address.id());
+
+        Buyer operator = loginAsPlatformOwner();
+        advance(operator, order.id(), OrderStatus.CONFIRMED);
+        advance(operator, order.id(), OrderStatus.PROCESSING);
+        advance(operator, order.id(), OrderStatus.OUT_FOR_DELIVERY);
+        advance(operator, order.id(), OrderStatus.DELIVERED);
+
+        UUID lineId = order.items().getFirst().id();
+        // "1 bag (25kg) = 40 LITER" - an arbitrary but buyer-asserted conversion; the point is
+        // that the buyer's own answer is what the ledger uses, not that this figure is realistic.
+        BigDecimal litersPerBag = new BigDecimal("40");
+        OrderResponse received = receive(
+                buyer,
+                order.id(),
+                new ReceiveOrderRequest(List.of(new ReceiveOrderRequest.ReceiveOrderLine(
+                        lineId, quantity, existingProduct.getId(), catalogProduct.getUnitOfMeasure(), litersPerBag, false))));
+
+        assertThat(received.status()).isEqualTo(OrderStatus.RECEIVED);
+        assertThat(received.items().getFirst().buyerProductId()).isEqualTo(existingProduct.getId());
+
+        Product merged = productRepository.findById(existingProduct.getId()).orElseThrow();
+        int expectedLiters = litersPerBag.intValue() * quantity;
+        assertThat(merged.getQuantityOnHand()).isEqualTo(10 + expectedLiters);
+        assertThat(merged.getIncomingQuantity()).isZero();
     }
 
     @Test
@@ -1430,14 +1637,30 @@ class MarketplaceOrderIntegrationTest {
     }
 
     private Product ownProductFor(UUID clientId) {
+        return ownProductNamed(clientId, "Own Item " + UUID.randomUUID().toString().substring(0, 8), null);
+    }
+
+    /** Like {@link #ownProductFor}, but with a caller-chosen name - the section 7.2 duplicate-nudge
+     *  tests need a name that matches a catalog product exactly, and a random SKU that doesn't. */
+    private Product ownProductNamed(UUID clientId, String name) {
+        return ownProductNamed(clientId, name, null);
+    }
+
+    /**
+     * Like {@link #ownProductNamed(UUID, String)}, but also lets a test pin the stock unit - the
+     * section 7.2 relink tests need to control, deliberately, whether it matches the order line's
+     * unit or not.
+     */
+    private Product ownProductNamed(UUID clientId, String name, String unitOfMeasure) {
         String unique = UUID.randomUUID().toString().substring(0, 8);
         Product product = Product.builder()
-                .name("Own Item " + unique)
+                .name(name)
                 .sku("OWN-" + unique)
                 .unitPrice(new BigDecimal("1000.00"))
                 .quantityOnHand(10)
                 .active(true)
                 .marketplaceListed(false)
+                .unitOfMeasure(unitOfMeasure)
                 .build();
         // client_id comes from TenantContext on persist, so it has to be set here the
         // way a privileged server-side flow would (see TenantAwareEntity).
@@ -1507,6 +1730,28 @@ class MarketplaceOrderIntegrationTest {
         return productRepository
                 .findByClientIdAndSourceProductId(buyer.clientId(), catalogProduct.getId())
                 .orElseThrow(() -> new AssertionError("the buyer should have an inventory row for this purchase"));
+    }
+
+    /** The vendorSku on a buyer product's preferred vendor's default pack - see StockInRequest.vendorSku. */
+    private String defaultPackVendorSku(Buyer buyer, UUID buyerProductId) {
+        ProductVendor vendor = productVendorRepository
+                .findByClientIdAndProductIdAndIsPreferredTrue(buyer.clientId(), buyerProductId)
+                .orElseThrow(() -> new AssertionError("expected a preferred vendor line for this product"));
+        ProductVendorPack pack = productVendorPackRepository
+                .findByProductVendorIdAndIsDefaultTrue(vendor.getId())
+                .orElseThrow(() -> new AssertionError("expected a default pack for this vendor line"));
+        return pack.getVendorSku();
+    }
+
+    /** Turns on SKU auto-generation for a tenant, the same PUT the SKU settings screen calls. */
+    private void enableSkuGeneration(Buyer buyer, String pattern) {
+        ResponseEntity<Void> response = restTemplate.exchange(
+                "/api/products/sku-settings",
+                HttpMethod.PUT,
+                new HttpEntity<>(
+                        new UpdateProductSkuSettingsRequest(true, pattern, SkuResetCadence.NEVER), buyer.headers()),
+                Void.class);
+        assertThat(response.getStatusCode()).as("enable sku generation").isEqualTo(HttpStatus.OK);
     }
 
     private long stockMovementsFor(Buyer buyer) {
@@ -1643,6 +1888,16 @@ class MarketplaceOrderIntegrationTest {
                 OrderResponse.class);
         assertThat(response.getStatusCode()).as("receive").isEqualTo(HttpStatus.OK);
         return response.getBody();
+    }
+
+    private List<OrderItemMatchSuggestionResponse> receiveSuggestions(Buyer buyer, UUID orderId) {
+        return restTemplate
+                .exchange(
+                        "/api/orders/" + orderId + "/receive-suggestions",
+                        HttpMethod.GET,
+                        new HttpEntity<>(buyer.headers()),
+                        new ParameterizedTypeReference<List<OrderItemMatchSuggestionResponse>>() {})
+                .getBody();
     }
 
     private List<TestNotification> notificationsOf(Buyer buyer) {

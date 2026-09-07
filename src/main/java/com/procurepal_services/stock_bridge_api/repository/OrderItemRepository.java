@@ -31,6 +31,14 @@ public interface OrderItemRepository extends JpaRepository<OrderItem, UUID> {
 
     long countByOrderId(UUID orderId);
 
+    /**
+     * Whether any line still points at this buyer product - the safety check before deleting an
+     * auto-created row a receipt just relinked away from (IncomingStockService.receive's
+     * orphanedDuplicate cleanup). Deleting a row another line still references would leave that
+     * line's buyerProductId dangling.
+     */
+    boolean existsByBuyerProductId(UUID buyerProductId);
+
     /** Reorder / "you bought this before": every line ever bought for one catalog product. */
     List<OrderItem> findAllByProductId(UUID productId);
 

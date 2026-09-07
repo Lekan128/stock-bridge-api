@@ -6,6 +6,7 @@ import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.auth.ValidationErrors;
 import com.procurepal_services.stock_bridge_api.cart.CatalogProductUnavailableException;
 import com.procurepal_services.stock_bridge_api.stock.InsufficientStockException;
+import com.procurepal_services.stock_bridge_api.stock.InvalidStockUnitException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -49,6 +50,17 @@ public class OrderExceptionHandler {
 
     @ExceptionHandler(InsufficientStockException.class)
     public ResponseEntity<ApiError> handleInsufficientStock(InsufficientStockException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    /**
+     * Newly reachable from here since the section 7.2 relink lets a receipt name a unit
+     * (the order line's) that the buyer's CHOSEN target product may not accept - see
+     * IncomingStockService.receive. Same 400 treatment StockManagementExceptionHandler gives it
+     * for the ordinary stock-in form; the message already names every unit that would work.
+     */
+    @ExceptionHandler(InvalidStockUnitException.class)
+    public ResponseEntity<ApiError> handleInvalidUnit(InvalidStockUnitException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 

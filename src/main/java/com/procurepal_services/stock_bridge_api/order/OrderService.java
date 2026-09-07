@@ -11,6 +11,7 @@ import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.PaymentMethod;
 import com.procurepal_services.stock_bridge_api.entity.PaymentStatus;
 import com.procurepal_services.stock_bridge_api.order.dto.CancelOrderRequest;
+import com.procurepal_services.stock_bridge_api.order.dto.OrderItemMatchSuggestionResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderSummaryResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.PlaceOrderRequest;
@@ -275,13 +276,22 @@ public class OrderService {
                 OrderItem item = orderItemRepository
                         .findByIdAndOrderId(line.orderItemId(), orderId)
                         .orElseThrow(OrderNotFoundException::new);
-                applied += incomingStockService.receive(order, item, line.quantity(), actingUserId);
+                applied += incomingStockService.receive(
+                        order,
+                        item,
+                        line.quantity(),
+                        actingUserId,
+                        line.linkToExistingProductId(),
+                        line.packagingUnit(),
+                        line.packagingSize(),
+                        Boolean.TRUE.equals(line.saveAsSupplierDefault()));
             }
         } else {
             // No lines given means "all of it", which is what the button on the order
             // page does and what most deliveries actually are.
             for (OrderItem item : items) {
-                applied += incomingStockService.receive(order, item, item.outstandingQuantity(), actingUserId);
+                applied += incomingStockService.receive(
+                        order, item, item.outstandingQuantity(), actingUserId, null, null, null, false);
             }
         }
 
@@ -296,6 +306,16 @@ public class OrderService {
             orderLifecycleService.markReceived(order, actingUserId);
         }
         return orderResponseAssembler.detail(order, false);
+    }
+
+    /**
+     * The section 7.2 duplicate nudge for this order's "confirm receipt" screen - see {@link
+     * IncomingStockService#suggestMatches}. Read-only and safe to call regardless of status; the
+     * result is simply empty once every line has either matched cleanly or already been received.
+     */
+    @Transactional(readOnly = true)
+    public List<OrderItemMatchSuggestionResponse> receiveSuggestions(UUID orderId) {
+        return incomingStockService.suggestMatches(requireOwnOrder(orderId));
     }
 
     /**

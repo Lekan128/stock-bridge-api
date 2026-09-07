@@ -308,7 +308,7 @@ public class ProductManagementService {
         // StockMovement through StockManagementService.stockIn in the SAME transaction, and
         // that service locks the product row with a SELECT ... FOR UPDATE against the database
         // - it must already be able to find this row. Same reasoning
-        // IncomingStockService.findOrCreateBuyerProduct's own saveAndFlush documents.
+        // IncomingStockService.matchOrCreateBuyerProduct's own saveAndFlush documents.
         product = productRepository.saveAndFlush(product);
 
         String preferredVendorName = null;
