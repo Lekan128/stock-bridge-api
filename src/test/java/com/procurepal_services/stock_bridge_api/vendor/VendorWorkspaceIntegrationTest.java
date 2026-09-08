@@ -1126,7 +1126,7 @@ class VendorWorkspaceIntegrationTest {
         return new CreateUserRequest(
                 "staff-" + UUID.randomUUID().toString().substring(0, 8),
                 PASSWORD,
-                "STOREKEEPER",
+                roleRepository.findByName("STOREKEEPER").orElseThrow().getId(),
                 null,
                 null,
                 null,
