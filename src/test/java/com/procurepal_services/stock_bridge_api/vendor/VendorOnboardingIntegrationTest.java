@@ -21,6 +21,7 @@ import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.entity.VendorWaitlistApplication;
 import com.procurepal_services.stock_bridge_api.entity.VendorWaitlistStatus;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.SuperAdminRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.repository.VendorWaitlistApplicationRepository;
@@ -95,6 +96,9 @@ class VendorOnboardingIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     @Autowired
     private SuperAdminRepository superAdminRepository;
@@ -590,7 +594,14 @@ class VendorOnboardingIntegrationTest {
                 HttpMethod.POST,
                 new HttpEntity<>(
                         new CreateUserRequest(
-                                "smuggled-" + unique, PASSWORD, "STOREKEEPER", null, null, null, null, null),
+                                "smuggled-" + unique,
+                                PASSWORD,
+                                roleRepository.findByName("STOREKEEPER").orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         authHeaders(vendorLogin.tokens().accessToken())),
                 String.class);
 
@@ -628,7 +639,14 @@ class VendorOnboardingIntegrationTest {
                 HttpMethod.POST,
                 new HttpEntity<>(
                         new CreateUserRequest(
-                                "sneaky-" + unique(), PASSWORD, "VENDOR", null, null, null, null, null),
+                                "sneaky-" + unique(),
+                                PASSWORD,
+                                roleRepository.findByName("VENDOR").orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         headers),
                 ApiError.class);
 

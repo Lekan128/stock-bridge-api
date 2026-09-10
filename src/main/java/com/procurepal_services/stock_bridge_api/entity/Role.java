@@ -20,10 +20,13 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 /**
- * A system-defined role: OWNER, PROCUREMENT_MANAGER, INVENTORY_OFFICER,
- * FINANCE_OFFICER, STOREKEEPER. Not tied to a client_id - roles are global and
- * not client-editable yet, though /api/roles serves them from this table
- * precisely so tenant-defined roles can be added without a frontend change.
+ * Either a system-defined role (OWNER, PROCUREMENT_MANAGER, INVENTORY_OFFICER,
+ * FINANCE_OFFICER, STOREKEEPER, VENDOR - clientId null, shared across every
+ * tenant, fixed and not editable through the Roles & Privileges screen) or a
+ * tenant's own custom role (clientId set - see RoleManagementService). Names
+ * are unique among system roles, and separately unique per tenant among
+ * custom roles (V27), not globally - two tenants may each have a "Warehouse
+ * Clerk".
  */
 @Entity
 @Table(name = "roles")
@@ -39,11 +42,15 @@ public class Role {
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
-    @Column(nullable = false, unique = true, length = 50)
+    @Column(nullable = false, length = 50)
     private String name;
 
     @Column(length = 255)
     private String description;
+
+    /** Null for a system role. Set for a tenant's own custom role - never reassigned. */
+    @Column(name = "client_id")
+    private UUID clientId;
 
     @Builder.Default
     @ManyToMany(fetch = FetchType.LAZY)
@@ -52,4 +59,8 @@ public class Role {
             joinColumns = @JoinColumn(name = "role_id"),
             inverseJoinColumns = @JoinColumn(name = "permission_id"))
     private Set<Permission> permissions = new HashSet<>();
+
+    public boolean isSystem() {
+        return clientId == null;
+    }
 }

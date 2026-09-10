@@ -7,6 +7,7 @@ import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.RoleResponse;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
@@ -48,6 +49,9 @@ class RolePermissionMatrixIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     @Test
     void financeOfficerSeesTheCatalogueAndAnalyticsButChangesNothing() {
@@ -166,6 +170,8 @@ class RolePermissionMatrixIntegrationTest {
                         "MANAGE_VENDORS",
                         "PLACE_ORDERS",
                         "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ALL_BRANCHES",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
@@ -183,6 +189,8 @@ class RolePermissionMatrixIntegrationTest {
                         "MANAGE_VENDORS",
                         "PLACE_ORDERS",
                         "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
                         "VIEW_ORDERS",
@@ -193,6 +201,8 @@ class RolePermissionMatrixIntegrationTest {
                         "BROWSE_MARKETPLACE",
                         "MANAGE_INVENTORY",
                         "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
                         "VIEW_ORDERS",
@@ -209,7 +219,13 @@ class RolePermissionMatrixIntegrationTest {
         // The storekeeper signs for goods but never sees spend: RECEIVE_DELIVERIES
         // without VIEW_ORDERS or PLACE_ORDERS is the whole point of the split.
         assertThat(byRole.get("STOREKEEPER"))
-                .containsExactly("BROWSE_MARKETPLACE", "MANAGE_INVENTORY", "RECEIVE_DELIVERIES", "VIEW_PRODUCTS");
+                .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_INVENTORY",
+                        "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
+                        "VIEW_PRODUCTS");
     }
 
     private void assertProductCreateForbidden(HttpHeaders auth) {
@@ -251,7 +267,15 @@ class RolePermissionMatrixIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                        new CreateUserRequest(
+                                username,
+                                PASSWORD,
+                                roleRepository.findByName(role).orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         authHeaders(owner)),
                 UserSummaryResponse.class);
         return restTemplate.postForObject(

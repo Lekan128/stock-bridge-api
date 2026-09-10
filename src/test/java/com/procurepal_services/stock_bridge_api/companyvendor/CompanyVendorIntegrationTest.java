@@ -28,6 +28,7 @@ import com.procurepal_services.stock_bridge_api.purchase.dto.PurchaseSource;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
@@ -85,6 +86,9 @@ class CompanyVendorIntegrationTest {
 
     @Autowired
     private OrderRepository orderRepository;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     private final List<UUID> plantedCatalogProductIds = new ArrayList<>();
 
@@ -969,7 +973,15 @@ class CompanyVendorIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                        new CreateUserRequest(
+                                username,
+                                PASSWORD,
+                                roleRepository.findByName(role).orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         asOwner.headers()),
                 UserSummaryResponse.class);
     }
