@@ -4,6 +4,8 @@ import com.procurepal_services.stock_bridge_api.entity.MarketplaceSettings;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductCategory;
 import com.procurepal_services.stock_bridge_api.marketplace.PlatformOwnerGuard;
+import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
+import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationService;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.AdminCatalogProductResponse;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.AdminMarketplaceSettingsResponse;
 import com.procurepal_services.stock_bridge_api.marketplace.catalog.dto.BulkListingRequest;
@@ -33,23 +35,50 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * ProcurePal's catalog administration: what is for sale, how it is filed, and the
- * commercial rules around it.
+ * Catalog administration: what is for sale, how it is filed, and the commercial rules
+ * around it.
+ *
+ * <h2>Moderation</h2>
+ * The product methods here can reach one of the identity fields moderation cares about -
+ * brand - so {@link #updateMarketplaceDetails} calls
+ * {@code ProductModerationService.onListingContentChanged} when it changes. It used to reach
+ * unitOfMeasure too; that field has since moved onto {@code ProductManagementService.create}/
+ * {@code .update} (see {@link ProductModerationRules} for why) and this method no longer
+ * writes it at all. The listing methods cannot reach any identity field and deliberately do
+ * not: see {@link #setListing} and {@link ProductModerationRules} for the full audit of which
+ * write paths re-trigger review and which are exempt.
+ *
+ * <h2>Two audiences, and the split between them is not down the middle</h2>
+ * The PRODUCT methods are per-seller. Every one of them takes an {@code operatorId} and
+ * resolves each row through {@link MarketplaceProductSpecifications#ownedBy}, so they
+ * serve ProcurePal (via {@link MarketplaceCatalogAdminController}, behind
+ * {@code requirePlatformOwner()}) and any vendor (via
+ * {@code vendor.catalogue.VendorCatalogueController}, behind {@code requireSeller()})
+ * with the same code and no branch - {@link #updateMarketplaceDetails} included, as of M8.
+ * There is deliberately no seller-kind check inside this class: the id is the scope, and it
+ * always arrives from a guard rather than from a request.
+ *
+ * <p>The CATEGORY and SETTINGS methods are not, and must never be given the same
+ * treatment. See below.
  *
  * <h2>The invariant this class owns</h2>
- * {@code is_marketplace_listed = TRUE} may only ever appear on the platform owner's own
- * products. That cannot be a CHECK constraint - expressing it needs a join to
- * clients.is_platform_owner - so it is enforced here twice over: the caller must be the
- * platform owner (PlatformOwnerGuard, applied in the controller), AND every product this
- * class touches is resolved through {@link MarketplaceProductSpecifications#ownedBy},
- * which pins client_id to that same platform owner. Neither check alone is enough: the
- * first would still let ProcurePal list a product id it does not own, and the second
- * would still let any tenant list their own products if the guard were removed.
+ * {@code is_marketplace_listed = TRUE} may only ever appear on the products of the seller
+ * flipping it. That cannot be a CHECK constraint - expressing it needs a join across
+ * products.client_id and clients.client_type - so it is enforced twice over: the caller
+ * must be a seller (a guard, applied in whichever controller is calling), AND every
+ * product this class touches is resolved through {@code ownedBy}, which pins client_id to
+ * that same caller. Neither check alone is enough: the first would still let a seller list
+ * a product id it does not own, and the second would still let any buying company list
+ * their own private stock on the public storefront if the guard were removed.
  *
- * <h2>Categories and settings are global, not tenant-scoped</h2>
- * There is one marketplace, so there is one category tree and one settings row. Both are
- * therefore protected only by the platform-owner guard - there is no tenant filter behind
- * these writes to catch a mistake.
+ * <h2>Categories and settings are global, not per-seller</h2>
+ * There is one marketplace, so there is one category tree and one settings row - delivery
+ * fee, free-delivery threshold, minimum order value, pay-on-delivery rules - and they
+ * govern every seller's checkout, not just the caller's. Both are therefore protected only
+ * by the platform-owner guard, and there is no tenant filter behind these writes to catch a
+ * mistake. This is the reason the vendor catalogue surface is a separate controller rather
+ * than a widened guard on {@link MarketplaceCatalogAdminController}: opening that
+ * controller to sellers would hand every vendor the operator's own commercial settings.
  */
 @Service
 @RequiredArgsConstructor
@@ -62,6 +91,16 @@ public class MarketplaceCatalogAdminService {
     private final MarketplaceSettingsRepository marketplaceSettingsRepository;
     private final PlatformOwnerGuard platformOwnerGuard;
     private final CatalogStockService catalogStockService;
+    /**
+     * One of this class's writable fields - brand - is moderation-invalidating, so this
+     * surface is a second entry point into the approve-then-swap rule that
+     * {@code ProductManagementService} owns. It calls the same hook rather than re-deciding:
+     * {@link ProductModerationRules} is where the ruling lives, and a second copy of it here
+     * is how the two paths would eventually disagree about whether a brand change counts.
+     * unitOfMeasure used to be a second field reaching this hook from here too; it has since
+     * moved to {@code ProductManagementService}, which owns the same hook for it now.
+     */
+    private final ProductModerationService productModerationService;
 
     // ------------------------------------------------------------------------
     // Products
@@ -100,6 +139,15 @@ public class MarketplaceCatalogAdminService {
      * by slug ({@code /product/:idOrSlug}) and a listed product without one is a catalog
      * entry that cannot be linked to. Unlisting leaves the slug alone so the same URL
      * comes back if it is re-listed.
+     *
+     * <p><b>Moderation: exempt, deliberately.</b> This writes {@code marketplaceListed} and
+     * possibly {@code slug}, and neither changes what the product IS - listing a PENDING
+     * product is a perfectly sensible "sell this the moment you clear it", and the public
+     * catalog predicate still requires APPROVED, so nothing reaches a buyer early. Sending
+     * a listing back for review because its owner toggled it off and on again would make
+     * the switch a punishment. The derived slug follows the NAME, and a name change already
+     * re-moderates through /api/products. {@link #bulkSetListing} is the same write and
+     * carries the same exemption.
      */
     @Transactional
     public AdminCatalogProductResponse setListing(UUID operatorId, UUID productId, UpdateListingRequest request) {
@@ -152,12 +200,62 @@ public class MarketplaceCatalogAdminService {
     /**
      * The marketplace-only facets of a product. Name, price, image and SKU are not
      * editable here on purpose - they belong to /api/products, and giving the same row two
-     * write paths is how fields start disagreeing.
+     * write paths is how fields start disagreeing. unitOfMeasure and unitCount belong to
+     * /api/products now too, for the same reason - see the class javadoc and
+     * {@code UpdateVendorMarketplaceDetailsRequest} for why they moved.
+     *
+     * <h2>brand IS an identity field, and that is the M6 fix</h2>
+     * {@code brand} is named in {@link ProductModerationRules#invalidatesApproval} - it
+     * changes what a buyer thinks they are buying, since "Dangote" becoming "Generic" is a
+     * different product at the same price - but this method wrote it (and, until it moved,
+     * unitOfMeasure alongside it) and never called the hook. An approved listing could
+     * therefore have its brand swapped without going back for review, which is exactly the
+     * approve-then-swap defeat the moderation gate exists to prevent.
+     *
+     * <p>The remaining fields are deliberately exempt and each has a reason:
+     * <ul>
+     *   <li><b>category</b> - exempt. Filing is a merchandising decision about where a
+     *       product appears in a menu, not a claim about what it is, and the reviewer's
+     *       judgement survives it intact. It is also the operator's taxonomy rather than
+     *       the seller's assertion.</li>
+     *   <li><b>minOrderQuantity</b> - exempt, on the same footing as price and stock.
+     *       Section A lists quantity terms as a commercial control a seller must be able
+     *       to move daily, no buyer is committed to a quantity they did not see (checkout
+     *       revalidates it), and a seller who has to wait for review before correcting an
+     *       MOQ will simply leave a wrong one in place.</li>
+     *   <li><b>slug</b> - exempt, and worth stating explicitly because it looks like
+     *       identity. It is a URL, never rendered as a product attribute, and it is
+     *       auto-derived from the name on first listing - so the case where it really does
+     *       change what a buyer sees is a NAME change, which re-moderates through
+     *       /api/products already. Re-moderating a slug edit on its own would mostly
+     *       punish sellers tidying a link.</li>
+     * </ul>
+     *
+     * <p>Reachability was not the reason this was fixed. At the time only ProcurePal reached
+     * this method - {@code MarketplaceCatalogAdminController} is behind
+     * {@code requirePlatformOwner()} and {@code ownedBy} pins the row to the caller, and the
+     * platform owner is not moderated - so the hole was latent rather than live, and fixing
+     * it anyway was the point: a latent hole in a gate is still a hole in the gate.
+     *
+     * <p><b>It is live now.</b> M8 mounted this method a second time, at
+     * {@code PUT /api/vendor/catalogue/products/&#123;id&#125;/marketplace-details}, behind
+     * {@code requireSeller()} - so a MODERATED seller reaches it, and the re-trigger above
+     * is doing real work on every call rather than waiting for one. That route added no
+     * moderation logic of its own; it inherited this method's, which is exactly what the M6
+     * fix was for. The vendor surface passes {@code slug} as null and cannot author one -
+     * see {@code UpdateVendorMarketplaceDetailsRequest} for the per-tenant-uniqueness
+     * reason - so the slug branch below still only ever runs for the platform owner.
      */
     @Transactional
     public AdminCatalogProductResponse updateMarketplaceDetails(
             UUID operatorId, UUID productId, UpdateMarketplaceDetailsRequest request) {
         Product product = findOwnedOrThrow(operatorId, productId);
+
+        // Snapshot BEFORE any mutation, so the check at the bottom compares what the
+        // listing was against what it became. Shaped exactly like
+        // ProductManagementService.update's snapshot, and captured unconditionally for the
+        // same reason: a string read is cheaper than two code paths through one method.
+        String beforeBrand = product.getBrand();
 
         if (Boolean.TRUE.equals(request.clearCategory())) {
             product.setCategory(null);
@@ -165,9 +263,6 @@ public class MarketplaceCatalogAdminService {
             product.setCategory(productCategoryRepository
                     .findById(request.categoryId())
                     .orElseThrow(CategoryNotFoundException::new));
-        }
-        if (request.unitOfMeasure() != null) {
-            product.setUnitOfMeasure(blankToNull(request.unitOfMeasure()));
         }
         if (request.minOrderQuantity() != null) {
             product.setMinOrderQuantity(request.minOrderQuantity());
@@ -177,6 +272,24 @@ public class MarketplaceCatalogAdminService {
         }
         if (request.slug() != null) {
             applySlug(operatorId, product, request.slug());
+        }
+
+        // The six identity fields this method cannot touch are passed as unchanged pairs
+        // rather than omitted, so the call site keeps naming the whole rule: if another
+        // field is ever added to invalidatesApproval, this line stops compiling instead of
+        // quietly continuing to check the old count. unitOfMeasure/packagingUnit/packagingSize
+        // are among them now precisely because this method no longer writes any of the three -
+        // ProductManagementService does, and owns their before/after snapshot.
+        if (ProductModerationRules.invalidatesApproval(
+                product.getName(), product.getName(),
+                product.getSku(), product.getSku(),
+                product.getDescription(), product.getDescription(),
+                beforeBrand, product.getBrand(),
+                product.getImageUrl(), product.getImageUrl(),
+                product.getUnitOfMeasure(), product.getUnitOfMeasure(),
+                product.getPackagingUnit(), product.getPackagingUnit(),
+                product.getPackagingSize(), product.getPackagingSize())) {
+            productModerationService.onListingContentChanged(product);
         }
         return toResponse(product);
     }

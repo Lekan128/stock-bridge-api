@@ -222,6 +222,14 @@ class MonnifyPaymentOrderLoopIntegrationTest {
         try {
             Order order = orderRepository.saveAndFlush(Order.builder()
                     .orderNumber("PP-LOOP-" + unique)
+                    // NOT NULL since V11. Taken from the catalog product's owner,
+                    // which is who is actually selling it.
+                    .sellerClientId(catalogProduct.getClientId())
+                    // NOT NULL since V12: every order names the checkout it came
+                    // out of. A fixture order is its own checkout - a group of one -
+                    // which is what V12's backfill made every pre-split row and what a
+                    // single-seller basket still produces today.
+                    .checkoutGroupId(UUID.randomUUID())
                     .status(OrderStatus.PENDING_PAYMENT)
                     .paymentStatus(PaymentStatus.PENDING)
                     .paymentMethod(PaymentMethod.MONNIFY)

@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.order;
 
 import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.order.dto.CancelOrderRequest;
+import com.procurepal_services.stock_bridge_api.order.dto.OrderItemMatchSuggestionResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderSummaryResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.PlaceOrderRequest;
@@ -9,6 +10,7 @@ import com.procurepal_services.stock_bridge_api.order.dto.ReceiveOrderRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.ReorderResponse;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -78,6 +80,18 @@ public class OrderController {
             @Valid @RequestBody(required = false) ReceiveOrderRequest request,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return orderService.receive(id, request, principal.getUserId());
+    }
+
+    /**
+     * The section 7.2 duplicate nudge: candidates for "this looks like it might already be in
+     * your inventory as '[name]' — same item?", per outstanding line, ahead of confirming
+     * receipt. Same permission as receiving itself - this is read-only prep for that action, not
+     * a separate capability.
+     */
+    @GetMapping("/{id}/receive-suggestions")
+    @PreAuthorize("hasAuthority('RECEIVE_DELIVERIES')")
+    public List<OrderItemMatchSuggestionResponse> receiveSuggestions(@PathVariable UUID id) {
+        return orderService.receiveSuggestions(id);
     }
 
     @PostMapping("/{id}/reorder")

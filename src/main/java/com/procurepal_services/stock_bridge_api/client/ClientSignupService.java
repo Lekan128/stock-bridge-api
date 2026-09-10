@@ -3,18 +3,17 @@ package com.procurepal_services.stock_bridge_api.client;
 import com.procurepal_services.stock_bridge_api.auth.AuthService;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
-import com.procurepal_services.stock_bridge_api.entity.Branch;
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
-import com.procurepal_services.stock_bridge_api.repository.BranchRepository;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.user.TenantRoles;
-import java.util.Locale;
-import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -35,15 +34,19 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class ClientSignupService {
 
-    /** The one branch every client starts with. Also the name V6's backfill uses, deliberately. */
-    private static final String DEFAULT_BRANCH_NAME = "Head Office";
-
     private final ClientRepository clientRepository;
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
-    private final BranchRepository branchRepository;
+    /**
+     * Slug derivation and the default branch, shared with the super-admin vendor
+     * creation path so the two cannot produce differently-shaped clients. See
+     * {@link ClientProvisioning} for what it deliberately does NOT share.
+     */
+    private final ClientProvisioning clientProvisioning;
     private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
+    private final EmailNotificationService emailNotificationService;
+    private final EmailVerificationService emailVerificationService;
 
     @Transactional
     public TenantLoginResponse signup(ClientSignupRequest request) {
@@ -51,10 +54,7 @@ public class ClientSignupService {
             throw new PasswordMismatchException();
         }
 
-        String slug = resolveSlug(request);
-        if (clientRepository.findBySlug(slug).isPresent()) {
-            throw new ClientIdentifierTakenException(slug);
-        }
+        String slug = clientProvisioning.requireAvailableSlug(request.clientIdentifier(), request.name());
 
         Role ownerRole = roleRepository.findByName(TenantRoles.OWNER)
                 .orElseThrow(() -> new IllegalStateException("OWNER role not seeded - run the Flyway migrations"));
@@ -84,11 +84,7 @@ public class ClientSignupService {
             // one-default-per-client index means a lazy race could fail in a place
             // that has nothing to do with branches. V6__marketplace.sql does the
             // equivalent backfill for clients created before this existed.
-            branchRepository.save(Branch.builder()
-                    .name(DEFAULT_BRANCH_NAME)
-                    .defaultBranch(true)
-                    .active(true)
-                    .build());
+            clientProvisioning.createDefaultBranch();
 
             ownerUser = userRepository.save(User.builder()
                     .username(request.adminEmail())
@@ -117,14 +113,31 @@ public class ClientSignupService {
             TenantContext.clear();
         }
 
-        return authService.issueLoginResponse(ownerUser, client);
-    }
+        // After the TenantContext finally-block, not inside it: rendering this reads
+        // the client and the user, and doing that under a tenant context set purely
+        // to permit one privileged insert would tie the email to a scope it has no
+        // business depending on. It is dispatched, not sent - the actual send waits
+        // for this transaction to commit, so a signup that fails at the last hurdle
+        // does not welcome anybody to an account that does not exist.
+        //
+        // The verification token is minted here for the SAME two reasons, which is
+        // why it sits inside the same block rather than up beside the user insert.
+        // email_verification_tokens is not a tenant-scoped table - it deliberately
+        // has no client_id, so that the unauthenticated redemption endpoint can read
+        // it at all - so writing it under a borrowed tenant context would suggest a
+        // dependency that does not exist. And it is written in THIS transaction, so
+        // a signup that rolls back takes the token with it: a live link to an
+        // account that was never created would be a link that can only ever fail.
+        //
+        // One email, not two. The link rides on the welcome rather than arriving as
+        // a separate "confirm your address" message seconds later - see
+        // AccountEmails.welcome for why that matters more than it looks like it
+        // should. A null link (no plausible address, or no configured base URL)
+        // renders the welcome exactly as it was before this flow existed.
+        VerificationLink verificationLink = emailVerificationService.issueLink(ownerUser);
+        emailNotificationService.welcomeNewClient(client, ownerUser, verificationLink);
 
-    private String resolveSlug(ClientSignupRequest request) {
-        String source = (request.clientIdentifier() != null && !request.clientIdentifier().isBlank())
-                ? request.clientIdentifier()
-                : request.name();
-        return slugify(source);
+        return authService.issueLoginResponse(ownerUser, client);
     }
 
     /** Blank is how a form says "empty"; the database should say NULL. */
@@ -134,12 +147,5 @@ public class ClientSignupService {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
-    }
-
-    private String slugify(String input) {
-        String normalized = input.trim().toLowerCase(Locale.ROOT)
-                .replaceAll("[^a-z0-9]+", "-")
-                .replaceAll("^-+|-+$", "");
-        return normalized.isBlank() ? "client-" + UUID.randomUUID() : normalized;
     }
 }

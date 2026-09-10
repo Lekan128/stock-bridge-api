@@ -137,6 +137,27 @@
 			<artifactId>s3</artifactId>
 		</dependency>
 
+		<!--
+			STS, for assuming the S3 role rather than giving the application
+			long-lived keys that carry the S3 permissions themselves. Version
+			comes from the AWS BOM above. See S3ClientConfig.
+		-->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>sts</artifactId>
+		</dependency>
+
+		<!--
+			SES v2, for transactional email (order receipts, status changes,
+			account mail). Shares the credential chain S3 already uses - see
+			SesClientConfig - so assuming the role above is enough to send,
+			provided that role also carries ses:SendEmail.
+		-->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>sesv2</artifactId>
+		</dependency>
+
 		<!-- Browsable API docs at /swagger-ui.html, generated from the controllers/DTOs already in place. -->
 		<dependency>
 			<groupId>org.springdoc</groupId>

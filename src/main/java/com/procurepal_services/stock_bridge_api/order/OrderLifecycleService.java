@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.companyvendor.CompanyVendorLinkService;
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
 import com.procurepal_services.stock_bridge_api.entity.Order;
@@ -9,6 +11,7 @@ import com.procurepal_services.stock_bridge_api.marketplace.PlatformOwnerGuard;
 import com.procurepal_services.stock_bridge_api.notification.NotificationService;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderStatusEventRepository;
+import com.procurepal_services.stock_bridge_api.settlement.VendorLedgerService;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -37,10 +40,13 @@ public class OrderLifecycleService {
 
     private final OrderStatusEventRepository orderStatusEventRepository;
     private final IncomingStockService incomingStockService;
+    private final CompanyVendorLinkService companyVendorLinkService;
     private final CatalogStockService catalogStockService;
     private final NotificationService notificationService;
+    private final EmailNotificationService emailNotificationService;
     private final PlatformOwnerGuard platformOwnerGuard;
     private final ClientRepository clientRepository;
+    private final VendorLedgerService vendorLedgerService;
 
     /**
      * The one moment incoming stock appears. Reached by a COD checkout (immediately,
@@ -64,7 +70,21 @@ public class OrderLifecycleService {
         }
 
         incomingStockService.materialize(order);
+        // The seller joins the buyer's own vendor directory, and the products this
+        // order just put into their inventory point at it. Here rather than in
+        // OrderService for the same reason everything else in this method is: an
+        // order reaches PLACED from two directions (a COD checkout and a verified
+        // Monnify payment), and a consequence wired into only one of them is a bug
+        // waiting for the other path. Runs AFTER materialize, which is what created
+        // the buyer's product rows this links. Idempotent - see the service.
+        companyVendorLinkService.recordPurchase(order);
         notifyNewOrder(order);
+        // The buyer's own receipt. Deliberately has no bell counterpart - see
+        // EmailNotificationService.orderConfirmedForBuyer - and deliberately lives
+        // here rather than in the two callers, for the same reason every other
+        // consequence of reaching PLACED does: there are two ways in and a receipt
+        // that only one of them sends is a bug waiting for the other path.
+        emailNotificationService.orderConfirmedForBuyer(order);
     }
 
     /**
@@ -101,11 +121,39 @@ public class OrderLifecycleService {
             // Its reserved-but-undispatched quantity simply stops counting towards
             // CatalogStockService.committedQuantity, which frees the stock for the next
             // buyer with no write at all.
+            //
+            // And the money half. Today this finds nothing to reverse for exactly the
+            // reason above - an order that accrued cannot subsequently be cancelled, so
+            // there is no accrual here to undo - and it is wired anyway, quietly, for
+            // the same reason everything else in this method is: the day somebody widens
+            // the state machine to allow a post-delivery cancellation, a vendor being
+            // paid for goods that came back is not a bug anyone would notice quickly.
+            // See VendorLedgerService.reverseForCancellation.
+            vendorLedgerService.reverseForCancellation(order, note, actingUserId);
         }
         notifyBuyerOfStatus(order, target, note);
     }
 
-    /** Marks an order fully received. Separate from {@link #transition} because only the buyer may do it. */
+    /**
+     * Marks an order fully received. Separate from {@link #transition} because only the
+     * buyer may do it - and, since M7, because it is the moment a VENDOR'S MONEY STOPS
+     * BEING HELD IN ESCROW.
+     *
+     * <h2>Why the accrual hangs off RECEIVED and not DELIVERED</h2>
+     * DELIVERED is the SELLER's assertion that the goods arrived, and on a vendor's own
+     * order the vendor is the one who sets it. Paying a vendor on their own say-so is
+     * exactly what escrow exists to prevent. RECEIVED is the BUYER's assertion, it is
+     * the transition {@link OrderStatus#isBuyerDriven()} exists to protect, and it
+     * already means ALL of it - partial receipt deliberately leaves an order at
+     * DELIVERED with the remainder still incoming. "Fully confirmed" and RECEIVED are
+     * the same sentence. The full argument, including what happens when a buyer never
+     * confirms, is on {@code VendorLedgerService}.
+     *
+     * <p>Here rather than in OrderService for the reason every other consequence in
+     * this class is here: a consequence wired into one caller is a bug waiting for the
+     * next one. Runs AFTER the status is set, so an accrual can never exist for an
+     * order the transition check would have refused. Idempotent - see the service.
+     */
     @Transactional
     public void markReceived(Order order, UUID actingUserId) {
         OrderStatus previous = order.getStatus();
@@ -113,6 +161,9 @@ public class OrderLifecycleService {
         order.setStatus(OrderStatus.RECEIVED);
         order.setReceivedAt(OffsetDateTime.now());
         recordEvent(order, previous, OrderStatus.RECEIVED, "Received into inventory", actingUserId);
+
+        vendorLedgerService.accrueForConfirmedDelivery(
+                order, order.getReceivedAt(), "Delivery confirmed by buyer", actingUserId);
     }
 
     @Transactional
@@ -128,10 +179,12 @@ public class OrderLifecycleService {
     }
 
     /**
-     * TODO(future): this only writes an in-app notification that the bell polls for.
-     * When ProcurePal has dispatch riders, a new order should also push to ProcurePal
-     * staff and to the assigned rider (FCM/SMS/WhatsApp) rather than waiting for a
-     * poll.
+     * Both channels, from one place: the bell ProcurePal staff poll, and an email to
+     * the operator so a night-time order is not waiting for somebody to open the tab.
+     *
+     * TODO(future): when ProcurePal has dispatch riders, a new order should also
+     * push to the assigned rider (FCM/SMS/WhatsApp), which is a channel neither of
+     * these two covers.
      */
     @Transactional
     public void notifyNewOrder(Order order) {
@@ -147,6 +200,7 @@ public class OrderLifecycleService {
                 buyerName + " placed an order worth " + order.getCurrency() + " " + order.getTotal() + ".",
                 "/app/marketplace/orders/" + order.getId(),
                 order);
+        emailNotificationService.newOrderPlaced(order);
     }
 
     @Transactional
@@ -170,6 +224,7 @@ public class OrderLifecycleService {
                 "We have your payment. ProcurePal will start preparing your order.",
                 "/app/orders/" + order.getId(),
                 order);
+        emailNotificationService.paymentReceived(order);
     }
 
     @Transactional
@@ -182,6 +237,7 @@ public class OrderLifecycleService {
                         + " Your order is still waiting - you can try paying again.",
                 "/app/orders/" + order.getId(),
                 order);
+        emailNotificationService.paymentFailed(order, reason);
     }
 
     private void notifyBuyerOfStatus(Order order, OrderStatus target, String note) {
@@ -200,6 +256,7 @@ public class OrderLifecycleService {
 
         notificationService.notifyAboutOrder(
                 order.getClientId(), type, title, body, "/app/orders/" + order.getId(), order);
+        emailNotificationService.orderStatusChanged(order, target, note);
     }
 
     private static void requireTransition(OrderStatus from, OrderStatus to) {

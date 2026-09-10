@@ -42,6 +42,23 @@ public class SecurityConfig {
         "/api/auth/login",
         "/api/auth/refresh",
         "/api/clients/signup",
+        // The public "apply to sell on ProcurePaddy" form. Unauthenticated by
+        // necessity: an applicant has no account and, if we reject them, never
+        // will - a login wall in front of it would mean asking businesses to sign
+        // up as a buyer in order to ask to be a seller.
+        //
+        // Same HAZARD as every path in this list: no principal, so TenantContext
+        // is empty and the Hibernate tenant filter is DISABLED for the whole
+        // request. The handler behind it does not depend on that filter and must
+        // not start to - vendor_waitlist_applications is deliberately not
+        // tenant-scoped (an applicant has no clients row to be scoped to), so
+        // there is nothing for the filter to do. See VendorWaitlistService.
+        //
+        // It also creates a row and sends two emails, one to a caller-chosen
+        // address, which is the abuse shape POST /api/me/email-verification
+        // already has. It is rate limited the same way, by the same mechanism -
+        // see VendorWaitlistRateLimiter.
+        "/api/vendor-waitlist",
         "/api/superadmin/auth/login",
         "/api/superadmin/auth/refresh",
         "/actuator/health",
@@ -54,18 +71,69 @@ public class SecurityConfig {
         // tenant filter (layer 1 of tenant isolation) DISABLED for the whole
         // request. A query that would normally be scoped for free is not scoped at
         // all here. Every handler behind these paths must therefore filter
-        // explicitly: on is_marketplace_listed = true AND is_active = true, and
-        // defensively on the platform owner's client_id
-        // (PlatformOwnerGuard.findPlatformOwner()). Do not add a path here whose
-        // handler relies on the tenant filter.
+        // explicitly: on is_marketplace_listed = true AND is_active = true AND
+        // approval_status = 'APPROVED', and on client_id being one of the ACTIVE
+        // SELLERS (SellerDirectory.activeSellerIds() - the platform owner plus
+        // active vendors). Do not add a path here whose handler relies on the
+        // tenant filter.
+        //
+        // The seller pin widened from one id to a set when selling opened up to
+        // vendors; it did not go away, and it must not. Every buying company on
+        // the platform keeps its private inventory in the same products table, so
+        // an unpinned query here publishes all of it.
         "/api/marketplace/catalog/**",
         "/api/marketplace/categories",
+        // The seller directory and per-vendor storefront headers. Same hazard, and
+        // one specific to them: they read `clients`, which holds every buying
+        // company too, so the handler must return active SELLERS only - never a
+        // filtered view of the whole tenant list. See SellerNotFoundException.
+        "/api/marketplace/sellers/**",
         "/api/marketplace/settings",
         // Same hazard, plus one more: this is called by Monnify, not by a browser,
         // so there is no token to authenticate and CSRF is disabled app-wide. Its
         // only authentication is the provider signature, which the handler MUST
         // verify before acting on the payload.
         "/api/payments/monnify/webhook",
+        // ====================================================================
+        // Email eligibility (see the email package). All three are registered
+        // here ahead of the controllers that will serve them, because three
+        // separate pieces of work each needed a line in this array and editing
+        // one shared file three ways is how merges go wrong. Until a controller
+        // exists a permitted path with no handler simply 404s, which is exactly
+        // what an unimplemented route should do and is harmless in the meantime.
+        //
+        // All three carry the same HAZARD as the storefront paths above: no
+        // authenticated principal, so TenantContext is empty and the Hibernate
+        // tenant filter is DISABLED for the whole request. Every handler behind
+        // them must scope its own queries explicitly and must treat its request
+        // body as hostile - the token or signature in the payload is the only
+        // authentication any of them will ever have.
+        //
+        // CSRF: disabled application-wide (see the filter chain below), so none
+        // of these needs an exemption and none should add one. That is a
+        // deliberate property of a stateless bearer-token API with no cookies -
+        // there is no ambient credential for a cross-site POST to borrow - and
+        // it is what already lets the Monnify webhook above work at all.
+        //
+        // Confirms a token emailed to an address, flipping users.is_email_
+        // verified. Unauthenticated by necessity: the whole point is that the
+        // recipient may not have an account they can sign into yet, and the
+        // token in the body is the credential.
+        "/api/email/verify",
+        // RFC 8058 one-click unsubscribe. Unauthenticated by necessity in a
+        // stronger sense than the others: the caller is the MAIL CLIENT, POSTing
+        // the List-Unsubscribe URL on the reader's behalf with no browser
+        // session, no token of ours and no user interaction. It must succeed on
+        // the first POST or the mail provider treats the unsubscribe as broken,
+        // so it can never redirect to a login.
+        "/api/email/unsubscribe",
+        // AWS SNS delivering SES bounce and complaint notifications, which flip
+        // the same two flags off. Same shape as the Monnify webhook above: no
+        // token to authenticate, so the handler MUST verify the SNS message
+        // signature before acting on anything in the payload, and must handle
+        // SubscriptionConfirmation as well as Notification.
+        "/api/webhooks/ses/notifications",
+        // ====================================================================
         // springdoc-openapi: browsable API docs, not a tenant/superadmin resource.
         "/v3/api-docs",
         "/v3/api-docs/**",
@@ -113,7 +181,18 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(corsProperties.allowedOrigins());
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        // PATCH is not optional and was not here until bulk import needed it. Nothing in the app
+        // used PATCH before - updates were PUT - so its absence cost nothing and was invisible.
+        // Bulk import's review screen is built on four PATCHes (repair a cell, skip a row, remap a
+        // column, answer a question), which is the entire fix-and-continue loop, and a method
+        // missing from this list is refused by the CorsFilter with a bare 403 "Invalid CORS
+        // request" before it reaches any controller. From a browser that meant the file could be
+        // uploaded and looked at and never corrected.
+        //
+        // Nothing caught it because nothing could: MockMvc and TestRestTemplate are same-origin
+        // and never preflight, and the review screens were developed against an in-memory mock
+        // that made no HTTP request at all. CorsIntegrationTest now preflights PATCH explicitly.
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
         // The frontend sends bearer tokens via the Authorization header and keeps
         // them in memory/localStorage rather than cookies, so there's no

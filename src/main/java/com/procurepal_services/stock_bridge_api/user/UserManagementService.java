@@ -1,5 +1,8 @@
 package com.procurepal_services.stock_bridge_api.user;
 
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
@@ -9,6 +12,7 @@ import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
+import com.procurepal_services.stock_bridge_api.vendor.VendorSingleAccountRule;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -22,6 +26,12 @@ import org.springframework.transaction.annotation.Transactional;
  * methods (or an explicit client_id from TenantContext), so a caller can
  * never see or touch another tenant's users - enforced at the query, not by
  * filtering a response afterward.
+ *
+ * A third guard is about the tenant's KIND rather than its integrity: a VENDOR
+ * client has exactly one user and cannot gain a second here. Today the VENDOR
+ * role also lacks MANAGE_USERS, so no vendor can reach this method at all - but
+ * that is a permission, and a permission is a decision somebody can revisit. The
+ * check below is the rule itself; see {@link VendorSingleAccountRule}.
  *
  * Two independent guards keep a tenant from losing control of itself:
  * "there must always be an active OWNER" (a headcount rule, satisfiable by
@@ -37,6 +47,9 @@ public class UserManagementService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
+    private final EmailNotificationService emailNotificationService;
+    private final EmailVerificationService emailVerificationService;
+    private final VendorSingleAccountRule vendorSingleAccountRule;
 
     @Transactional(readOnly = true)
     public Page<UserSummaryResponse> list(Pageable pageable) {
@@ -52,11 +65,15 @@ public class UserManagementService {
     public UserSummaryResponse create(CreateUserRequest request) {
         UUID tenantId = requireTenantId();
 
+        // Before the username check and before anything is built: a refusal here must
+        // leave no user row, no verification token and no invitation email behind.
+        vendorSingleAccountRule.assertMayAddUser(tenantId);
+
         if (userRepository.findByClientIdAndUsername(tenantId, request.username()).isPresent()) {
             throw new UsernameTakenException(request.username());
         }
 
-        Role role = resolveRole(request.role());
+        Role role = resolveRole(request.roleId());
 
         User user = userRepository.save(User.builder()
                 .username(request.username())
@@ -73,6 +90,22 @@ public class UserManagementService {
                 .jobTitle(normalize(request.jobTitle()))
                 .build());
 
+        // Tells the new user their account exists and what to sign in as. It cannot
+        // tell them the password the admin just typed - see AccountEmails for why
+        // that convenience is not worth what it costs.
+        //
+        // It DOES carry a verification link, and a sub-user needs one at least as
+        // much as an account holder does. The address on this row was typed by an
+        // administrator, about somebody else, so it is the population most likely to
+        // be wrong - and an unverified user receives no order mail at all under V8,
+        // silently and permanently. Without this, "our warehouse lead never gets
+        // delivery notifications" becomes a support ticket with no visible cause,
+        // and the only escape is the user happening to find the resend button. The
+        // link goes ON this email rather than in a second one for the same reason it
+        // does at signup; see AccountEmails.userInvited.
+        VerificationLink verificationLink = emailVerificationService.issueLink(user);
+        emailNotificationService.userInvited(user, role.getName(), verificationLink);
+
         return UserSummaryResponse.from(user);
     }
 
@@ -82,13 +115,13 @@ public class UserManagementService {
 
         // Checked before the root rules so a root user editing themselves still
         // gets the more specific "you can't change your own role here" message.
-        boolean requestsChange = request.role() != null || request.active() != null;
+        boolean requestsChange = request.roleId() != null || request.active() != null;
         if (requestsChange && user.getId().equals(callerId)) {
             throw new SelfServiceNotAllowedException();
         }
 
         if (user.isRoot()) {
-            if (request.role() != null) {
+            if (request.roleId() != null) {
                 throw new RootUserRoleChangeNotAllowedException();
             }
             if (Boolean.FALSE.equals(request.active())) {
@@ -96,7 +129,7 @@ public class UserManagementService {
             }
         }
 
-        Role newRole = request.role() != null ? resolveRole(request.role()) : user.getRole();
+        Role newRole = request.roleId() != null ? resolveRole(request.roleId()) : user.getRole();
         boolean newActive = request.active() != null ? request.active() : user.isActive();
 
         assertKeepsAtLeastOneActiveOwner(user, newRole.getName(), newActive);
@@ -122,6 +155,10 @@ public class UserManagementService {
             throw new RootPasswordResetNotAllowedException();
         }
         user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+        // An alert, not a delivery. Its whole value is reaching a user whose password
+        // was changed without their knowledge, so it names the account and says to
+        // raise it - and carries no credential of any kind.
+        emailNotificationService.passwordResetByAdmin(user);
     }
 
     @Transactional
@@ -143,13 +180,20 @@ public class UserManagementService {
         return userRepository.findByIdForCurrentTenant(id).orElseThrow(UserNotFoundException::new);
     }
 
-    private Role resolveRole(String roleName) {
-        if (!TenantRoles.ALL.contains(roleName)) {
-            throw new InvalidRoleException(roleName);
+    /**
+     * A role a user may be assigned: a system role from {@link TenantRoles#ALL} (VENDOR
+     * excluded - see that constant), or a custom role this tenant owns (client_id V27). Neither
+     * branch trusts the id alone - a role id belonging to another tenant's custom role, or to
+     * VENDOR, is rejected exactly like one that doesn't exist at all.
+     */
+    private Role resolveRole(UUID roleId) {
+        Role role = roleRepository.findById(roleId).orElseThrow(() -> new InvalidRoleException(roleId));
+        boolean assignable = role.isSystem() ? TenantRoles.ALL.contains(role.getName())
+                : role.getClientId().equals(requireTenantId());
+        if (!assignable) {
+            throw new InvalidRoleException(roleId);
         }
-        return roleRepository.findByName(roleName)
-                .orElseThrow(
-                        () -> new IllegalStateException(roleName + " role not seeded - run the Flyway migrations"));
+        return role;
     }
 
     /** Null means "leave alone" here, not "clear" - see UpdateUserRequest. */

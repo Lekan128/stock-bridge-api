@@ -18,9 +18,17 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * A company's delivery locations. DELETE is a deactivation, not a removal - see
- * DeliveryAddressService for why - so it answers 204 and the row stops appearing in
- * the list, which is indistinguishable from a delete for every caller.
+ * A company's DELIVERY locations - where it wants goods sent.
+ *
+ * <p>Every route here is pinned to {@code AddressPurpose.DELIVERY}, so a seller's
+ * pickup points never appear on this surface even when they belong to the same
+ * tenant (ProcurePal is both). The pickup half lives at
+ * {@code /api/vendor/pickup-addresses}; the two share a table, a service and a
+ * validator, and differ only in the purpose each passes. See {@code AddressPurpose}.
+ *
+ * <p>DELETE is a deactivation, not a removal - see DeliveryAddressService for why -
+ * so it answers 204 and the row stops appearing in the list, which is
+ * indistinguishable from a delete for every caller.
  */
 @RestController
 @RequestMapping("/api/delivery-addresses")

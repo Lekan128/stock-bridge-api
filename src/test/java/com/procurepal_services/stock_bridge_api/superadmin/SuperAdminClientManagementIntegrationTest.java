@@ -343,7 +343,9 @@ class SuperAdminClientManagementIntegrationTest {
         body.add(
                 "product",
                 new HttpEntity<>(
-                        new CreateProductRequest("Product " + sku, sku, null, new BigDecimal("9.99"), null, lowStockThreshold),
+                        new CreateProductRequest(
+                                "Product " + sku, sku, null, new BigDecimal("9.99"), lowStockThreshold, null,
+                                null, null, null),
                         productPartHeaders));
 
         HttpHeaders headers = authHeaders(asAdmin.tokens().accessToken());

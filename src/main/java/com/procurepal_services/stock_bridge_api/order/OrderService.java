@@ -11,6 +11,7 @@ import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.PaymentMethod;
 import com.procurepal_services.stock_bridge_api.entity.PaymentStatus;
 import com.procurepal_services.stock_bridge_api.order.dto.CancelOrderRequest;
+import com.procurepal_services.stock_bridge_api.order.dto.OrderItemMatchSuggestionResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.OrderSummaryResponse;
 import com.procurepal_services.stock_bridge_api.order.dto.PlaceOrderRequest;
@@ -61,6 +62,41 @@ public class OrderService {
     private final OrderNumberAllocator orderNumberAllocator;
     private final OrderResponseAssembler orderResponseAssembler;
 
+    /**
+     * Turns the cart into orders - plural, since a basket holding several sellers'
+     * products splits into ONE ORDER PER SELLER.
+     *
+     * <h2>The split, in order</h2>
+     * <ol>
+     *   <li>Price the whole basket once, and group it by seller
+     *       ({@link CheckoutService#price()}). Blockers, the payment-method gate and the
+     *       stock re-check all run against the WHOLE basket first, so a cart that cannot
+     *       be checked out fails before a single order row exists.</li>
+     *   <li>Mint one checkout group id. Every order below carries it, and it is what
+     *       lets one Monnify transaction settle all of them - see
+     *       {@link Order#getCheckoutGroupId()}.</li>
+     *   <li>Write one Order per group, each with its own order number, seller, subtotal,
+     *       delivery fee and total, and its own lines with the seller's commission rate
+     *       stamped on them.</li>
+     * </ol>
+     * All of it in one transaction: a basket that becomes two orders and then fails must
+     * leave neither behind, or the buyer has paid-for goods and an orphan.
+     *
+     * <h2>Why the whole basket is validated before anything is written</h2>
+     * The stock lock in step 1 covers every line across every seller. Doing it per group
+     * as the orders were written would leave a window where seller A's order exists and
+     * seller B's line turns out to be oversold - and then the buyer either loses half a
+     * basket or the transaction rolls back after a partial notification has already
+     * fired. One validation pass, then one write pass.
+     *
+     * <h2>What the buyer sees back</h2>
+     * The FIRST order of the group, detailed, with its {@code relatedOrders} listing the
+     * siblings. The response is a single OrderResponse rather than a list because every
+     * existing caller - the confirmation page, the payment handoff, the tests - expects
+     * one order, and because the payment handoff genuinely does need one anchor order to
+     * open the checkout against. The confirmation screen reads {@code checkoutGroupId}
+     * and {@code relatedOrders} to explain that one basket produced several orders.
+     */
     @Transactional
     public OrderResponse place(PlaceOrderRequest request, UUID actingUserId) {
         UUID clientId = requireTenantId();
@@ -77,6 +113,8 @@ public class OrderService {
         // recomputing what is left to sell. The quote and price() both read without a
         // lock, so without this two companies could each be told yes for the last ten
         // bags within the same second.
+        //
+        // Across ALL sellers, before any order is written - see the javadoc.
         for (CheckoutService.PricedLine line : priced.lines()) {
             catalogStockService.requireSellable(
                     line.product().getId(), line.quantity(), line.product().getName());
@@ -92,62 +130,90 @@ public class OrderService {
         boolean payOnDelivery = request.paymentMethod().isPayOnDelivery();
         OrderStatus initialStatus = payOnDelivery ? OrderStatus.PLACED : OrderStatus.PENDING_PAYMENT;
 
-        Order order = Order.builder()
-                .orderNumber(orderNumberAllocator.allocate())
-                .placedBy(actingUserId)
-                .branchId(branch == null ? null : branch.getId())
-                .status(initialStatus)
-                .paymentStatus(payOnDelivery ? PaymentStatus.ON_DELIVERY : PaymentStatus.PENDING)
-                .paymentMethod(request.paymentMethod())
-                .currency("NGN")
-                .subtotal(priced.subtotal())
-                .deliveryFee(priced.deliveryFee())
-                .total(priced.total())
-                .deliveryAddressId(address.getId())
-                .deliveryLabel(address.getLabel())
-                .deliveryContactName(address.getContactName())
-                .deliveryContactPhone(address.getContactPhone())
-                .deliveryAddressLine1(address.getAddressLine1())
-                .deliveryAddressLine2(address.getAddressLine2())
-                .deliveryCity(address.getCity())
-                .deliveryState(address.getState())
-                .deliveryLandmark(address.getLandmark())
-                .deliveryNotes(address.getDeliveryNotes())
-                .customerNote(blankToNull(request.customerNote()))
-                .build();
-        order = orderRepository.saveAndFlush(order);
+        // One id for the whole shopping trip, minted before the first insert so every
+        // order of the group carries the same value. Random rather than derived from any
+        // one order, so no member of the group is structurally special and cancelling
+        // one cannot orphan the rest (V12__order_splitting.sql).
+        UUID checkoutGroupId = UUID.randomUUID();
 
-        for (CheckoutService.PricedLine line : priced.lines()) {
-            orderItemRepository.save(OrderItem.builder()
-                    .order(order)
-                    .productId(line.product().getId())
-                    // Snapshots, not references. What the buyer saw and agreed to pay
-                    // must survive a rename, a repricing and a delisting.
-                    .productName(line.product().getName())
-                    .productSku(line.product().getSku())
-                    .unitOfMeasure(line.product().getUnitOfMeasure())
-                    .imageUrl(line.product().getImageUrl())
-                    .unitPrice(line.unitPrice())
-                    .quantity(line.quantity())
-                    .receivedQuantity(0)
-                    .lineTotal(line.lineTotal())
-                    .build());
-        }
-        orderItemRepository.flush();
+        List<Order> created = new ArrayList<>(priced.groups().size());
 
-        orderLifecycleService.recordEvent(
-                order,
-                null,
-                initialStatus,
-                payOnDelivery ? "Order placed (pay on delivery)" : "Awaiting payment",
-                actingUserId);
+        for (CheckoutService.PricedSellerGroup group : priced.groups()) {
+            Order order = Order.builder()
+                    .orderNumber(orderNumberAllocator.allocate())
+                    // Who is selling: read off the catalog products, never assumed to be
+                    // ProcurePal. Since V11 any vendor client can own listed products,
+                    // and the split above is what guarantees every line of THIS order
+                    // shares this one seller.
+                    .sellerClientId(group.sellerId())
+                    .checkoutGroupId(checkoutGroupId)
+                    .placedBy(actingUserId)
+                    .branchId(branch == null ? null : branch.getId())
+                    .status(initialStatus)
+                    .paymentStatus(payOnDelivery ? PaymentStatus.ON_DELIVERY : PaymentStatus.PENDING)
+                    .paymentMethod(request.paymentMethod())
+                    .currency("NGN")
+                    // The GROUP's figures, not the basket's. Each order is a
+                    // self-contained contract: its own goods, its own delivery fee (see
+                    // CheckoutService for why the fee is per seller), its own total.
+                    .subtotal(group.subtotal())
+                    .deliveryFee(group.deliveryFee())
+                    .total(group.total())
+                    // The delivery snapshot is identical across the group - one basket,
+                    // one address - and is copied onto each order rather than shared,
+                    // for the same reason it was copied at all: an order is a contract,
+                    // and editing an address must never rewrite a shipment.
+                    .deliveryAddressId(address.getId())
+                    .deliveryLabel(address.getLabel())
+                    .deliveryContactName(address.getContactName())
+                    .deliveryContactPhone(address.getContactPhone())
+                    .deliveryAddressLine1(address.getAddressLine1())
+                    .deliveryAddressLine2(address.getAddressLine2())
+                    .deliveryCity(address.getCity())
+                    .deliveryState(address.getState())
+                    .deliveryLandmark(address.getLandmark())
+                    .deliveryNotes(address.getDeliveryNotes())
+                    .customerNote(blankToNull(request.customerNote()))
+                    .build();
+            order = orderRepository.saveAndFlush(order);
 
-        if (payOnDelivery) {
-            orderLifecycleService.enterPlaced(order, true, null, actingUserId);
+            for (CheckoutService.PricedLine line : group.lines()) {
+                orderItemRepository.save(OrderItem.builder()
+                        .order(order)
+                        .productId(line.product().getId())
+                        // Snapshots, not references. What the buyer saw and agreed to pay
+                        // must survive a rename, a repricing and a delisting.
+                        .productName(line.product().getName())
+                        .productSku(line.product().getSku())
+                        .unitOfMeasure(line.product().getUnitOfMeasure())
+                        .imageUrl(line.product().getImageUrl())
+                        .unitPrice(line.unitPrice())
+                        .quantity(line.quantity())
+                        .receivedQuantity(0)
+                        .lineTotal(line.lineTotal())
+                        // The seller's rate AT SALE TIME, resolved once during pricing.
+                        // Null for ProcurePal's own lines - commission is a fact about a
+                        // third-party sale, and null means "none applies", never 0%.
+                        .commissionRate(group.commissionRate())
+                        .build());
+            }
+            orderItemRepository.flush();
+
+            orderLifecycleService.recordEvent(
+                    order,
+                    null,
+                    initialStatus,
+                    payOnDelivery ? "Order placed (pay on delivery)" : "Awaiting payment",
+                    actingUserId);
+
+            if (payOnDelivery) {
+                orderLifecycleService.enterPlaced(order, true, null, actingUserId);
+            }
+            created.add(order);
         }
 
         cartService.clearItems(priced.cart().getId());
-        return orderResponseAssembler.detail(order, false);
+        return orderResponseAssembler.detail(created.getFirst(), false);
     }
 
     @Transactional(readOnly = true)
@@ -210,13 +276,22 @@ public class OrderService {
                 OrderItem item = orderItemRepository
                         .findByIdAndOrderId(line.orderItemId(), orderId)
                         .orElseThrow(OrderNotFoundException::new);
-                applied += incomingStockService.receive(order, item, line.quantity(), actingUserId);
+                applied += incomingStockService.receive(
+                        order,
+                        item,
+                        line.quantity(),
+                        actingUserId,
+                        line.linkToExistingProductId(),
+                        line.packagingUnit(),
+                        line.packagingSize(),
+                        Boolean.TRUE.equals(line.saveAsSupplierDefault()));
             }
         } else {
             // No lines given means "all of it", which is what the button on the order
             // page does and what most deliveries actually are.
             for (OrderItem item : items) {
-                applied += incomingStockService.receive(order, item, item.outstandingQuantity(), actingUserId);
+                applied += incomingStockService.receive(
+                        order, item, item.outstandingQuantity(), actingUserId, null, null, null, false);
             }
         }
 
@@ -231,6 +306,16 @@ public class OrderService {
             orderLifecycleService.markReceived(order, actingUserId);
         }
         return orderResponseAssembler.detail(order, false);
+    }
+
+    /**
+     * The section 7.2 duplicate nudge for this order's "confirm receipt" screen - see {@link
+     * IncomingStockService#suggestMatches}. Read-only and safe to call regardless of status; the
+     * result is simply empty once every line has either matched cleanly or already been received.
+     */
+    @Transactional(readOnly = true)
+    public List<OrderItemMatchSuggestionResponse> receiveSuggestions(UUID orderId) {
+        return incomingStockService.suggestMatches(requireOwnOrder(orderId));
     }
 
     /**

@@ -9,6 +9,7 @@ import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.company.dto.CompanyResponse;
 import com.procurepal_services.stock_bridge_api.company.dto.UpdateCompanyRequest;
 import com.procurepal_services.stock_bridge_api.entity.PaymentTerms;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
 import java.util.UUID;
@@ -46,6 +47,9 @@ class CompanyIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     @Test
     void ownerReadsItsOwnCompany() {
@@ -279,7 +283,15 @@ class CompanyIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                        new CreateUserRequest(
+                                username,
+                                PASSWORD,
+                                roleRepository.findByName(role).orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         authHeaders(asOwner)),
                 UserSummaryResponse.class);
     }

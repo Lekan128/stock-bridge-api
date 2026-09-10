@@ -84,8 +84,49 @@ public class OrderItem {
     @Column(name = "received_quantity", nullable = false)
     private int receivedQuantity;
 
+    /**
+     * Set alongside buyerProductId when {@code IncomingStockService} resolves it: true when no
+     * source-product or SKU match existed and a brand new {@code Product} row had to be created,
+     * false when an existing row was reused. Drives the MULTI_VENDOR_INVENTORY_DESIGN.md
+     * section 7.2 duplicate nudge at receipt time - there is nothing to ask about a line that
+     * already matched cleanly, and once anything has been received against this line a relink
+     * would mean moving ledger history rather than just a reservation, so the nudge only ever
+     * looks at lines where this is still true AND receivedQuantity is still zero.
+     */
+    @Column(name = "buyer_product_newly_created", nullable = false)
+    private boolean buyerProductNewlyCreated;
+
     @Column(name = "line_total", nullable = false, precision = 14, scale = 2)
     private BigDecimal lineTotal;
+
+    /**
+     * The platform's commission rate in force when this line was SOLD, as a
+     * fraction - {@code 0.0750} is 7.5%. Resolved once from the seller's
+     * {@link Client#getCommissionRate()} (or the platform default) at that moment
+     * and never touched again.
+     *
+     * <p>It is a snapshot for exactly the reason the name, sku, unit and price
+     * above are: renegotiating a vendor's rate must not retroactively rewrite what
+     * the platform earned on every order they have already shipped, or a statement
+     * printed before the change stops reconciling with one printed after it.
+     *
+     * <p>Nullable, and null means "no commission applies" - never zero by
+     * coincidence. Every row that predates V11 is one of ProcurePal's own sales,
+     * where the platform and the seller are the same party and commission is not a
+     * concept, so inventing a rate for them would assert a commercial fact nobody
+     * agreed.
+     *
+     * <h2>There is deliberately no commission AMOUNT here</h2>
+     * Commission accrues on DELIVERY, not at checkout (VENDOR_RESEARCH.md Section
+     * C item 2): a cancelled or returned order must never have earned the platform
+     * anything. The amount is therefore a consequence of an event, and belongs in
+     * the append-only vendor ledger a later module builds - where a return can post
+     * a reversing entry against it. A computed amount stored here would be a second
+     * place for money to live, and a way for the two to disagree after the first
+     * refund.
+     */
+    @Column(name = "commission_rate", precision = 5, scale = 4)
+    private BigDecimal commissionRate;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

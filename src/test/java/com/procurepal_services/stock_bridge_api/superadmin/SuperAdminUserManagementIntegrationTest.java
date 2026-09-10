@@ -18,6 +18,8 @@ import com.procurepal_services.stock_bridge_api.repository.SuperAdminRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerCreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerUpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
@@ -125,7 +127,7 @@ class SuperAdminUserManagementIntegrationTest {
                 .findFirst()
                 .orElseThrow();
         assertThat(accountHolder.root()).isTrue();
-        assertThat(accountHolder.role()).isEqualTo("OWNER");
+        assertThat(accountHolder.roleName()).isEqualTo("OWNER");
         assertThat(accountHolder.active()).isTrue();
 
         // The single-user read agrees with the listing, and is reachable by the
@@ -250,11 +252,11 @@ class SuperAdminUserManagementIntegrationTest {
                 new Probe(
                         HttpMethod.POST,
                         "/api/superadmin/platform-owner/users",
-                        new CreateUserRequest("intruder", PASSWORD, "OWNER", null, null, null, null, null)),
+                        new PlatformOwnerCreateUserRequest("intruder", PASSWORD, "OWNER", null, null, null, null, null)),
                 new Probe(
                         HttpMethod.PUT,
                         "/api/superadmin/platform-owner/users/" + userId,
-                        new UpdateUserRequest("OWNER", null, null, null, null, null, null)),
+                        new PlatformOwnerUpdateUserRequest("OWNER", null, null, null, null, null, null)),
                 new Probe(
                         HttpMethod.POST,
                         "/api/superadmin/platform-owner/users/" + userId + "/reset-password",
@@ -292,14 +294,14 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users",
                     HttpMethod.POST,
                     new HttpEntity<>(
-                            new CreateUserRequest(
+                            new PlatformOwnerCreateUserRequest(
                                     "founder", PASSWORD, "STOREKEEPER", "Ada", "Founder", null, null, null),
                             authHeaders(token)),
                     UserSummaryResponse.class);
 
             assertThat(first.getStatusCode()).isEqualTo(HttpStatus.CREATED);
             assertThat(first.getBody().root()).isTrue();
-            assertThat(first.getBody().role()).isEqualTo("OWNER");
+            assertThat(first.getBody().roleName()).isEqualTo("OWNER");
             assertThat(first.getBody().active()).isTrue();
             assertThat(first.getBody().firstName()).isEqualTo("Ada");
             // The flag is derived from the tenant's state, not from the body, so it
@@ -311,7 +313,7 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users",
                     HttpMethod.POST,
                     new HttpEntity<>(
-                            new CreateUserRequest(
+                            new PlatformOwnerCreateUserRequest(
                                     "second-hire", PASSWORD, "STOREKEEPER", null, null, null, null, null),
                             authHeaders(token)),
                     UserSummaryResponse.class);
@@ -320,7 +322,7 @@ class SuperAdminUserManagementIntegrationTest {
             assertThat(second.getBody().root()).isFalse();
             // ...and now the requested role IS honoured, which is what makes the
             // override above a rule about the first user rather than about the API.
-            assertThat(second.getBody().role()).isEqualTo("STOREKEEPER");
+            assertThat(second.getBody().roleName()).isEqualTo("STOREKEEPER");
         });
     }
 
@@ -344,7 +346,7 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users/" + root.id(),
                     HttpMethod.PUT,
                     new HttpEntity<>(
-                            new UpdateUserRequest("FINANCE_OFFICER", null, null, null, null, null, null),
+                            new PlatformOwnerUpdateUserRequest("FINANCE_OFFICER", null, null, null, null, null, null),
                             authHeaders(token)),
                     ApiError.class);
             assertThat(demote.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -355,7 +357,8 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users/" + root.id(),
                     HttpMethod.PUT,
                     new HttpEntity<>(
-                            new UpdateUserRequest(null, false, null, null, null, null, null), authHeaders(token)),
+                            new PlatformOwnerUpdateUserRequest(null, false, null, null, null, null, null),
+                            authHeaders(token)),
                     ApiError.class);
             assertThat(viaUpdate.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
             assertThat(viaUpdate.getBody().message()).isEqualTo("The account owner cannot be deactivated or deleted.");
@@ -377,11 +380,11 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users/" + coOwner.id(),
                     HttpMethod.PUT,
                     new HttpEntity<>(
-                            new UpdateUserRequest("FINANCE_OFFICER", null, null, null, null, null, null),
+                            new PlatformOwnerUpdateUserRequest("FINANCE_OFFICER", null, null, null, null, null, null),
                             authHeaders(token)),
                     UserSummaryResponse.class);
             assertThat(demoted.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(demoted.getBody().role()).isEqualTo("FINANCE_OFFICER");
+            assertThat(demoted.getBody().roleName()).isEqualTo("FINANCE_OFFICER");
 
             // And a spare owner can be deactivated outright, because the root user
             // still holds the OWNER seat the headcount rule is counting. The rule
@@ -420,7 +423,7 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users/" + soleOwner.getId(),
                     HttpMethod.PUT,
                     new HttpEntity<>(
-                            new UpdateUserRequest("STOREKEEPER", null, null, null, null, null, null),
+                            new PlatformOwnerUpdateUserRequest("STOREKEEPER", null, null, null, null, null, null),
                             authHeaders(token)),
                     ApiError.class);
             assertThat(demote.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -444,7 +447,7 @@ class SuperAdminUserManagementIntegrationTest {
                             new HttpEntity<>(authHeaders(token)),
                             UserSummaryResponse.class)
                     .getBody();
-            assertThat(reloaded.role()).isEqualTo("OWNER");
+            assertThat(reloaded.roleName()).isEqualTo("OWNER");
             assertThat(reloaded.active()).isTrue();
 
             // Promote somebody else first and the same demotion is allowed, which is
@@ -454,11 +457,11 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users/" + soleOwner.getId(),
                     HttpMethod.PUT,
                     new HttpEntity<>(
-                            new UpdateUserRequest("STOREKEEPER", null, null, null, null, null, null),
+                            new PlatformOwnerUpdateUserRequest("STOREKEEPER", null, null, null, null, null, null),
                             authHeaders(token)),
                     UserSummaryResponse.class);
             assertThat(allowed.getStatusCode()).isEqualTo(HttpStatus.OK);
-            assertThat(allowed.getBody().role()).isEqualTo("STOREKEEPER");
+            assertThat(allowed.getBody().roleName()).isEqualTo("STOREKEEPER");
         });
     }
 
@@ -513,7 +516,8 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users",
                     HttpMethod.POST,
                     new HttpEntity<>(
-                            new CreateUserRequest("taken-name", PASSWORD, "STOREKEEPER", null, null, null, null, null),
+                            new PlatformOwnerCreateUserRequest(
+                                    "taken-name", PASSWORD, "STOREKEEPER", null, null, null, null, null),
                             authHeaders(token)),
                     ApiError.class);
 
@@ -533,7 +537,8 @@ class SuperAdminUserManagementIntegrationTest {
                     "/api/superadmin/platform-owner/users",
                     HttpMethod.POST,
                     new HttpEntity<>(
-                            new CreateUserRequest("bad-role", PASSWORD, "SUPREME_LEADER", null, null, null, null, null),
+                            new PlatformOwnerCreateUserRequest(
+                                    "bad-role", PASSWORD, "SUPREME_LEADER", null, null, null, null, null),
                             authHeaders(token)),
                     ApiError.class);
 
@@ -562,11 +567,11 @@ class SuperAdminUserManagementIntegrationTest {
                     new Probe(
                             HttpMethod.POST,
                             "/api/superadmin/platform-owner/users",
-                            new CreateUserRequest("nobody", PASSWORD, "OWNER", null, null, null, null, null)),
+                            new PlatformOwnerCreateUserRequest("nobody", PASSWORD, "OWNER", null, null, null, null, null)),
                     new Probe(
                             HttpMethod.PUT,
                             "/api/superadmin/platform-owner/users/" + someUser,
-                            new UpdateUserRequest("OWNER", null, null, null, null, null, null)),
+                            new PlatformOwnerUpdateUserRequest("OWNER", null, null, null, null, null, null)),
                     new Probe(
                             HttpMethod.POST,
                             "/api/superadmin/platform-owner/users/" + someUser + "/reset-password",
@@ -710,7 +715,7 @@ class SuperAdminUserManagementIntegrationTest {
                 "/api/superadmin/platform-owner/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                        new PlatformOwnerCreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
                         authHeaders(token)),
                 UserSummaryResponse.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
@@ -723,7 +728,15 @@ class SuperAdminUserManagementIntegrationTest {
                         "/api/users",
                         HttpMethod.POST,
                         new HttpEntity<>(
-                                new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                                new CreateUserRequest(
+                                        username,
+                                        PASSWORD,
+                                        roleRepository.findByName(role).orElseThrow().getId(),
+                                        null,
+                                        null,
+                                        null,
+                                        null,
+                                        null),
                                 authHeaders(asOwner.tokens().accessToken())),
                         UserSummaryResponse.class)
                 .getBody();

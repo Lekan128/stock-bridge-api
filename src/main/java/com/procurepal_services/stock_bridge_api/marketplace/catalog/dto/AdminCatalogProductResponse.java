@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.marketplace.catalog.dto;
 
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
 import com.procurepal_services.stock_bridge_api.entity.ProductCategory;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -33,6 +34,21 @@ import java.util.UUID;
  * Collapsing these to one would force a choice between an admin screen that lies about
  * the warehouse and one that lies about the shop - and the gap between them is exactly
  * the thing the operator is being paid to notice.
+ *
+ * <h2>Moderation state, and why it is on the same object</h2>
+ * {@code approvalStatus} and {@code rejectionReason} were added when vendors got a
+ * catalogue screen of their own. Two flags decide whether a product is on the public
+ * catalogue and only one of them is the seller's: {@code listed} is "I want this sold",
+ * {@code approvalStatus} is "the platform says you may" (see
+ * MarketplaceProductSpecifications). A screen showing the first without the second
+ * cannot explain the single most common vendor question there is - "my product is
+ * listed, why can nobody see it" - and a REJECTED listing whose reason is not on screen
+ * produces a support ticket instead of a fix.
+ *
+ * <p>For ProcurePal these are always APPROVED and null respectively, because the
+ * platform owner is stamped APPROVED at write time and never queues behind itself
+ * (ProductModerationRules). Its own screen can therefore ignore both fields, which is
+ * exactly what it does; nothing about ProcurePal's view changes.
  */
 public record AdminCatalogProductResponse(
         UUID id,
@@ -45,6 +61,8 @@ public record AdminCatalogProductResponse(
         BigDecimal costPrice,
         String imageUrl,
         String unitOfMeasure,
+        String packagingUnit,
+        BigDecimal packagingSize,
         int minOrderQuantity,
         int quantityOnHand,
         int committedQuantity,
@@ -55,6 +73,14 @@ public record AdminCatalogProductResponse(
         boolean listed,
         UUID categoryId,
         String categoryName,
+        ProductApprovalStatus approvalStatus,
+        // Why a reviewer refused this listing. Deliberately still present after a later
+        // approval - the column keeps it (see ProductModerationService.approve) because
+        // the history of a contested listing is what anybody asks for when it is
+        // disputed. A client showing it must therefore key off approvalStatus, not off
+        // the reason being non-null.
+        String rejectionReason,
+        OffsetDateTime reviewedAt,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt) {
 
@@ -76,6 +102,8 @@ public record AdminCatalogProductResponse(
                 product.getCostPrice(),
                 product.getImageUrl(),
                 product.getUnitOfMeasure(),
+                product.getPackagingUnit(),
+                product.getPackagingSize(),
                 product.getMinOrderQuantity(),
                 product.getQuantityOnHand(),
                 committedQuantity,
@@ -92,6 +120,9 @@ public record AdminCatalogProductResponse(
                 product.isMarketplaceListed(),
                 category == null ? null : category.getId(),
                 category == null ? null : category.getName(),
+                product.getApprovalStatus(),
+                product.getRejectionReason(),
+                product.getReviewedAt(),
                 product.getCreatedAt(),
                 product.getUpdatedAt());
     }

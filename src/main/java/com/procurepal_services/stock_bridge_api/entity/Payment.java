@@ -35,6 +35,55 @@ import org.hibernate.type.SqlTypes;
  * therefore be scoped through {@code order.clientId} in service code - there is no
  * filter to fall back on.
  *
+ * <h2>ONE PAYMENT CAN COVER SEVERAL ORDERS</h2>
+ * A basket holding several sellers' goods splits into one order per seller (V12),
+ * but the buyer pays ONCE and Monnify mints one transaction. The decision, taken
+ * over the alternative of one Monnify checkout per seller:
+ *
+ * <p><b>One payment, fanned out across the checkout group.</b> {@link #order} is
+ * the ANCHOR - the first order of the group - and {@link #amount} is the sum
+ * across the whole group. Settlement applies to every order in the anchor's
+ * {@code checkout_group_id}, inside one transaction. {@code order_id} therefore
+ * means "the order this payment hangs off", not "the only order it pays for", and
+ * that is the one piece of dishonesty in this schema; it is tolerated because the
+ * alternative was worse in every direction.
+ *
+ * <p><b>Why not a payment per order.</b> It would mean sending a buyer to Monnify's
+ * hosted checkout three times for one basket, entering their card three times, with
+ * three chances to abandon. Partial payment then becomes an ordinary outcome rather
+ * than an anomaly: one seller's goods are paid for and dispatched while another's sit
+ * unpaid, and the buyer's "order" is half real. It also triples the fixed per
+ * transaction fee for no benefit to anyone.
+ *
+ * <p><b>Why not a payments row per order sharing one transaction reference.</b> That
+ * splits the idempotency guard across N rows, and the guard is the single most
+ * load-bearing property here: {@code findByPaymentReferenceForUpdate} takes ONE row
+ * lock and re-checks ONE final status. With N rows a replayed webhook could take them
+ * in a different order and interleave, and "all N applied or none did" would have to
+ * be re-established by hand. Keeping exactly one payments row per attempt keeps
+ * exactly one thing to lock and one thing to check.
+ *
+ * <h2>Failure modes of this choice, stated plainly</h2>
+ * <ul>
+ *   <li><b>Anchor cancelled while the group is unpaid.</b> The payments row still
+ *       points at it. Settlement resolves the group from the anchor's
+ *       {@code checkout_group_id}, which survives cancellation, so the remaining
+ *       orders still settle - but the anchor itself is terminal and is skipped. A
+ *       buyer who cancels one order of an unpaid group and then pays will have paid
+ *       the ORIGINAL group total, which is now more than they owe. That is an
+ *       overpayment, which the amount check treats as payment and flags for manual
+ *       reconciliation. Cancelling a member of a group that has a live checkout open
+ *       is the sharp edge here; it is not currently prevented.</li>
+ *   <li><b>Partial fulfilment after settlement.</b> Not a payment problem - each
+ *       order fulfils independently by design - but a refund of ONE order in a group
+ *       has no per-order payment row to reverse against. The refund path is a later
+ *       module's, and it must reverse against the order, not against this row.</li>
+ *   <li><b>A group whose members are edited between init and settle.</b> The amount is
+ *       frozen on this row at init; the group total is recomputed at settlement. If
+ *       they disagree the amount check fires, which is the correct and safe
+ *       direction.</li>
+ * </ul>
+ *
  * paymentReference is OURS (sent to Monnify as paymentReference) and unique, so a
  * retry can never collide with an earlier attempt. transactionReference is
  * Monnify's and stays null until they tell us.
@@ -57,6 +106,11 @@ public class Payment {
     @Column(name = "id", nullable = false, updatable = false)
     private UUID id;
 
+    /**
+     * The ANCHOR order. See the class javadoc: a payment settles this order's whole
+     * checkout group, not this order alone. Read {@code order.getCheckoutGroupId()},
+     * never {@code order.getId()}, when asking what a payment covers.
+     */
     @ManyToOne(fetch = FetchType.LAZY, optional = false)
     @JoinColumn(name = "order_id", nullable = false, updatable = false)
     private Order order;
@@ -74,6 +128,7 @@ public class Payment {
     @Column(nullable = false, length = 30)
     private PaymentProviderStatus status;
 
+    /** What was asked for: the SUM across every order in the anchor's checkout group. */
     @Column(nullable = false, precision = 14, scale = 2)
     private BigDecimal amount;
 

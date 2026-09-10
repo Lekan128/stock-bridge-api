@@ -7,6 +7,7 @@ import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.RoleResponse;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
@@ -48,6 +49,9 @@ class RolePermissionMatrixIntegrationTest {
 
     @Autowired
     private TestRestTemplate restTemplate;
+
+    @Autowired
+    private RoleRepository roleRepository;
 
     @Test
     void financeOfficerSeesTheCatalogueAndAnalyticsButChangesNothing() {
@@ -131,6 +135,11 @@ class RolePermissionMatrixIntegrationTest {
      * chain honours the matrix; this proves the matrix itself is what §4.11 of the
      * marketplace contract specifies, which the endpoint tests cannot show while
      * the marketplace controllers live in other modules.
+     *
+     * Covers the five TENANT roles only. V11's VENDOR role is deliberately not
+     * served by /api/roles - it is not assignable through user management (see
+     * TenantRoles.VENDOR) - so its permission set is asserted straight off the
+     * roles table in VendorFoundationIntegrationTest instead.
      */
     @Test
     void everyRoleCarriesExactlyTheSeededPermissionSet() {
@@ -156,13 +165,19 @@ class RolePermissionMatrixIntegrationTest {
                         "MANAGE_PRODUCTS",
                         "MANAGE_ROLES",
                         "MANAGE_USERS",
+                        // V11. Maintaining the company's vendor directory is a
+                        // procurement job; OWNER holds everything its managers hold.
+                        "MANAGE_VENDORS",
                         "PLACE_ORDERS",
                         "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ALL_BRANCHES",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
                         "VIEW_ORDERS",
-                        "VIEW_PRODUCTS");
+                        "VIEW_PRODUCTS",
+                        "VIEW_VENDORS");
         assertThat(byRole.get("PROCUREMENT_MANAGER"))
                 .containsExactly(
                         "BROWSE_MARKETPLACE",
@@ -171,27 +186,46 @@ class RolePermissionMatrixIntegrationTest {
                         "MANAGE_MARKETPLACE",
                         "MANAGE_MARKETPLACE_ORDERS",
                         "MANAGE_PRODUCTS",
+                        "MANAGE_VENDORS",
                         "PLACE_ORDERS",
                         "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
                         "VIEW_ORDERS",
-                        "VIEW_PRODUCTS");
+                        "VIEW_PRODUCTS",
+                        "VIEW_VENDORS");
         assertThat(byRole.get("INVENTORY_OFFICER"))
                 .containsExactly(
                         "BROWSE_MARKETPLACE",
                         "MANAGE_INVENTORY",
                         "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
                         "VIEW_ANALYTICS",
                         "VIEW_MARKETPLACE_ANALYTICS",
                         "VIEW_ORDERS",
-                        "VIEW_PRODUCTS");
+                        "VIEW_PRODUCTS",
+                        // V11, read-only: products now carry a vendor, and a stock
+                        // item whose origin renders blank is worse than useless.
+                        "VIEW_VENDORS");
+        // V11 adds VIEW_VENDORS and not MANAGE_VENDORS: "what did we last pay this
+        // supplier" is exactly the question this role exists to answer, and it
+        // still changes nothing.
         assertThat(byRole.get("FINANCE_OFFICER"))
-                .containsExactly("BROWSE_MARKETPLACE", "VIEW_ANALYTICS", "VIEW_ORDERS", "VIEW_PRODUCTS");
+                .containsExactly(
+                        "BROWSE_MARKETPLACE", "VIEW_ANALYTICS", "VIEW_ORDERS", "VIEW_PRODUCTS", "VIEW_VENDORS");
         // The storekeeper signs for goods but never sees spend: RECEIVE_DELIVERIES
         // without VIEW_ORDERS or PLACE_ORDERS is the whole point of the split.
         assertThat(byRole.get("STOREKEEPER"))
-                .containsExactly("BROWSE_MARKETPLACE", "MANAGE_INVENTORY", "RECEIVE_DELIVERIES", "VIEW_PRODUCTS");
+                .containsExactly(
+                        "BROWSE_MARKETPLACE",
+                        "MANAGE_INVENTORY",
+                        "RECEIVE_DELIVERIES",
+                        "STOCK_IN",
+                        "STOCK_OUT",
+                        "VIEW_PRODUCTS");
     }
 
     private void assertProductCreateForbidden(HttpHeaders auth) {
@@ -217,7 +251,8 @@ class RolePermissionMatrixIntegrationTest {
         body.add(
                 "product",
                 new HttpEntity<>(
-                        new CreateProductRequest("Product " + sku, sku, null, new BigDecimal("9.99"), null, null),
+                        new CreateProductRequest(
+                                "Product " + sku, sku, null, new BigDecimal("9.99"), null, null, null, null, null),
                         partHeaders));
 
         HttpHeaders headers = new HttpHeaders();
@@ -232,7 +267,15 @@ class RolePermissionMatrixIntegrationTest {
                 "/api/users",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CreateUserRequest(username, PASSWORD, role, null, null, null, null, null),
+                        new CreateUserRequest(
+                                username,
+                                PASSWORD,
+                                roleRepository.findByName(role).orElseThrow().getId(),
+                                null,
+                                null,
+                                null,
+                                null,
+                                null),
                         authHeaders(owner)),
                 UserSummaryResponse.class);
         return restTemplate.postForObject(

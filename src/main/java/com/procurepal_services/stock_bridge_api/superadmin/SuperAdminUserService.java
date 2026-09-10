@@ -1,5 +1,8 @@
 package com.procurepal_services.stock_bridge_api.superadmin;
 
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
+import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
@@ -16,10 +19,11 @@ import com.procurepal_services.stock_bridge_api.user.RootUserRoleChangeNotAllowe
 import com.procurepal_services.stock_bridge_api.user.TenantRoles;
 import com.procurepal_services.stock_bridge_api.user.UserNotFoundException;
 import com.procurepal_services.stock_bridge_api.user.UsernameTakenException;
-import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerCreateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
-import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerUpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
+import com.procurepal_services.stock_bridge_api.vendor.VendorSingleAccountRule;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -54,6 +58,19 @@ import org.springframework.transaction.annotation.Transactional;
  *       (UserManagementService) or, in the last resort, by a DBA who leaves an
  *       audit trail.</li>
  * </ul>
+ *
+ * <h2>The one exception, and why it does not weaken the argument above</h2>
+ * {@code SuperAdminVendorService.resetVendorAccountPassword} can set the password
+ * of a VENDOR's single account, and nothing else about it. It was added because
+ * the "served by that customer's own OWNER" escape hatch does not exist for a
+ * vendor: a vendor has exactly one user, cannot create staff, and there is no
+ * self-service reset anywhere in this codebase, so one lost password ends that
+ * business's ability to trade (VENDOR_RESEARCH.md Section C item 9). It is bounded
+ * three ways - vendors only ({@code findByIdAndClientType}), that vendor's one
+ * account resolved server-side, and no user id in the path - which is what keeps it
+ * from being the unbounded capability this class declines to build. Read its
+ * Javadoc before widening anything here; the buying-company case is untouched and
+ * should stay that way, because a buying company HAS colleagues.
  *
  * <h2>Why the reads need no TenantScopeExecutor and the writes do</h2>
  * A super admin has no TenantContext at all (SuperAdminPrincipal is not a
@@ -119,8 +136,11 @@ public class SuperAdminUserService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
+    private final EmailNotificationService emailNotificationService;
+    private final EmailVerificationService emailVerificationService;
     private final PlatformOwnerGuard platformOwnerGuard;
     private final TenantScopeExecutor tenantScopeExecutor;
+    private final VendorSingleAccountRule vendorSingleAccountRule;
 
     // ------------------------------------------------------------------------
     // Cross-tenant reads. Any client, including the platform owner.
@@ -183,7 +203,7 @@ public class SuperAdminUserService {
      * under the same condition - a client that has no users yet needs an account
      * holder, and only a privileged server-side flow can say who it is. What has
      * NOT changed is the rule that comment was protecting: root is never something
-     * a caller can ask for. CreateUserRequest still has no {@code root} component
+     * a caller can ask for. PlatformOwnerCreateUserRequest still has no {@code root} component
      * (see its Javadoc), UserManagementService still hardcodes {@code root(false)}
      * because nothing created through the tenant-facing API is ever the account
      * holder, and the flag is derived here from a count the caller cannot influence
@@ -200,9 +220,17 @@ public class SuperAdminUserService {
      * makes both land inside this request rather than at an unrelated commit.
      */
     @Transactional
-    public UserSummaryResponse createPlatformOwnerUser(CreateUserRequest request) {
+    public UserSummaryResponse createPlatformOwnerUser(PlatformOwnerCreateUserRequest request) {
         Client platformOwner = requirePlatformOwner();
         UUID clientId = platformOwner.getId();
+
+        // ProcurePal is a COMPANY, so this can never fire today - and it is here for
+        // that reason rather than in spite of it. "Every path that creates a user
+        // asserts the vendor single-account rule" is a property somebody can check by
+        // grepping; "every path except the ones we reasoned could not need it" is a
+        // property that decays the first time the reasoning changes. Costs one indexed
+        // lookup on a super-admin write.
+        vendorSingleAccountRule.assertMayAddUser(clientId);
 
         return tenantScopeExecutor.callAs(clientId, () -> {
             if (userRepository.findByClientIdAndUsername(clientId, request.username()).isPresent()) {
@@ -225,6 +253,15 @@ public class SuperAdminUserService {
                     .jobTitle(normalize(request.jobTitle()))
                     .build());
 
+            // Same reasoning as UserManagementService.create - see there. Note this
+            // one runs inside TenantScopeExecutor.callAs, which is harmless for the
+            // token: email_verification_tokens is not tenant-scoped, so the borrowed
+            // filter neither helps nor hinders the insert. It matters for the EMAIL,
+            // which reads the user and the client while that scope is still open -
+            // exactly as the userInvited call below it already did.
+            VerificationLink verificationLink = emailVerificationService.issueLink(user);
+            emailNotificationService.userInvited(user, role.getName(), verificationLink);
+
             return UserSummaryResponse.from(user);
         });
     }
@@ -232,10 +269,10 @@ public class SuperAdminUserService {
     /**
      * Patch semantics, exactly like PUT /api/users/{id}: a body of
      * {@code {"active": false}} must not blank out the user's name and phone as a
-     * side effect. See UpdateUserRequest.
+     * side effect. See PlatformOwnerUpdateUserRequest.
      */
     @Transactional
-    public UserSummaryResponse updatePlatformOwnerUser(UUID userId, UpdateUserRequest request) {
+    public UserSummaryResponse updatePlatformOwnerUser(UUID userId, PlatformOwnerUpdateUserRequest request) {
         Client platformOwner = requirePlatformOwner();
         UUID clientId = platformOwner.getId();
 
@@ -283,6 +320,11 @@ public class SuperAdminUserService {
         tenantScopeExecutor.runAs(clientId, () -> {
             User user = findUserOrThrow(clientId, userId);
             user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
+            // Doubly worth sending here: this is the one reset path that can target a
+            // root user, by a caller from outside the tenant entirely. The account
+            // holder learning by email that somebody reset their password is the only
+            // check on that power the tenant itself has.
+            emailNotificationService.passwordResetByAdmin(user);
         });
     }
 
@@ -347,8 +389,8 @@ public class SuperAdminUserService {
                         () -> new IllegalStateException(roleName + " role not seeded - run the Flyway migrations"));
     }
 
-    /** Null means "leave alone" here, not "clear" - see UpdateUserRequest. */
-    private void applyProfilePatch(User user, UpdateUserRequest request) {
+    /** Null means "leave alone" here, not "clear" - see PlatformOwnerUpdateUserRequest. */
+    private void applyProfilePatch(User user, PlatformOwnerUpdateUserRequest request) {
         if (request.firstName() != null) {
             user.setFirstName(normalize(request.firstName()));
         }

@@ -20,6 +20,13 @@ import java.util.UUID;
  * {@code canCancel} / {@code canReceive} are computed server-side for the same
  * reason: the rule for "may this buyer cancel" is the state machine plus the
  * buyer-driven carve-out, and a frontend copy of it drifts.
+ *
+ * <h2>One checkout can have produced several of these</h2>
+ * {@code seller} names who is fulfilling THIS order, and {@code checkoutGroupId} plus
+ * {@code siblingOrders} say which basket it came out of. Without them a buyer who
+ * checked out one cart containing three sellers' goods would see three unexplained
+ * orders with three order numbers and three delivery fees, and no way to tell they
+ * were one purchase. See {@code Order.checkoutGroupId}.
  */
 public record OrderResponse(
         UUID id,
@@ -31,6 +38,22 @@ public record OrderResponse(
         BigDecimal subtotal,
         BigDecimal deliveryFee,
         BigDecimal total,
+        /**
+         * Who sold this order - name and logo only, on the buyer-facing surfaces for
+         * the same reason MarketplaceSellerResponse withholds contact details.
+         * Resolved from the seller OF RECORD, so an order placed with a vendor who has
+         * since been suspended still renders their name rather than a blank.
+         */
+        OrderSellerResponse seller,
+        /** The basket this order came out of. Shared with {@link #siblingOrders}. */
+        UUID checkoutGroupId,
+        /**
+         * The OTHER orders the same checkout produced, oldest number first - empty for
+         * the ordinary single-seller case. Deliberately a light summary rather than
+         * full OrderResponses: rendering "your basket also became these" needs a number,
+         * a seller and a total, and nesting complete orders would recurse.
+         */
+        List<SiblingOrderResponse> siblingOrders,
         OrderDeliveryResponse delivery,
         String customerNote,
         String cancellationReason,
@@ -59,7 +82,9 @@ public record OrderResponse(
             List<OrderItem> items,
             List<OrderStatusEvent> events,
             OrderCustomerResponse customer,
-            String placedByUsername) {
+            String placedByUsername,
+            OrderSellerResponse seller,
+            List<SiblingOrderResponse> siblingOrders) {
         boolean fullyReceived = !items.isEmpty() && items.stream().allMatch(item -> item.outstandingQuantity() == 0);
         return new OrderResponse(
                 order.getId(),
@@ -71,6 +96,9 @@ public record OrderResponse(
                 order.getSubtotal(),
                 order.getDeliveryFee(),
                 order.getTotal(),
+                seller,
+                order.getCheckoutGroupId(),
+                siblingOrders,
                 OrderDeliveryResponse.from(order),
                 order.getCustomerNote(),
                 order.getCancellationReason(),

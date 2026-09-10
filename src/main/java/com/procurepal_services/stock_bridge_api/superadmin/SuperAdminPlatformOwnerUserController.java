@@ -1,8 +1,8 @@
 package com.procurepal_services.stock_bridge_api.superadmin;
 
-import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerCreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.PlatformOwnerUpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.ResetPasswordRequest;
-import com.procurepal_services.stock_bridge_api.user.dto.UpdateUserRequest;
 import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -88,7 +88,7 @@ public class SuperAdminPlatformOwnerUserController {
     }
 
     @PostMapping
-    public ResponseEntity<UserSummaryResponse> create(@Valid @RequestBody CreateUserRequest request) {
+    public ResponseEntity<UserSummaryResponse> create(@Valid @RequestBody PlatformOwnerCreateUserRequest request) {
         return ResponseEntity.status(HttpStatus.CREATED).body(superAdminUserService.createPlatformOwnerUser(request));
     }
 
@@ -100,7 +100,8 @@ public class SuperAdminPlatformOwnerUserController {
      * SuperAdminUserService for why that guard is absent rather than stubbed.
      */
     @PutMapping("/{userId}")
-    public UserSummaryResponse update(@PathVariable UUID userId, @Valid @RequestBody UpdateUserRequest request) {
+    public UserSummaryResponse update(
+            @PathVariable UUID userId, @Valid @RequestBody PlatformOwnerUpdateUserRequest request) {
         return superAdminUserService.updatePlatformOwnerUser(userId, request);
     }
 
