@@ -4,6 +4,8 @@ import com.procurepal_services.stock_bridge_api.config.CorsProperties;
 import com.procurepal_services.stock_bridge_api.tenant.TenantResolutionFilter;
 
 import jakarta.servlet.DispatcherType;
+import jakarta.servlet.http.HttpServletResponse;
+import java.time.Instant;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
@@ -14,6 +16,8 @@ import org.springframework.security.config.annotation.web.configurers.AbstractHt
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.http.MediaType;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.web.cors.CorsConfiguration;
@@ -172,9 +176,51 @@ public class SecurityConfig {
                         .requestMatchers("/api/**")
                         .hasAuthority(JwtAuthenticationFilter.AUDIENCE_TENANT_AUTHORITY)
                         .anyRequest().authenticated())
+                .exceptionHandling(ex -> ex.authenticationEntryPoint(unauthenticatedEntryPoint()))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
                 .addFilterAfter(tenantResolutionFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
+    }
+
+    /**
+     * 401 for "we do not know who you are", so that 403 can keep meaning "we know who you are and
+     * you may not do this". Without this bean Spring Security has no entry point to fall back on -
+     * httpBasic and formLogin are both disabled above, and each is what would otherwise contribute
+     * one - so it defaults to {@code Http403ForbiddenEntryPoint} and answers 403 to everything,
+     * including a request carrying no token at all.
+     *
+     * <h2>Why this is a client-visible bug and not a cosmetic status-code preference</h2>
+     * {@code JwtAuthenticationFilter} deliberately does not reject a bad token itself: it clears
+     * the context and lets the request continue as anonymous, so that the permit-all routes still
+     * work. An EXPIRED token therefore arrives here indistinguishable from no token - and an
+     * access token expires every {@code JWT_ACCESS_TOKEN_EXPIRATION_MS} (15 minutes by default),
+     * which is to say constantly, in the middle of whatever the user is doing.
+     *
+     * <p>The web client's single-flight refresh-retry (see {@code createApiClient.ts}) is keyed on
+     * {@code status === 401}, which is the correct thing for it to key on. Answering 403 meant it
+     * never fired: the refresh token sat in local storage, unused, while the screen the user was
+     * on rendered whatever it shows when a fetch fails. That is how "Could not load this product's
+     * current details." appeared in the middle of confirming a delivery receipt - not a permission
+     * problem, and not a server error, just a fifteen-minute-old access token that nothing was
+     * allowed to notice had expired.
+     *
+     * <p>Spring's {@code ExceptionTranslationFilter} routes to this entry point only when the
+     * request is anonymous, and to the access-denied handler when it is authenticated but lacks an
+     * authority - so the genuine 403s ({@code @PreAuthorize} on a permission the user does not
+     * hold) are untouched by this and stay 403.
+     *
+     * <p>The body mirrors the shape Boot's own error handling produces for the other statuses, so
+     * a client parsing one can parse the other.
+     */
+    private AuthenticationEntryPoint unauthenticatedEntryPoint() {
+        return (request, response, authException) -> {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+            response.getWriter().write(
+                    "{\"timestamp\":\"" + Instant.now()
+                            + "\",\"status\":401,\"error\":\"Unauthorized\",\"path\":\""
+                            + request.getRequestURI() + "\"}");
+        };
     }
 
     @Bean
