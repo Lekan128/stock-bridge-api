@@ -21,7 +21,10 @@ import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -408,13 +411,33 @@ public class IncomingStockService {
         return tenantScopeExecutor.callAs(order.getClientId(), () -> {
             List<Product> catalogue =
                     productRepository.findAllByClientIdAndActiveTrueOrderByNameAsc(order.getClientId());
+            List<OrderItem> items = orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(order.getId());
+            // Every product THIS order brought into existence. None of them answers the question
+            // the nudge asks - "is this already in your inventory?" - because none of them was,
+            // until materialize() created it for this very order seconds ago.
+            //
+            // Without this, a two-line order of two different goods nudged each line towards the
+            // OTHER line's brand-new row ("Bags Of Rice ... might already be in your inventory as
+            // Dangote Parboiled Rice 50kg (0 on hand)"), and answering "yes, same item" would
+            // relink one line onto the other's product and then delete the row it abandoned -
+            // collapsing two genuinely different items into one, on the buyer's say-so, in
+            // response to a question they were wrong to be asked.
+            //
+            // Scoped to this order rather than to "created recently": a row an EARLIER order
+            // created is a real part of the buyer's inventory by now and is a legitimate
+            // candidate, which is exactly the repeat-purchase case section 7.2 exists for.
+            Set<UUID> createdByThisOrder = items.stream()
+                    .filter(OrderItem::isBuyerProductNewlyCreated)
+                    .map(OrderItem::getBuyerProductId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet());
             List<OrderItemMatchSuggestionResponse> suggestions = new ArrayList<>();
-            for (OrderItem item : orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(order.getId())) {
+            for (OrderItem item : items) {
                 if (!item.isBuyerProductNewlyCreated() || item.getReceivedQuantity() > 0) {
                     continue;
                 }
                 List<Product> candidates = catalogue.stream()
-                        .filter(p -> !p.getId().equals(item.getBuyerProductId()))
+                        .filter(p -> !createdByThisOrder.contains(p.getId()))
                         .filter(p -> NameSimilarity.score(item.getProductName(), p.getName())
                                 >= NameSimilarity.SUGGESTION_FLOOR)
                         .sorted(Comparator.comparingDouble(
