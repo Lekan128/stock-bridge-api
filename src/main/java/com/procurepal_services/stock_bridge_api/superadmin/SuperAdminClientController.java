@@ -4,6 +4,8 @@ import com.procurepal_services.stock_bridge_api.analytics.AnalyticsService;
 import com.procurepal_services.stock_bridge_api.analytics.dto.AnalyticsSummaryResponse;
 import com.procurepal_services.stock_bridge_api.analytics.dto.MovementsOverTimePoint;
 import com.procurepal_services.stock_bridge_api.analytics.dto.TopProductEntry;
+import com.procurepal_services.stock_bridge_api.superadmin.dto.CatalogResetPreview;
+import com.procurepal_services.stock_bridge_api.superadmin.dto.CatalogResetRequest;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.SuperAdminClientDetail;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.SuperAdminClientSummary;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.UpdateClientRequest;
@@ -19,6 +21,7 @@ import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -43,6 +46,7 @@ public class SuperAdminClientController {
 
     private final SuperAdminClientService superAdminClientService;
     private final AnalyticsService analyticsService;
+    private final ClientCatalogResetService clientCatalogResetService;
 
     @GetMapping
     public Page<SuperAdminClientSummary> list(
@@ -115,5 +119,33 @@ public class SuperAdminClientController {
             @RequestParam(defaultValue = "in") String direction,
             @RequestParam(defaultValue = "10") int limit) {
         return analyticsService.topProductsForClient(id, from, to, by, direction, limit);
+    }
+
+    /**
+     * Dry run of a catalog reset: what would be deleted, or why it refuses. Safe to call
+     * freely - it writes nothing, and it is what the confirmation dialog renders before an ops
+     * user commits to anything.
+     */
+    @GetMapping("/{id}/catalog-reset")
+    public CatalogResetPreview previewCatalogReset(
+            @PathVariable UUID id,
+            @RequestParam(defaultValue = "false") boolean includeVendorDirectory,
+            @RequestParam(defaultValue = "false") boolean resetSkuCounters) {
+        return clientCatalogResetService.preview(id, includeVendorDirectory, resetSkuCounters);
+    }
+
+    /**
+     * Clears a tenant's products, stock ledger and upload history so they can onboard again -
+     * the account, its users and its settings all survive. Irreversible, and gated on the
+     * caller typing the tenant's slug into the body (see CatalogResetRequest).
+     *
+     * <p>POST rather than DELETE: the target is not one addressable resource but a set of rows
+     * across eight tables chosen by policy, and it takes a body - options plus the typed
+     * confirmation - which DELETE has no good place for.
+     */
+    @PostMapping("/{id}/catalog-reset")
+    public CatalogResetPreview resetCatalog(
+            @PathVariable UUID id, @Valid @RequestBody CatalogResetRequest request) {
+        return clientCatalogResetService.reset(id, request);
     }
 }
