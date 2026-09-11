@@ -62,9 +62,20 @@ import org.springframework.web.multipart.MultipartFile;
  * making somebody think in kilograms. Decimals are accepted on both columns, because thirty kegs
  * and a half-full one is a real shelf.
  *
- * <p>{@code cost_price} deliberately does NOT follow: it stays per stock unit, per ml and not
- * per keg, and section 9.2 records why - it is the only figure comparable across suppliers whose
- * packs differ, which is the job that column does. Do not "fix" it to match its neighbours.
+ * <p>{@code cost_price} follows the pack too, on ENTRY - "what you pay for one keg" - while what
+ * is STORED stays per stock unit, which is the comparability across suppliers with different
+ * packs that section 9.2 exists to deliver. That is the amendment: this javadoc used to say the
+ * column was per stock unit on entry as well, and section 9.2 originally did say so, until a real
+ * sheet read "45 baskets" beside "78,000" and meant 78,000 for ONE basket - the mixed basis this
+ * whole remediation removes, sitting in two adjacent cells. See
+ * {@code ProductCatalogRowHandler.perStockUnitPriceOf} for the conversion and the full account,
+ * and {@link #inSheetPrice} for the export half that has to match it.
+ *
+ * <p><b>Note the one place that did not follow the amendment:</b> {@link #parseRow}, which backs
+ * the legacy {@code POST /api/products/bulk-upload} endpoint, still reads {@code cost_price} as
+ * per stock unit. Nothing in the app calls it - every upload goes through the import session -
+ * but the same file therefore means two different things on the two endpoints, and the template
+ * this class generates says per pack. Reconcile before that endpoint is given a second caller.
  *
  * <h2>Column order, and the promise that replaced the old one</h2>
  * The columns are grouped by the question they answer: who it is ({@code name}, {@code sku},
@@ -409,11 +420,23 @@ public class ProductExcelService {
                     cell(row, "low_stock_alert_at").setCellValue(alertAt.doubleValue());
                 }
 
-                // cost_price does NOT get the same treatment - section 9.2. It is per stock unit
-                // on the way out because it is per stock unit on the way in, and converting it
-                // here would be the mixed-basis row the whole amendment exists to remove.
+                // cost_price gets the same treatment as the two quantities above, for the same
+                // reason: it is written in the terms the column is READ in. Since section 9.2 was
+                // amended, that is PER PACK - "what you pay for one keg" - while what is STORED
+                // stays per stock unit, which is what actually delivers the comparability across
+                // suppliers the old rule was reaching for. See
+                // ProductCatalogRowHandler.perStockUnitPriceOf for the reading half.
+                //
+                // This comment previously said the opposite ("per stock unit on the way out
+                // because it is per stock unit on the way in") and the code matched it. That was
+                // true before the amendment and silently wrong after it: a product stored at
+                // N900/kg in 50 kg bags exported 900, re-imported as N900 PER BAG, and came back
+                // N18/kg - a 50x loss, on a row the review screen marked VALID with no warning,
+                // while the quantity beside it round-tripped perfectly and hid it. Exporting,
+                // editing and re-uploading is the workflow this method exists to serve, so a
+                // basis it does not share with the parser is not a cosmetic mismatch.
                 if (product.getCostPrice() != null) {
-                    cell(row, "cost_price").setCellValue(product.getCostPrice().doubleValue());
+                    cell(row, "cost_price").setCellValue(inSheetPrice(product, product.getCostPrice()).doubleValue());
                 }
                 // Nullable since V17 (a buying company's product has no selling price to give)
                 // - null-guarded the same way costPrice above it always has been, so an export
@@ -899,6 +922,31 @@ public class ProductExcelService {
             return stockUnits;
         }
         return stockUnits.divide(option.factorToStockUnit(), 6, java.math.RoundingMode.HALF_UP)
+                .stripTrailingZeros();
+    }
+
+    /**
+     * The price twin of {@link #inSheetUnits}: a stored per-stock-unit cost expressed per PACK,
+     * which is the basis the {@code cost_price} column is read in (section 9.2 as amended, and
+     * {@code ProductCatalogRowHandler.perStockUnitPriceOf}).
+     *
+     * <p>Multiplying rather than dividing, and for the mirror-image reason: a price is per-unit,
+     * so a bigger unit carries a bigger number. {@code UnitOption.toStockUnitPrice} divides by
+     * this same factor on the way back in, so the pair round-trips - N900/kg over a 50 kg bag
+     * exports as 45,000 and re-imports as 900.
+     *
+     * <p>Scale 6 before the cell, matching the contract's "do the arithmetic at scale 6 first";
+     * the factor-of-1 case returns the input unchanged, exactly as {@code toStockUnitPrice} does,
+     * so a product with no pack exports byte-for-byte what it always has.
+     */
+    private BigDecimal inSheetPrice(Product product, BigDecimal perStockUnit) {
+        UnitOption option =
+                countedIn(product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize());
+        if (option.factorToStockUnit().compareTo(BigDecimal.ONE) == 0) {
+            return perStockUnit;
+        }
+        return perStockUnit.multiply(option.factorToStockUnit())
+                .setScale(6, java.math.RoundingMode.HALF_UP)
                 .stripTrailingZeros();
     }
 

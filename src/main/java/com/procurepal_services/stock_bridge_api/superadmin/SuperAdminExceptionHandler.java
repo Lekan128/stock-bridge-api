@@ -17,6 +17,7 @@ import com.procurepal_services.stock_bridge_api.user.RootUserRoleChangeNotAllowe
 import com.procurepal_services.stock_bridge_api.user.UserNotFoundException;
 import com.procurepal_services.stock_bridge_api.user.UsernameTakenException;
 import org.springframework.dao.DataIntegrityViolationException;
+import com.procurepal_services.stock_bridge_api.superadmin.dto.CatalogResetPreview;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -65,6 +66,21 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
             SuperAdminSettlementController.class
         })
 public class SuperAdminExceptionHandler {
+
+    /**
+     * 409 with the full preview body, not a plain ApiError, for the reason UndoBlockedResponse
+     * gives: the caller needs the blocker list to render which products are in the way. The
+     * dialog detects this shape by {@code blocked === true && Array.isArray(blockers)}.
+     */
+    @ExceptionHandler(CatalogResetExceptions.Blocked.class)
+    public ResponseEntity<CatalogResetPreview> handleCatalogResetBlocked(CatalogResetExceptions.Blocked ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getBody());
+    }
+
+    @ExceptionHandler(CatalogResetExceptions.NotConfirmed.class)
+    public ResponseEntity<ApiError> handleCatalogResetNotConfirmed(CatalogResetExceptions.NotConfirmed ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiError(ex.getMessage()));
+    }
 
     @ExceptionHandler(ClientNotFoundException.class)
     public ResponseEntity<ApiError> handleClientNotFound(ClientNotFoundException ex) {
