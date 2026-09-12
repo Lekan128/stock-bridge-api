@@ -1914,7 +1914,7 @@ class BulkImportSessionIntegrationTest {
                         "/api/company-vendors",
                         HttpMethod.POST,
                         new HttpEntity<>(
-                                new CompanyVendorRequest(name, "08030000000", null, null, null, null, null, null),
+                                new CompanyVendorRequest(name, "08030000000", null, null, null, null, null, null, null, null, null, null),
                                 headers),
                         CompanyVendorResponse.class)
                 .getBody();

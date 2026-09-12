@@ -195,6 +195,39 @@ public class Client {
     @Column(name = "commission_rate", precision = 5, scale = 4)
     private BigDecimal commissionRate;
 
+    /**
+     * Where ProcurePaddy pays this seller out, and the registration number behind
+     * the business. All four are optional and all four are a VENDOR's fields - like
+     * {@link #logoUrl} and {@link #commissionRate} they are meaningless on a COMPANY
+     * row, and for the same reason no constraint ties them to {@link #clientType}:
+     * recording a business's bank details before flipping them to VENDOR is an
+     * ordinary sequence.
+     *
+     * <h2>Not the same as a company_vendors row's bank details</h2>
+     * A {@link CompanyVendor} carries its own independent set. These are OUR banking
+     * relationship with the seller; those are one buyer's record of how they pay a
+     * supplier off-platform. They may legitimately differ and neither is sourced
+     * from the other - see V28__vendor_bank_details_and_cac.sql.
+     *
+     * <h2>Deliberately unvalidated beyond length</h2>
+     * A Nigerian NUBAN is ten digits, but these fields are filled in progressively
+     * by an ops user working from whatever the vendor sent, so a half-entered number
+     * must be storable. Nothing pays out automatically off these columns; a human
+     * reads them before money moves.
+     */
+    @Column(name = "bank_name")
+    private String bankName;
+
+    @Column(name = "bank_account_number", length = 50)
+    private String bankAccountNumber;
+
+    @Column(name = "bank_account_name")
+    private String bankAccountName;
+
+    /** Corporate Affairs Commission registration number, as written ("RC 123456"). See {@link #bankName}. */
+    @Column(name = "cac_number", length = 50)
+    private String cacNumber;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

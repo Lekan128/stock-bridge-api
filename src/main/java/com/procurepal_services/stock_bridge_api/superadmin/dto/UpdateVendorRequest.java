@@ -44,5 +44,14 @@ public record UpdateVendorRequest(
         /** An S3 URL. TEXT in the schema, so length is deliberately unbounded here too. */
         String logoUrl,
         /** A fraction in 0..1, matching chk_clients_commission_rate_fraction. Null means none agreed. */
-        @DecimalMin("0.0") @DecimalMax("1.0") BigDecimal commissionRate) {
+        @DecimalMin("0.0") @DecimalMax("1.0") BigDecimal commissionRate,
+        // Optional and clearable, like email above - this record's replace semantics
+        // mean a field the ops user emptied is written as NULL. That is the right
+        // behaviour here: "we no longer hold their bank details" has to be
+        // expressible, since these columns are the record of where money goes.
+        @Size(max = 255) String bankName,
+        @Size(max = 50) String bankAccountNumber,
+        @Size(max = 255) String bankAccountName,
+        /** Corporate Affairs Commission registration number, as written ("RC 123456"). */
+        @Size(max = 50) String cacNumber) {
 }

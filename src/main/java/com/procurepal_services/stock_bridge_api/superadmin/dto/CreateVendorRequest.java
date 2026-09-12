@@ -83,6 +83,18 @@ public record CreateVendorRequest(
         // not been agreed is null, which is different from zero (zero is a rate
         // somebody negotiated).
         @DecimalMin("0.0") @DecimalMax("1.0") BigDecimal commissionRate,
+        // Optional, all four. Where ProcurePaddy pays this seller out, and the
+        // registration number behind the business. Length-only validation on
+        // purpose: an ops user types these from whatever the vendor sent, so a
+        // partially-known account number has to be storable - and nothing pays out
+        // off these columns without a human reading them first (see V28). The
+        // waitlist approval path collects none of them; they are filled in later
+        // through PUT /api/superadmin/vendors/{id}.
+        @Size(max = 255) String bankName,
+        @Size(max = 50) String bankAccountNumber,
+        @Size(max = 255) String bankAccountName,
+        /** Corporate Affairs Commission registration number, as written ("RC 123456"). */
+        @Size(max = 50) String cacNumber,
         @NotBlank @Size(max = 255) String username,
         // Length-only for now; tighten later once there is a product decision on
         // password policy (see ClientSignupRequest for the same note).

@@ -134,11 +134,21 @@ class CompanyVendorIntegrationTest {
                         null,
                         "Ikeja",
                         "Lagos",
-                        "Delivers Tuesdays."));
+                        "Delivers Tuesdays.",
+                        "First Bank",
+                        "0123456789",
+                        "Ada Millers Limited",
+                        "RC 123456"));
         assertThat(updated.name()).isEqualTo("Ada Millers Limited");
         assertThat(updated.email()).isEqualTo("sales@adamillers.example");
         assertThat(updated.state()).isEqualTo("Lagos");
         assertThat(updated.notes()).isEqualTo("Delivers Tuesdays.");
+        // V28: optional on both kinds, and the buyer's OWN record of how they pay this supplier -
+        // never sourced from the seller's clients row. See CompanyVendor's javadoc.
+        assertThat(updated.bankName()).isEqualTo("First Bank");
+        assertThat(updated.bankAccountNumber()).isEqualTo("0123456789");
+        assertThat(updated.bankAccountName()).isEqualTo("Ada Millers Limited");
+        assertThat(updated.cacNumber()).isEqualTo("RC 123456");
         // Still external after an edit - an update can no more change the kind than a
         // create can choose it.
         assertThat(updated.kind()).isEqualTo(CompanyVendorKind.EXTERNAL);
@@ -206,7 +216,8 @@ class CompanyVendorIntegrationTest {
                 HttpMethod.POST,
                 new HttpEntity<>(
                         new CompanyVendorRequest(
-                                "Faraway Traders", "0801 234 5678", null, null, null, "Accra", "Greater Accra", null),
+                                "Faraway Traders", "0801 234 5678", null, null, null, "Accra", "Greater Accra", null,
+                                null, null, null, null),
                         buyer.headers()),
                 ApiError.class);
 
@@ -731,7 +742,7 @@ class CompanyVendorIntegrationTest {
     }
 
     private static CompanyVendorRequest vendorRequest(String name, String phone) {
-        return new CompanyVendorRequest(name, phone, null, null, null, null, null, null);
+        return new CompanyVendorRequest(name, phone, null, null, null, null, null, null, null, null, null, null);
     }
 
     private CompanyVendorResponse createVendor(Buyer buyer, CompanyVendorRequest request) {

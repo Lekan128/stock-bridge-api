@@ -122,6 +122,10 @@ public class CompanyVendorService {
                 .city(blankToNull(request.city()))
                 .state(blankToNull(request.state()))
                 .notes(blankToNull(request.notes()))
+                .bankName(blankToNull(request.bankName()))
+                .bankAccountNumber(blankToNull(request.bankAccountNumber()))
+                .bankAccountName(blankToNull(request.bankAccountName()))
+                .cacNumber(blankToNull(request.cacNumber()))
                 .active(true)
                 .build();
         // saveAndFlush, not save: a CHECK violation has to surface inside this call
@@ -144,6 +148,10 @@ public class CompanyVendorService {
         vendor.setCity(blankToNull(request.city()));
         vendor.setState(blankToNull(request.state()));
         vendor.setNotes(blankToNull(request.notes()));
+        vendor.setBankName(blankToNull(request.bankName()));
+        vendor.setBankAccountNumber(blankToNull(request.bankAccountNumber()));
+        vendor.setBankAccountName(blankToNull(request.bankAccountName()));
+        vendor.setCacNumber(blankToNull(request.cacNumber()));
         // vendorKind and platformClientId are untouched, and there is nothing in the
         // request that could touch them. An EXTERNAL row can never acquire a
         // platform_client_id through this endpoint because no code path here sets one.

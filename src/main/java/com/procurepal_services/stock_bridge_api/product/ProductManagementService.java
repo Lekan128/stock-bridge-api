@@ -497,6 +497,34 @@ public class ProductManagementService {
     }
 
     /**
+     * Undoes {@link #deactivate}. Deactivation is a soft delete - the row, its stock
+     * ledger and its supplier lines all survive it - so the product simply stops
+     * appearing in active lists, and there was until now no way back short of an
+     * {@code active: true} on the multipart PUT, which means re-submitting the whole
+     * form (and, for a seller, re-satisfying {@link UnitPriceRequiredException}) just
+     * to flip one boolean.
+     *
+     * <h2>Deliberately does not touch approval status</h2>
+     * {@code active} is not one of the fields {@code ProductModerationRules
+     * .invalidatesApproval} watches, and that is the correct reading rather than an
+     * omission: nothing a buyer sees about the listing changed while it was away, so
+     * a product that was APPROVED before it was deactivated is APPROVED again the
+     * moment it comes back, and one that was PENDING or REJECTED stays exactly where
+     * it was in the queue. Deactivating and reactivating is therefore not a way to
+     * launder a rejected listing back into the catalog.
+     *
+     * <h2>Idempotent, and no error for an already-active product</h2>
+     * Reactivating something already active is a no-op that answers 204, matching
+     * {@link #deactivate}'s own tolerance of a second call. "Make sure this is on" is
+     * what the caller means, and failing the second click of a button whose first
+     * click succeeded would be a worse answer than doing nothing.
+     */
+    @Transactional
+    public void activate(UUID id) {
+        findTenantProductOrThrow(id).setActive(true);
+    }
+
+    /**
      * <h2>Why the export now carries the vendor columns too</h2>
      * The export and the template are deliberately the same column set, because the most common
      * thing a tenant does with these two files is "export what we have, edit it, upload it back".

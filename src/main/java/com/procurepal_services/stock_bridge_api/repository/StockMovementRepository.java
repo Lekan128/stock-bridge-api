@@ -127,7 +127,71 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
     List<Object[]> findPricedInMovementPricesForTenant(@Param("clientId") UUID clientId);
 
     /**
-     * Rows with a null unit_price_at_time (adjustments, or IN/OUT recorded
+     * The totals row of the stock in/out report, over exactly the filters the report's own rows
+     * use - see {@code StockMovementSummaryResponse} for what each column means and why the
+     * unpriced counts are published alongside the values.
+     *
+     * <p>Returns a one-element list holding {@code [inValue(numeric), outValue(numeric), inQuantity(bigint),
+     * outQuantity(bigint), inCount(bigint), outCount(bigint), unpricedInCount(bigint),
+     * unpricedOutCount(bigint), adjustmentCount(bigint)]}. One pass over the filtered set with
+     * nine conditional aggregates, rather than nine round trips or - worse - paging the whole
+     * range into the application to add it up there.
+     *
+     * <h2>Native, and every optional parameter is cast explicitly</h2>
+     * Native for the same reason {@link #movementsOverTime} is: this is a Postgres-only app and
+     * the conditional-aggregate form above is far clearer in SQL than in JPQL. The {@code
+     * ::uuid}/{@code ::text} casts on each optional filter are not decoration - a bare
+     * {@code :param IS NULL} on a null bind leaves Postgres with no type to infer and the
+     * statement fails to prepare. The casts also make each predicate a no-op when the filter is
+     * absent, which is what keeps this one query instead of a specification per combination.
+     *
+     * <p>{@code occurred_at} brackets the range, not {@code created_at} - see {@code
+     * StockMovementSpecifications.forTenant} for why, and {@code
+     * idx_stock_movements_client_id_occurred_at} (V28) for what serves it. The report's rows and
+     * this total must filter on the same column or the footer contradicts the table above it.
+     */
+    @Query(
+            value = "SELECT "
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'IN' AND unit_price_at_time IS NOT NULL "
+                    + "THEN quantity * unit_price_at_time ELSE 0 END), 0) AS in_value, "
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' AND unit_price_at_time IS NOT NULL "
+                    + "THEN quantity * unit_price_at_time ELSE 0 END), 0) AS out_value, "
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE 0 END), 0) AS in_quantity, "
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS out_quantity, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'IN') AS in_count, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT') AS out_count, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'IN' AND unit_price_at_time IS NULL) AS unpriced_in, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND unit_price_at_time IS NULL) AS unpriced_out, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'ADJUSTMENT') AS adjustment_count "
+                    + "FROM stock_movements "
+                    + "WHERE client_id = :clientId "
+                    + "AND (CAST(:productId AS uuid) IS NULL OR product_id = CAST(:productId AS uuid)) "
+                    + "AND (CAST(:companyVendorId AS uuid) IS NULL OR company_vendor_id = CAST(:companyVendorId AS uuid)) "
+                    + "AND (CAST(:movementType AS text) IS NULL OR movement_type = CAST(:movementType AS text)) "
+                    + "AND (CAST(:from AS timestamptz) IS NULL OR occurred_at >= CAST(:from AS timestamptz)) "
+                    + "AND (CAST(:to AS timestamptz) IS NULL OR occurred_at <= CAST(:to AS timestamptz))",
+            nativeQuery = true)
+    List<Object[]> summarise(
+            @Param("clientId") UUID clientId,
+            @Param("productId") UUID productId,
+            @Param("companyVendorId") UUID companyVendorId,
+            @Param("movementType") String movementType,
+            @Param("from") OffsetDateTime from,
+            @Param("to") OffsetDateTime to);
+
+    /**
+     * <h2>V28: these five reporting queries bracket occurred_at, not created_at</h2>
+     * They are what the dashboard's Stock In/Out Value cards, the movements chart and the
+     * top-products chart are built from, and the stock in/out report at {@code GET
+     * /api/stock/movements} is the drill-down a user reaches from those cards. Filtering the
+     * card on one column and the drill-down on another would mean the total and the rows behind
+     * it disagree for any tenant that has ever backdated a delivery - which bulk stock-in makes
+     * ordinary (BULK_IMPORT_DESIGN.md section 8.4). {@code occurred_at} is also the right answer
+     * on its own terms: "what did we spend in July" means deliveries that arrived in July, not
+     * deliveries somebody typed in during July. Served by
+     * {@code idx_stock_movements_client_id_occurred_at} (V28).
+     *
+     * <p>Rows with a null unit_price_at_time (adjustments, or IN/OUT recorded
      * without a price) are excluded from value sums by the "unitPriceAtTime IS
      * NOT NULL" predicate below - they still count toward sumQuantity, since
      * that's units moved regardless of whether a price was recorded. This is
@@ -136,7 +200,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      */
     @Query("SELECT COALESCE(SUM(m.quantity * m.unitPriceAtTime), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType AND m.unitPriceAtTime IS NOT NULL "
-            + "AND m.createdAt BETWEEN :from AND :to")
+            + "AND m.occurredAt BETWEEN :from AND :to")
     BigDecimal sumValue(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
@@ -145,7 +209,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
 
     @Query("SELECT COALESCE(SUM(m.quantity), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType "
-            + "AND m.createdAt BETWEEN :from AND :to")
+            + "AND m.occurredAt BETWEEN :from AND :to")
     long sumQuantity(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
@@ -165,7 +229,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      * Each row: [period(text), inValue(numeric), outValue(numeric), inQuantity(bigint), outQuantity(bigint)].
      */
     @Query(
-            value = "SELECT to_char(date_trunc(:granularity, created_at), 'YYYY-MM-DD') AS period, "
+            value = "SELECT to_char(date_trunc(:granularity, occurred_at), 'YYYY-MM-DD') AS period, "
                     + "COALESCE(SUM(CASE WHEN movement_type = 'IN' AND unit_price_at_time IS NOT NULL "
                     + "THEN quantity * unit_price_at_time ELSE 0 END), 0) AS in_value, "
                     + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' AND unit_price_at_time IS NOT NULL "
@@ -173,7 +237,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE 0 END), 0) AS in_quantity, "
                     + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS out_quantity "
                     + "FROM stock_movements "
-                    + "WHERE client_id = :clientId AND created_at BETWEEN :from AND :to "
+                    + "WHERE client_id = :clientId AND occurred_at BETWEEN :from AND :to "
                     + "GROUP BY period "
                     + "ORDER BY period",
             nativeQuery = true)
@@ -189,7 +253,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(CASE WHEN m.unit_price_at_time IS NOT NULL THEN m.quantity * m.unit_price_at_time ELSE 0 END), 0) AS total_value, "
                     + "COALESCE(SUM(m.quantity), 0) AS total_quantity "
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
-                    + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.created_at BETWEEN :from AND :to "
+                    + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_value DESC "
                     + "LIMIT :limit",
@@ -206,7 +270,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(CASE WHEN m.unit_price_at_time IS NOT NULL THEN m.quantity * m.unit_price_at_time ELSE 0 END), 0) AS total_value, "
                     + "COALESCE(SUM(m.quantity), 0) AS total_quantity "
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
-                    + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.created_at BETWEEN :from AND :to "
+                    + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_quantity DESC "
                     + "LIMIT :limit",

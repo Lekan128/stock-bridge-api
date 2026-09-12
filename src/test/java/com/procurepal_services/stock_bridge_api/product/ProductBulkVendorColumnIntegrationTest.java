@@ -276,7 +276,7 @@ class ProductBulkVendorColumnIntegrationTest {
         HttpHeaders headers = authHeaders(tenant);
         headers.setContentType(MediaType.APPLICATION_JSON);
         CompanyVendorRequest request =
-                new CompanyVendorRequest(name, "08030000000", null, null, null, null, null, null);
+                new CompanyVendorRequest(name, "08030000000", null, null, null, null, null, null, null, null, null, null);
         ResponseEntity<CompanyVendorResponse> response = restTemplate.exchange(
                 "/api/company-vendors", HttpMethod.POST, new HttpEntity<>(request, headers), CompanyVendorResponse.class);
         assertThat(response.getStatusCode()).as("vendor fixture must be creatable").isEqualTo(HttpStatus.CREATED);

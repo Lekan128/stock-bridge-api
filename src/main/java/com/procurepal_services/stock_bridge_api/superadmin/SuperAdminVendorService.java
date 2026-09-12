@@ -199,6 +199,11 @@ public class SuperAdminVendorService {
                 application.getCity(),
                 application.getState(),
                 request.commissionRate(),
+                // The waitlist form collects no banking details - see VendorSpec.
+                null,
+                null,
+                null,
+                null,
                 request.username(),
                 request.password()));
 
@@ -310,6 +315,10 @@ public class SuperAdminVendorService {
                 normalize(request.city()),
                 normalize(request.state()),
                 request.commissionRate(),
+                normalize(request.bankName()),
+                normalize(request.bankAccountNumber()),
+                normalize(request.bankAccountName()),
+                normalize(request.cacNumber()),
                 request.username(),
                 request.password()));
 
@@ -339,6 +348,10 @@ public class SuperAdminVendorService {
         vendor.setState(normalize(request.state()));
         vendor.setLogoUrl(normalize(request.logoUrl()));
         vendor.setCommissionRate(request.commissionRate());
+        vendor.setBankName(normalize(request.bankName()));
+        vendor.setBankAccountNumber(normalize(request.bankAccountNumber()));
+        vendor.setBankAccountName(normalize(request.bankAccountName()));
+        vendor.setCacNumber(normalize(request.cacNumber()));
 
         return toDetail(clientRepository.saveAndFlush(vendor));
     }
@@ -438,6 +451,17 @@ public class SuperAdminVendorService {
             String city,
             String state,
             BigDecimal commissionRate,
+            /**
+             * Optional, and null on the {@link #approve} path - the public waitlist form
+             * does not ask for banking details, so an approved vendor arrives without them
+             * and ops fills them in afterwards through {@link #updateVendor}. Only
+             * {@link #createVendor}, where an ops user is typing a recruited vendor in by
+             * hand, can supply them up front.
+             */
+            String bankName,
+            String bankAccountNumber,
+            String bankAccountName,
+            String cacNumber,
             String username,
             String rawPassword) {
     }
@@ -492,6 +516,10 @@ public class SuperAdminVendorService {
                 .city(spec.city())
                 .state(spec.state())
                 .commissionRate(spec.commissionRate())
+                .bankName(spec.bankName())
+                .bankAccountNumber(spec.bankAccountNumber())
+                .bankAccountName(spec.bankAccountName())
+                .cacNumber(spec.cacNumber())
                 // Not settable from any request body, on this surface or any other:
                 // a vendor is not the marketplace operator, and platformOwner is a
                 // bootstrap concern with no REST verb by design (see
@@ -595,6 +623,10 @@ public class SuperAdminVendorService {
                 vendor.getState(),
                 vendor.getLogoUrl(),
                 vendor.getCommissionRate(),
+                vendor.getBankName(),
+                vendor.getBankAccountNumber(),
+                vendor.getBankAccountName(),
+                vendor.getCacNumber(),
                 account.map(User::getId).orElse(null),
                 account.map(User::getUsername).orElse(null),
                 productRepository.countByClientId(vendor.getId()),
