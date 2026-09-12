@@ -129,6 +129,42 @@ public class CompanyVendor extends TenantAwareEntity {
     private String notes;
 
     /**
+     * How THIS COMPANY pays this supplier, and the registration number they hold
+     * for them. All four optional, for both kinds.
+     *
+     * <h2>These are the buyer's own record, never the seller's</h2>
+     * A VERIFIED row points at a {@link Client} that has its own
+     * {@code bankName}/{@code cacNumber} - the account ProcurePaddy pays that seller
+     * out to. These columns are NOT read from there and must never be backfilled
+     * from there: our banking relationship with a seller is not the buyer's to see,
+     * and a buyer who settles an off-platform invoice with the same supplier may
+     * legitimately hold different details. Two independent sets is the design - see
+     * V28__vendor_bank_details_and_cac.sql.
+     *
+     * <p>Like every other own-field on this row they are subject to
+     * {@link #isEditableByOwningCompany()}: a VERIFIED entry is not rewritable by
+     * the company that owns it, so in practice these are filled in on EXTERNAL
+     * suppliers, which is where an off-platform payment actually happens.
+     *
+     * <h2>Deliberately unvalidated beyond length</h2>
+     * Same reasoning as {@link #contactPhone}: a partially-filled directory entry is
+     * the normal state of a directory somebody is still building, and nothing here
+     * moves money on its own.
+     */
+    @Column(name = "bank_name")
+    private String bankName;
+
+    @Column(name = "bank_account_number", length = 50)
+    private String bankAccountNumber;
+
+    @Column(name = "bank_account_name")
+    private String bankAccountName;
+
+    /** Corporate Affairs Commission registration number, as written ("RC 123456"). See {@link #bankName}. */
+    @Column(name = "cac_number", length = 50)
+    private String cacNumber;
+
+    /**
      * Soft delete, matching {@link DeliveryAddress}: products and purchase history
      * reference these rows, so a removed supplier is deactivated rather than
      * deleted.

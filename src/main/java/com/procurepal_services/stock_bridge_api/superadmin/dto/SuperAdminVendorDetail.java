@@ -43,6 +43,15 @@ public record SuperAdminVendorDetail(
         String logoUrl,
         /** A fraction in 0..1 (the DB CHECK enforces the range), or null if none agreed. */
         BigDecimal commissionRate,
+        /**
+         * Where ProcurePaddy pays this seller out, and the registration number behind
+         * the business. All four optional and all four null until somebody fills them
+         * in - a vendor approved off the waitlist always arrives without them.
+         */
+        String bankName,
+        String bankAccountNumber,
+        String bankAccountName,
+        String cacNumber,
         /** The vendor's single user, or null in the state that should not happen. */
         UUID userId,
         String username,

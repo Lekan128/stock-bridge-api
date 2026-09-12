@@ -354,7 +354,7 @@ class CostBasisAuditIntegrationTest {
                 "/api/company-vendors",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CompanyVendorRequest(name, "0800" + suffix, null, null, null, null, null, null),
+                        new CompanyVendorRequest(name, "0800" + suffix, null, null, null, null, null, null, null, null, null, null),
                         authHeaders(admin)),
                 CompanyVendorResponse.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);

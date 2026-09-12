@@ -180,6 +180,24 @@ public class ProductController {
         return ResponseEntity.noContent().build();
     }
 
+    /**
+     * The other half of {@link #deactivate}, which has had no counterpart since
+     * deactivation existed - see {@code ProductManagementService.activate}.
+     *
+     * <p>A POST to a sub-path rather than a second verb on {@code /{id}}: the DELETE
+     * above is already spoken for and the natural mirror, an undelete, has no HTTP
+     * method. Rewriting the whole product through the multipart PUT with {@code
+     * active: true} is the only alternative and is a far heavier request to make of a
+     * caller that wants to flip one flag. Same {@code MANAGE_PRODUCTS} authority as
+     * its counterpart - whoever may take a product out of circulation may put it back.
+     */
+    @PostMapping("/{id}/activate")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ResponseEntity<Void> activate(@PathVariable UUID id) {
+        productManagementService.activate(id);
+        return ResponseEntity.noContent().build();
+    }
+
     private ResponseEntity<byte[]> xlsxResponse(byte[] bytes, String filename) {
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))

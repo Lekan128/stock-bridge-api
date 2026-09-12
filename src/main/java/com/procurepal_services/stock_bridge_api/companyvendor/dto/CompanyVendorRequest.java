@@ -44,5 +44,14 @@ public record CompanyVendorRequest(
         @Size(max = 255) String addressLine2,
         @Size(max = 100) String city,
         @Size(max = 100) String state,
-        @Size(max = 1000) String notes) {
+        @Size(max = 1000) String notes,
+        // Optional, all four, and length-only on purpose. These are the buyer's own
+        // record of how they pay this supplier off-platform - never read from or
+        // written back to the seller's clients row, see CompanyVendor's javadoc. A
+        // half-entered account number has to be storable because a directory gets
+        // filled in progressively, so there is no ten-digit NUBAN check here.
+        @Size(max = 255) String bankName,
+        @Size(max = 50) String bankAccountNumber,
+        @Size(max = 255) String bankAccountName,
+        @Size(max = 50) String cacNumber) {
 }
