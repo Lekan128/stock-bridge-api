@@ -347,7 +347,9 @@ public class ImportController {
                 })
                 .toList();
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(importSessionService.createDelivery(lines, deliveryTitle(delivery), principal.getUserId(), delivery));
+                .body(importSessionService.createDelivery(
+                        lines, deliveryTitle(delivery), principal.getUserId(), delivery,
+                        request.expectedDeliveryId()));
     }
 
     /**

@@ -20,6 +20,12 @@ public record ProductResponse(
         // NOT part of quantityOnHand and must never be presented as usable stock. It becomes
         // on-hand only when the buyer marks the order received, which writes a real IN movement.
         int incomingQuantity,
+        // Task 3.1: how much of this is on an OPEN expected delivery and has not arrived yet,
+        // counted in the unit each expectation was written in. Deliberately NOT added to
+        // incomingQuantity above: that one is paid for through the marketplace and settled, this
+        // one is a promise a supplier made on the phone. Null unless the caller asked for it -
+        // only the list and the product page pay for the extra query.
+        BigDecimal expectedQuantity,
         // The ProcurePal catalog product this row was created from, when it was created by a
         // marketplace purchase rather than by hand. Null for anything the tenant added themselves.
         UUID sourceProductId,
@@ -137,6 +143,7 @@ public record ProductResponse(
                 product.getCostPrice(),
                 product.getQuantityOnHand(),
                 product.getIncomingQuantity(),
+                null,
                 product.getSourceProductId(),
                 preferredVendorName,
                 product.getLowStockThreshold(),
@@ -154,5 +161,18 @@ public record ProductResponse(
                 hasMultiplePacks,
                 product.getCompanyCategory() == null ? null : product.getCompanyCategory().getId(),
                 product.getCompanyCategory() == null ? null : product.getCompanyCategory().getName());
+    }
+
+    /**
+     * The same product with its "and this much is coming" figure filled in. A copy rather than a
+     * setter because this is a record, and the figure comes from one batched query the callers
+     * that need it run once for a whole page.
+     */
+    public ProductResponse withExpectedQuantity(BigDecimal expected) {
+        return new ProductResponse(
+                id, name, sku, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
+                expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
+                packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
+                warnings, hasMultiplePacks, categoryId, categoryName);
     }
 }

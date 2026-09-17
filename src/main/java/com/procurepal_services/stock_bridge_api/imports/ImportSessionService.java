@@ -18,6 +18,7 @@ import com.procurepal_services.stock_bridge_api.imports.dto.ImportLinkedPackResp
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportDeliveryDetails;
+import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionSummaryResponse;
@@ -117,6 +118,7 @@ public class ImportSessionService {
     private final ImportResultReportWriter reportWriter;
     private final List<ImportRowHandler> handlers;
     private final CompanyVendorRepository companyVendorRepository;
+    private final ExpectedDeliveryService expectedDeliveryService;
 
     private Map<ImportKind, ImportRowHandler> handlersByKind;
 
@@ -177,7 +179,8 @@ public class ImportSessionService {
      */
     @Transactional
     public ImportSessionResponse createDelivery(
-            List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery) {
+            List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID expectedDeliveryId) {
         if (lines == null || lines.isEmpty()) {
             throw new ImportExceptions.BadFile("Add at least one thing that arrived.");
         }
@@ -210,7 +213,7 @@ public class ImportSessionService {
             rows.add(new SheetRow(line++, cells));
         }
         return createFromTable(new SheetTable(headers, indexes, rows), title, ImportKind.STOCK_IN,
-                ImportMode.CREATE_ONLY, actingUserId, delivery);
+                ImportMode.CREATE_ONLY, actingUserId, delivery, expectedDeliveryId);
     }
 
     /**
@@ -224,6 +227,12 @@ public class ImportSessionService {
     private ImportSessionResponse createFromTable(
             SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
             ImportDeliveryDetails delivery) {
+        return createFromTable(table, filename, kind, mode, actingUserId, delivery, null);
+    }
+
+    private ImportSessionResponse createFromTable(
+            SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
+            ImportDeliveryDetails delivery, UUID expectedDeliveryId) {
         // Mode is meaningless for STOCK_IN (contract section 1) - persisted as CREATE_ONLY and
         // ignored, rather than left null, so the CHECK constraint and every later read see a
         // legal value.
@@ -243,6 +252,7 @@ public class ImportSessionService {
                 .columnMapping(new LinkedHashMap<>(mapping.columnMapping()))
                 .valueMappings(new LinkedHashMap<>())
                 .rowDefaults(kind == ImportKind.STOCK_IN ? rowDefaultsOf(delivery) : null)
+                .expectedDeliveryId(expectedDeliveryId)
                 .rowCount(dataRows.size())
                 .validCount(0)
                 .errorCount(0)
@@ -1053,6 +1063,42 @@ public class ImportSessionService {
         session.setCommittedAt(OffsetDateTime.now());
         session.setSkippedCount(outcome.skippedCount());
         importSessionRepository.saveAndFlush(session);
+
+        // Task 3.1: if this stock-in was started from an expectation, tell it what actually
+        // arrived. Last, and only after the commit itself has been written, so a receipt is never
+        // credited against stock that did not land.
+        expectedDeliveryService.credit(
+                session.getExpectedDeliveryId(), session.getClientId(), receiptsOf(batch.states()));
+    }
+
+    /**
+     * What a committed stock-in received, keyed by product and the unit it was counted in - the
+     * pair an expected line is written in, so the two can be matched without guessing.
+     *
+     * <p>Only rows that actually committed count. A skipped or failed row moved no stock and must
+     * not settle anything.
+     */
+    private Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receiptsOf(List<ImportRowState> states) {
+        Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receipts = new LinkedHashMap<>();
+        for (ImportRowState state : states) {
+            String outcome = state.getOutcome();
+            boolean committed = ImportFields.OUTCOME_CREATED.equals(outcome)
+                    || ImportFields.OUTCOME_UPDATED.equals(outcome);
+            if (state.getResolvedEntityId() == null || !committed) {
+                continue;
+            }
+            Object unit = state.getNormalized().get(ImportFields.COUNTED_IN);
+            Object quantity = state.getNormalized().get(ImportFields.QUANTITY);
+            if (unit == null || quantity == null) {
+                continue;
+            }
+            BigDecimal amount = new BigDecimal(quantity.toString());
+            receipts.merge(
+                    new ExpectedDeliveryService.ReceiptKey(state.getResolvedEntityId(), unit.toString()),
+                    amount,
+                    BigDecimal::add);
+        }
+        return receipts;
     }
 
     /**
@@ -1227,7 +1273,35 @@ public class ImportSessionService {
         mappings.putResult(result);
         session.setValueMappings(mappings.toMap());
         importSessionRepository.saveAndFlush(session);
+
+        // Task 3.1: an undone receipt un-receives exactly what it credited, reopening the
+        // expectation if it had been closed. Read back off the rows rather than remembered, so it
+        // reverses what was actually committed and not what was once intended.
+        expectedDeliveryService.uncredit(
+                session.getExpectedDeliveryId(), tenantId, receiptsOfRows(allRows(session)));
         return resultOf(session);
+    }
+
+    /** {@link #receiptsOf} for rows read back from the database, as undo has them. */
+    private Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receiptsOfRows(List<ImportSessionRow> rows) {
+        Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receipts = new LinkedHashMap<>();
+        for (ImportSessionRow row : rows) {
+            Map<String, Object> normalized = row.getNormalized();
+            if (row.getResolvedEntityId() == null || normalized == null
+                    || row.getStatus() != ImportRowStatus.COMMITTED) {
+                continue;
+            }
+            Object unit = normalized.get(ImportFields.COUNTED_IN);
+            Object quantity = normalized.get(ImportFields.QUANTITY);
+            if (unit == null || quantity == null) {
+                continue;
+            }
+            receipts.merge(
+                    new ExpectedDeliveryService.ReceiptKey(row.getResolvedEntityId(), unit.toString()),
+                    new BigDecimal(quantity.toString()),
+                    BigDecimal::add);
+        }
+        return receipts;
     }
 
     // ------------------------------------------------------------------ report

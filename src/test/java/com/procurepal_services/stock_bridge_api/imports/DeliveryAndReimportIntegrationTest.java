@@ -100,7 +100,7 @@ class DeliveryAndReimportIntegrationTest {
 
         ResponseEntity<ImportSessionResponse> created = restTemplate.exchange(
                 "/api/imports/delivery", HttpMethod.POST,
-                new HttpEntity<>(new DeliveryRequest(date, "WB-77", tony.id(), List.of(
+                new HttpEntity<>(new DeliveryRequest(date, "WB-77", tony.id(), null, List.of(
                         new DeliveryRequest.Line(rice.id(), "BAG:50", new BigDecimal("2.5"), null),
                         new DeliveryRequest.Line(onion.id(), "BASKET:30", new BigDecimal("3"), new BigDecimal("29000")))),
                         json(tenant)),
@@ -133,11 +133,11 @@ class DeliveryAndReimportIntegrationTest {
         ProductResponse rice = product(tenant, "Rice", "ED-RICE", "KG", null, null);
 
         ResponseEntity<String> empty = restTemplate.exchange("/api/imports/delivery", HttpMethod.POST,
-                new HttpEntity<>(new DeliveryRequest(null, null, null, List.of()), json(tenant)), String.class);
+                new HttpEntity<>(new DeliveryRequest(null, null, null, null, List.of()), json(tenant)), String.class);
         assertThat(empty.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
 
         ResponseEntity<String> future = restTemplate.exchange("/api/imports/delivery", HttpMethod.POST,
-                new HttpEntity<>(new DeliveryRequest(LocalDate.now().plusDays(3).toString(), null, null,
+                new HttpEntity<>(new DeliveryRequest(LocalDate.now().plusDays(3).toString(), null, null, null,
                         List.of(new DeliveryRequest.Line(rice.id(), "KG", BigDecimal.ONE, null))), json(tenant)),
                 String.class);
         assertThat(future.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);

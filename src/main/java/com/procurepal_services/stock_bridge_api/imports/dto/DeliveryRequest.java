@@ -15,11 +15,15 @@ import java.util.UUID;
  * apply to every line, the same way the upload screen's do.
  *
  * @param deliveryDate ISO date; absent means today.
+ * @param expectedDeliveryId the expectation this delivery is the arrival of, when the screen was
+ *     opened from one (BULK_IMPORT_CX_PLAN.md task 3.1). Committing credits its lines; undoing
+ *     takes that back. Absent for a delivery typed from scratch, which is most of them.
  */
 public record DeliveryRequest(
         String deliveryDate,
         @Size(max = 200) String invoiceNo,
         UUID vendorId,
+        UUID expectedDeliveryId,
         @NotEmpty @Valid List<Line> lines) {
 
     /**

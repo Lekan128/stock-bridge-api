@@ -171,6 +171,17 @@ public class ImportSession extends TenantAwareEntity {
     @Column(name = "row_defaults")
     private Map<String, String> rowDefaults;
 
+    /**
+     * The {@code ExpectedDelivery} this stock-in is receiving, when it was started from one
+     * (BULK_IMPORT_CX_PLAN.md task 3.1). Null for every ordinary upload and every delivery typed
+     * from scratch, which is nearly all of them.
+     *
+     * <p>Held as a bare id rather than an association: nothing in the import engine reads the
+     * expectation, and committing only needs to hand the id back to the service that owns it.
+     */
+    @Column(name = "expected_delivery_id")
+    private UUID expectedDeliveryId;
+
     /** Total rows parsed from the file, example rows and skipped rows included. Cached - see the class javadoc. */
     @Column(name = "row_count", nullable = false)
     private int rowCount;

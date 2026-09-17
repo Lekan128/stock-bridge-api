@@ -3,6 +3,7 @@ package com.procurepal_services.stock_bridge_api.product;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationService;
@@ -106,6 +107,7 @@ public class ProductManagementService {
      */
     private final CompanyVendorRepository companyVendorRepository;
     private final ProductSkuSettingsService productSkuSettingsService;
+    private final ExpectedDeliveryService expectedDeliveryService;
     private final SkuGenerationService skuGenerationService;
 
     @Transactional(readOnly = true)
@@ -120,11 +122,16 @@ public class ProductManagementService {
                 ProductSpecifications.forTenant(tenantId, search, active, categoryId), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
         Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
+        // Task 3.1's "and 10 coming", in one query for the page rather than one per row - the
+        // same reason the preferred vendors above are batched.
+        Map<UUID, BigDecimal> expected = expectedDeliveryService.outstandingByProduct(
+                tenantId, page.getContent().stream().map(Product::getId).toList());
         return page.map(product -> ProductResponse.from(
-                product,
-                preferredVendorNames.get(product.getId()),
-                null,
-                hasMultiplePacks.getOrDefault(product.getId(), false)));
+                        product,
+                        preferredVendorNames.get(product.getId()),
+                        null,
+                        hasMultiplePacks.getOrDefault(product.getId(), false))
+                .withExpectedQuantity(expected.get(product.getId())));
     }
 
     @Transactional(readOnly = true)
@@ -136,7 +143,9 @@ public class ProductManagementService {
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
         boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
-        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks);
+        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
+                .withExpectedQuantity(
+                        expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id));
     }
 
     /**
