@@ -10,12 +10,10 @@ import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorR
 import com.procurepal_services.stock_bridge_api.entity.ImportSession;
 import com.procurepal_services.stock_bridge_api.entity.ImportStatus;
 import com.procurepal_services.stock_bridge_api.entity.Product;
-import com.procurepal_services.stock_bridge_api.entity.ProductCategory;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRepository;
 import com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository;
-import com.procurepal_services.stock_bridge_api.repository.ProductCategoryRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import java.io.ByteArrayInputStream;
@@ -25,6 +23,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.apache.poi.ss.usermodel.Cell;
@@ -94,9 +93,6 @@ class BulkImportEngineEdgeCaseIntegrationTest {
 
     @Autowired
     private ProductRepository productRepository;
-
-    @Autowired
-    private ProductCategoryRepository productCategoryRepository;
 
     @Autowired
     private StockMovementRepository stockMovementRepository;
@@ -350,22 +346,23 @@ class BulkImportEngineEdgeCaseIntegrationTest {
     @Test
     void theStockInTemplateCanBeFilteredToOneCategory() {
         TenantLoginResponse tenant = signup("Template Category Co");
-        UUID catalogSession = commitCatalog(tenant, CATALOG_HEADERS
-                + "Rice 50kg,TCAT-1,,42000,,,KG,,,,,\n"
-                + "Engine oil,TCAT-2,,12000,,,KG,,,,,\n");
+        // The company's own categories (V32), created by the product sheet's Category column.
+        commitCatalog(tenant, "name,sku,unit_of_measure,category\n"
+                + "Rice 50kg,TCAT-1,KG,Grains\n"
+                + "Engine oil,TCAT-2,KG,\n");
 
-        UUID clientId = clientIdOf(catalogSession);
-        ProductCategory grains = productCategoryRepository.save(ProductCategory.builder()
-                .name("Grains")
-                .slug("grains-" + UUID.randomUUID())
-                .sortOrder(0)
-                .active(true)
-                .build());
-        Product rice = productRepository.findByClientIdAndSku(clientId, "TCAT-1").orElseThrow();
-        rice.setCategory(grains);
-        productRepository.saveAndFlush(rice);
+        ResponseEntity<List<Map<String, Object>>> categories = restTemplate.exchange(
+                "/api/company-categories",
+                HttpMethod.GET,
+                new HttpEntity<>(authHeaders(tenant)),
+                new org.springframework.core.ParameterizedTypeReference<List<Map<String, Object>>>() {});
+        assertThat(categories.getBody()).singleElement().satisfies(category -> {
+            assertThat(category.get("name")).isEqualTo("Grains");
+            assertThat(((Number) category.get("productCount")).intValue()).isEqualTo(1);
+        });
+        Object grainsId = categories.getBody().get(0).get("id");
 
-        assertThat(skusInSheet(stockInTemplate(tenant, "?filter=BY_CATEGORY&categoryId=" + grains.getId())))
+        assertThat(skusInSheet(stockInTemplate(tenant, "?filter=BY_CATEGORY&categoryId=" + grainsId)))
                 .containsExactly("TCAT-1");
 
         // A category the tenant has nothing in yields an empty sheet, not a fall-through to ALL.

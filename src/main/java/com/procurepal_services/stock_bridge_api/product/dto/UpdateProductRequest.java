@@ -3,6 +3,7 @@ package com.procurepal_services.stock_bridge_api.product.dto;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import java.math.BigDecimal;
+import java.util.UUID;
 
 /**
  * All fields optional/nullable - only non-null ones are applied. removeImage
@@ -74,5 +75,23 @@ public record UpdateProductRequest(
         Boolean removeImage,
         String unitOfMeasure,
         String packagingUnit,
-        @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
+        @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
+        UUID categoryId,
+        Boolean clearCategory) {
+
+    /** The shape before company categories (V32) - leaves the category as it is. */
+    public UpdateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            Boolean active,
+            Boolean removeImage,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize) {
+        this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure,
+                packagingUnit, packagingSize, null, null);
+    }
 }

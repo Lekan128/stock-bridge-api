@@ -70,30 +70,16 @@ class BulkImportRoundTripIntegrationTest {
 
     private static final String PASSWORD = "correct-horse-battery-staple";
 
-    /**
-     * Contract section 5's PRODUCT_CATALOG field keys for a company that does not sell -
-     * {@code unit_price} is omitted entirely, as it always has been. Field key and column header
-     * are the same string, which is what makes {@code column_mapping} an identity map for our own
-     * template and is the property this whole round trip depends on.
-     */
+    /** The product sheet for a company that does not sell (BULK_IMPORT_CX_PLAN.md task 1.6). */
     private static final List<String> CATALOG_TEMPLATE_HEADERS = List.of(
-            // PACK_ENTRY_REDESIGN.md section 14: the counting trio in SENTENCE order, so a row
-            // reads left to right as "Bottle contains 750 ml". `size` was deleted - the pack and
-            // the number beside it already say how big one is, and two columns holding one fact
-            // is worse than none.
-            // Section 16: products only - opening_stock and cost_price live on the stock sheet.
-            "name", "sku", "description",
-            "pack", "contains",
-            "low_stock_alert_at",
-            "vendor_name", "vendor_sku", "is_preferred_vendor");
+            "Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
+            "How many you have now", "Price you pay for one (₦)", "Warn me when I have",
+            "Category", "Notes", "Supplier's code for it");
 
-    /** UNIT_UX_CONTRACT.md section 5.2's STOCK_IN column set, in order. */
     /** The stock sheet as it is downloaded today (BULK_IMPORT_CX_PLAN.md task 1.4). */
     private static final List<String> STOCK_IN_TEMPLATE_HEADERS = List.of(
             "Product", "Comes in", "How many arrived", "Price paid for one (₦)", "Last price paid (₦)",
             "Supplier", "Your code", "Date (if different)", "Ref");
-
-    private static final String EXAMPLE_MARKER = "EXAMPLE-SKU-DELETE-ME";
 
     /**
      * Deliberately still spelled {@code quantity_on_hand}: this is a saved copy of the template as
@@ -112,8 +98,8 @@ class BulkImportRoundTripIntegrationTest {
     // ------------------------------------------------- catalog template, end to end
 
     /**
-     * The product template as a document: the columns contract section 5 promises, in the order it
-     * promises them, and the two greyed example rows the file's own text says are safe to leave in.
+     * The product sheet as a document: a help tab first, the columns in plain words, a guidance
+     * row, a note, and three worked examples - and nothing else.
      */
     @Test
     void theProductTemplateIsAWellFormedSheetWithTheContractsColumnsAndItsExampleRows() {
@@ -121,31 +107,20 @@ class BulkImportRoundTripIntegrationTest {
         createVendor(tenant, "Dangote Nigeria Plc");
 
         try (XSSFWorkbook workbook = open(productTemplate(tenant))) {
-            Sheet sheet = workbook.getSheetAt(0);
-            assertThat(headersOf(sheet))
-                    .as("field key and column header are the same string - contract section 5")
-                    .containsExactlyElementsOf(CATALOG_TEMPLATE_HEADERS);
+            assertThat(workbook.getSheetName(0)).isEqualTo("How to fill this in");
+            Sheet sheet = workbook.getSheet("Products");
+            assertThat(headersOf(sheet)).containsExactlyElementsOf(CATALOG_TEMPLATE_HEADERS);
+            assertThat(cell(sheet, 1, "Product name *", CATALOG_TEMPLATE_HEADERS)).startsWith("ⓘ");
+            assertThat(cell(sheet, 2, "Product name *", CATALOG_TEMPLATE_HEADERS)).startsWith("ⓘ").contains("examples");
 
-            assertThat(cell(sheet, 1, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
-            assertThat(cell(sheet, 2, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
-            // Labels, never codes - UNIT_UX_CONTRACT.md section 7, non-negotiable 4. The example
-            // row is the one place a user learns what to type into these columns, so a cell
-            // reading "KG" would teach them our vocabulary instead of their own.
-            // Substance, not container - see ProductExcelService.exampleRowOne for why a stock
-            // unit must survive the product arriving in a different container tomorrow.
-            // Section 15: a pack of twelve 750 ml bottles, the way the invoice says it.
-            assertThat(cell(sheet, 1, "pack", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Pack");
-            assertThat(cell(sheet, 1, "contains", CATALOG_TEMPLATE_HEADERS)).isEqualTo("12 x 750 ml");
-            assertThat(cell(sheet, 1, "vendor_name", CATALOG_TEMPLATE_HEADERS))
-                    .as("the example demonstrates the vendor columns with a supplier this tenant actually has")
-                    .isEqualTo("Dangote Nigeria Plc");
-            // Three examples now - section 8.7 added the rice row, the case where a measure
-            // genuinely IS the stock unit. Row one alone would teach "never put a measure in
-            // stock_unit", which is false and sends every rice seller the other way.
-            assertThat(cell(sheet, 2, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
-            assertThat(cell(sheet, 2, "contains", CATALOG_TEMPLATE_HEADERS)).isEqualTo("50 kg");
-            assertThat(cell(sheet, 3, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
-            assertThat(sheet.getLastRowNum()).as("headers plus three examples, and nothing else").isEqualTo(3);
+            // Labels, never codes, and a pack of twelve 750 ml bottles the way the invoice says it.
+            assertThat(cell(sheet, 3, "Product name *", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Rice (Mama Gold)");
+            assertThat(cell(sheet, 3, "Comes in", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Bag");
+            assertThat(cell(sheet, 3, "Size of one", CATALOG_TEMPLATE_HEADERS)).isEqualTo("50 kg");
+            assertThat(cell(sheet, 4, "Comes in", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Pack");
+            assertThat(cell(sheet, 4, "Size of one", CATALOG_TEMPLATE_HEADERS)).isEqualTo("12 x 750 ml");
+            assertThat(cell(sheet, 5, "Size of one", CATALOG_TEMPLATE_HEADERS)).isEqualTo("piece");
+            assertThat(sheet.getLastRowNum()).as("headers, guidance, note and three examples").isEqualTo(5);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -164,10 +139,11 @@ class BulkImportRoundTripIntegrationTest {
         TenantLoginResponse tenant = signup("Catalog Round Trip Co");
 
         byte[] filled = fill(productTemplate(tenant), CATALOG_TEMPLATE_HEADERS, List.of(
-                row("name", "Rice 50kg", "sku", "RT-1", "pack", "Bag", "contains", "50 kg"),
-                row("name", "Beans 100kg", "sku", "RT-2", "contains", "KGX"),
-                row("name", "Salt 25kg", "sku", "RT-3", "contains", "kg",
-                        "vendor_name", "Brand New Supplier Ltd")));
+                row("Product name *", "Rice 50kg", "Your code *", "RT-1", "Comes in", "Bag", "Size of one", "50 kg",
+                        "How many you have now", "20", "Price you pay for one (₦)", "42000", "Category", "Grains"),
+                row("Product name *", "Beans 100kg", "Your code *", "RT-2", "Size of one", "KGX", "Category", "grains"),
+                row("Product name *", "Salt 25kg", "Your code *", "RT-3", "Size of one", "kg",
+                        "Supplier", "Brand New Supplier Ltd")));
 
         ImportSessionResponse session = upload(tenant, filled, "products.xlsx", "PRODUCT_CATALOG", "CREATE_ONLY");
 
@@ -175,9 +151,12 @@ class BulkImportRoundTripIntegrationTest {
                 .as("the template's own example rows say \"we skip it either way\" - the engine must agree")
                 .isEqualTo(3);
         assertThat(session.columnMapping())
-                .as("our own template maps to itself, so the mapping step never appears")
-                .containsEntry("sku", "sku")
-                .containsEntry("contains", "contains");
+                .as("our own template's words map by themselves, so the mapping step never appears")
+                .containsEntry("your_code", "sku")
+                .containsEntry("size_of_one", "contains")
+                .containsEntry("how_many_you_have_now", "opening_stock")
+                .containsEntry("category", "category");
+        assertThat(session.unmappedHeaders()).isEmpty();
         assertThat(session.needsMapping()).isFalse();
         assertThat(session.status().name()).isEqualTo("NEEDS_REVIEW");
 
@@ -229,18 +208,26 @@ class BulkImportRoundTripIntegrationTest {
         assertThat(preview.blocked()).isFalse();
         assertThat(preview.confirmLabel()).isNotBlank();
         assertThat(preview.lines()).anySatisfy(line -> assertThat(line.key()).isEqualTo("create"));
+        assertThat(preview.lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("categories");
+            assertThat(line.text()).as("Grains and grains are one category").isEqualTo("1 new category will be added");
+        });
 
         // Commit.
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.createdCount()).isEqualTo(3);
         assertThat(result.vendorsCreated()).isEqualTo(1);
-        // Section 16: a product sheet records no stock - that is the stock sheet's job, next.
-        assertThat(result.movementsCreated()).as("the product sheet creates products, not stock").isZero();
+        // Task 1.6: starting stock is back on the product sheet, and goes through the ledger.
+        assertThat(result.movementsCreated()).as("one row said how many it has now").isEqualTo(1);
         assertThat(result.kind()).as("so the result screen can hand on to the stock sheet").isEqualTo(
                 com.procurepal_services.stock_bridge_api.entity.ImportKind.PRODUCT_CATALOG);
         assertThat(productBySku(tenant, "RT-1").packagingSize())
                 .as("\"50 kg\" beside Bag is a 50 kg bag")
                 .isEqualByComparingTo("50");
+        assertThat(productBySku(tenant, "RT-1").quantityOnHand()).as("20 bags of 50 kg").isEqualTo(1000);
+        assertThat(productBySku(tenant, "RT-1").costPrice()).as("N42,000 a bag is N840 a kg").isEqualByComparingTo("840");
+        assertThat(productBySku(tenant, "RT-1").categoryName()).isEqualTo("Grains");
+        assertThat(productBySku(tenant, "RT-2").categoryName()).isEqualTo("Grains");
         assertThat(result.undoable()).isTrue();
         assertThat(productBySku(tenant, "RT-2").unitOfMeasure())
                 .as("the repair, not the file, is what got imported")
@@ -275,7 +262,6 @@ class BulkImportRoundTripIntegrationTest {
                 .hasSize(3)
                 .allSatisfy(product -> {
                     assertThat(product.active()).isFalse();
-                    assertThat(product.quantityOnHand()).isZero();
                 });
     }
 
@@ -423,7 +409,7 @@ class BulkImportRoundTripIntegrationTest {
     /** Appends data rows to a generated template, below whatever it already contains. */
     private byte[] fill(byte[] template, List<String> headers, List<Map<String, String>> newRows) {
         try (XSSFWorkbook workbook = open(template)) {
-            Sheet sheet = workbook.getSheetAt(0);
+            Sheet sheet = workbook.getSheet("Products");
             int rowIndex = sheet.getLastRowNum() + 1;
             for (Map<String, String> values : newRows) {
                 Row row = sheet.createRow(rowIndex++);

@@ -116,6 +116,9 @@ public final class ImportFields {
     public static final String VENDOR_SKU = "vendor_sku";
     public static final String IS_PREFERRED_VENDOR = "is_preferred_vendor";
 
+    /** The company's own category for a product (V32) - found or created by name at commit. */
+    public static final String CATEGORY = "category";
+
     // STOCK_IN
     public static final String PRODUCT_NAME = "product_name";
     public static final String QUANTITY = "quantity";

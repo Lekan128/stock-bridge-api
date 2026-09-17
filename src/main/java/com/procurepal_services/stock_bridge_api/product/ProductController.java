@@ -115,8 +115,9 @@ public class ProductController {
     public Page<ProductResponse> list(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Boolean active,
+            @RequestParam(required = false) UUID categoryId,
             @PageableDefault(size = 20) Pageable pageable) {
-        return productManagementService.list(search, active, pageable);
+        return productManagementService.list(search, active, categoryId, pageable);
     }
 
     /**

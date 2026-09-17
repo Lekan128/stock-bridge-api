@@ -85,9 +85,10 @@ public class StockInTemplateService {
             case ALL -> activeProducts(tenantId);
             case LOW_STOCK -> productRepository.findLowStockByClientId(tenantId);
             case BY_VENDOR -> productsOfVendor(tenantId, vendorId);
+            // The company's own categories (V32) - the ones its people chose and recognise.
             case BY_CATEGORY -> activeProducts(tenantId).stream()
-                    .filter(product -> product.getCategory() != null
-                            && product.getCategory().getId().equals(categoryId))
+                    .filter(product -> product.getCompanyCategory() != null
+                            && product.getCompanyCategory().getId().equals(categoryId))
                     .toList();
         };
     }

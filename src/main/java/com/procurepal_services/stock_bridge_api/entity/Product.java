@@ -121,6 +121,14 @@ public class Product extends TenantAwareEntity {
     private ProductCategory category;
 
     /**
+     * The company's own category for this product (V32) - not {@link #category}, which is the
+     * marketplace's. Null when uncategorised.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "company_category_id")
+    private CompanyCategory companyCategory;
+
+    /**
      * Listed on the public marketplace catalog.
      *
      * <p>Only ever true on the products of a client that may SELL - since V11 that

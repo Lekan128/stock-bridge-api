@@ -91,7 +91,23 @@ public record CreateProductRequest(
         String unitOfMeasure,
         String packagingUnit,
         @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
-        @Valid InitialVendor initialVendor) {
+        @Valid InitialVendor initialVendor,
+        UUID categoryId) {
+
+    /** The shape before company categories (V32) - no category. */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, null);
+    }
 
     /**
      * The product's first supplier line, filled in on the same screen as the product itself -

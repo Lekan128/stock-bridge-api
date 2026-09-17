@@ -8,6 +8,7 @@ import com.procurepal_services.stock_bridge_api.imports.io.SheetRow;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetTable;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReadException;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReader;
+import com.procurepal_services.stock_bridge_api.imports.io.TemplateConventions;
 import com.procurepal_services.stock_bridge_api.imports.io.WorkbookBuilder;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
@@ -229,25 +230,6 @@ public class ProductExcelService {
      * "stock unit" the columns are named after. "Per ml, not per keg" is a sentence somebody can
      * check against their invoice; "per stock unit" is one they have to translate first.
      */
-    private static final Map<String, String> HEADER_COMMENTS = Map.ofEntries(
-            Map.entry("name", "What you call this product. Required."),
-            Map.entry("sku", "Your own code for this product - it must be unique in your catalog. Required."),
-            Map.entry("description", "Optional. Anything you want on the product page."),
-            Map.entry("pack", "What it comes in - Bag, Bottle, Carton, Keg. Leave blank if you buy it loose by weight or count."),
-            Map.entry("contains", "What is inside ONE of them, with the unit. A 50 kg bag: \u201c50 kg\u201d. A pack of twelve 750 ml bottles: \u201c12 x 750 ml\u201d - we do the multiplying. Bought loose? Just the unit: \u201ckg\u201d."),
-            Map.entry("opening_stock", "How much you have right now, counted in PACKS when this row has one - 30 beside Pack means 30 packs, not 30 bottles. No pack? Then it is 30 of your Stock unit. Half-packs are fine: 30.5."),
-            Map.entry("low_stock_alert_at", "Optional. Warn me when stock falls to this many. Counted in packs if this row has a pack - 5 beside Bag means 5 bags."),
-            Map.entry("cost_price", "What you pay for ONE of what the opening stock counts - one pack if this row has a pack, one bottle/kg if it does not. Optional. If the row also has an opening stock, this becomes that stock's cost."),
-            Map.entry("vendor_name", "Optional. Who you buy this from. Pick from your suppliers, or type a new name and we will ask about it."),
-            Map.entry("vendor_sku", "Optional. That supplier's own code for this product, if it differs from yours."),
-            Map.entry("is_preferred_vendor", "Optional. Type TRUE if this is your main supplier for the product. Leave blank otherwise."));
-
-    /**
-     * Public rather than package-private because the session engine has to honour the same rule:
-     * both templates write an example row carrying this prefix and tell the user, in the cell
-     * itself, that leaving it in is safe. That promise has to be kept by whichever door the file
-     * comes back through - this service's own {@code parse}, or {@code ImportSessionService}.
-     */
     public static final String EXAMPLE_SKU_MARKER_PREFIX = "EXAMPLE-SKU-DELETE-ME";
 
     /**
@@ -265,7 +247,7 @@ public class ProductExcelService {
 
     private static final String VENDOR_NAMES_RANGE = "vendor_names";
 
-    private static final String YES_FLAG_RANGE = "yes_flag";
+    private static final String CATEGORY_NAMES_RANGE = "category_names";
 
     /**
      * Everything accepted as "yes" in {@code is_preferred_vendor}. Generous on purpose: the
@@ -307,6 +289,132 @@ public class ProductExcelService {
      * file that states it; the template just stops asking.
      */
     static final Set<String> STOCK_COLUMNS = Set.of("opening_stock", "cost_price");
+
+    // ------------------------------------------------------------------------------------------
+    // The product sheet as people see it (BULK_IMPORT_CX_PLAN.md task 1.6). Columns are still
+    // addressed by their import field key; SHEET_HEADERS is what the header cell says, and
+    // ImportColumnMapper maps those words back onto the keys.
+    // ------------------------------------------------------------------------------------------
+
+    /** Template and export column order: what it is, how you buy it, what you have, the rest. */
+    static final List<String> SHEET_FIELDS = List.of(
+            "name", "sku", "pack", "contains", "vendor_name", "opening_stock", "cost_price", "unit_price",
+            "low_stock_alert_at", "category", "description", "vendor_sku");
+
+    static final Map<String, String> SHEET_HEADERS = Map.ofEntries(
+            Map.entry("name", "Product name *"),
+            Map.entry("sku", "Your code *"),
+            Map.entry("pack", "Comes in"),
+            Map.entry("contains", "Size of one"),
+            Map.entry("vendor_name", "Supplier"),
+            Map.entry("opening_stock", "How many you have now"),
+            Map.entry("cost_price", "Price you pay for one (\u20a6)"),
+            Map.entry("unit_price", "Selling price (\u20a6) *"),
+            Map.entry("low_stock_alert_at", "Warn me when I have"),
+            Map.entry("category", "Category"),
+            Map.entry("description", "Notes"),
+            Map.entry("vendor_sku", "Supplier's code for it"));
+
+    private static final Map<String, String> SHEET_GUIDANCE = Map.ofEntries(
+            Map.entry("name", "What your staff call it. e.g. Rice (Mama Gold)"),
+            Map.entry("sku", "Your own code for it. Must be different for every product."),
+            Map.entry("pack", "Bag, Carton, Keg... Pick from the list. Blank if you buy it loose."),
+            Map.entry("contains", "What is inside ONE. 50 kg \u00b7 12 x 750 ml. Loose? Just the unit: kg"),
+            Map.entry("vendor_name", "Who you buy it from. Pick one or type a new name. Optional."),
+            Map.entry("opening_stock", "Optional. Counted in what \"Comes in\" says - 20 means 20 bags."),
+            Map.entry("cost_price", "Optional. For ONE of \"Comes in\" - per bag, not per kg."),
+            Map.entry("unit_price", "What you sell it for, per kg, litre or piece - not per bag."),
+            Map.entry("low_stock_alert_at", "Optional. Counted the same way as \"How many you have now\"."),
+            Map.entry("category", "Optional. Pick one or type a new one - we'll add it."),
+            Map.entry("description", "Optional. Anything you want on the product page."),
+            Map.entry("vendor_sku", "Optional. The supplier's own code, if they use one."));
+
+    private static final Map<String, Integer> SHEET_WIDTHS = Map.ofEntries(
+            Map.entry("name", 30), Map.entry("sku", 16), Map.entry("pack", 14), Map.entry("contains", 18),
+            Map.entry("vendor_name", 22), Map.entry("opening_stock", 16), Map.entry("cost_price", 18),
+            Map.entry("unit_price", 16), Map.entry("low_stock_alert_at", 16), Map.entry("category", 16),
+            Map.entry("description", 26), Map.entry("vendor_sku", 18));
+
+    /**
+     * The worked examples at the top of a new template - ordinary-looking rows a person types
+     * over. A row still exactly like one of these on upload is dropped as an example
+     * ({@link #isShippedExample}); change any cell and it is a real product.
+     */
+    public static final List<Map<String, String>> EXAMPLE_ROWS = List.of(
+            Map.of("name", "Rice (Mama Gold)", "sku", "RICE-50", "pack", "Bag", "contains", "50 kg",
+                    "opening_stock", "12", "cost_price", "42000", "low_stock_alert_at", "3", "category", "Grains"),
+            Map.of("name", "Bottled water 75cl", "sku", "WATER-75CL", "pack", "Pack", "contains", "12 x 750 ml",
+                    "opening_stock", "40", "cost_price", "3600", "low_stock_alert_at", "10", "category", "Drinks"),
+            Map.of("name", "Biro (blue)", "sku", "BIRO-BLUE", "contains", "piece",
+                    "opening_stock", "200", "cost_price", "150", "low_stock_alert_at", "50", "category", "Office"));
+
+    static final String EXAMPLES_NOTE = "The next " + EXAMPLE_ROWS.size() + " rows are examples - type over them "
+            + "or delete them. Rows left exactly as they are here are ignored.";
+
+    static final String HELP_TITLE = "Add your products";
+
+    static final List<String> HELP_LINES = List.of(
+            "One row per product. Only the product name is required.",
+            "",
+            "1.  Say what it is: Product name.",
+            "2.  Say how you buy it: Comes in + Size of one - read together as \"Bag \u00b7 50 kg\" or "
+                    + "\"Pack \u00b7 12 x 750 ml\".",
+            "3.  (Optional) Say what you have today: How many you have now + Price you pay for one.",
+            "4.  Upload it. We check everything and show you any problems before anything is saved.",
+            "",
+            "The grey row under the headings explains each column. You can leave it there.",
+            "Already have your own spreadsheet? Upload that instead - we'll ask which column is which.",
+            "The supplier on a row becomes that product's main supplier. Add more suppliers on the product page.");
+
+    /** The template's columns for this company, as field keys. */
+    public List<String> sheetFieldsFor(boolean isSeller, boolean skuAutoGenerated) {
+        return SHEET_FIELDS.stream()
+                .filter(field -> isSeller || !field.equals("unit_price"))
+                .filter(field -> !skuAutoGenerated || !field.equals("sku"))
+                .toList();
+    }
+
+    /**
+     * Whether a row, read as field key to cell text, is one of {@link #EXAMPLE_ROWS} left exactly
+     * as shipped: every example value matches (numbers by value, words ignoring case) and every
+     * other column is blank.
+     */
+    public static boolean isShippedExample(Map<String, String> valuesByField) {
+        for (Map<String, String> example : EXAMPLE_ROWS) {
+            if (matchesExample(example, valuesByField)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean matchesExample(Map<String, String> example, Map<String, String> row) {
+        boolean anyCompared = false;
+        for (Map.Entry<String, String> cell : row.entrySet()) {
+            String value = cell.getValue() == null ? "" : cell.getValue().trim();
+            String expected = example.get(cell.getKey());
+            if (expected == null) {
+                if (!value.isEmpty()) {
+                    return false;
+                }
+                continue;
+            }
+            if (!sameCell(expected, value)) {
+                return false;
+            }
+            anyCompared = true;
+        }
+        return anyCompared && row.containsKey("name");
+    }
+
+    private static boolean sameCell(String expected, String actual) {
+        Optional<BigDecimal> a = NumberValues.parseDecimal(expected);
+        Optional<BigDecimal> b = NumberValues.parseDecimal(actual);
+        if (a.isPresent() && b.isPresent()) {
+            return a.get().compareTo(b.get()) == 0;
+        }
+        return expected.equalsIgnoreCase(actual);
+    }
 
     public List<String> headerNamesFor(boolean isSeller, boolean skuAutoGenerated) {
         return ALL_HEADER_NAMES.stream()
@@ -350,53 +458,71 @@ public class ProductExcelService {
      * unit codes in the two unit columns, number formats on everything numeric, a short comment on
      * every header, and the whole lookup machinery hidden on a sheet the user never has to see.
      */
+    /**
+     * The product sheet (BULK_IMPORT_CX_PLAN.md task 1.6): a help tab first, headers named for
+     * people, a guidance row under them, a note and three worked examples, and dropdowns for what
+     * it comes in, the supplier and the category. Starting stock and price are optional columns.
+     */
     public byte[] generateTemplate(ProductTemplateContext context) {
         try (WorkbookBuilder builder = new WorkbookBuilder("Products")) {
-            List<String> headers = headerNamesFor(context.isSeller(), context.skuAutoGenerated());
-            builder.writeHeaderRow(headers, COLUMN_WIDTHS_CHARS_BY_HEADER,
-                    headerCommentsFor(context.isSeller(), context.skuAutoGenerated()));
-            applyNumberFormats(builder, headers);
+            List<String> fields = sheetFieldsFor(context.isSeller(), context.skuAutoGenerated());
+            writeSheetHeader(builder, fields);
 
-            List<String> vendorNames = context.vendorDropdownNames();
-            writeExampleRow(builder, 1, headers, exampleRowOne(vendorNames, context.skuAutoGenerated()));
-            writeExampleRow(builder, 2, headers, exampleRowTwo(context.skuAutoGenerated()));
-            writeExampleRow(builder, 3, headers, exampleRowThree(context.skuAutoGenerated()));
+            Row note = builder.sheet().createRow(2);
+            Cell noteCell = note.createCell(0);
+            noteCell.setCellValue(TemplateConventions.GUIDANCE_MARKER + " " + EXAMPLES_NOTE);
+            noteCell.setCellStyle(builder.guidanceStyle());
+            int rowIndex = 3;
+            for (Map<String, String> example : EXAMPLE_ROWS) {
+                Row row = builder.sheet().createRow(rowIndex++);
+                for (int i = 0; i < fields.size(); i++) {
+                    String value = example.get(fields.get(i));
+                    if (value == null) {
+                        continue;
+                    }
+                    Cell cell = row.createCell(i);
+                    Optional<BigDecimal> number = isNumberField(fields.get(i)) ? NumberValues.parseDecimal(value) : Optional.empty();
+                    if (number.isPresent()) {
+                        cell.setCellValue(number.get().doubleValue());
+                    } else {
+                        cell.setCellValue(value);
+                    }
+                }
+            }
 
             LookupSheetWriter lookups = new LookupSheetWriter(builder.workbook());
-            // No dropdown on `contains` - PACK_ENTRY_REDESIGN.md section 15. Its value is a
-            // number and a unit together ("50 kg", "12 x 750 ml"), and the set of those is
-            // unbounded, so there is no list to put behind a named range. The unit half is
-            // resolved by the same forgiving alias table the dropdown was only ever an
-            // affordance for, and anything unreadable is asked about in the review grid.
-            // The opening_stock_counted_in dropdown is gone with its column - section 9.1. It
-            // asked which unit the number beside it was in; the row now answers that by itself,
-            // and a dropdown offering all ~30 units next to a number whose unit is already
-            // decided would be a question with no legal wrong answer.
-            addDropdown(builder, headers, "pack",
+            addDropdown(builder, fields, "pack",
                     lookups.addList(PACKAGING_UNITS_RANGE, labelsOf(UnitOfMeasure.packagingUnits())),
-                    "Pack",
-                    "Pick the container this product comes in - Bag, Carton, Drum and so on. Leave blank if it is sold loose.");
-            addDropdown(builder, headers, "vendor_name",
-                    lookups.addList(VENDOR_NAMES_RANGE, vendorNames),
+                    "Comes in",
+                    "Pick what it comes in - Bag, Carton, Keg. Leave it blank if you buy it loose.");
+            addDropdown(builder, fields, "vendor_name",
+                    lookups.addList(VENDOR_NAMES_RANGE, context.vendorDropdownNames()),
                     "Supplier",
                     "Pick one of your suppliers, or type a new name - we will ask whether to add it after you upload.");
-            addDropdown(builder, headers, "is_preferred_vendor",
-                    lookups.addList(YES_FLAG_RANGE, List.of("TRUE")),
-                    "Main supplier",
-                    "Type TRUE if this is your main supplier for this product, or leave it blank.");
+            addDropdown(builder, fields, "category",
+                    lookups.addList(CATEGORY_NAMES_RANGE, context.categoryNames()),
+                    "Category",
+                    "Pick one of your categories, or type a new one - we will add it.");
             lookups.hide();
 
+            builder.addHelpSheet(HELP_TITLE, HELP_LINES);
             return builder.toBytes();
         }
     }
 
-    /**
-     * Not tenant-conditional the way the template is: an export shows whatever is actually on
-     * each product row, and both a company and a seller can have real values in every column.
-     * Always writes the full column set - which is also what makes "export, edit, upload back" a
-     * lossless round trip, since the template the user would otherwise be editing has exactly
-     * these columns.
-     */
+    private void writeSheetHeader(WorkbookBuilder builder, List<String> fields) {
+        List<String> headers = fields.stream().map(SHEET_HEADERS::get).toList();
+        Map<String, Integer> widths = new LinkedHashMap<>();
+        fields.forEach(field -> widths.put(SHEET_HEADERS.get(field), SHEET_WIDTHS.get(field)));
+        builder.writeHeaderRow(headers, widths, Map.of());
+        builder.writeGuidanceRow(fields.stream().map(SHEET_GUIDANCE::get).toList());
+        applyNumberFormats(builder, fields);
+    }
+
+    private static boolean isNumberField(String field) {
+        return Set.of("opening_stock", "cost_price", "unit_price", "low_stock_alert_at").contains(field);
+    }
+
     public byte[] exportProducts(List<Product> products) {
         return exportProducts(products, Map.of());
     }
@@ -411,11 +537,12 @@ public class ProductExcelService {
      */
     public byte[] exportProducts(List<Product> products, Map<UUID, ProductVendorSnapshot> preferredVendorsByProductId) {
         try (WorkbookBuilder builder = new WorkbookBuilder("Products")) {
-            builder.writeHeaderRow(ALL_HEADER_NAMES, COLUMN_WIDTHS_CHARS_BY_HEADER, Map.of());
-            applyNumberFormats(builder, ALL_HEADER_NAMES);
+            // The same columns and words as the template, so an exported sheet can be edited and
+            // uploaded again through the import page.
+            writeSheetHeader(builder, SHEET_FIELDS);
             Sheet sheet = builder.sheet();
 
-            int rowIndex = 1;
+            int rowIndex = 2;
             for (Product product : products) {
                 Row row = sheet.createRow(rowIndex++);
                 // Indexed by header name rather than by literal position. The positions moved
@@ -479,13 +606,13 @@ public class ProductExcelService {
                     cell(row, "unit_price").setCellValue(product.getUnitPrice().doubleValue());
                 }
 
+                if (product.getCompanyCategory() != null) {
+                    cell(row, "category").setCellValue(product.getCompanyCategory().getName());
+                }
                 ProductVendorSnapshot vendor = preferredVendorsByProductId.get(product.getId());
                 if (vendor != null) {
                     cell(row, "vendor_name").setCellValue(vendor.vendorName() == null ? "" : vendor.vendorName());
                     cell(row, "vendor_sku").setCellValue(vendor.vendorSku() == null ? "" : vendor.vendorSku());
-                    if (vendor.preferred()) {
-                        cell(row, "is_preferred_vendor").setCellValue("TRUE");
-                    }
                 }
             }
             return builder.toBytes();
@@ -1011,8 +1138,8 @@ public class ProductExcelService {
     }
 
     /** One export cell, addressed by header name rather than by a hand-counted index. */
-    private Cell cell(Row row, String header) {
-        return row.createCell(ALL_HEADER_NAMES.indexOf(header));
+    private Cell cell(Row row, String field) {
+        return row.createCell(SHEET_FIELDS.indexOf(field));
     }
 
     private BigDecimal nonNegativeDecimal(String raw, int excelRow, String column, List<ProductRowError> errors) {
@@ -1114,113 +1241,6 @@ public class ProductExcelService {
      * left blank rather than filled with an invented supplier - an example row naming a company
      * that does not exist would be the one example that teaches the wrong thing.
      */
-    private Map<String, String> exampleRowOne(List<String> vendorNames, boolean skuAutoGenerated) {
-        Map<String, String> values = new LinkedHashMap<>(Map.ofEntries(
-                Map.entry("name", exampleName("Bottled Water", skuAutoGenerated)),
-                Map.entry("sku", "EXAMPLE-SKU-DELETE-ME-1"),
-                Map.entry("description", "Delete this row, or leave it - example rows are skipped automatically"),
-                Map.entry("pack", "Pack"),
-                Map.entry("contains", "12 x 750 ml"),
-                Map.entry("opening_stock", "30"),
-                Map.entry("low_stock_alert_at", "5"),
-                Map.entry("cost_price", "150.00"),
-                Map.entry("unit_price", "200.00")));
-        if (!vendorNames.isEmpty()) {
-            values.put("vendor_name", vendorNames.get(0));
-            values.put("vendor_sku", "THEIR-CODE-1");
-            values.put("is_preferred_vendor", "TRUE");
-        }
-        return values;
-    }
-
-    /**
-     * The counterpart to {@link #exampleRowOne}: <b>the case where a measure genuinely IS the
-     * stock unit</b>. Rice counted in kilograms, bought by the 50 kg bag.
-     *
-     * <h2>Why two packed examples instead of one</h2>
-     * PACK_ENTRY_REDESIGN.md section 8.7. Row one alone would teach "never put a measure in
-     * stock_unit", which is false and would send every rice and cement seller the other way into
-     * the ditch. Rice really is issued by the kilogram - you can sell someone 2 kg out of a
-     * 50 kg bag, and you cannot sell them 200 ml out of a sealed bottle. That is the whole
-     * distinction, and one row cannot carry it.
-     *
-     * <p>Two adjacent rows can, without a sentence of explanation: same shape, different answer,
-     * and the reason is visible in the products themselves. {@code size} carries "50 kg" here
-     * too, which shows that the descriptor is for the user's own reference and is not what drives
-     * the arithmetic - {@code units_per_pack=50} is.
-     *
-     * <p>Both products are things a Nigerian buyer actually stocks, chosen so the numbers can be
-     * checked against the world - which "Sample Widget" could not be.
-     */
-    private Map<String, String> exampleRowTwo(boolean skuAutoGenerated) {
-        return Map.ofEntries(
-                Map.entry("name", exampleName("Rice", skuAutoGenerated)),
-                Map.entry("sku", "EXAMPLE-SKU-DELETE-ME-2"),
-                Map.entry("description", "Delete this row, or leave it - example rows are skipped automatically"),
-                Map.entry("pack", "Bag"),
-                Map.entry("contains", "50 kg"),
-                Map.entry("opening_stock", "20"),
-                Map.entry("low_stock_alert_at", "4"),
-                Map.entry("cost_price", "75000.00"),
-                Map.entry("unit_price", "82000.00"));
-    }
-
-    /**
-     * The third shape: <b>no pack at all</b>, so its {@code opening_stock} of 600 is 600 pieces -
-     * the other half of UNIT_UX_CONTRACT.md section 9.1's rule, and the case that must keep
-     * behaving exactly as it always has.
-     *
-     * <p>Leaving {@code pack} and {@code units_per_pack} empty is also what shows that they are
-     * optional: only {@code stock_unit} is ever required to stand alone. Its {@code size} is
-     * blank for the same reason - a biro has no printed size worth recording, and a blank cell
-     * teaches that the column can be left alone. Its vendor columns are left blank on purpose,
-     * which demonstrates the other half of the vendor rule - they are all optional too.
-     */
-    private Map<String, String> exampleRowThree(boolean skuAutoGenerated) {
-        return Map.ofEntries(
-                Map.entry("name", exampleName("Biro", skuAutoGenerated)),
-                Map.entry("sku", "EXAMPLE-SKU-DELETE-ME-3"),
-                Map.entry("description", "Delete this row, or leave it - example rows are skipped automatically"),
-                Map.entry("contains", "piece"),
-                Map.entry("opening_stock", "600"),
-                Map.entry("low_stock_alert_at", "50"),
-                Map.entry("cost_price", "150.00"),
-                Map.entry("unit_price", "250.00"));
-    }
-
-    /**
-     * The example-row product name: unchanged when {@code sku} carries the skip marker, prefixed
-     * with {@link #EXAMPLE_NAME_MARKER_PREFIX} when there is no {@code sku} column for it to live
-     * on instead - see that constant's javadoc.
-     */
-    private String exampleName(String name, boolean skuAutoGenerated) {
-        return skuAutoGenerated ? EXAMPLE_NAME_MARKER_PREFIX + " " + name : name;
-    }
-
-    /**
-     * Example values are written as text, not as numbers, and that is deliberate: they are
-     * illustrations, and a number in a formatted column would be indistinguishable from a real
-     * value the user had entered. The italic-grey style says the same thing visually.
-     */
-    private void writeExampleRow(
-            WorkbookBuilder builder, int rowIndex, List<String> headers, Map<String, String> valuesByHeader) {
-        Row row = builder.sheet().createRow(rowIndex);
-        for (int i = 0; i < headers.size(); i++) {
-            Cell cell = row.createCell(i);
-            String value = valuesByHeader.get(headers.get(i));
-            if (value != null) {
-                cell.setCellValue(value);
-            }
-            cell.setCellStyle(builder.exampleStyle());
-        }
-    }
-
-    /**
-     * Money columns get thousands-and-two-decimals, counted columns get whole thousands, and
-     * both quantity columns and units_per_pack get an optional-decimals format, because half a
-     * pack is a real thing on all three since section 9.1. See
-     * {@code WorkbookBuilder}'s javadoc for why this is a parsing feature rather than decoration.
-     */
     private void applyNumberFormats(WorkbookBuilder builder, List<String> headers) {
         for (int i = 0; i < headers.size(); i++) {
             switch (headers.get(i)) {
@@ -1232,7 +1252,6 @@ public class ProductExcelService {
                 // itself is worse than no formatting at all.
                 case "opening_stock", "low_stock_alert_at", "contains" ->
                         builder.formatColumn(i, builder.decimalStyle());
-                case "is_preferred_vendor" -> builder.formatColumn(i, builder.centeredStyle());
                 default -> {
                     // Text columns keep the General format. Deliberately including sku: forcing a
                     // format on it would turn a numeric-looking SKU like 00123 into 123.
@@ -1281,22 +1300,4 @@ public class ProductExcelService {
      * it is their marketplace selling price and required; a company never sees the column at all,
      * so the entry is simply absent from their map.
      */
-    private Map<String, String> headerCommentsFor(boolean isSeller, boolean skuAutoGenerated) {
-        Map<String, String> comments = new LinkedHashMap<>(HEADER_COMMENTS);
-        if (isSeller) {
-            comments.put("unit_price", "Your marketplace selling price. Required for every product you list.");
-        }
-        // The example-row marker lives on whichever column will actually be in the file - see
-        // EXAMPLE_NAME_MARKER_PREFIX's javadoc for why sku isn't it when auto-generated.
-        String exampleRowNote = skuAutoGenerated
-                ? "Rows written in grey are examples - delete them, or leave them, any row whose name starts with '"
-                        + EXAMPLE_NAME_MARKER_PREFIX + "' is skipped automatically."
-                : "Rows written in grey are examples - delete them, or leave them, any row whose sku starts with '"
-                        + EXAMPLE_SKU_MARKER_PREFIX + "' is skipped automatically.";
-        comments.put("name", HEADER_COMMENTS.get("name") + " " + exampleRowNote);
-        if (skuAutoGenerated) {
-            comments.remove("sku");
-        }
-        return comments;
-    }
 }

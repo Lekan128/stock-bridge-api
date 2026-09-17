@@ -1315,7 +1315,9 @@ class BulkImportSessionIntegrationTest {
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
         assertThat(catalog.needsMapping()).isFalse();
-        assertThat(catalog.unmappedHeaders()).isEmpty();
+        // The main-supplier flag was retired in BULK_IMPORT_CX_PLAN.md task 1.6: the supplier on a
+        // product's row is its main one. An old sheet still imports; the column is reported.
+        assertThat(catalog.unmappedHeaders()).containsExactly("is_preferred_vendor");
         assertThat(catalog.columnMapping())
                 .containsEntry("quantity_on_hand", "opening_stock")
                 .containsEntry("low_stock_threshold", "low_stock_alert_at")

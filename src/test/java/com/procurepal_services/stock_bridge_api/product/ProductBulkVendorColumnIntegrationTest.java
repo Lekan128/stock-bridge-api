@@ -170,15 +170,15 @@ class ProductBulkVendorColumnIntegrationTest {
 
         assertThat(export.getStatusCode()).isEqualTo(HttpStatus.OK);
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(export.getBody()))) {
-            Sheet sheet = workbook.getSheetAt(0);
+            Sheet sheet = workbook.getSheet("Products");
             List<String> headers = headerNames(sheet);
-            assertThat(headers).containsSequence("vendor_name", "vendor_sku", "is_preferred_vendor");
+            assertThat(headers).contains("Supplier", "Supplier's code for it");
+            // The supplier on a product's row is its main supplier - there is no separate flag.
+            assertThat(headers).noneMatch(header -> header.toLowerCase().contains("preferred"));
 
             Row exported = rowWithSku(sheet, "VNDEXP-RICE-50");
-            assertThat(exported.getCell(headers.indexOf("vendor_name")).getStringCellValue())
+            assertThat(exported.getCell(headers.indexOf("Supplier")).getStringCellValue())
                     .isEqualTo(VENDOR_NAME);
-            assertThat(exported.getCell(headers.indexOf("is_preferred_vendor")).getStringCellValue())
-                    .isEqualTo("TRUE");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }

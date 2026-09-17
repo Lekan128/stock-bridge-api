@@ -55,17 +55,17 @@ class ProductBulkImportExportIntegrationTest {
     // The company (non-seller) template's column set - UNIT_UX_CONTRACT.md section 9's grouping
     // with unit_price dropped entirely. See ProductExcelService.ALL_HEADER_NAMES: identity, then
     // how you count it, then how much, then supplier.
+    // The product sheet in plain words (BULK_IMPORT_CX_PLAN.md task 1.6).
     private static final List<String> COMPANY_HEADERS = List.of(
-            "name", "sku", "description",
-            "pack", "contains",
-            "low_stock_alert_at");
+            "Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
+            "How many you have now", "Price you pay for one (₦)", "Warn me when I have",
+            "Category", "Notes", "Supplier's code for it");
     // The seller template's full column set - the same, plus unit_price and the vendor trio
     // (BULK_IMPORT_CONTRACT.md section 5, BULK_IMPORT_DESIGN.md section 7.1).
     private static final List<String> FULL_HEADERS = List.of(
-            "name", "sku", "description",
-            "pack", "contains",
-            "low_stock_alert_at", "unit_price",
-            "vendor_name", "vendor_sku", "is_preferred_vendor");
+            "Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
+            "How many you have now", "Price you pay for one (₦)", "Selling price (₦) *", "Warn me when I have",
+            "Category", "Notes", "Supplier's code for it");
 
     /**
      * The column sets as uploaded by a tenant whose saved template predates section 9.4's
@@ -101,7 +101,7 @@ class ProductBulkImportExportIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(response.getBody()))) {
-            Row header = workbook.getSheetAt(0).getRow(0);
+            Row header = workbook.getSheet("Products").getRow(0);
             for (int i = 0; i < COMPANY_HEADERS.size(); i++) {
                 assertThat(header.getCell(i).getStringCellValue()).isEqualTo(COMPANY_HEADERS.get(i));
             }
@@ -123,8 +123,8 @@ class ProductBulkImportExportIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<String> headerNames = readHeaderNames(response.getBody());
-        assertThat(headerNames).doesNotContain("unit_price");
-        assertThat(headerNames).containsSequence("pack", "contains");
+        assertThat(headerNames).doesNotContain("Selling price (₦) *");
+        assertThat(headerNames).containsSequence("Comes in", "Size of one");
     }
 
     /**
@@ -161,28 +161,27 @@ class ProductBulkImportExportIntegrationTest {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(response.getBody()))) {
-            Sheet sheet = workbook.getSheetAt(0);
+            Sheet sheet = workbook.getSheet("Products");
             List<String> headerNames = readHeaderNames(response.getBody());
-            int packCol = headerNames.indexOf("pack");
-            int containsCol = headerNames.indexOf("contains");
-            // PACK_ENTRY_REDESIGN.md section 16: no stock columns on the product sheet.
-            assertThat(headerNames).doesNotContain("stock_unit", "opening_stock", "cost_price");
+            int packCol = headerNames.indexOf("Comes in");
+            int containsCol = headerNames.indexOf("Size of one");
+            // Task 1.6: starting stock and price are back, as optional columns.
+            assertThat(headerNames).contains("How many you have now", "Price you pay for one (₦)");
 
-            // Row one is THE case - a pack of twelve 750 ml bottles, written the way it is on the
-            // invoice. Section 15: the unit is inside the phrase, and the server multiplies.
-            Row exampleOne = sheet.getRow(1);
-            assertThat(exampleOne.getCell(packCol).getStringCellValue()).isEqualTo("Pack");
-            assertThat(exampleOne.getCell(containsCol).getStringCellValue()).isEqualTo("12 x 750 ml");
+            // Rows 0-2 are the headers, the guidance row and the "these are examples" note.
+            Row rice = sheet.getRow(3);
+            assertThat(rice.getCell(packCol).getStringCellValue()).isEqualTo("Bag");
+            assertThat(rice.getCell(containsCol).getStringCellValue()).isEqualTo("50 kg");
 
-            // Row two: one level, a measure that genuinely is the stock unit.
-            Row exampleTwo = sheet.getRow(2);
-            assertThat(exampleTwo.getCell(packCol).getStringCellValue()).isEqualTo("Bag");
-            assertThat(exampleTwo.getCell(containsCol).getStringCellValue()).isEqualTo("50 kg");
+            // A pack of twelve 750 ml bottles, written the way it is on the invoice.
+            Row water = sheet.getRow(4);
+            assertThat(water.getCell(packCol).getStringCellValue()).isEqualTo("Pack");
+            assertThat(water.getCell(containsCol).getStringCellValue()).isEqualTo("12 x 750 ml");
 
-            // Row three: bought loose - no pack, and `contains` is just the unit.
-            Row exampleThree = sheet.getRow(3);
-            assertThat(exampleThree.getCell(packCol).getStringCellValue()).isEmpty();
-            assertThat(exampleThree.getCell(containsCol).getStringCellValue()).isEqualTo("piece");
+            // Bought loose - no pack, and the size is just the unit.
+            Row biro = sheet.getRow(5);
+            assertThat(biro.getCell(packCol)).isNull();
+            assertThat(biro.getCell(containsCol).getStringCellValue()).isEqualTo("piece");
         }
     }
 
@@ -635,7 +634,7 @@ class ProductBulkImportExportIntegrationTest {
 
     private List<String> readHeaderNames(byte[] file) {
         try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
-            Row header = workbook.getSheetAt(0).getRow(0);
+            Row header = workbook.getSheet("Products").getRow(0);
             List<String> names = new java.util.ArrayList<>();
             for (Cell cell : header) {
                 names.add(cell.getStringCellValue());
@@ -654,7 +653,7 @@ class ProductBulkImportExportIntegrationTest {
      */
     private Object[] readUnitOfMeasurePackagingUnitAndSize(byte[] file, String sku) {
         try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
-            Sheet sheet = workbook.getSheetAt(0);
+            Sheet sheet = workbook.getSheet("Products");
             // Resolved by header NAME, not by a hardcoded index: the column set grows (V20 added
             // the vendor trio, the unit remediation added opening_stock_counted_in), and an index
             // here turns every such addition into a puzzling type error three columns to the right.
@@ -664,13 +663,14 @@ class ProductBulkImportExportIntegrationTest {
                 Cell cell = headerRow.getCell(c);
                 exportHeaders.add(cell == null ? "" : cell.getStringCellValue());
             }
-            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+            int skuCol = exportHeaders.indexOf("Your code *");
+            for (int i = 2; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
-                if (row != null && row.getCell(1) != null && sku.equals(row.getCell(1).getStringCellValue())) {
+                if (row != null && row.getCell(skuCol) != null && sku.equals(row.getCell(skuCol).getStringCellValue())) {
                     // Section 15: the export writes one phrase - "25.5 kg" - so the unit and the
                     // size are read back out of it by the same parser the import uses.
-                    Cell packagingUnitCell = row.getCell(exportHeaders.indexOf("pack"));
-                    Cell containsCell = row.getCell(exportHeaders.indexOf("contains"));
+                    Cell packagingUnitCell = row.getCell(exportHeaders.indexOf("Comes in"));
+                    Cell containsCell = row.getCell(exportHeaders.indexOf("Size of one"));
                     String packagingUnit = packagingUnitCell == null ? null : packagingUnitCell.getStringCellValue();
                     var contents = containsCell == null
                             ? java.util.Optional.<com.procurepal_services.stock_bridge_api.product.unit.PackContents>empty()

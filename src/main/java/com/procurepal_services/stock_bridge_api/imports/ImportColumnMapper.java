@@ -134,11 +134,14 @@ public class ImportColumnMapper {
 
     private static Map<String, String> catalogAliases() {
         Map<String, String> aliases = new LinkedHashMap<>();
+        // The product sheet's own headers (BULK_IMPORT_CX_PLAN.md task 1.6) sit first in each
+        // list; HeaderNames has already dropped their "*", apostrophes and bracketed asides.
         put(aliases, ImportFields.NAME, "product", "product_name", "item", "item_name", "title", "description_of_item");
-        put(aliases, ImportFields.SKU, "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
-        put(aliases, ImportFields.DESCRIPTION, "desc", "details", "notes", "remarks");
-        put(aliases, ImportFields.UNIT_PRICE, "price", "selling_price", "sale_price", "sales_price", "list_price", "rrp");
-        put(aliases, ImportFields.COST_PRICE, "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");
+        put(aliases, ImportFields.SKU, "your_code", "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
+        put(aliases, ImportFields.DESCRIPTION, "notes", "desc", "details", "remarks");
+        put(aliases, ImportFields.CATEGORY, "categories", "product_category", "group", "product_group");
+        put(aliases, ImportFields.UNIT_PRICE, "selling_price", "price", "sale_price", "sales_price", "list_price", "rrp");
+        put(aliases, ImportFields.COST_PRICE, "price_you_pay_for_one", "price_you_pay", "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");
         // Each of the four renamed columns leads with the spelling OUR OWN template used before
         // UNIT_UX_CONTRACT.md section 9.4 - "quantity_on_hand" (section 5.1), then section 9.4's
         // "low_stock_threshold", "unit_of_measure" and "packaging_unit"/"packaging_size". Section
@@ -150,15 +153,15 @@ public class ImportColumnMapper {
         // reached production, so there is no saved sheet whose bare number needs its old meaning
         // preserved, and preserving it was the only argument for the deleted
         // opening_stock_counted_in column.
-        put(aliases, ImportFields.OPENING_STOCK, "quantity_on_hand", "qty", "quantity", "stock", "on_hand", "opening_balance", "current_stock", "stock_on_hand", "qty_on_hand");
-        put(aliases, ImportFields.LOW_STOCK_ALERT_AT, "low_stock_threshold", "reorder_level", "reorder_point", "min_stock", "minimum_stock", "low_stock", "reorder", "alert_at");
+        put(aliases, ImportFields.OPENING_STOCK, "how_many_you_have_now", "how_many_you_have", "quantity_on_hand", "qty", "quantity", "stock", "on_hand", "opening_balance", "current_stock", "stock_on_hand", "qty_on_hand");
+        put(aliases, ImportFields.LOW_STOCK_ALERT_AT, "warn_me_when_i_have", "low_stock_threshold", "reorder_level", "reorder_point", "min_stock", "minimum_stock", "low_stock", "reorder", "alert_at");
         // "unit" stays here and still means the STOCK unit on a catalog sheet - see the per-kind
         // note in this class's javadoc for why that is not the same answer as on a stock-in sheet.
         put(aliases, ImportFields.STOCK_UNIT, "unit_of_measure", "uom", "unit", "units", "measure", "base_unit", "unit_measure", "sold_in");
-        put(aliases, ImportFields.PACK, "packaging_unit", "packaging", "pack_type", "package", "package_unit", "pack_unit");
-        put(aliases, ImportFields.UNITS_PER_PACK, "units_per_pack", "packaging_size", "pack_size", "package_size", "size", "qty_per_pack", "holds", "contents");
+        put(aliases, ImportFields.PACK, "comes_in", "packaging_unit", "packaging", "pack_type", "package", "package_unit", "pack_unit");
+        put(aliases, ImportFields.UNITS_PER_PACK, "size_of_one", "units_per_pack", "packaging_size", "pack_size", "package_size", "size", "qty_per_pack", "holds", "contents");
         put(aliases, ImportFields.VENDOR_NAME, "supplier", "vendor", "supplier_name", "bought_from", "source", "distributor");
-        put(aliases, ImportFields.VENDOR_SKU, "supplier_code", "vendor_code", "supplier_sku", "supplier_item_code", "their_code");
+        put(aliases, ImportFields.VENDOR_SKU, "suppliers_code_for_it", "suppliers_code", "supplier_code", "vendor_code", "supplier_sku", "supplier_item_code", "their_code");
         put(aliases, ImportFields.IS_PREFERRED_VENDOR, "preferred", "main_supplier", "preferred_supplier", "primary_supplier", "default_supplier");
         return Map.copyOf(aliases);
     }

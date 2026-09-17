@@ -87,6 +87,8 @@ public class ProductManagementService {
      * "stock that came in from a spreadsheet rather than a delivery" will match on.
      */
 
+    private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
+    private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
@@ -124,8 +126,14 @@ public class ProductManagementService {
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
+        return list(search, active, null, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> list(String search, Boolean active, UUID categoryId, Pageable pageable) {
         UUID tenantId = requireTenantId();
-        Page<Product> page = productRepository.findAll(ProductSpecifications.forTenant(tenantId, search, active), pageable);
+        Page<Product> page = productRepository.findAll(
+                ProductSpecifications.forTenant(tenantId, search, active, categoryId), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
         Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
         return page.map(product -> ProductResponse.from(
@@ -297,6 +305,7 @@ public class ProductManagementService {
                 // for an ordinary buying company it is also PENDING and is never read
                 // by anything - see ProductModerationRules.
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
+                .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
 
         List<String> warnings = new ArrayList<>();
@@ -442,6 +451,11 @@ public class ProductManagementService {
         }
         if (request.packagingSize() != null) {
             product.setPackagingSize(request.packagingSize());
+        }
+        if (Boolean.TRUE.equals(request.clearCategory())) {
+            product.setCompanyCategory(null);
+        } else if (request.categoryId() != null) {
+            product.setCompanyCategory(companyCategoryService.require(request.categoryId()));
         }
         // Both checked against the RESULTING state, not the request: a patch that supplies
         // only one of the packagingUnit/packagingSize pair is fine so long as the product
@@ -596,8 +610,11 @@ public class ProductManagementService {
                 .stream()
                 .map(CompanyVendor::getName)
                 .toList();
-        return productExcelService.generateTemplate(
-                new ProductTemplateContext(isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId)));
+        List<String> categoryNames = companyCategoryRepository.findAllByClientIdOrderByNameAsc(tenantId).stream()
+                .map(com.procurepal_services.stock_bridge_api.entity.CompanyCategory::getName)
+                .toList();
+        return productExcelService.generateTemplate(new ProductTemplateContext(
+                isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames));
     }
 
     /**

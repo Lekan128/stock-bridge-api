@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports;
 
+import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_NAME_MARKER_PREFIX;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_SKU_MARKER_PREFIX;
 
@@ -243,6 +244,27 @@ public class ImportSessionService {
      * either.
      */
     private List<SheetRow> withoutExampleRows(SheetTable table, Map<String, String> columnMapping) {
+        // The product sheet's worked examples (BULK_IMPORT_CX_PLAN.md task 1.6) are ordinary
+        // rows; one still exactly as shipped is dropped, like the guidance rows above it.
+        List<SheetRow> rows = table.rows().stream()
+                .filter(row -> !ProductExcelService.isShippedExample(valuesByField(table, row, columnMapping)))
+                .toList();
+        return withoutMarkedExampleRows(new SheetTable(table.headers(), table.columnIndexes(), rows), columnMapping);
+    }
+
+    private static Map<String, String> valuesByField(SheetTable table, SheetRow row, Map<String, String> columnMapping) {
+        Map<String, String> values = new LinkedHashMap<>();
+        columnMapping.forEach((header, field) -> {
+            if (field != null) {
+                String value = table.value(row, header);
+                values.put(field, value == null ? "" : value);
+            }
+        });
+        return values;
+    }
+
+    /** The older templates' example rows, marked by a reserved prefix on the code or the name. */
+    private List<SheetRow> withoutMarkedExampleRows(SheetTable table, Map<String, String> columnMapping) {
         String skuHeader = columnMapping.entrySet().stream()
                 .filter(entry -> ImportFields.SKU.equals(entry.getValue()))
                 .map(Map.Entry::getKey)

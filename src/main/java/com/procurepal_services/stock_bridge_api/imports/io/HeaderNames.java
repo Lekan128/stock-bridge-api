@@ -59,6 +59,8 @@ public final class HeaderNames {
         if (cleaned.isEmpty()) {
             return null;
         }
+        // A required-marker "*" and apostrophes are decoration, not part of the name.
+        cleaned = cleaned.replaceAll("[*'\u2019]", "").trim();
         String unbracketed = BRACKETED.matcher(cleaned).replaceAll("").trim();
         if (!unbracketed.isEmpty()) {
             cleaned = unbracketed;

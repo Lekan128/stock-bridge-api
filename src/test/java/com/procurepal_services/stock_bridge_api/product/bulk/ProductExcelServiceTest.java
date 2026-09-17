@@ -7,7 +7,9 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
 import com.procurepal_services.stock_bridge_api.imports.io.LookupSheetWriter;
+import com.procurepal_services.stock_bridge_api.imports.io.SheetTable;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReader;
+import com.procurepal_services.stock_bridge_api.imports.io.TemplateConventions;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -48,237 +50,125 @@ class ProductExcelServiceTest {
     private static final List<String> VENDORS =
             List.of("Dangote Nigeria Plc", "Ade Foods Ltd", "Olam Agri Nigeria");
 
-    // ------------------------------------------------------------------------------- columns ----
+    // ------------------------------------------------------------------------ the product sheet ----
+    // BULK_IMPORT_CX_PLAN.md task 1.6: a help tab first, headers named for people, a guidance row,
+    // a note and worked examples, dropdowns, optional starting stock and price, a category.
 
-    /**
-     * The column vocabulary of UNIT_UX_CONTRACT.md section 9.4, in section 9's grouping: identity,
-     * then how you count it, then how much, then supplier.
-     *
-     * <p>The counting columns come BEFORE the quantity columns because since section 9.1 they
-     * decide what the quantity columns mean. The old order - which froze the first ten columns in
-     * place - put the pack three places to the right of the number it qualifies, which is exactly
-     * how "20 bags of rice" got typed into a column that meant kilograms. Saved copies survive
-     * through {@link #aTemplateSavedBeforeTheRenameStillParsesThroughTheAlias}: the parser reads
-     * by header, not by position.
-     */
+    private static final ProductTemplateContext COMPANY =
+            new ProductTemplateContext(false, VENDORS, false, List.of("Drinks", "Grains"));
+
     @Test
-    void theSellerTemplateCarriesEveryContractColumnInOrder() {
-        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false)));
-
-        assertThat(headers).containsExactly(
-                // PACK_ENTRY_REDESIGN.md sections 15 and 16: two counting columns, and no stock
-                // columns at all - opening_stock and cost_price belong to the stock sheet, which
-                // the user fills next with these products already listed.
-                "name", "sku", "description",
-                "pack", "contains",
-                "low_stock_alert_at", "unit_price",
-                "vendor_name", "vendor_sku", "is_preferred_vendor");
+    void theSellerTemplateCarriesEveryColumnInOrderInPlainWords() {
+        assertThat(headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false, List.of()))))
+                .containsExactly("Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
+                        "How many you have now", "Price you pay for one (₦)", "Selling price (₦) *",
+                        "Warn me when I have", "Category", "Notes", "Supplier's code for it");
     }
 
-    /**
-     * Section 9.4's four renames, and the deletion. The old spellings are gone from the file the
-     * user downloads today - they survive only as read aliases.
-     */
     @Test
-    void theTemplateSpellsTheColumnsSection94sWayAndHasNoCountedInColumn() {
-        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false)));
-
-        assertThat(headers).doesNotContain(
-                "unit_of_measure", "packaging_unit", "packaging_size", "low_stock_threshold",
-                "quantity_on_hand", "opening_stock_counted_in");
+    void aCompanyTemplateHasNoSellingPriceAndAGeneratedCodeCompanyHasNoCodeColumn() {
+        assertThat(headersOf(service.generateTemplate(COMPANY)))
+                .doesNotContain("Selling price (₦) *")
+                .contains("Your code *", "How many you have now", "Price you pay for one (₦)", "Category");
+        assertThat(headersOf(service.generateTemplate(new ProductTemplateContext(false, VENDORS, true, List.of()))))
+                .doesNotContain("Your code *");
     }
 
-    /** A buying company has no selling price at all, so the column is absent rather than optional. */
     @Test
-    void theCompanyTemplateDropsUnitPriceAndKeepsEverythingElseInPlace() {
-        List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(false, VENDORS, false)));
-
-        assertThat(headers).doesNotContain("unit_price");
-        assertThat(headers).containsSequence("pack", "contains");
-        assertThat(headers).containsSequence("contains", "low_stock_alert_at");
-        // Section 16: the product sheet no longer asks what is on the shelf or what it cost.
-        assertThat(headers).doesNotContain("opening_stock", "cost_price");
-        assertThat(headers).containsSequence("vendor_name", "vendor_sku", "is_preferred_vendor");
+    void theMainSupplierColumnIsGone() {
+        assertThat(headersOf(service.generateTemplate(COMPANY)))
+                .noneMatch(header -> header.toLowerCase().contains("preferred") || header.toLowerCase().contains("main"));
     }
 
-    // ------------------------------------------------------------ the lookup sheet and ranges ----
-
-    /**
-     * Hidden, present, and pointing at real values. Hidden rather than deleted after the names are
-     * defined: a name pointing at a missing sheet resolves to {@code #REF!} and Excel then shows an
-     * empty dropdown, which is worse than none because the column still looks like it has one.
-     */
     @Test
-    void theLookupSheetIsPresentHiddenAndItsNamedRangesResolveToTheRealValues() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
-
-        try (XSSFWorkbook workbook = open(file)) {
-            int lookupIndex = workbook.getSheetIndex(LookupSheetWriter.SHEET_NAME);
-            assertThat(lookupIndex).as("the _lookups sheet must exist").isNotNegative();
-            assertThat(workbook.isSheetHidden(lookupIndex)).as("_lookups must be hidden").isTrue();
-            // The data sheet must stay first: every reader in this codebase takes sheet zero.
-            assertThat(workbook.getSheetAt(0).getSheetName()).isEqualTo("Products");
-
-            // Labels, never codes - UNIT_UX_CONTRACT.md section 7, non-negotiable 4. A user opening
-            // the dropdown sees "Kilogram (kg)", not "KG", and the parser reads either back.
-            // `base_units` is gone with the stock_unit column - PACK_ENTRY_REDESIGN.md section 15.
-            // The unit now lives inside the `contains` text ("50 kg"), whose value set is a number
-            // and a unit together and therefore unbounded, so there is no list to put behind a name.
-            assertThat(valuesOfNamedRange(workbook, "packaging_units"))
-                    .contains("Bag", "Carton", "Drum")
-                    .doesNotContain("BAG", "Kilogram (kg)");
-            assertThat(valuesOfNamedRange(workbook, "vendor_names"))
-                    .containsExactlyElementsOf(VENDORS);
-            assertThat(valuesOfNamedRange(workbook, "yes_flag")).containsExactly("TRUE");
+    void theHelpTabOpensFirstAndTheDataTabIsFrozenUnderItsGuidanceRow() {
+        try (XSSFWorkbook workbook = open(service.generateTemplate(COMPANY))) {
+            assertThat(workbook.getSheetName(0)).isEqualTo(TemplateConventions.HELP_SHEET_NAME);
+            assertThat(workbook.getActiveSheetIndex()).isZero();
+            Sheet data = workbook.getSheet("Products");
+            assertThat(data.getPaneInformation().getHorizontalSplitPosition()).isEqualTo((short) 2);
+            assertThat(data.getRow(1).getCell(0).getStringCellValue()).startsWith(TemplateConventions.GUIDANCE_MARKER);
+            assertThat(data.getRow(0).getCell(0).getCellComment()).as("no hover-only instructions").isNull();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
     /**
-     * The test the whole dropdown feature lives or dies on: the validation records are read back out
-     * of the written file, and each one is checked for the column it covers AND the named range it
-     * points at. A formula constraint naming a range that was never defined would produce an empty
-     * dropdown at open time and nothing at all at write time.
+     * The examples are ordinary rows under a note. Read back, the guidance and the note are
+     * dropped, and each example - left as shipped - is recognised as one.
      */
     @Test
-    void everyIntendedColumnReallyHasADropdownInTheWrittenFile() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
+    void theExamplesReadBackAsExamplesUntilSomeoneChangesThem() {
+        byte[] template = service.generateTemplate(COMPANY);
+        SheetTable table = new SpreadsheetReader().read(template, "products.xlsx");
+        assertThat(table.rows()).hasSize(ProductExcelService.EXAMPLE_ROWS.size());
+        assertThat(table.rows()).allSatisfy(row -> assertThat(ProductExcelService.isShippedExample(byField(table, row))).isTrue());
 
-        try (XSSFWorkbook workbook = open(file)) {
-            XSSFSheet sheet = workbook.getSheetAt(0);
-            List<String> headers = headersOf(file);
-            Map<String, String> rangeByColumn = dropdownRangesByColumn(sheet, headers);
+        Map<String, String> edited = new java.util.LinkedHashMap<>(byField(table, table.rows().get(0)));
+        edited.put("opening_stock", "13");
+        assertThat(ProductExcelService.isShippedExample(edited)).isFalse();
 
-            assertThat(rangeByColumn)
-                    .containsEntry("pack", "packaging_units")
-                    .containsEntry("vendor_name", "vendor_names")
-                    .containsEntry("is_preferred_vendor", "yes_flag");
-
-            // And every one of those names is actually defined, or the dropdown resolves to #REF!.
-            rangeByColumn.values().forEach(range ->
-                    assertThat(workbook.getName(range)).as("defined name %s", range).isNotNull());
-
-            // Deliberately no dropdowns on free-text and numeric columns - section 5.2's last line.
-            assertThat(rangeByColumn.keySet())
-                    .doesNotContain("sku", "name", "description", "unit_price", "cost_price",
-                            "opening_stock", "low_stock_alert_at", "contains", "vendor_sku");
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        Map<String, String> renamed = new java.util.LinkedHashMap<>(byField(table, table.rows().get(0)));
+        renamed.put("name", "Rice (Royal Stallion)");
+        assertThat(ProductExcelService.isShippedExample(renamed)).isFalse();
     }
 
-    /** The dropdown must cover the rows the user will paste into, not just the example rows. */
     @Test
-    void dropdownsCoverTheWholeImportableRange() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
-
-        try (XSSFWorkbook workbook = open(file)) {
-            XSSFDataValidation validation = (XSSFDataValidation) workbook.getSheetAt(0).getDataValidations().stream()
-                    .filter(v -> v.getValidationConstraint().getFormula1().equals("packaging_units"))
-                    .findFirst()
-                    .orElseThrow();
-
-            assertThat(validation.getRegions().getCellRangeAddress(0).getFirstRow()).isEqualTo(1);
-            assertThat(validation.getRegions().getCellRangeAddress(0).getLastRow())
-                    .isEqualTo(ImportLimits.MAX_ROWS);
+    void theDropdownsPointAtWhatItComesInTheSuppliersAndTheCategories() {
+        byte[] template = service.generateTemplate(COMPANY);
+        try (XSSFWorkbook workbook = open(template)) {
+            XSSFSheet sheet = workbook.getSheet("Products");
+            Map<String, String> ranges = dropdownRangesByColumn(sheet, headersOf(template));
+            assertThat(ranges).containsOnlyKeys("Comes in", "Supplier", "Category");
+            assertThat(valuesOfNamedRange(workbook, ranges.get("Supplier"))).containsExactlyElementsOf(VENDORS);
+            assertThat(valuesOfNamedRange(workbook, ranges.get("Category"))).containsExactly("Drinks", "Grains");
+            assertThat(valuesOfNamedRange(workbook, ranges.get("Comes in"))).contains("Bag", "Carton", "Keg", "Bottle");
+            assertThat(workbook.isSheetHidden(workbook.getSheetIndex(LookupSheetWriter.SHEET_NAME))).isTrue();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    /**
-     * Past the cap the column is free text rather than a truncated list - an arbitrary first 200 of
-     * 900 vendors is a dropdown missing the one this user needs, which reads as "your supplier is
-     * not in the system".
-     */
     @Test
-    void aVendorListPastTheCapLeavesTheColumnAsFreeText() {
-        List<String> tooMany = IntStream.range(0, ImportLimits.VENDOR_DROPDOWN_CAP + 1)
-                .mapToObj(i -> "Supplier " + i)
-                .toList();
-
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, tooMany, false));
-
-        try (XSSFWorkbook workbook = open(file)) {
-            Map<String, String> rangeByColumn = dropdownRangesByColumn(workbook.getSheetAt(0), headersOf(file));
-            assertThat(rangeByColumn).doesNotContainKey("vendor_name");
-            // The pack dropdown is unaffected - one column losing its list must not take the
-            // others with it.
-            assertThat(rangeByColumn).containsKey("pack");
+    void aSupplierListPastTheCapLeavesTheColumnAsFreeText() {
+        List<String> many = IntStream.range(0, ImportLimits.VENDOR_DROPDOWN_CAP + 1).mapToObj(i -> "Vendor " + i).toList();
+        byte[] template = service.generateTemplate(new ProductTemplateContext(false, many, false, List.of()));
+        try (XSSFWorkbook workbook = open(template)) {
+            assertThat(dropdownRangesByColumn(workbook.getSheet("Products"), headersOf(template)))
+                    .doesNotContainKeys("Supplier", "Category");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    /** A tenant with no suppliers yet gets no vendor dropdown, and no empty one either. */
-    @Test
-    void aTenantWithNoVendorsGetsNoVendorDropdown() {
-        byte[] file = service.generateTemplate(ProductTemplateContext.of(false));
-
-        try (XSSFWorkbook workbook = open(file)) {
-            assertThat(dropdownRangesByColumn(workbook.getSheetAt(0), headersOf(file)))
-                    .doesNotContainKey("vendor_name");
-            assertThat(workbook.getName("vendor_names")).isNull();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    // --------------------------------------------------------------- comments, formats, panes ----
-
-    /**
-     * Section 7.2's replacement of the single paragraph on B1: one short comment per column, where
-     * the question is actually asked.
-     */
-    @Test
-    void everyColumnCarriesItsOwnHeaderComment() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
-
-        try (XSSFWorkbook workbook = open(file)) {
-            Row header = workbook.getSheetAt(0).getRow(0);
-            for (Cell cell : header) {
-                assertThat(cell.getCellComment())
-                        .as("comment on column %s", cell.getStringCellValue())
-                        .isNotNull();
-                assertThat(cell.getCellComment().getString().getString())
-                        .as("comment on column %s", cell.getStringCellValue())
-                        .isNotBlank();
-            }
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    /** Number formats, so a user typing 45,000 gets a number and not a string the parser has to rescue. */
     @Test
     void priceAndQuantityColumnsCarryNumberFormats() {
-        byte[] file = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false));
-
-        try (XSSFWorkbook workbook = open(file)) {
-            XSSFSheet sheet = workbook.getSheetAt(0);
-            List<String> headers = headersOf(file);
-
-            assertThat(formatOfColumn(sheet, headers.indexOf("unit_price"))).isEqualTo("#,##0.00");
-            // Optional decimals, not whole thousands: section 9.1 accepts 30.5 kegs, and a
-            // "#,##0" column would display 31 while the file stored 30.5.
-            assertThat(formatOfColumn(sheet, headers.indexOf("low_stock_alert_at"))).isEqualTo("#,##0.###");
-            // sku stays General on purpose: a number format would turn 00123 into 123.
-            assertThat(formatOfColumn(sheet, headers.indexOf("sku"))).isEqualTo("General");
+        byte[] template = service.generateTemplate(new ProductTemplateContext(true, VENDORS, false, List.of()));
+        List<String> headers = headersOf(template);
+        try (XSSFWorkbook workbook = open(template)) {
+            XSSFSheet sheet = workbook.getSheet("Products");
+            assertThat(formatOfColumn(sheet, headers.indexOf("Price you pay for one (₦)"))).isEqualTo("#,##0.00");
+            assertThat(formatOfColumn(sheet, headers.indexOf("Selling price (₦) *"))).isEqualTo("#,##0.00");
+            assertThat(formatOfColumn(sheet, headers.indexOf("How many you have now"))).isEqualTo("#,##0.###");
+            assertThat(formatOfColumn(sheet, headers.indexOf("Warn me when I have"))).isEqualTo("#,##0.###");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    @Test
-    void theHeaderRowIsFrozen() {
-        byte[] file = service.generateTemplate(ProductTemplateContext.of(false));
-
-        try (XSSFWorkbook workbook = open(file)) {
-            assertThat(workbook.getSheetAt(0).getPaneInformation().getHorizontalSplitPosition()).isEqualTo((short) 1);
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
+    private static Map<String, String> byField(SheetTable table, com.procurepal_services.stock_bridge_api.imports.io.SheetRow row) {
+        Map<String, String> reverse = new java.util.HashMap<>();
+        ProductExcelService.SHEET_HEADERS.forEach((field, header) -> reverse.put(header, field));
+        Map<String, String> values = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < table.headers().size(); i++) {
+            String field = reverse.get(table.headers().get(i));
+            if (field != null) {
+                String value = row.cell(i);
+                values.put(field, value == null ? "" : value);
+            }
         }
+        return values;
     }
 
     // ------------------------------------------ the rename, and the promise that survived it ----
@@ -358,10 +248,10 @@ class ProductExcelServiceTest {
 
         try (XSSFWorkbook workbook = open(service.exportProducts(List.of(rice)))) {
             List<String> headers = headersOf(service.exportProducts(List.of(rice)));
-            Row row = workbook.getSheetAt(0).getRow(1);
+            Row row = workbook.getSheet("Products").getRow(2);
             // Section 15: one phrase, the same shape the user types back in.
-            assertThat(row.getCell(headers.indexOf("contains")).getStringCellValue()).isEqualTo("50 kg");
-            assertThat(row.getCell(headers.indexOf("pack")).getStringCellValue()).isEqualTo("Bag");
+            assertThat(row.getCell(headers.indexOf("Size of one")).getStringCellValue()).isEqualTo("50 kg");
+            assertThat(row.getCell(headers.indexOf("Comes in")).getStringCellValue()).isEqualTo("Bag");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -483,20 +373,12 @@ class ProductExcelServiceTest {
         byte[] bytes = service.exportProducts(List.of(rice));
         List<String> headers = headersOf(bytes);
         try (XSSFWorkbook workbook = open(bytes)) {
-            Row row = workbook.getSheetAt(0).getRow(1);
-            assertThat(row.getCell(headers.indexOf("opening_stock")).getNumericCellValue()).isEqualTo(20d);
-            assertThat(row.getCell(headers.indexOf("low_stock_alert_at")).getNumericCellValue()).isEqualTo(2d);
+            Row row = workbook.getSheet("Products").getRow(2);
+            assertThat(row.getCell(headers.indexOf("How many you have now")).getNumericCellValue()).isEqualTo(20d);
+            assertThat(row.getCell(headers.indexOf("Warn me when I have")).getNumericCellValue()).isEqualTo(2d);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
-
-        // And back through the parser it is 1,000 kg again, not 50,000.
-        assertThat(service.parse(multipart("products.xlsx", bytes), false))
-                .singleElement()
-                .satisfies(row -> {
-                    assertThat(row.quantityOnHand()).isEqualTo(1_000);
-                    assertThat(row.lowStockThreshold()).isEqualTo(100);
-                });
     }
 
     /** A product with no pack exports its stock-unit figure unchanged. */
@@ -512,53 +394,16 @@ class ProductExcelServiceTest {
         byte[] bytes = service.exportProducts(List.of(bolts));
         List<String> headers = headersOf(bytes);
         try (XSSFWorkbook workbook = open(bytes)) {
-            assertThat(workbook.getSheetAt(0).getRow(1).getCell(headers.indexOf("opening_stock")).getNumericCellValue())
+            assertThat(workbook.getSheet("Products").getRow(2).getCell(headers.indexOf("How many you have now")).getNumericCellValue())
                     .isEqualTo(600d);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
     }
 
-    // ------------------------------------------------------------------------- the round trip ----
-
-    /**
-     * The template, filled in the way a user would fill it, read back by the parser that owns it.
-     * This is the assertion that the generator and the parser have not drifted - separately correct
-     * halves that disagree about a column would pass every other test in this file.
-     */
-    @Test
-    void aFilledInTemplateRoundTripsThroughItsOwnParser() {
-        byte[] template = service.generateTemplate(new ProductTemplateContext(false, VENDORS, false));
-        byte[] filled = fillIn(template, List.of(
-                Map.of("name", "Rice 50kg", "sku", "RICE-50", "pack", "Bag",
-                        "contains", "50 kg", "vendor_name", "Dangote Nigeria Plc",
-                        "vendor_sku", "DN-RICE-50", "is_preferred_vendor", "TRUE"),
-                Map.of("name", "Groundnut Oil 5L", "sku", "OIL-5L", "contains", "L")));
-
-        List<ParsedProductRow> rows = service.parse(multipart("products.xlsx", filled), false);
-
-        assertThat(rows).hasSize(2);
-        ParsedProductRow rice = rows.get(0);
-        assertThat(rice.sku()).isEqualTo("RICE-50");
-        // Section 16: the template carries no stock columns, so a filled-in template creates
-        // products with nothing on the shelf yet. Quantities arrive through the stock sheet.
-        assertThat(rice.quantityOnHand()).isZero();
-        assertThat(rice.unitOfMeasure()).isEqualTo("KG");
-        assertThat(rice.packagingUnit()).isEqualTo("BAG");
-        assertThat(rice.packagingSize()).isEqualByComparingTo("50");
-        assertThat(rice.vendorName()).isEqualTo("Dangote Nigeria Plc");
-        assertThat(rice.vendorSku()).isEqualTo("DN-RICE-50");
-        assertThat(rice.preferredVendor()).isTrue();
-        // The example rows the template ships with are skipped, not parsed - a user who forgets to
-        // delete them gets no errors for them.
-        assertThat(rows).extracting(ParsedProductRow::sku).doesNotContain("EXAMPLE-SKU-DELETE-ME-1");
-
-        ParsedProductRow oil = rows.get(1);
-        assertThat(oil.unitOfMeasure()).isEqualTo("LITER");
-        assertThat(oil.packagingUnit()).isNull();
-        assertThat(oil.vendorName()).isNull();
-        assertThat(oil.preferredVendor()).isFalse();
-    }
+    // ---------------------------------------------------------------------- the legacy parser ----
+    // The old /api/products/bulk-upload parser still reads the older headers below; the product
+    // sheet itself is read by the import page (BulkImportRoundTripIntegrationTest).
 
     /** The same content as a CSV must parse to the same rows - the format is the user's choice, not ours. */
     @Test
@@ -706,7 +551,8 @@ class ProductExcelServiceTest {
     private List<String> headersOf(byte[] file) {
         try (XSSFWorkbook workbook = open(file)) {
             List<String> headers = new ArrayList<>();
-            for (Cell cell : workbook.getSheetAt(0).getRow(0)) {
+            Sheet data = workbook.getSheet("Products");
+            for (Cell cell : (data == null ? workbook.getSheetAt(0) : data).getRow(0)) {
                 headers.add(cell.getStringCellValue());
             }
             return headers;
@@ -750,28 +596,6 @@ class ProductExcelServiceTest {
 
     private String formatOfColumn(XSSFSheet sheet, int columnIndex) {
         return sheet.getColumnStyle(columnIndex).getDataFormatString();
-    }
-
-    /** Writes data rows into a generated template, the way a user filling it in would. */
-    private byte[] fillIn(byte[] template, List<Map<String, String>> rows) {
-        try (XSSFWorkbook workbook = open(template)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            List<String> headers = headersOf(template);
-            int rowIndex = sheet.getLastRowNum() + 1;
-            for (Map<String, String> values : rows) {
-                Row row = sheet.createRow(rowIndex++);
-                for (Map.Entry<String, String> entry : values.entrySet()) {
-                    int column = headers.indexOf(entry.getKey());
-                    assertThat(column).as("column %s exists in the template", entry.getKey()).isNotNegative();
-                    row.createCell(column).setCellValue(entry.getValue());
-                }
-            }
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            workbook.write(out);
-            return out.toByteArray();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 
     private XSSFWorkbook open(byte[] file) {

@@ -17,6 +17,12 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice(assignableTypes = ProductController.class)
 public class ProductManagementExceptionHandler {
 
+    @ExceptionHandler(com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryException.class)
+    public ResponseEntity<ApiError> handleCategory(
+            com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryException ex) {
+        return ResponseEntity.status(ex.status()).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(ProductNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(ProductNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));

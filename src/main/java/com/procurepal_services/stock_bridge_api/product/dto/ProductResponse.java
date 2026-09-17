@@ -90,7 +90,10 @@ public record ProductResponse(
         // the rest living on the Vendors tab" - which is exactly the ambiguity a product page
         // surfaced (the Apple/Carrot review, 2026-09-06). False, never null, for a product with
         // no pack of its own: the field the caller would annotate with it does not render either.
-        boolean hasMultiplePacks) {
+        boolean hasMultiplePacks,
+        // The company's own category (V32), or null when uncategorised.
+        UUID categoryId,
+        String categoryName) {
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -148,6 +151,8 @@ public record ProductResponse(
                 product.getCreatedAt(),
                 product.getUpdatedAt(),
                 warnings,
-                hasMultiplePacks);
+                hasMultiplePacks,
+                product.getCompanyCategory() == null ? null : product.getCompanyCategory().getId(),
+                product.getCompanyCategory() == null ? null : product.getCompanyCategory().getName());
     }
 }
