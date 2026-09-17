@@ -77,9 +77,14 @@ class BulkImportRoundTripIntegrationTest {
      * template and is the property this whole round trip depends on.
      */
     private static final List<String> CATALOG_TEMPLATE_HEADERS = List.of(
+            // PACK_ENTRY_REDESIGN.md section 14: the counting trio in SENTENCE order, so a row
+            // reads left to right as "Bottle contains 750 ml". `size` was deleted - the pack and
+            // the number beside it already say how big one is, and two columns holding one fact
+            // is worse than none.
+            // Section 16: products only - opening_stock and cost_price live on the stock sheet.
             "name", "sku", "description",
-            "stock_unit", "pack", "units_per_pack",
-            "opening_stock", "low_stock_alert_at", "cost_price",
+            "pack", "contains",
+            "low_stock_alert_at",
             "vendor_name", "vendor_sku", "is_preferred_vendor");
 
     /** UNIT_UX_CONTRACT.md section 5.2's STOCK_IN column set, in order. */
@@ -125,17 +130,21 @@ class BulkImportRoundTripIntegrationTest {
             // Labels, never codes - UNIT_UX_CONTRACT.md section 7, non-negotiable 4. The example
             // row is the one place a user learns what to type into these columns, so a cell
             // reading "KG" would teach them our vocabulary instead of their own.
-            assertThat(cell(sheet, 1, "stock_unit", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Milliliter (ml)");
-            assertThat(cell(sheet, 1, "pack", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Keg");
-            // The example teaches section 9.1: 30 beside a Keg of 50 ml is thirty kegs. A row
-            // reading 1,000 beside a pack of 50 - which is what it used to say - teaches the
-            // opposite, and the opposite is what a user actually got wrong.
-            assertThat(cell(sheet, 1, "units_per_pack", CATALOG_TEMPLATE_HEADERS)).isEqualTo("50");
-            assertThat(cell(sheet, 1, "opening_stock", CATALOG_TEMPLATE_HEADERS)).isEqualTo("30");
+            // Substance, not container - see ProductExcelService.exampleRowOne for why a stock
+            // unit must survive the product arriving in a different container tomorrow.
+            // Section 15: a pack of twelve 750 ml bottles, the way the invoice says it.
+            assertThat(cell(sheet, 1, "pack", CATALOG_TEMPLATE_HEADERS)).isEqualTo("Pack");
+            assertThat(cell(sheet, 1, "contains", CATALOG_TEMPLATE_HEADERS)).isEqualTo("12 x 750 ml");
             assertThat(cell(sheet, 1, "vendor_name", CATALOG_TEMPLATE_HEADERS))
                     .as("the example demonstrates the vendor columns with a supplier this tenant actually has")
                     .isEqualTo("Dangote Nigeria Plc");
-            assertThat(sheet.getLastRowNum()).as("headers plus two examples, and nothing else").isEqualTo(2);
+            // Three examples now - section 8.7 added the rice row, the case where a measure
+            // genuinely IS the stock unit. Row one alone would teach "never put a measure in
+            // stock_unit", which is false and sends every rice seller the other way.
+            assertThat(cell(sheet, 2, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
+            assertThat(cell(sheet, 2, "contains", CATALOG_TEMPLATE_HEADERS)).isEqualTo("50 kg");
+            assertThat(cell(sheet, 3, "sku", CATALOG_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
+            assertThat(sheet.getLastRowNum()).as("headers plus three examples, and nothing else").isEqualTo(3);
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -154,10 +163,9 @@ class BulkImportRoundTripIntegrationTest {
         TenantLoginResponse tenant = signup("Catalog Round Trip Co");
 
         byte[] filled = fill(productTemplate(tenant), CATALOG_TEMPLATE_HEADERS, List.of(
-                row("name", "Rice 50kg", "sku", "RT-1", "cost_price", "840",
-                        "opening_stock", "20", "stock_unit", "KG"),
-                row("name", "Beans 100kg", "sku", "RT-2", "cost_price", "52000", "stock_unit", "KGX"),
-                row("name", "Salt 25kg", "sku", "RT-3", "cost_price", "12000", "stock_unit", "KG",
+                row("name", "Rice 50kg", "sku", "RT-1", "pack", "Bag", "contains", "50 kg"),
+                row("name", "Beans 100kg", "sku", "RT-2", "contains", "KGX"),
+                row("name", "Salt 25kg", "sku", "RT-3", "contains", "kg",
                         "vendor_name", "Brand New Supplier Ltd")));
 
         ImportSessionResponse session = upload(tenant, filled, "products.xlsx", "PRODUCT_CATALOG", "CREATE_ONLY");
@@ -168,7 +176,7 @@ class BulkImportRoundTripIntegrationTest {
         assertThat(session.columnMapping())
                 .as("our own template maps to itself, so the mapping step never appears")
                 .containsEntry("sku", "sku")
-                .containsEntry("stock_unit", "stock_unit");
+                .containsEntry("contains", "contains");
         assertThat(session.needsMapping()).isFalse();
         assertThat(session.status().name()).isEqualTo("NEEDS_REVIEW");
 
@@ -176,11 +184,12 @@ class BulkImportRoundTripIntegrationTest {
         ImportRowResponse broken = rows(tenant, session.id(), "ERROR").stream()
                 .filter(row -> "RT-2".equals(String.valueOf(row.raw().get("sku"))))
                 .findFirst()
-                .orElseThrow(() -> new AssertionError("RT-2 should have been an error on stock_unit"));
+                .orElseThrow(() -> new AssertionError("RT-2 should have been an error on contains"));
+        assertThat(broken.errors()).anySatisfy(error -> assertThat(error.column()).isEqualTo("contains"));
         assertThat(broken.raw())
                 .as("raw stays populated on an error row so the grid shows what they typed, not an em-dash")
-                .containsEntry("stock_unit", "KGX");
-        ImportRowResponse repaired = patchRow(tenant, session.id(), broken.id(), Map.of("stock_unit", "KG"));
+                .containsEntry("contains", "KGX");
+        ImportRowResponse repaired = patchRow(tenant, session.id(), broken.id(), Map.of("contains", "kg"));
         assertThat(repaired.status().name())
                 .as("PATCH returns the REVALIDATED row - the grid does not refetch")
                 .isEqualTo("VALID");
@@ -224,7 +233,13 @@ class BulkImportRoundTripIntegrationTest {
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.createdCount()).isEqualTo(3);
         assertThat(result.vendorsCreated()).isEqualTo(1);
-        assertThat(result.movementsCreated()).as("only RT-1 carried an opening balance").isEqualTo(1);
+        // Section 16: a product sheet records no stock - that is the stock sheet's job, next.
+        assertThat(result.movementsCreated()).as("the product sheet creates products, not stock").isZero();
+        assertThat(result.kind()).as("so the result screen can hand on to the stock sheet").isEqualTo(
+                com.procurepal_services.stock_bridge_api.entity.ImportKind.PRODUCT_CATALOG);
+        assertThat(productBySku(tenant, "RT-1").packagingSize())
+                .as("\"50 kg\" beside Bag is a 50 kg bag")
+                .isEqualByComparingTo("50");
         assertThat(result.undoable()).isTrue();
         assertThat(productBySku(tenant, "RT-2").unitOfMeasure())
                 .as("the repair, not the file, is what got imported")

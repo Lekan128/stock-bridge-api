@@ -1035,7 +1035,8 @@ public class ImportSessionService {
                 session.getStatus() == ImportStatus.COMMITTED && !undone,
                 undone ? "You have already undone this import." : null,
                 "/api/imports/" + session.getId() + "/report",
-                targetUrlFor(session));
+                targetUrlFor(session),
+                session.getKind());
     }
 
     /**

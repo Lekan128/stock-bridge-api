@@ -156,7 +156,7 @@ public class ImportColumnMapper {
         // note in this class's javadoc for why that is not the same answer as on a stock-in sheet.
         put(aliases, ImportFields.STOCK_UNIT, "unit_of_measure", "uom", "unit", "units", "measure", "base_unit", "unit_measure", "sold_in");
         put(aliases, ImportFields.PACK, "packaging_unit", "packaging", "pack_type", "package", "package_unit", "pack_unit");
-        put(aliases, ImportFields.UNITS_PER_PACK, "packaging_size", "pack_size", "package_size", "size", "qty_per_pack");
+        put(aliases, ImportFields.UNITS_PER_PACK, "units_per_pack", "packaging_size", "pack_size", "package_size", "size", "qty_per_pack", "holds", "contents");
         put(aliases, ImportFields.VENDOR_NAME, "supplier", "vendor", "supplier_name", "bought_from", "source", "distributor");
         put(aliases, ImportFields.VENDOR_SKU, "supplier_code", "vendor_code", "supplier_sku", "supplier_item_code", "their_code");
         put(aliases, ImportFields.IS_PREFERRED_VENDOR, "preferred", "main_supplier", "preferred_supplier", "primary_supplier", "default_supplier");
@@ -180,10 +180,13 @@ public class ImportColumnMapper {
         // reported as a column we did not understand, which is both untrue and silent about the
         // thing the user needs to hear: that the pack now comes from their product setup.
         //
-        // The key itself is now "units_per_pack" (section 9.4), so "packaging_size" - the header
+        // The key itself is now "contains" (PACK_ENTRY_REDESIGN.md section 14), so both
+        // "units_per_pack" and "packaging_size" - the two headers the sheet has actually carried
+        // - have to be listed as aliases here rather than matching by identity as they used to.
+        // Old note, still true of "packaging_size": it was the header
         // the sheet actually carried before section 5.2 removed the column - has to be listed as
         // an alias here rather than matching by identity as it used to.
-        put(aliases, ImportFields.UNITS_PER_PACK, "packaging_size", "pack_size", "package_size", "size", "qty_per_pack");
+        put(aliases, ImportFields.UNITS_PER_PACK, "units_per_pack", "packaging_size", "pack_size", "package_size", "size", "qty_per_pack", "holds", "contents");
         put(aliases, ImportFields.RECEIVED_DATE, "date", "received", "delivery_date", "date_received", "invoice_date", "receipt_date");
         put(aliases, ImportFields.WAYBILL_OR_INVOICE_NO,
                 "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "ref", "doc_no");

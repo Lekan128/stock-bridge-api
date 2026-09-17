@@ -122,8 +122,27 @@ class UnitOfMeasureAliasTest {
         table.put("pack", UnitOfMeasure.PACK);
         table.put("packs", UnitOfMeasure.PACK);
         table.put("pkt", UnitOfMeasure.PACK);
-        table.put("sachet", UnitOfMeasure.PACK);
-        table.put("sachets", UnitOfMeasure.PACK);
+        // PACK_ENTRY_REDESIGN.md section 4 made SACHET its own BASE constant, so a sachet is now
+        // a thing you HAND OVER rather than a synonym for the pack it arrives in. It still
+        // resolves in a packaging_unit column - a COUNT unit whose declared role is BASE may serve
+        // as a pack - so nothing a user could type stops working; it just lands on the constant
+        // that means what the word means. Leaving it on PACK was also a build failure:
+        // UnitOfMeasureAliases.register throws on a duplicate and SACHET's own label derives the
+        // same key.
+        table.put("sachet", UnitOfMeasure.SACHET);
+        table.put("sachets", UnitOfMeasure.SACHET);
+        // The other three sealed retail items from that section. "can" is the word half of Nigeria
+        // uses for a tin of tomatoes or malt; it cannot collide with KEG's "jerry can", which
+        // normalizes to a distinct two-word key.
+        table.put("bottle", UnitOfMeasure.BOTTLE);
+        table.put("bottles", UnitOfMeasure.BOTTLE);
+        table.put("btl", UnitOfMeasure.BOTTLE);
+        table.put("tin", UnitOfMeasure.TIN);
+        table.put("tins", UnitOfMeasure.TIN);
+        table.put("can", UnitOfMeasure.TIN);
+        table.put("jerry can", UnitOfMeasure.KEG);
+        table.put("tube", UnitOfMeasure.TUBE);
+        table.put("tubes", UnitOfMeasure.TUBE);
         table.put("doz", UnitOfMeasure.DOZEN);
         table.put("dozen", UnitOfMeasure.DOZEN);
         table.put("dozens", UnitOfMeasure.DOZEN);

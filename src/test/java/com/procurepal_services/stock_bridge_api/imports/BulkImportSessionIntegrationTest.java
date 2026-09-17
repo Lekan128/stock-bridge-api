@@ -68,7 +68,7 @@ class BulkImportSessionIntegrationTest {
      * the point being made is about the current sheet.
      */
     private static final String CATALOG_HEADERS_TODAY =
-            "name,sku,description,stock_unit,pack,units_per_pack,opening_stock,low_stock_alert_at,"
+            "name,sku,description,pack,contains,opening_stock,low_stock_alert_at,"
                     + "cost_price,vendor_name,vendor_sku,is_preferred_vendor\n";
 
     private static final String STOCK_IN_HEADERS =
@@ -1024,8 +1024,8 @@ class BulkImportSessionIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant,
                 CATALOG_HEADERS_TODAY
-                        + "Palm Oil,PACKQ-1,,Milliliter (ml),Keg,50,30,5,475,,,\n"
-                        + "Bolts,PACKQ-2,,Piece,,,600,50,3,,,\n",
+                        + "Palm Oil,PACKQ-1,,Keg,50 ml,30,5,475,,,\n"
+                        + "Bolts,PACKQ-2,,,piece,600,50,3,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
@@ -1062,7 +1062,7 @@ class BulkImportSessionIntegrationTest {
         TenantLoginResponse tenant = signup("Half Keg Co");
         ImportSessionResponse session = upload(
                 tenant,
-                CATALOG_HEADERS_TODAY + "Palm Oil,HALF-1,,Milliliter (ml),Keg,50,30.5,,,,,\n",
+                CATALOG_HEADERS_TODAY + "Palm Oil,HALF-1,,Keg,50 ml,30.5,,,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
@@ -1081,7 +1081,7 @@ class BulkImportSessionIntegrationTest {
         TenantLoginResponse tenant = signup("Rounds To Zero Co");
         ImportSessionResponse session = upload(
                 tenant,
-                CATALOG_HEADERS_TODAY + "Gold Dust,ZERO-1,,Kilogram (kg),,,0.4,,,,,\n",
+                CATALOG_HEADERS_TODAY + "Gold Dust,ZERO-1,,,kg,0.4,,,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
@@ -1103,8 +1103,8 @@ class BulkImportSessionIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant,
                 CATALOG_HEADERS_TODAY
-                        + "Palm Oil,ECHO-1,,Milliliter (ml),Keg,50,30,,,,,\n"
-                        + "Bolts,ECHO-2,,Piece,,,600,,,,,\n",
+                        + "Palm Oil,ECHO-1,,Keg,50 ml,30,,,,,\n"
+                        + "Bolts,ECHO-2,,,piece,600,,,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
@@ -1267,7 +1267,7 @@ class BulkImportSessionIntegrationTest {
         assertThat(firstRow(tenant, session, "WARNING").warnings()).anySatisfy(warning -> {
             // The stock-in sheet's ignored column keeps its old HEADER ("packaging_size") but its
             // field key moved with section 9.4, and the grid addresses cells by field key.
-            assertThat(warning.column()).isEqualTo("units_per_pack");
+            assertThat(warning.column()).isEqualTo("contains");
             assertThat(warning.message()).contains("take the pack from your product setup");
         });
 
@@ -1301,7 +1301,7 @@ class BulkImportSessionIntegrationTest {
                 .containsEntry("low_stock_threshold", "low_stock_alert_at")
                 .containsEntry("unit_of_measure", "stock_unit")
                 .containsEntry("packaging_unit", "pack")
-                .containsEntry("packaging_size", "units_per_pack");
+                .containsEntry("packaging_size", "contains");
         commit(tenant, catalog.id());
 
         ImportSessionResponse stockIn =

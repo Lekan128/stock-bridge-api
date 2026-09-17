@@ -69,6 +69,22 @@ public record RowContext(
         return raw != null ? raw : text(field);
     }
 
+    /**
+     * True when the uploaded FILE has a column mapped to this field at all, whatever this row's
+     * cell holds. The question a handler asks to tell an older sheet's shape from a newer one: a
+     * row whose unit cell is blank is still on a sheet that HAS a unit column.
+     *
+     * <p>Deliberately not {@link #has}: that reads the effective input, which overlays values a
+     * previous validation pass wrote back. A handler that derives one field from another
+     * (PACK_ENTRY_REDESIGN.md section 15 writes the stock unit out of {@code contains}) would see
+     * its own output on the next pass and change its mind about the file it is reading. The
+     * column mapping never changes between passes.
+     */
+    public boolean fileHasColumn(String field) {
+        Map<String, String> mapping = session.getColumnMapping();
+        return mapping != null && mapping.containsValue(field);
+    }
+
     public boolean has(String field) {
         return text(field) != null;
     }

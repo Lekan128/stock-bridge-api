@@ -22,6 +22,7 @@ public final class ImportFields {
     public static final String NAME = "name";
     public static final String SKU = "sku";
     public static final String DESCRIPTION = "description";
+
     public static final String UNIT_PRICE = "unit_price";
     public static final String COST_PRICE = "cost_price";
 
@@ -79,11 +80,22 @@ public final class ImportFields {
     public static final String PACK = "pack";
 
     /**
-     * Renamed from {@code packaging_size} - UNIT_UX_CONTRACT.md section 9.4. Section 1: when a
-     * number must be entered for {@code packagingSize} alone, it is called "Units per pack" -
-     * never "pack size", which never says a size OF what.
+     * Respelled to {@code contains} by PACK_ENTRY_REDESIGN.md section 14. Was
+     * {@code units_per_pack}, and {@code packaging_size} before that; both stay permanent read
+     * aliases in {@link ImportColumnMapper}.
+     *
+     * <h2>Why a third spelling</h2>
+     * "Units per pack" was an improvement on "pack size" (which never said a size OF what) and
+     * still collected the wrong number, because it names a RATIO and the reader answers with a
+     * SIZE. Section 14's fix is not another noun but a sentence: the three counting columns are
+     * now ordered {@code pack}, {@code contains}, {@code stock_unit} so a row reads left to
+     * right as <b>"Bag contains 50 kg"</b>. In that sentence this column is the verb's object,
+     * and "contains" is the only word that fits it.
+     *
+     * <p>The identifier stays {@code UNITS_PER_PACK} because renaming it would ripple through
+     * every module for no behavioural gain - section 9.4 set that precedent and it holds here.
      */
-    public static final String UNITS_PER_PACK = "units_per_pack";
+    public static final String UNITS_PER_PACK = "contains";
 
     /**
      * The identifier {@code StockInRowHandler} reads this key by, kept pointing at the same

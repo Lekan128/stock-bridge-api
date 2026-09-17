@@ -317,6 +317,55 @@ class UnitOptionsTest {
                         + "\"isStockUnit\":false,\"isDefault\":true,\"isPack\":true}");
     }
 
+    /**
+     * The headline case of PACK_ENTRY_REDESIGN.md, as a unit set: water counted in MILLILITRES,
+     * arriving as a 750 ml bottle.
+     *
+     * <h2>Why the stock unit is ml and not "Bottle"</h2>
+     * Section 4, as corrected. A stock unit must be invariant across the containers a product
+     * arrives in: the same water bought as a 750 ml bottle today and a 2 L keg tomorrow is one
+     * product with one balance. Making BOTTLE the stock unit would strand the user - {@code
+     * unitOfMeasure} is immutable once stock moves, so tomorrow's keg would need a second product
+     * for the same water.
+     *
+     * <p>Both containers therefore sit on the ml product as PACKS, and the balance stays
+     * comparable across them. That is what {@code ProductVendorPack} exists for.
+     */
+    @Test
+    void aContainerIsAPackOnAMeasuredProductNeverTheStockUnitItself() {
+        List<UnitOption> bottled = UnitOptions.forProduct("ML", "BOTTLE", new BigDecimal("750"));
+        assertThat(bottled).extracting(UnitOption::label).containsExactly("ml", "Bottle of 750 ml", "L");
+        assertThat(bottled.get(1).factorToStockUnit()).isEqualByComparingTo("750");
+        assertThat(bottled.get(1).isDefault())
+                .as("the pack is what a form preselects - section 2.1")
+                .isTrue();
+
+        // Tomorrow's keg: same stock unit, same balance, a different container.
+        List<UnitOption> kegged = UnitOptions.forProduct("ML", "KEG", new BigDecimal("2000"));
+        assertThat(kegged).extracting(UnitOption::label).containsExactly("ml", "Keg of 2,000 ml", "L");
+        assertThat(kegged.get(1).factorToStockUnit()).isEqualByComparingTo("2000");
+    }
+
+    /**
+     * The four sealed-retail containers are PACKAGING, so they never widen the stock-unit picker
+     * and never appear as an alternative way to COUNT a product.
+     */
+    @Test
+    void theSealedRetailContainersArePacksAndNeverStockUnits() {
+        assertThat(UnitOfMeasure.baseUnits())
+                .as("a container word is never offered as a stock unit")
+                .doesNotContain(UnitOfMeasure.BOTTLE, UnitOfMeasure.SACHET, UnitOfMeasure.TIN, UnitOfMeasure.TUBE);
+        assertThat(UnitOfMeasure.packagingUnits())
+                .contains(UnitOfMeasure.BOTTLE, UnitOfMeasure.SACHET, UnitOfMeasure.TIN, UnitOfMeasure.TUBE);
+
+        // And they carry no conversion factor, so step 4 can never offer one as a way of counting
+        // another - "count this water in tins" is not a conversion.
+        assertThat(UnitOfMeasure.BOTTLE.factorToCanonical()).isNull();
+        assertThat(UnitOptions.forProduct("PIECE", null, null))
+                .extracting(UnitOption::code)
+                .containsExactly("PIECE");
+    }
+
     @Test
     void packLabelsAreWrittenTheWayAPersonWritesThem() {
         // Section 1 locks a pack's rendering to one phrase, and 50.00 as stored in a

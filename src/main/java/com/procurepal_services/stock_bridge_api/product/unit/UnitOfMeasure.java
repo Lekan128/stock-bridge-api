@@ -63,6 +63,33 @@ public enum UnitOfMeasure {
     BUNDLE("BUNDLE", "Bundle", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
     DRUM("DRUM", "Drum", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
     KEG("KEG", "Keg", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
+
+    /**
+     * The sealed retail containers - PACK_ENTRY_REDESIGN.md section 4, as corrected.
+     *
+     * <h2>PACKAGING, emphatically not BASE</h2>
+     * An earlier revision of that document declared these BASE, so that "Bottle" could be a
+     * product's STOCK unit. That was wrong, and the reason is worth keeping: <b>a product's stock
+     * unit has to be invariant across the containers it arrives in.</b> The same water bought as
+     * a 750 ml bottle today and a 2 L keg tomorrow is one product with one balance; if the stock
+     * unit were BOTTLE, tomorrow's keg would need a different stock unit, and
+     * {@code unitOfMeasure} is immutable once any movement exists. The user would be forced to
+     * create a second product for the same water.
+     *
+     * <p>So the substance is the stock unit (ML here) and every container is a PACK sized in it -
+     * "Bottle of 750 ml", "Keg of 2,000 ml" - which is what {@code ProductVendorPack} and
+     * MULTI_PACK_PER_VENDOR_DESIGN.md were built for: many containers, one comparable balance.
+     *
+     * <h2>What they actually fix</h2>
+     * The gap was never that "Bottle" could not be a stock unit; it was that <b>Bottle was not a
+     * container word at all</b>. Before these four, a 750 ml bottle could only be described as a
+     * Pack, a Box or a Keg - so the packaging picker could not say what was in the user's hand,
+     * and "Bottle of 750 ml" was inexpressible. That is what sent the 750 into the wrong column.
+     */
+    BOTTLE("BOTTLE", "Bottle", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
+    SACHET("SACHET", "Sachet", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
+    TIN("TIN", "Tin", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
+    TUBE("TUBE", "Tube", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
     PALLET("PALLET", "Pallet", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
     SET("SET", "Set", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),
     PAIR("PAIR", "Pair", UnitOfMeasureCategory.COUNT, UnitOfMeasureRole.PACKAGING),

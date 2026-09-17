@@ -10,6 +10,8 @@ import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReadExcept
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReader;
 import com.procurepal_services.stock_bridge_api.imports.io.WorkbookBuilder;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
+import com.procurepal_services.stock_bridge_api.product.unit.PackContents;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
@@ -149,8 +151,16 @@ public class ProductExcelService {
      * field keys, in the same order, because a field key IS a column header.
      */
     static final List<String> ALL_HEADER_NAMES = List.of(
+            // PACK_ENTRY_REDESIGN.md section 14: the counting trio in SENTENCE order, so a row
+            // reads left to right as "Bag contains 50 kg" instead of "kg, Bag, 50" - which the
+            // reader had to reassemble before it meant anything. `size` is gone; the pack and the
+            // number beside it already state how big one is.
+            // PACK_ENTRY_REDESIGN.md section 15: TWO counting columns, not three. `stock_unit`
+            // is gone from the sheet because it was already inside the answer to `contains` -
+            // somebody who writes "50 kg" has said the unit is kg, and a separate column asked
+            // the same question a second time in the most abstract words on the row.
             "name", "sku", "description",
-            "stock_unit", "pack", "units_per_pack",
+            "pack", "contains",
             "opening_stock", "low_stock_alert_at", "cost_price", "unit_price",
             "vendor_name", "vendor_sku", "is_preferred_vendor");
 
@@ -178,15 +188,17 @@ public class ProductExcelService {
             "low_stock_threshold", "low_stock_alert_at",
             "unit_of_measure", "stock_unit",
             "packaging_unit", "pack",
-            "packaging_size", "units_per_pack");
+            "packaging_size", "contains",
+            // PACK_ENTRY_REDESIGN.md section 14 - the spelling this sheet carried between
+            // UNIT_UX_CONTRACT.md section 9.4 and section 14. Accepted on read forever.
+            "units_per_pack", "contains");
 
     private static final Map<String, Integer> COLUMN_WIDTHS_CHARS_BY_HEADER = Map.ofEntries(
             Map.entry("name", 28),
             Map.entry("sku", 18),
             Map.entry("description", 42),
-            Map.entry("stock_unit", 18),
             Map.entry("pack", 16),
-            Map.entry("units_per_pack", 16),
+            Map.entry("contains", 22),
             Map.entry("opening_stock", 18),
             Map.entry("low_stock_alert_at", 22),
             Map.entry("cost_price", 14),
@@ -221,12 +233,11 @@ public class ProductExcelService {
             Map.entry("name", "What you call this product. Required."),
             Map.entry("sku", "Your own code for this product - it must be unique in your catalog. Required."),
             Map.entry("description", "Optional. Anything you want on the product page."),
-            Map.entry("stock_unit", "What you count this product in - Kilogram, Milliliter, Piece. Everything we store for it is counted this way. Pick from the list."),
-            Map.entry("pack", "Optional. The container you buy and sell it by - Bag, Keg, Carton. Leave it blank if you sell it loose."),
-            Map.entry("units_per_pack", "How much is in one pack. 50, beside Milliliter and Keg, means a 50 ml keg. Required once you fill in Pack."),
-            Map.entry("opening_stock", "How much you have right now, counted in PACKS when this row has one - 30 beside Keg means 30 kegs, not 30 ml. No pack? Then it is 30 ml. Half-packs are fine: 30.5."),
-            Map.entry("low_stock_alert_at", "Optional. Tell us when to warn you that stock is running low. Counted the same way as opening stock - in kegs if this row has a pack."),
-            Map.entry("cost_price", "What you pay for ONE of what the opening stock counts - one keg if this row has a pack, one ml if it does not. Optional. If the row also has an opening stock, this becomes that stock's cost."),
+            Map.entry("pack", "What it comes in - Bag, Bottle, Carton, Keg. Leave blank if you buy it loose by weight or count."),
+            Map.entry("contains", "What is inside ONE of them, with the unit. A 50 kg bag: \u201c50 kg\u201d. A pack of twelve 750 ml bottles: \u201c12 x 750 ml\u201d - we do the multiplying. Bought loose? Just the unit: \u201ckg\u201d."),
+            Map.entry("opening_stock", "How much you have right now, counted in PACKS when this row has one - 30 beside Pack means 30 packs, not 30 bottles. No pack? Then it is 30 of your Stock unit. Half-packs are fine: 30.5."),
+            Map.entry("low_stock_alert_at", "Optional. Warn me when stock falls to this many. Counted in packs if this row has a pack - 5 beside Bag means 5 bags."),
+            Map.entry("cost_price", "What you pay for ONE of what the opening stock counts - one pack if this row has a pack, one bottle/kg if it does not. Optional. If the row also has an opening stock, this becomes that stock's cost."),
             Map.entry("vendor_name", "Optional. Who you buy this from. Pick from your suppliers, or type a new name and we will ask about it."),
             Map.entry("vendor_sku", "Optional. That supplier's own code for this product, if it differs from yours."),
             Map.entry("is_preferred_vendor", "Optional. Type TRUE if this is your main supplier for the product. Leave blank otherwise."));
@@ -249,7 +260,6 @@ public class ProductExcelService {
     public static final String EXAMPLE_NAME_MARKER_PREFIX = "EXAMPLE-DELETE-ME";
 
     /** Defined names on the hidden {@code _lookups} sheet - see {@link LookupSheetWriter}. */
-    private static final String BASE_UNITS_RANGE = "base_units";
 
     private static final String PACKAGING_UNITS_RANGE = "packaging_units";
 
@@ -277,8 +287,30 @@ public class ProductExcelService {
      * tenant has automatic SKU generation on: the server generates it, so a column the user
      * cannot usefully fill in is worse than no column - see {@code ProductSkuSettings}.
      */
+    /**
+     * Columns the downloadable PRODUCT template no longer carries - PACK_ENTRY_REDESIGN.md
+     * section 16.
+     *
+     * <h2>Products first, stock second</h2>
+     * The buyer's report: users were still confused by a product upload that also asked how much
+     * they had and what it cost. Those are two jobs - "what do we sell" and "what is on the
+     * shelf" - and the template was asking both at once, in one row, where the second one's
+     * meaning depended on the first (opening stock counted packs only if the row declared one).
+     * Onboarding now does them in order: this sheet creates the products, and the stock sheet -
+     * which arrives pre-filled with exactly those products - records the quantities and costs.
+     * Most users spend their time on the second job anyway.
+     *
+     * <h2>Template only - the parser and the export are untouched</h2>
+     * Only {@link #headerNamesFor} filters these, and it is used only to build the template. A
+     * file that still carries them - every template issued before section 16, and every export,
+     * which shows what is on hand - imports exactly as it always did. Nothing is dropped from a
+     * file that states it; the template just stops asking.
+     */
+    static final Set<String> STOCK_COLUMNS = Set.of("opening_stock", "cost_price");
+
     public List<String> headerNamesFor(boolean isSeller, boolean skuAutoGenerated) {
         return ALL_HEADER_NAMES.stream()
+                .filter(h -> !STOCK_COLUMNS.contains(h))
                 .filter(h -> isSeller || !h.equals("unit_price"))
                 .filter(h -> !skuAutoGenerated || !h.equals("sku"))
                 .toList();
@@ -328,13 +360,14 @@ public class ProductExcelService {
             List<String> vendorNames = context.vendorDropdownNames();
             writeExampleRow(builder, 1, headers, exampleRowOne(vendorNames, context.skuAutoGenerated()));
             writeExampleRow(builder, 2, headers, exampleRowTwo(context.skuAutoGenerated()));
+            writeExampleRow(builder, 3, headers, exampleRowThree(context.skuAutoGenerated()));
 
             LookupSheetWriter lookups = new LookupSheetWriter(builder.workbook());
-            addDropdown(builder, headers, "stock_unit",
-                    lookups.addList(BASE_UNITS_RANGE, labelsOf(UnitOfMeasure.baseUnits())),
-                    "Stock unit",
-                    "Pick a unit from the list, or type one - we understand kg, kilo, bags, ctn and most other "
-                            + "spellings. If we cannot work it out we will ask you after you upload.");
+            // No dropdown on `contains` - PACK_ENTRY_REDESIGN.md section 15. Its value is a
+            // number and a unit together ("50 kg", "12 x 750 ml"), and the set of those is
+            // unbounded, so there is no list to put behind a named range. The unit half is
+            // resolved by the same forgiving alias table the dropdown was only ever an
+            // affordance for, and anything unreadable is asked about in the review grid.
             // The opening_stock_counted_in dropdown is gone with its column - section 9.1. It
             // asked which unit the number beside it was in; the row now answers that by itself,
             // and a dropdown offering all ~30 units next to a number whose unit is already
@@ -398,11 +431,12 @@ public class ProductExcelService {
                 // so a cell that reads "KG" on one and "Kilogram (kg)" on the other would be two
                 // vocabularies in one workflow. Round-trips exactly: fromCodeOrLabel resolves the
                 // display label back to the same constant.
-                cell(row, "stock_unit").setCellValue(unitLabelOrBlank(product.getUnitOfMeasure()));
                 cell(row, "pack").setCellValue(unitLabelOrBlank(product.getPackagingUnit()));
-                if (product.getPackagingSize() != null) {
-                    cell(row, "units_per_pack").setCellValue(product.getPackagingSize().doubleValue());
-                }
+                // One phrase, the same shape the user types - PackContents.format. Never the
+                // "12 x 750" form: only the product is stored, so reconstructing the factors
+                // would invent a fact about their packaging.
+                cell(row, "contains")
+                        .setCellValue(PackContents.format(product.getPackagingSize(), product.getUnitOfMeasure()));
 
                 // Both quantities are exported in the terms the column is now READ in - packs
                 // when the product has one (section 9.1), stock units when it does not. This is
@@ -634,24 +668,54 @@ public class ProductExcelService {
         // of each is tracked from the raw cell (before validation), not from the resolved
         // value, so an invalid code in one column doesn't ALSO trigger a misleading "requires"
         // error against another column that was in fact supplied correctly.
+        // PACK_ENTRY_REDESIGN.md section 15: the stock unit and the pack size come from ONE cell.
+        // "50 kg" says both; "12 x 750 ml" says both and does the multiplying.
+        //
+        // The SHAPE is decided by whether the file carries a stock-unit column of its own, not by
+        // whether `contains` happens to parse. A pre-section-15 sheet has both columns and a bare
+        // number in the size one; a section-15 sheet has no unit column and a phrase. Deciding on
+        // the column makes each file unambiguous, where "try the phrase, fall back" would read a
+        // legacy "50" as an unreadable phrase and error on a file that is perfectly fine.
+        String containsHeader = headerFor(table, "contains");
+        String rawContains = value(table, row, containsHeader);
         String stockUnitHeader = headerFor(table, "stock_unit");
         String rawUnitOfMeasure = value(table, row, stockUnitHeader);
-        boolean unitOfMeasureProvided = rawUnitOfMeasure != null;
+
         String unitOfMeasure = null;
-        if (unitOfMeasureProvided) {
-            // fromCodeOrLabel, not fromCode: the dropdown is an affordance and a large share of
-            // these cells are typed, so "kg", "Kilogram (kg)", "kilos" and "KGS" all have to land
-            // on KG here or they become error rows on values that were never actually wrong.
-            Optional<UnitOfMeasure> resolved =
-                    UnitOfMeasure.fromCodeOrLabel(rawUnitOfMeasure, UnitOfMeasureRole.BASE);
+        BigDecimal packagingSize = null;
+        boolean unitOfMeasureProvided = false;
+        boolean packagingSizeProvided = false;
+
+        if (table.hasColumn(stockUnitHeader)) {
+            // The column, not the cell: an older sheet with this row's unit left blank is still an
+            // older sheet, and its size cell still holds a bare number.
+            unitOfMeasureProvided = rawUnitOfMeasure != null;
+            Optional<UnitOfMeasure> resolved = rawUnitOfMeasure == null
+                    ? Optional.empty()
+                    : UnitOfMeasure.fromCodeOrLabel(rawUnitOfMeasure, UnitOfMeasureRole.BASE);
             if (resolved.isPresent()) {
                 unitOfMeasure = resolved.get().code();
-            } else {
+            } else if (rawUnitOfMeasure != null) {
                 errors.add(new ProductRowError(
                         excelRow,
                         stockUnitHeader,
                         "'" + rawUnitOfMeasure + "' is not a recognized stock unit"
                                 + wrongRoleHint(rawUnitOfMeasure, UnitOfMeasureRole.BASE)));
+            }
+            if (rawContains != null) {
+                packagingSizeProvided = true;
+                packagingSize = nonNegativeDecimal(rawContains, excelRow, containsHeader, errors);
+            }
+        } else if (rawContains != null) {
+            Optional<PackContents> contents = PackContents.parse(rawContains);
+            if (contents.isPresent()) {
+                unitOfMeasure = contents.get().unit().code();
+                packagingSize = contents.get().packSize();
+                unitOfMeasureProvided = true;
+                packagingSizeProvided = packagingSize != null;
+            } else {
+                errors.add(new ProductRowError(
+                        excelRow, containsHeader, ImportCopy.containsUnreadable(rawContains)));
             }
         }
 
@@ -678,13 +742,9 @@ public class ProductExcelService {
             }
         }
 
-        String unitsPerPackHeader = headerFor(table, "units_per_pack");
-        String rawPackagingSize = value(table, row, unitsPerPackHeader);
-        boolean packagingSizeProvided = rawPackagingSize != null;
-        BigDecimal packagingSize = null;
-        if (packagingSizeProvided) {
-            packagingSize = nonNegativeDecimal(rawPackagingSize, excelRow, unitsPerPackHeader, errors);
-        }
+        // A pre-section-15 sheet carries the size in its own column; a section-15 one already has
+        // it from `contains` above. Only the old shape needs reading here.
+        String unitsPerPackHeader = containsHeader;
 
         // packaging_unit/packaging_size travel together - either both present or neither - same
         // symmetric pairing rule as ProductManagementService.requirePackagingUnitAndSizePaired.
@@ -1001,27 +1061,53 @@ public class ProductExcelService {
     }
 
     /**
-     * The headline case, and the one the whole sheet turns on: a product counted in millilitres,
-     * bought and sold by the 50 ml keg, with <b>30</b> in {@code opening_stock} - thirty KEGS,
-     * 1,500 ml (UNIT_UX_CONTRACT.md section 9.1).
+     * The headline case, and the one the whole sheet turns on: <b>a pack of twelve 750 ml bottles
+     * of water</b>, counted in BOTTLE, with 30 in {@code opening_stock} - thirty PACKS, 360
+     * bottles (UNIT_UX_CONTRACT.md section 9.1).
      *
-     * <h2>Why the numbers are these numbers</h2>
-     * The example row is where people learn what to type; nobody reads a header comment twice,
-     * but everybody looks at the row above the one they are filling in. So this row is written
-     * to be unreadable in any other way. {@code opening_stock} is 30 beside a pack of 50, which
-     * is impossible to mistake for a stock-unit figure - a shelf holding 30 ml of anything is
-     * not a shelf. {@code low_stock_alert_at} is 5, five kegs, which shows the second column
-     * following the same rule. {@code cost_price} is 9.50 and the header says "for ONE ml, not
-     * for a whole keg", which shows the one column that deliberately does not (section 9.2).
+     * <h2>Why this row was rewritten - PACK_ENTRY_REDESIGN.md section 8.7</h2>
+     * The previous version of this row was {@code stock_unit=Milliliter (ml)},
+     * {@code pack=Keg}, {@code units_per_pack=50}, on a product called "Sample Widget". Read it
+     * as somebody learning the pattern: <em>put the measure in stock_unit, the container in pack,
+     * the number in units_per_pack.</em> Apply that to a pack of bottled water and you get
+     * {@code ml, Pack, 750} - which is exactly the defect that was reported, and it is this row,
+     * followed correctly. The customer was not confused; they imitated the template, which is the
+     * most reliable thing a spreadsheet user does.
      *
-     * <p>The previous version of this row did the opposite on purpose: it carried 1,000 beside a
-     * 50 kg bag "so the example itself demonstrates the rule the column comment states - the
-     * number is in the stock unit, not in packs". That rule is the one section 9 reversed, after
-     * a user described the opposite model in their own words and turned out to be right. The old
-     * reasoning is recorded here rather than deleted, because it was sound about its own rule.
+     * <p>Two things made the old row impossible to check. "Sample Widget" is not a real thing, so
+     * "a keg of 50 ml of Widget" cannot be recognised as odd - an example whose numbers cannot be
+     * checked against the world teaches its SHAPE and nothing else, and the shape was the wrong
+     * part. And it was the only packed example, so the sole demonstration of how packs work was
+     * the misleading one.
      *
-     * <p>See {@link #exampleRowTwo} for the complementary no-pack shape. Between the two, both
-     * readings of {@code opening_stock} are visible from the template alone.
+     * <h2>The stock unit is ml, not Bottle - and that is the correction</h2>
+     * A container word is never a stock unit. The same water bought as a 750 ml bottle today and
+     * a 2 L keg tomorrow is ONE product with one balance, and {@code unitOfMeasure} is immutable
+     * once stock moves - so "Bottle" as the stock unit would force a second product for the same
+     * water. The substance is the unit; every container is a pack sized in it. Tomorrow's keg is
+     * another pack on this same row ({@code ProductVendorPack}), not another product.
+     *
+     * <h2>Why these numbers</h2>
+     * Nobody reads a header comment twice, but everybody looks at the row above the one they are
+     * filling in, so this row is written to be unreadable in any other way:
+     * <ul>
+     *   <li>{@code pack} is <b>Bottle</b> - the word that was missing. Before section 4 added it
+     *       there was no container called a bottle at all, so a 750 ml bottle could only be
+     *       described as a Pack, a Box or a Keg, and the picker could not say what was in the
+     *       user's hand. That absence is what pushed the 750 into the wrong column.
+     *   <li>{@code units_per_pack} is <b>750</b> and it is CORRECT here, because the container
+     *       named beside it really does hold 750 ml. The reported defect was the same 750 beside
+     *       <em>Pack</em>, which does not.
+     *   <li>{@code opening_stock} is <b>30</b> - thirty bottles, 22,500 ml - showing section 9.1's
+     *       rule. {@code low_stock_alert_at} is 5, five bottles, showing the second column follows
+     *       it too.
+     *   <li>{@code cost_price} is what one PACK costs, which the header says and section 9.2
+     *       requires.
+     * </ul>
+     *
+     * <p>See {@link #exampleRowTwo} for the case where a measure genuinely IS the stock unit, and
+     * {@link #exampleRowThree} for the no-pack shape. The three together draw the line this
+     * template exists to teach without a word of explanation.
      *
      * <p>When the tenant has suppliers on file, the first one is used to demonstrate the vendor
      * columns with a name the user will actually recognise. When they have none, those columns are
@@ -1030,16 +1116,15 @@ public class ProductExcelService {
      */
     private Map<String, String> exampleRowOne(List<String> vendorNames, boolean skuAutoGenerated) {
         Map<String, String> values = new LinkedHashMap<>(Map.ofEntries(
-                Map.entry("name", exampleName("Sample Widget", skuAutoGenerated)),
+                Map.entry("name", exampleName("Bottled Water", skuAutoGenerated)),
                 Map.entry("sku", "EXAMPLE-SKU-DELETE-ME-1"),
                 Map.entry("description", "Delete this row, or leave it - example rows are skipped automatically"),
-                Map.entry("stock_unit", "Milliliter (ml)"),
-                Map.entry("pack", "Keg"),
-                Map.entry("units_per_pack", "50"),
+                Map.entry("pack", "Pack"),
+                Map.entry("contains", "12 x 750 ml"),
                 Map.entry("opening_stock", "30"),
                 Map.entry("low_stock_alert_at", "5"),
-                Map.entry("cost_price", "9.50"),
-                Map.entry("unit_price", "19.99")));
+                Map.entry("cost_price", "150.00"),
+                Map.entry("unit_price", "200.00")));
         if (!vendorNames.isEmpty()) {
             values.put("vendor_name", vendorNames.get(0));
             values.put("vendor_sku", "THEIR-CODE-1");
@@ -1049,25 +1134,58 @@ public class ProductExcelService {
     }
 
     /**
-     * The complementary shape: <b>no pack at all</b>, so its {@code opening_stock} of 600 is 600
-     * pieces - the other half of section 9.1's rule, and the case that must keep behaving exactly
-     * as it always has.
+     * The counterpart to {@link #exampleRowOne}: <b>the case where a measure genuinely IS the
+     * stock unit</b>. Rice counted in kilograms, bought by the 50 kg bag.
      *
-     * <p>Leaving {@code pack} and {@code units_per_pack} empty is also what shows that they are
-     * optional: only {@code stock_unit} is ever required to stand alone. Its vendor columns are
-     * left blank on purpose, which demonstrates the other half of the vendor rule - they are all
-     * optional too.
+     * <h2>Why two packed examples instead of one</h2>
+     * PACK_ENTRY_REDESIGN.md section 8.7. Row one alone would teach "never put a measure in
+     * stock_unit", which is false and would send every rice and cement seller the other way into
+     * the ditch. Rice really is issued by the kilogram - you can sell someone 2 kg out of a
+     * 50 kg bag, and you cannot sell them 200 ml out of a sealed bottle. That is the whole
+     * distinction, and one row cannot carry it.
+     *
+     * <p>Two adjacent rows can, without a sentence of explanation: same shape, different answer,
+     * and the reason is visible in the products themselves. {@code size} carries "50 kg" here
+     * too, which shows that the descriptor is for the user's own reference and is not what drives
+     * the arithmetic - {@code units_per_pack=50} is.
+     *
+     * <p>Both products are things a Nigerian buyer actually stocks, chosen so the numbers can be
+     * checked against the world - which "Sample Widget" could not be.
      */
     private Map<String, String> exampleRowTwo(boolean skuAutoGenerated) {
         return Map.ofEntries(
-                Map.entry("name", exampleName("Sample Gadget", skuAutoGenerated)),
+                Map.entry("name", exampleName("Rice", skuAutoGenerated)),
                 Map.entry("sku", "EXAMPLE-SKU-DELETE-ME-2"),
                 Map.entry("description", "Delete this row, or leave it - example rows are skipped automatically"),
-                Map.entry("stock_unit", "Piece"),
+                Map.entry("pack", "Bag"),
+                Map.entry("contains", "50 kg"),
+                Map.entry("opening_stock", "20"),
+                Map.entry("low_stock_alert_at", "4"),
+                Map.entry("cost_price", "75000.00"),
+                Map.entry("unit_price", "82000.00"));
+    }
+
+    /**
+     * The third shape: <b>no pack at all</b>, so its {@code opening_stock} of 600 is 600 pieces -
+     * the other half of UNIT_UX_CONTRACT.md section 9.1's rule, and the case that must keep
+     * behaving exactly as it always has.
+     *
+     * <p>Leaving {@code pack} and {@code units_per_pack} empty is also what shows that they are
+     * optional: only {@code stock_unit} is ever required to stand alone. Its {@code size} is
+     * blank for the same reason - a biro has no printed size worth recording, and a blank cell
+     * teaches that the column can be left alone. Its vendor columns are left blank on purpose,
+     * which demonstrates the other half of the vendor rule - they are all optional too.
+     */
+    private Map<String, String> exampleRowThree(boolean skuAutoGenerated) {
+        return Map.ofEntries(
+                Map.entry("name", exampleName("Biro", skuAutoGenerated)),
+                Map.entry("sku", "EXAMPLE-SKU-DELETE-ME-3"),
+                Map.entry("description", "Delete this row, or leave it - example rows are skipped automatically"),
+                Map.entry("contains", "piece"),
                 Map.entry("opening_stock", "600"),
                 Map.entry("low_stock_alert_at", "50"),
-                Map.entry("cost_price", "20.00"),
-                Map.entry("unit_price", "49.99"));
+                Map.entry("cost_price", "150.00"),
+                Map.entry("unit_price", "250.00"));
     }
 
     /**
@@ -1112,7 +1230,7 @@ public class ProductExcelService {
                 // now, and "30.5 kegs" is an ordinary shelf that the thousands-integer format
                 // would have displayed as 31 while storing 30.5 - a cell that disagrees with
                 // itself is worse than no formatting at all.
-                case "opening_stock", "low_stock_alert_at", "units_per_pack" ->
+                case "opening_stock", "low_stock_alert_at", "contains" ->
                         builder.formatColumn(i, builder.decimalStyle());
                 case "is_preferred_vendor" -> builder.formatColumn(i, builder.centeredStyle());
                 default -> {

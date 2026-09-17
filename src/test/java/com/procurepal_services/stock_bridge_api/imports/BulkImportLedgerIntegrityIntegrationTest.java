@@ -167,9 +167,9 @@ class BulkImportLedgerIntegrityIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant,
                 "name,sku,description,cost_price,opening_stock,low_stock_alert_at,"
-                        + "stock_unit,pack,units_per_pack,vendor_name,vendor_sku,is_preferred_vendor\n"
-                        + "Mango,OSU-BAGS,,36000,12,,KG,BAG,40,,,\n"
-                        + "Cassava,OSU-KG,,900,12,,KG,,,,,\n",
+                        + "pack,contains,vendor_name,vendor_sku,is_preferred_vendor\n"
+                        + "Mango,OSU-BAGS,,36000,12,,BAG,40 KG,,,\n"
+                        + "Cassava,OSU-KG,,900,12,,,KG,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
         ImportResultResponse result = commit(tenant, session.id());

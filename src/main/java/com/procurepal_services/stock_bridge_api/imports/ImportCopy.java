@@ -251,6 +251,17 @@ public final class ImportCopy {
      * that renders it, including the downloadable report, which takes its headers straight from
      * these descriptors.
      */
+    /**
+     * The one message for a {@code contains} cell we could not read - PACK_ENTRY_REDESIGN.md
+     * section 15. It re-states the grammar by example rather than naming it, because "a number,
+     * an optional multiplier and a unit" is a rule and "50 kg" is an answer.
+     */
+    public static String containsUnreadable(String raw) {
+        return "We could not read \u201c" + raw + "\u201d. Write what is inside one of them with its "
+                + "unit - \u201c50 kg\u201d, or \u201c12 x 750 ml\u201d for a pack of twelve 750 ml "
+                + "bottles. Bought loose? Just the unit: \u201ckg\u201d.";
+    }
+
     public static final class Labels {
 
         private Labels() {
@@ -262,8 +273,16 @@ public final class ImportCopy {
         /** {@code packagingUnit} + {@code packagingSize} as one idea. Never "Packaged as". */
         public static final String PACK = "Pack";
 
-        /** {@code packagingSize} alone, when a number must be entered. Never "Pack size". */
-        public static final String UNITS_PER_PACK = "Units per pack";
+        /**
+         * {@code packagingSize} alone - PACK_ENTRY_REDESIGN.md section 14. Was "Units per pack",
+         * which names a RATIO where the reader answers with a SIZE. The counting fields now read
+         * as one sentence, "Bag contains 50 kg", and this is its verb.
+         */
+        public static final String CONTAINS = "Contains";
+
+        /** @deprecated section 14 renamed this to {@link #CONTAINS}. */
+        @Deprecated
+        public static final String UNITS_PER_PACK = CONTAINS;
 
         /** The wire's {@code unit} - which unit a typed number is in. Never "Unit". */
         public static final String COUNTED_IN = "Counted in";

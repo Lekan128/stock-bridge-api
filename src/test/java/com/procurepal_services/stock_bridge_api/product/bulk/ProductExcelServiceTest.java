@@ -66,9 +66,12 @@ class ProductExcelServiceTest {
         List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false)));
 
         assertThat(headers).containsExactly(
+                // PACK_ENTRY_REDESIGN.md sections 15 and 16: two counting columns, and no stock
+                // columns at all - opening_stock and cost_price belong to the stock sheet, which
+                // the user fills next with these products already listed.
                 "name", "sku", "description",
-                "stock_unit", "pack", "units_per_pack",
-                "opening_stock", "low_stock_alert_at", "cost_price", "unit_price",
+                "pack", "contains",
+                "low_stock_alert_at", "unit_price",
                 "vendor_name", "vendor_sku", "is_preferred_vendor");
     }
 
@@ -91,8 +94,10 @@ class ProductExcelServiceTest {
         List<String> headers = headersOf(service.generateTemplate(new ProductTemplateContext(false, VENDORS, false)));
 
         assertThat(headers).doesNotContain("unit_price");
-        assertThat(headers).containsSequence("stock_unit", "pack", "units_per_pack");
-        assertThat(headers).containsSequence("opening_stock", "low_stock_alert_at", "cost_price");
+        assertThat(headers).containsSequence("pack", "contains");
+        assertThat(headers).containsSequence("contains", "low_stock_alert_at");
+        // Section 16: the product sheet no longer asks what is on the shelf or what it cost.
+        assertThat(headers).doesNotContain("opening_stock", "cost_price");
         assertThat(headers).containsSequence("vendor_name", "vendor_sku", "is_preferred_vendor");
     }
 
@@ -116,9 +121,9 @@ class ProductExcelServiceTest {
 
             // Labels, never codes - UNIT_UX_CONTRACT.md section 7, non-negotiable 4. A user opening
             // the dropdown sees "Kilogram (kg)", not "KG", and the parser reads either back.
-            assertThat(valuesOfNamedRange(workbook, "base_units"))
-                    .contains("Kilogram (kg)", "Liter (L)", "Piece")
-                    .doesNotContain("KG", "LITER", "Bag", "Carton");
+            // `base_units` is gone with the stock_unit column - PACK_ENTRY_REDESIGN.md section 15.
+            // The unit now lives inside the `contains` text ("50 kg"), whose value set is a number
+            // and a unit together and therefore unbounded, so there is no list to put behind a name.
             assertThat(valuesOfNamedRange(workbook, "packaging_units"))
                     .contains("Bag", "Carton", "Drum")
                     .doesNotContain("BAG", "Kilogram (kg)");
@@ -146,7 +151,6 @@ class ProductExcelServiceTest {
             Map<String, String> rangeByColumn = dropdownRangesByColumn(sheet, headers);
 
             assertThat(rangeByColumn)
-                    .containsEntry("stock_unit", "base_units")
                     .containsEntry("pack", "packaging_units")
                     .containsEntry("vendor_name", "vendor_names")
                     .containsEntry("is_preferred_vendor", "yes_flag");
@@ -158,7 +162,7 @@ class ProductExcelServiceTest {
             // Deliberately no dropdowns on free-text and numeric columns - section 5.2's last line.
             assertThat(rangeByColumn.keySet())
                     .doesNotContain("sku", "name", "description", "unit_price", "cost_price",
-                            "opening_stock", "low_stock_alert_at", "units_per_pack", "vendor_sku");
+                            "opening_stock", "low_stock_alert_at", "contains", "vendor_sku");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -171,7 +175,7 @@ class ProductExcelServiceTest {
 
         try (XSSFWorkbook workbook = open(file)) {
             XSSFDataValidation validation = (XSSFDataValidation) workbook.getSheetAt(0).getDataValidations().stream()
-                    .filter(v -> v.getValidationConstraint().getFormula1().equals("base_units"))
+                    .filter(v -> v.getValidationConstraint().getFormula1().equals("packaging_units"))
                     .findFirst()
                     .orElseThrow();
 
@@ -199,9 +203,9 @@ class ProductExcelServiceTest {
         try (XSSFWorkbook workbook = open(file)) {
             Map<String, String> rangeByColumn = dropdownRangesByColumn(workbook.getSheetAt(0), headersOf(file));
             assertThat(rangeByColumn).doesNotContainKey("vendor_name");
-            // The unit dropdowns are unaffected - one column losing its list must not take the
+            // The pack dropdown is unaffected - one column losing its list must not take the
             // others with it.
-            assertThat(rangeByColumn).containsKey("stock_unit");
+            assertThat(rangeByColumn).containsKey("pack");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -256,10 +260,8 @@ class ProductExcelServiceTest {
             List<String> headers = headersOf(file);
 
             assertThat(formatOfColumn(sheet, headers.indexOf("unit_price"))).isEqualTo("#,##0.00");
-            assertThat(formatOfColumn(sheet, headers.indexOf("cost_price"))).isEqualTo("#,##0.00");
             // Optional decimals, not whole thousands: section 9.1 accepts 30.5 kegs, and a
             // "#,##0" column would display 31 while the file stored 30.5.
-            assertThat(formatOfColumn(sheet, headers.indexOf("opening_stock"))).isEqualTo("#,##0.###");
             assertThat(formatOfColumn(sheet, headers.indexOf("low_stock_alert_at"))).isEqualTo("#,##0.###");
             // sku stays General on purpose: a number format would turn 00123 into 123.
             assertThat(formatOfColumn(sheet, headers.indexOf("sku"))).isEqualTo("General");
@@ -357,8 +359,8 @@ class ProductExcelServiceTest {
         try (XSSFWorkbook workbook = open(service.exportProducts(List.of(rice)))) {
             List<String> headers = headersOf(service.exportProducts(List.of(rice)));
             Row row = workbook.getSheetAt(0).getRow(1);
-            assertThat(row.getCell(headers.indexOf("stock_unit")).getStringCellValue())
-                    .isEqualTo("Kilogram (kg)");
+            // Section 15: one phrase, the same shape the user types back in.
+            assertThat(row.getCell(headers.indexOf("contains")).getStringCellValue()).isEqualTo("50 kg");
             assertThat(row.getCell(headers.indexOf("pack")).getStringCellValue()).isEqualTo("Bag");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -384,8 +386,8 @@ class ProductExcelServiceTest {
         // Not merely absent from the template - not readable either. A file still carrying the
         // column parses fine and the column is simply not one of ours.
         List<ParsedProductRow> rows = service.parse(multipart("products.csv", csv(
-                "name,sku,stock_unit,pack,units_per_pack,opening_stock,opening_stock_counted_in\n"
-                        + "Palm Oil,OIL-1,Milliliter (ml),Keg,50,30,Milliliter (ml)\n")), false);
+                "name,sku,pack,contains,opening_stock,opening_stock_counted_in\n"
+                        + "Palm Oil,OIL-1,Keg,50 ml,30,Milliliter (ml)\n")), false);
 
         // 30 kegs - 1,500 ml. The stray column said "ml" and changed nothing, because the row
         // decides.
@@ -400,8 +402,8 @@ class ProductExcelServiceTest {
     @Test
     void aPackRowsOpeningStockCountsPacks() {
         List<ParsedProductRow> rows = service.parse(multipart("products.csv", csv(
-                "name,sku,stock_unit,pack,units_per_pack,opening_stock,low_stock_alert_at\n"
-                        + "Palm Oil,OIL-1,Milliliter (ml),Keg,50,30,5\n")), false);
+                "name,sku,pack,contains,opening_stock,low_stock_alert_at\n"
+                        + "Palm Oil,OIL-1,Keg,50 ml,30,5\n")), false);
 
         assertThat(rows).singleElement().satisfies(row -> {
             assertThat(row.quantityOnHand()).isEqualTo(1_500);
@@ -431,9 +433,9 @@ class ProductExcelServiceTest {
     @Test
     void aFractionalPackCountIsAcceptedAndConverted() {
         List<ParsedProductRow> rows = service.parse(multipart("products.csv", csv(
-                "name,sku,stock_unit,pack,units_per_pack,opening_stock\n"
-                        + "Palm Oil,OIL-1,Milliliter (ml),Keg,50,30.5\n"
-                        + "Rice,RICE-1,Kilogram (kg),Bag,3,2.5\n")), false);
+                "name,sku,pack,contains,opening_stock\n"
+                        + "Palm Oil,OIL-1,Keg,50 ml,30.5\n"
+                        + "Rice,RICE-1,Bag,3 kg,2.5\n")), false);
 
         assertThat(rows).extracting(ParsedProductRow::quantityOnHand)
                 // 30.5 x 50 = 1,525 exactly; 2.5 x 3 = 7.5, HALF_UP to 8.
@@ -450,7 +452,7 @@ class ProductExcelServiceTest {
         BulkUploadValidationException thrown = catchThrowableOfType(
                 BulkUploadValidationException.class,
                 () -> service.parse(multipart("products.csv", csv(
-                        "name,sku,stock_unit,opening_stock\nGold Dust,GOLD-1,Kilogram (kg),0.4\n")), false));
+                        "name,sku,contains,opening_stock\nGold Dust,GOLD-1,kg,0.4\n")), false));
 
         assertThat(thrown.getErrors()).singleElement().satisfies(error -> {
             assertThat(error.column()).isEqualTo("opening_stock");
@@ -528,22 +530,19 @@ class ProductExcelServiceTest {
     void aFilledInTemplateRoundTripsThroughItsOwnParser() {
         byte[] template = service.generateTemplate(new ProductTemplateContext(false, VENDORS, false));
         byte[] filled = fillIn(template, List.of(
-                Map.of("name", "Rice 50kg", "sku", "RICE-50", "cost_price", "840",
-                        "opening_stock", "40", "stock_unit", "Kilogram (kg)", "pack", "Bag",
-                        "units_per_pack", "50", "vendor_name", "Dangote Nigeria Plc",
+                Map.of("name", "Rice 50kg", "sku", "RICE-50", "pack", "Bag",
+                        "contains", "50 kg", "vendor_name", "Dangote Nigeria Plc",
                         "vendor_sku", "DN-RICE-50", "is_preferred_vendor", "TRUE"),
-                Map.of("name", "Groundnut Oil 5L", "sku", "OIL-5L", "stock_unit", "Liter (L)")));
+                Map.of("name", "Groundnut Oil 5L", "sku", "OIL-5L", "contains", "L")));
 
         List<ParsedProductRow> rows = service.parse(multipart("products.xlsx", filled), false);
 
         assertThat(rows).hasSize(2);
         ParsedProductRow rice = rows.get(0);
         assertThat(rice.sku()).isEqualTo("RICE-50");
-        // Per stock unit, not per bag - section 9.2's deliberate divergence, and the reason the
-        // fixture says 840 rather than 42,000.
-        assertThat(rice.costPrice()).isEqualByComparingTo("840");
-        // Forty BAGS of 50 kg - section 9.1.
-        assertThat(rice.quantityOnHand()).isEqualTo(2_000);
+        // Section 16: the template carries no stock columns, so a filled-in template creates
+        // products with nothing on the shelf yet. Quantities arrive through the stock sheet.
+        assertThat(rice.quantityOnHand()).isZero();
         assertThat(rice.unitOfMeasure()).isEqualTo("KG");
         assertThat(rice.packagingUnit()).isEqualTo("BAG");
         assertThat(rice.packagingSize()).isEqualByComparingTo("50");

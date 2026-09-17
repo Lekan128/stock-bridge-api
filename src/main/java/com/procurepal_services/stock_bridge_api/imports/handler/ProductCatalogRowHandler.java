@@ -33,6 +33,7 @@ import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsSe
 import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationService;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
+import com.procurepal_services.stock_bridge_api.product.unit.PackContents;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
@@ -182,16 +183,25 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                         : "Your own code for this product. It has to be unique in your catalog."));
         fields.add(ImportFieldDescriptor.text(ImportFields.DESCRIPTION, "Description",
                 "Anything you want shown on the product page."));
+        // Kept although new templates no longer carry the column - PACK_ENTRY_REDESIGN.md section
+        // 15. ImportColumnMapper only maps a header to a field that is DECLARED here, so dropping
+        // this descriptor silently unmapped `stock_unit` / `unit_of_measure` on every file issued
+        // before section 15, and those rows then failed to import. On a new-format file it shows
+        // the unit the server read out of `contains`.
         fields.add(ImportFieldDescriptor.enumeration(ImportFields.STOCK_UNIT, ImportCopy.Labels.STOCK_UNIT,
-                false, "What you count this product in - kilograms, millilitres, pieces. Everything we store "
-                        + "for it is counted this way.",
+                false, "What the amount is measured in - kg, ml, Piece. On a new sheet this is read "
+                        + "from the Contains column; you only need it on an older sheet.",
                 RowValues.options(UnitOfMeasure.baseUnits())));
         fields.add(ImportFieldDescriptor.enumeration(ImportFields.PACK, ImportCopy.Labels.PACK, false,
                 "The container you buy and sell it by - Bag, Keg, Carton. Leave it blank if you sell it loose.",
                 RowValues.options(UnitOfMeasure.packagingUnits())));
-        fields.add(ImportFieldDescriptor.of(ImportFields.UNITS_PER_PACK, ImportCopy.Labels.UNITS_PER_PACK,
-                ImportFieldDescriptor.Type.NUMBER, false,
-                "How much is in one pack. Stock unit Milliliter + Pack Keg + 50 means a 50 ml keg."));
+        // TEXT, not NUMBER - PACK_ENTRY_REDESIGN.md section 15. The cell carries a number AND its
+        // unit ("50 kg"), and may carry a multiplication ("12 x 750 ml") which the server works
+        // out. Both halves of what used to be `stock_unit` + `units_per_pack` come from here.
+        fields.add(ImportFieldDescriptor.text(ImportFields.UNITS_PER_PACK, ImportCopy.Labels.CONTAINS,
+                "What is inside ONE of them, with the unit. A 50 kg bag: \u201c50 kg\u201d. A pack of "
+                        + "twelve 750 ml bottles: \u201c12 x 750 ml\u201d - we do the multiplying. "
+                        + "Bought loose? Just the unit: \u201ckg\u201d."));
         // NUMBER rather than INTEGER, on both quantity columns. Section 9.1 accepts decimals
         // because they now count PACKS, and thirty kegs and a half-full one is a real shelf that
         // an integer cannot say. The grid renders the number the user typed; the "= 1,500 ml"
@@ -291,12 +301,41 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         //
         // Read BEFORE the two quantity columns, and that order is section 9.1 in code: what
         // opening_stock and low_stock_alert_at COUNT depends on whether this row declared a pack.
-        String unitOfMeasure = RowValues.unitCode(ctx, out, ImportFields.STOCK_UNIT,
-                UnitOfMeasureRole.BASE, ImportCopy.Labels.STOCK_UNIT, ImportCopy.Labels.PACK, subject);
         String packagingUnit = RowValues.unitCode(ctx, out, ImportFields.PACK,
-                UnitOfMeasureRole.PACKAGING, ImportCopy.Labels.PACK, ImportCopy.Labels.STOCK_UNIT, subject);
-        BigDecimal packagingSize = RowValues.decimal(
-                ctx, out, ImportFields.UNITS_PER_PACK, ImportCopy.Labels.UNITS_PER_PACK, subject);
+                UnitOfMeasureRole.PACKAGING, ImportCopy.Labels.PACK, ImportCopy.Labels.CONTAINS, subject);
+
+        // PACK_ENTRY_REDESIGN.md section 15: one cell answers what used to be two columns. A file
+        // still carrying its own `stock_unit` column - every template issued before section 15 -
+        // is read from that instead, so no saved sheet changes meaning.
+        String unitOfMeasure;
+        BigDecimal packagingSize;
+        // Shape decided by the COLUMN, not by whether the value parses - the same rule
+        // ProductExcelService uses. A pre-section-15 file has its own stock_unit column and a bare
+        // number here; reading that "50" as an unreadable phrase would error on a file that is fine.
+        String rawContains = ctx.text(ImportFields.UNITS_PER_PACK);
+        if (rawContains != null && !ctx.fileHasColumn(ImportFields.STOCK_UNIT)) {
+            Optional<PackContents> contents = PackContents.parse(rawContains);
+            if (contents.isEmpty()) {
+                out.error(ImportFields.UNITS_PER_PACK, "CONTAINS_UNREADABLE",
+                        ImportCopy.containsUnreadable(rawContains));
+                unitOfMeasure = null;
+                packagingSize = null;
+            } else {
+                unitOfMeasure = contents.get().unit().code();
+                packagingSize = contents.get().packSize();
+                // Canonical spelling back into the cell: parses to the same thing on every later
+                // pass, and is what packSizeOf reads at commit.
+                out.value(ImportFields.UNITS_PER_PACK, PackContents.format(packagingSize, unitOfMeasure));
+            }
+            // Normalized so every later reader - the commit, the snapshot, the undo - sees the
+            // two values it always saw, from the one cell that now carries both.
+            out.value(ImportFields.STOCK_UNIT, unitOfMeasure);
+        } else {
+            unitOfMeasure = RowValues.unitCode(ctx, out, ImportFields.STOCK_UNIT,
+                    UnitOfMeasureRole.BASE, ImportCopy.Labels.STOCK_UNIT, ImportCopy.Labels.PACK, subject);
+            packagingSize = RowValues.decimal(
+                    ctx, out, ImportFields.UNITS_PER_PACK, ImportCopy.Labels.CONTAINS, subject);
+        }
 
         validatePackagingCoherence(ctx, out, subject, unitOfMeasure, packagingUnit, packagingSize);
 
@@ -337,16 +376,21 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (existing != null) {
             if (mode == ImportMode.CREATE_ONLY && !looksLikeContinuation) {
                 out.error(ImportFields.SKU, "SKU_EXISTS",
-                        "You already stock %s under this code. This import is set to add new products only - "
+                        // Names the option by its on-screen label ("Update it") and the place it
+                        // actually lives. The review screen has no mode switch - it is chosen on
+                        // the upload page - so "switch it at the top of this page" sent people
+                        // looking for a control that is not there.
+                        "%s is already in your catalog under this code. Remove this row, or upload the file again "
                                 .formatted(existing.getName())
-                                + "switch it to “Add or update” at the top of the page to update it instead.");
+                                + "and choose “Update it” to change the product you already have.");
             }
             return false;
         }
         if (mode == ImportMode.UPDATE_ONLY) {
             out.error(ImportFields.SKU, "SKU_NOT_FOUND",
-                    "There is no product in your catalog with this code, and this import is set to update "
-                            + "existing products only. Switch it to “Add or update” to create " + subject + ".");
+                    "There is no product in your catalog with this code, and this import only updates products "
+                            + "you already have. Upload the file again and choose “Skip it” or “Update it” to add "
+                            + subject + ".");
         }
         return true;
     }
@@ -367,15 +411,32 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             String unitOfMeasure,
             String packagingUnit,
             BigDecimal packagingSize) {
-        boolean unitProvided = ctx.has(ImportFields.STOCK_UNIT);
         boolean packagingUnitProvided = ctx.has(ImportFields.PACK);
-        boolean packagingSizeProvided = ctx.has(ImportFields.UNITS_PER_PACK);
+        // PACK_ENTRY_REDESIGN.md section 15. On the old sheet each fact had its own cell, so "was
+        // the cell filled" was the right question. On the new one `contains` carries both the unit
+        // and the size, and is filled even for a product bought loose ("piece") - so the answer has
+        // to come from what it PARSED to. An unreadable `contains` already raised its own error;
+        // counting it as "provided" stops the same cell earning a second, less useful one here.
+        boolean newShape = ctx.has(ImportFields.UNITS_PER_PACK) && !ctx.fileHasColumn(ImportFields.STOCK_UNIT);
+        boolean unitProvided = newShape || ctx.has(ImportFields.STOCK_UNIT);
+        boolean packagingSizeProvided;
+        if (!newShape) {
+            packagingSizeProvided = ctx.has(ImportFields.UNITS_PER_PACK);
+        } else if (unitOfMeasure == null) {
+            // Unreadable - already reported. Agree with the pack cell so no mismatch fires on top.
+            packagingSizeProvided = packagingUnitProvided;
+        } else {
+            packagingSizeProvided = packagingSize != null;
+        }
 
         if (packagingUnitProvided != packagingSizeProvided) {
             if (packagingUnitProvided) {
-                out.error(ImportFields.UNITS_PER_PACK, "PACKAGING_SIZE_REQUIRED",
-                        "How many stock units are in one %s of %s? A pack needs a size to be useful."
-                                .formatted(ImportCopy.unitLabel(packagingUnit == null ? "pack" : packagingUnit), subject));
+                String packName = ImportCopy.unitLabel(packagingUnit == null ? "pack" : packagingUnit);
+                out.error(ImportFields.UNITS_PER_PACK, "PACKAGING_SIZE_REQUIRED", newShape
+                        ? "What is inside one %s of %s? Write it with the unit - \u201c50 kg\u201d, or \u201c12 x 750 ml\u201d."
+                                .formatted(packName.toLowerCase(java.util.Locale.ROOT), subject)
+                        : "How many stock units are in one %s of %s? A pack needs a size to be useful."
+                                .formatted(packName, subject));
             } else {
                 out.error(ImportFields.PACK, "PACKAGING_UNIT_REQUIRED",
                         "%s says there are %s units in a pack, but not what kind of pack. Bag, carton, drum?"
@@ -511,7 +572,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return countedIn(
                 state.text(ImportFields.STOCK_UNIT),
                 state.text(ImportFields.PACK),
-                decimalOf(state, ImportFields.UNITS_PER_PACK));
+                packSizeOf(state));
     }
 
     /**
@@ -1165,7 +1226,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 .lowStockThreshold(stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT))
                 .unitOfMeasure(state.text(ImportFields.STOCK_UNIT))
                 .packagingUnit(state.text(ImportFields.PACK))
-                .packagingSize(decimalOf(state, ImportFields.UNITS_PER_PACK))
+                .packagingSize(packSizeOf(state))
                 .active(true)
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
                 .importBatchId(batchId)
@@ -1228,8 +1289,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (state.text(ImportFields.PACK) != null) {
             product.setPackagingUnit(state.text(ImportFields.PACK));
         }
-        if (decimalOf(state, ImportFields.UNITS_PER_PACK) != null) {
-            product.setPackagingSize(decimalOf(state, ImportFields.UNITS_PER_PACK));
+        if (packSizeOf(state) != null) {
+            product.setPackagingSize(packSizeOf(state));
         }
     }
 
@@ -1568,6 +1629,27 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return authentication != null
                 && authentication.getAuthorities().stream()
                         .anyMatch(granted -> authority.equals(granted.getAuthority()));
+    }
+
+    /**
+     * The pack size on a row, whichever sheet it came from - PACK_ENTRY_REDESIGN.md section 15.
+     *
+     * <p>An older sheet leaves a NUMBER here. A new one leaves the `contains` phrase, normalized
+     * by {@link #validate} to its canonical spelling ("50 ml", never "12 x 750 ml"), which is
+     * what keeps re-validation idempotent: the phrase parses back to the same unit and size on
+     * every pass. Reading it with a plain {@code asDecimal} is the bug this replaces - "50 ml" is
+     * not a decimal, so the pack silently vanished and thirty kegs of 50 ml committed as 30 ml.
+     */
+    private static BigDecimal packSizeOf(ImportRowState state) {
+        Object value = state.value(ImportFields.UNITS_PER_PACK);
+        if (!(value instanceof String text)) {
+            return asDecimal(value);
+        }
+        try {
+            return new BigDecimal(text.trim());
+        } catch (NumberFormatException phrase) {
+            return PackContents.parse(text).map(PackContents::packSize).orElse(null);
+        }
     }
 
     private static BigDecimal decimalOf(ImportRowState state, String field) {

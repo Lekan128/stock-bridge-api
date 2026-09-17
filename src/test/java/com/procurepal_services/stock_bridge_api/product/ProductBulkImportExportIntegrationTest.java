@@ -57,14 +57,14 @@ class ProductBulkImportExportIntegrationTest {
     // how you count it, then how much, then supplier.
     private static final List<String> COMPANY_HEADERS = List.of(
             "name", "sku", "description",
-            "stock_unit", "pack", "units_per_pack",
-            "opening_stock", "low_stock_alert_at", "cost_price");
+            "pack", "contains",
+            "low_stock_alert_at");
     // The seller template's full column set - the same, plus unit_price and the vendor trio
     // (BULK_IMPORT_CONTRACT.md section 5, BULK_IMPORT_DESIGN.md section 7.1).
     private static final List<String> FULL_HEADERS = List.of(
             "name", "sku", "description",
-            "stock_unit", "pack", "units_per_pack",
-            "opening_stock", "low_stock_alert_at", "cost_price", "unit_price",
+            "pack", "contains",
+            "low_stock_alert_at", "unit_price",
             "vendor_name", "vendor_sku", "is_preferred_vendor");
 
     /**
@@ -124,7 +124,7 @@ class ProductBulkImportExportIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         List<String> headerNames = readHeaderNames(response.getBody());
         assertThat(headerNames).doesNotContain("unit_price");
-        assertThat(headerNames).containsSequence("stock_unit", "pack", "units_per_pack");
+        assertThat(headerNames).containsSequence("pack", "contains");
     }
 
     /**
@@ -163,25 +163,26 @@ class ProductBulkImportExportIntegrationTest {
         try (Workbook workbook = new XSSFWorkbook(new ByteArrayInputStream(response.getBody()))) {
             Sheet sheet = workbook.getSheetAt(0);
             List<String> headerNames = readHeaderNames(response.getBody());
-            int uomCol = headerNames.indexOf("stock_unit");
             int packCol = headerNames.indexOf("pack");
-            int unitsPerPackCol = headerNames.indexOf("units_per_pack");
-            int openingStockCol = headerNames.indexOf("opening_stock");
+            int containsCol = headerNames.indexOf("contains");
+            // PACK_ENTRY_REDESIGN.md section 16: no stock columns on the product sheet.
+            assertThat(headerNames).doesNotContain("stock_unit", "opening_stock", "cost_price");
 
-            // Row one is the pack case, and its numbers teach section 9.1: 30 beside a Keg of
-            // 50 ml is thirty kegs. A row reading 1,000 beside a pack of 50 - which is what this
-            // example used to say - teaches the opposite.
+            // Row one is THE case - a pack of twelve 750 ml bottles, written the way it is on the
+            // invoice. Section 15: the unit is inside the phrase, and the server multiplies.
             Row exampleOne = sheet.getRow(1);
-            assertThat(exampleOne.getCell(uomCol).getStringCellValue()).isEqualTo("Milliliter (ml)");
-            assertThat(exampleOne.getCell(packCol).getStringCellValue()).isEqualTo("Keg");
-            assertThat(exampleOne.getCell(unitsPerPackCol).getStringCellValue()).isEqualTo("50");
-            assertThat(exampleOne.getCell(openingStockCol).getStringCellValue()).isEqualTo("30");
+            assertThat(exampleOne.getCell(packCol).getStringCellValue()).isEqualTo("Pack");
+            assertThat(exampleOne.getCell(containsCol).getStringCellValue()).isEqualTo("12 x 750 ml");
 
-            // Row two is the no-pack case, so its 600 is 600 pieces.
+            // Row two: one level, a measure that genuinely is the stock unit.
             Row exampleTwo = sheet.getRow(2);
-            assertThat(exampleTwo.getCell(uomCol).getStringCellValue()).isEqualTo("Piece");
-            assertThat(exampleTwo.getCell(packCol).getStringCellValue()).isEmpty();
-            assertThat(exampleTwo.getCell(openingStockCol).getStringCellValue()).isEqualTo("600");
+            assertThat(exampleTwo.getCell(packCol).getStringCellValue()).isEqualTo("Bag");
+            assertThat(exampleTwo.getCell(containsCol).getStringCellValue()).isEqualTo("50 kg");
+
+            // Row three: bought loose - no pack, and `contains` is just the unit.
+            Row exampleThree = sheet.getRow(3);
+            assertThat(exampleThree.getCell(packCol).getStringCellValue()).isEmpty();
+            assertThat(exampleThree.getCell(containsCol).getStringCellValue()).isEqualTo("piece");
         }
     }
 
@@ -666,12 +667,17 @@ class ProductBulkImportExportIntegrationTest {
             for (int i = 1; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
                 if (row != null && row.getCell(1) != null && sku.equals(row.getCell(1).getStringCellValue())) {
-                    Cell uomCell = row.getCell(exportHeaders.indexOf("stock_unit"));
+                    // Section 15: the export writes one phrase - "25.5 kg" - so the unit and the
+                    // size are read back out of it by the same parser the import uses.
                     Cell packagingUnitCell = row.getCell(exportHeaders.indexOf("pack"));
-                    Cell sizeCell = row.getCell(exportHeaders.indexOf("units_per_pack"));
-                    String uom = uomCell == null ? null : uomCell.getStringCellValue();
+                    Cell containsCell = row.getCell(exportHeaders.indexOf("contains"));
                     String packagingUnit = packagingUnitCell == null ? null : packagingUnitCell.getStringCellValue();
-                    Double size = sizeCell == null ? null : sizeCell.getNumericCellValue();
+                    var contents = containsCell == null
+                            ? java.util.Optional.<com.procurepal_services.stock_bridge_api.product.unit.PackContents>empty()
+                            : com.procurepal_services.stock_bridge_api.product.unit.PackContents.parse(
+                                    containsCell.getStringCellValue());
+                    String uom = contents.map(c -> c.unit().label()).orElse(null);
+                    Double size = contents.map(c -> c.packSize() == null ? null : c.packSize().doubleValue()).orElse(null);
                     return new Object[] {uom, packagingUnit, size};
                 }
             }
