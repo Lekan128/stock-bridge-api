@@ -252,11 +252,31 @@ public final class UnitOptions {
         String label = option.label();
         int of = label.indexOf(" of ");
         if (of > 0) {
-            return pluralise(label.substring(0, of).toLowerCase(Locale.ROOT)) + label.substring(of);
+            return pluralise(label.substring(0, of).toLowerCase(Locale.ROOT)) + " of " + spokenSize(label.substring(of + 4));
         }
         return UnitOfMeasure.fromCode(option.code())
                 .map(UnitOptions::spokenPhrase)
                 .orElseGet(() -> pluralise(label.toLowerCase(Locale.ROOT)));
+    }
+
+    /**
+     * The size half of a pack label, mid-sentence. A measured unit stays as its symbol
+     * ({@code "50 kg"}); a counted one is a word and follows the number ({@code "10 pieces"},
+     * {@code "1 piece"}) - the label itself says "10 Piece", which is right for a picker entry
+     * standing alone and wrong inside a sentence.
+     */
+    private static String spokenSize(String size) {
+        int space = size.lastIndexOf(' ');
+        if (space < 0) {
+            return size;
+        }
+        String number = size.substring(0, space);
+        return UnitOfMeasure.fromCodeOrLabel(size.substring(space + 1))
+                .filter(unit -> !unit.hasSymbolAbbreviation())
+                .map(unit -> number + " " + ("1".equals(number)
+                        ? unit.label().toLowerCase(Locale.ROOT)
+                        : spokenPhrase(unit)))
+                .orElse(size);
     }
 
     /**
@@ -290,6 +310,34 @@ public final class UnitOptions {
             return "";
         }
         return UnitOfMeasure.fromCode(stockUnitCode).map(UnitOfMeasure::symbol).orElse(stockUnitCode);
+    }
+
+    /**
+     * True when a stock unit is something you count rather than measure - pieces, not kg - so a
+     * fraction of one is not a real amount and must not be rounded into existence
+     * (PACK_ENTRY_REDESIGN.md section 7.1). A product with no stock unit at all (the pre-V17 rows)
+     * is counted in plain units, which cannot be split either. The one rule, for the stock-in
+     * service and the import's review screen alike.
+     */
+    public static boolean isCountedInWholeUnits(String stockUnitCode) {
+        if (stockUnitCode == null || stockUnitCode.isBlank()) {
+            return true;
+        }
+        return UnitOfMeasure.fromCode(stockUnitCode)
+                .map(unit -> unit.category() == UnitOfMeasureCategory.COUNT)
+                .orElse(false);
+    }
+
+    /**
+     * A stored stock-unit code as it reads mid-sentence - {@code "PIECE"} &rarr; {@code "pieces"},
+     * {@code "KG"} &rarr; {@code "kg"}. A product with no stock unit is counted in plain "units",
+     * which is what the sheets already call it.
+     */
+    public static String spokenPhraseOfStockUnit(String stockUnitCode) {
+        if (stockUnitCode == null || stockUnitCode.isBlank()) {
+            return "units";
+        }
+        return UnitOfMeasure.fromCode(stockUnitCode).map(UnitOptions::spokenPhrase).orElse(stockUnitCode);
     }
 
     // ---------------------------------------------------------------------------------------

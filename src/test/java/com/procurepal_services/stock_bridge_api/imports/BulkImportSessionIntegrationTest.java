@@ -917,6 +917,67 @@ class BulkImportSessionIntegrationTest {
     }
 
     /**
+     * Two and a half bags is a real delivery, and a spreadsheet is where people type it. The row is
+     * accepted, the preview says what the ledger will hold, and the commit records exactly 125 kg.
+     */
+    @Test
+    void aFractionalNumberOfBagsInAFileIsRecordedExactly() {
+        TenantLoginResponse tenant = signup("Half Bag Import Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,FRAC-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS + "FRAC-1,Rice 50kg,,2.5,BAG,45000,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(firstRow(tenant, session, "ALL").baseQuantityText()).isEqualTo("= 125 kg");
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("stock");
+            assertThat(line.text()).isEqualTo("125 kg (2.5 bags) across 1 product");
+        });
+
+        commit(tenant, session.id());
+        ProductResponse rice = productBySku(tenant, "FRAC-1");
+        assertThat(rice.quantityOnHand()).isEqualTo(125);
+        assertThat(rice.costPrice()).isEqualByComparingTo("900");
+    }
+
+    /**
+     * A quarter of a pack of ten pieces is two and a half pieces. The row says so on the review
+     * screen - naming the product and the whole numbers that would work - instead of letting the
+     * commit refuse it and roll the whole file back.
+     */
+    @Test
+    void aFractionOfAPackThatIsNotAWholeNumberOfPiecesIsFlaggedOnItsOwnRow() {
+        TenantLoginResponse tenant = signup("Quarter Pack Import Co");
+        commitCatalog(
+                tenant,
+                "CREATE_ONLY",
+                CATALOG_HEADERS
+                        + "Biro,FRAC-2,,50,,,PIECE,PACK,10,,,\n"
+                        + "Rice 50kg,FRAC-3,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS
+                        + "FRAC-2,Biro,,0.25,PACK,,,,\n"
+                        + "FRAC-3,Rice 50kg,,3,BAG,,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isEqualTo(1);
+        ImportRowResponse flagged = firstRow(tenant, session, "ERROR");
+        assertThat(flagged.errors()).anySatisfy(error -> {
+            assertThat(error.column()).isEqualTo("quantity");
+            assertThat(error.message())
+                    .isEqualTo("Biro: 0.25 packs of 10 pieces is 2.5 pieces — that isn't a whole number of pieces. "
+                            + "Enter 2 or 3 pieces instead.");
+        });
+    }
+
+    /**
      * Section 6.3's second half: "when the file mixes units the parenthetical is dropped and only
      * the stock-unit total is shown."
      *

@@ -213,6 +213,13 @@ public final class ImportCopy {
      */
     public static String enteredQuantityPhrase(
             long enteredQuantity, com.procurepal_services.stock_bridge_api.product.unit.UnitOption option) {
+        return enteredQuantityPhrase(BigDecimal.valueOf(enteredQuantity), option);
+    }
+
+    /** {@link #enteredQuantityPhrase(long, com.procurepal_services.stock_bridge_api.product.unit.UnitOption)}
+     *  for a delivery that may be fractional - "2.5 bags". */
+    public static String enteredQuantityPhrase(
+            BigDecimal enteredQuantity, com.procurepal_services.stock_bridge_api.product.unit.UnitOption option) {
         String phrase = com.procurepal_services.stock_bridge_api.product.unit.UnitOptions.spokenPhrase(option);
         int of = phrase.indexOf(" of ");
         return count(enteredQuantity) + " " + (of > 0 ? phrase.substring(0, of) : phrase);

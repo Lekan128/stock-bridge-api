@@ -44,8 +44,10 @@ import com.procurepal_services.stock_bridge_api.repository.ProductVendorReposito
 import com.procurepal_services.stock_bridge_api.repository.StockMovementAllocationRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
+import com.procurepal_services.stock_bridge_api.stock.InvalidStockUnitException;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -330,7 +332,7 @@ public class StockInRowHandler implements ImportRowHandler {
                 new ImportFieldDescriptor(ImportFields.VENDOR_NAME, ImportCopy.Labels.SUPPLIER,
                         ImportFieldDescriptor.Type.REFERENCE, false, false, false,
                         "Who this delivery came from.", null, null),
-                new ImportFieldDescriptor(ImportFields.QUANTITY, "Quantity", ImportFieldDescriptor.Type.INTEGER,
+                new ImportFieldDescriptor(ImportFields.QUANTITY, "Quantity", ImportFieldDescriptor.Type.NUMBER,
                         false, false, true,
                         "How much of this product arrived, counted in whatever “Counted in” says. Leave it "
                                 + "empty for products you did not receive.", null, null),
@@ -370,7 +372,7 @@ public class StockInRowHandler implements ImportRowHandler {
         // Contract section 8.11. Checked before anything else, because a row with no quantity is
         // not a delivery and must not be told off for the state of its other columns - most of
         // which we pre-filled ourselves.
-        Integer quantity = readQuantity(ctx, out, subject);
+        BigDecimal quantity = readQuantity(ctx, out, subject);
         if (quantity == null && !out.hasErrors()) {
             out.value(ImportFields.AUTO_SKIP, Boolean.TRUE);
             return out.build();
@@ -407,8 +409,12 @@ public class StockInRowHandler implements ImportRowHandler {
      * and telling them that is an error would be pedantry about a perfectly clear intention.
      * Negative is an error, because a delivery only ever adds stock and a negative number means
      * the user is trying to do something this screen cannot do.
+     *
+     * <p>A fraction is a real delivery - two and a half bags - and is kept exactly as typed.
+     * Whether it comes out as a whole number of stock units is a question about the product, so
+     * {@link #describeUnits} answers it once the product is known.
      */
-    private Integer readQuantity(RowContext ctx, RowValidation.Builder out, String subject) {
+    private BigDecimal readQuantity(RowContext ctx, RowValidation.Builder out, String subject) {
         String raw = ctx.text(ImportFields.QUANTITY);
         if (raw == null) {
             out.value(ImportFields.QUANTITY, null);
@@ -434,21 +440,18 @@ public class StockInRowHandler implements ImportRowHandler {
             out.value(ImportFields.QUANTITY, null);
             return null;
         }
-        if (value.stripTrailingZeros().scale() > 0) {
-            out.error(ImportFields.QUANTITY, "NOT_A_WHOLE_NUMBER",
-                    "We record whole units, so %s of %s is not something we can store."
-                            .formatted(ImportCopy.quote(raw), subject));
-            out.value(ImportFields.QUANTITY, null);
-            return null;
-        }
         if (value.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0) {
             out.error(ImportFields.QUANTITY, "NUMBER_TOO_LARGE",
                     "That is a larger delivery of %s than we can record.".formatted(subject));
             out.value(ImportFields.QUANTITY, null);
             return null;
         }
-        out.value(ImportFields.QUANTITY, value.intValue());
-        return value.intValue();
+        BigDecimal quantity = value.stripTrailingZeros();
+        if (quantity.scale() < 0) {
+            quantity = quantity.setScale(0);
+        }
+        out.value(ImportFields.QUANTITY, quantity);
+        return quantity;
     }
 
     /**
@@ -487,7 +490,7 @@ public class StockInRowHandler implements ImportRowHandler {
     }
 
     private void readRemainingColumns(
-            RowContext ctx, RowValidation.Builder out, String subject, Product product, Integer quantity) {
+            RowContext ctx, RowValidation.Builder out, String subject, Product product, BigDecimal quantity) {
         UnitOptionsAndPacks unitContext = product == null
                 ? new UnitOptionsAndPacks(List.of(), List.of())
                 : unitOptionsWithPacksFor(
@@ -705,7 +708,7 @@ public class StockInRowHandler implements ImportRowHandler {
             Product product,
             List<UnitOption> options,
             UnitOption countedIn,
-            Integer quantity) {
+            BigDecimal quantity) {
         if (product == null || options.isEmpty()) {
             return;
         }
@@ -719,7 +722,7 @@ public class StockInRowHandler implements ImportRowHandler {
                 })
                 .toList()));
 
-        if (countedIn == null || quantity == null || quantity <= 0) {
+        if (countedIn == null || quantity == null || quantity.signum() <= 0) {
             return;
         }
         Long baseQuantity = toStockUnits(countedIn, quantity);
@@ -727,6 +730,23 @@ public class StockInRowHandler implements ImportRowHandler {
             out.error(ImportFields.QUANTITY, "NUMBER_TOO_LARGE",
                     "That is a larger delivery of %s than we can record.".formatted(subject));
             out.value(ImportFields.QUANTITY, null);
+            return;
+        }
+        // The two refusals stockIn itself would make, raised here instead, where they name the
+        // row and leave the rest of the file alone. Left to the commit, either one would roll back
+        // every delivery in the file over one cell.
+        BigDecimal exact = countedIn.exactStockUnits(quantity);
+        if (UnitOptions.isCountedInWholeUnits(product.getUnitOfMeasure())
+                && exact.stripTrailingZeros().scale() > 0) {
+            out.error(ImportFields.QUANTITY, "NOT_A_WHOLE_COUNT", subject + ": "
+                    + InvalidStockUnitException.notAWholeCount(quantity, countedIn, exact,
+                            UnitOptions.spokenPhraseOfStockUnit(product.getUnitOfMeasure())).getMessage());
+            return;
+        }
+        if (baseQuantity == 0) {
+            out.error(ImportFields.QUANTITY, "ROUNDS_TO_ZERO", subject + ": "
+                    + InvalidStockUnitException.roundsToZero(quantity, countedIn,
+                            UnitOptions.symbolOf(product.getUnitOfMeasure())).getMessage());
             return;
         }
         if (countedIn.isStockUnit()) {
@@ -975,7 +995,7 @@ public class StockInRowHandler implements ImportRowHandler {
         int deliveries = 0;
         // Insertion-ordered: the first product in the file names the unit the sentence leads with.
         Map<String, Long> stockUnitTotals = new LinkedHashMap<>();
-        Map<String, Long> enteredTotals = new LinkedHashMap<>();
+        Map<String, BigDecimal> enteredTotals = new LinkedHashMap<>();
         Map<String, UnitOption> enteredOptions = new LinkedHashMap<>();
         Set<UUID> products = new LinkedHashSet<>();
         Set<String> suppliers = new LinkedHashSet<>();
@@ -994,26 +1014,26 @@ public class StockInRowHandler implements ImportRowHandler {
             if (!state.isCommittable()) {
                 continue;
             }
-            Object rawQuantity = state.value(ImportFields.QUANTITY);
-            if (!(rawQuantity instanceof Number number) || number.intValue() <= 0) {
+            BigDecimal quantity = decimalOf(state, ImportFields.QUANTITY);
+            if (quantity == null || quantity.signum() <= 0) {
                 continue;
             }
             deliveries++;
 
             Product product = productOf(ctx, state);
             UnitOption option = optionFor(ctx, product, state, state.text(ImportFields.COUNTED_IN));
-            Long converted = option == null ? null : toStockUnits(option, number.intValue());
+            Long converted = option == null ? null : toStockUnits(option, quantity);
             // A row whose product has not been created yet converts by 1: the resolution card
             // collected a base unit and nothing else, so the number the user typed IS the number
             // the ledger will take. Falling back to the raw value here is not the bare sum P0-4
             // is about - it is a genuine stock-unit quantity for a product with no pack.
             stockUnitTotals.merge(
                     stockUnitSymbolOf(ctx, product, state),
-                    converted == null ? (long) number.intValue() : converted,
+                    converted == null ? quantity.setScale(0, RoundingMode.HALF_UP).longValue() : converted,
                     Long::sum);
 
             String enteredCode = option == null ? ImportFields.QUANTITY : option.code();
-            enteredTotals.merge(enteredCode, (long) number.intValue(), Long::sum);
+            enteredTotals.merge(enteredCode, quantity, BigDecimal::add);
             if (option != null) {
                 enteredOptions.putIfAbsent(enteredCode, option);
             }
@@ -1030,7 +1050,7 @@ public class StockInRowHandler implements ImportRowHandler {
                 // bags is the same naira as a price per kg times a count of kg. This one line
                 // was never wrong, and converting either half of it would have made it so.
                 totalCost = totalCost.add(
-                        new BigDecimal(cost.toString()).multiply(BigDecimal.valueOf(number.intValue())));
+                        new BigDecimal(cost.toString()).multiply(quantity));
             }
             String date = state.text(ImportFields.RECEIVED_DATE);
             if (date != null) {
@@ -1081,7 +1101,7 @@ public class StockInRowHandler implements ImportRowHandler {
      */
     private String quantityPhrase(
             Map<String, Long> stockUnitTotals,
-            Map<String, Long> enteredTotals,
+            Map<String, BigDecimal> enteredTotals,
             Map<String, UnitOption> enteredOptions) {
         String ledger = ImportCopy.quantityTotals(stockUnitTotals);
         if (stockUnitTotals.size() != 1 || enteredTotals.size() != 1) {
@@ -1151,8 +1171,8 @@ public class StockInRowHandler implements ImportRowHandler {
                 state.setOutcomeMessage("This row still had something to fix.");
                 continue;
             }
-            Object rawQuantity = state.value(ImportFields.QUANTITY);
-            if (!(rawQuantity instanceof Number number) || number.intValue() <= 0) {
+            BigDecimal quantity = decimalOf(state, ImportFields.QUANTITY);
+            if (quantity == null || quantity.signum() <= 0) {
                 state.setOutcome(ImportFields.OUTCOME_SKIPPED);
                 state.setOutcomeMessage("No quantity, so there was nothing to record.");
                 skipped++;
@@ -1173,7 +1193,7 @@ public class StockInRowHandler implements ImportRowHandler {
             stockManagementService.stockIn(
                     product.getId(),
                     new StockInRequest(
-                            number.intValue(),
+                            quantity,
                             // cost_per_unit is per the row's "Counted in", and it is handed over
                             // exactly as typed. UNIT_UX_CONTRACT.md section 3.2's division by the
                             // option's factor happens once, inside StockManagementService, beside
@@ -1196,7 +1216,8 @@ public class StockInRowHandler implements ImportRowHandler {
                             // left to the shorter constructor's implicit null, because "nobody
                             // said" and "no" reading alike is a thing a reader should not have to
                             // go and confirm.
-                            false),
+                            false,
+                            null),
                     ctx.actingUserId(),
                     batchId);
             state.setOutcome(ImportFields.OUTCOME_CREATED);
@@ -1807,7 +1828,7 @@ public class StockInRowHandler implements ImportRowHandler {
      *
      * @return the quantity in stock units, or null when it does not fit.
      */
-    private static Long toStockUnits(UnitOption option, int enteredQuantity) {
+    private static Long toStockUnits(UnitOption option, BigDecimal enteredQuantity) {
         try {
             return (long) option.toStockUnitQuantity(enteredQuantity);
         } catch (ArithmeticException tooLarge) {

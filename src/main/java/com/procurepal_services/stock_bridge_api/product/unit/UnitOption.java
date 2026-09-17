@@ -94,17 +94,32 @@ public record UnitOption(
      * and its stock unit, which this record does not carry; see
      * {@code StockManagementService.resolveEntry}.
      *
+     * <p>The entered quantity may be a fraction - two and a half bags is a real delivery - and
+     * the rounding happens once, here, after the multiplication, so 2.5 bags of 50 kg is exactly
+     * 125 kg rather than 2 bags' worth. Whether an INEXACT result is acceptable is the caller's
+     * question, answered with {@link #exactStockUnits}.
+     *
      * @param enteredQuantity a quantity counted in THIS unit (bags, tonnes, kg).
      * @return the same amount counted in the product's stock unit.
+     * @throws ArithmeticException when the result does not fit an int.
      */
+    public int toStockUnitQuantity(BigDecimal enteredQuantity) {
+        return exactStockUnits(enteredQuantity).setScale(0, RoundingMode.HALF_UP).intValueExact();
+    }
+
+    /** {@link #toStockUnitQuantity(BigDecimal)} for a whole-number entry. */
     public int toStockUnitQuantity(int enteredQuantity) {
-        if (isUnitFactor()) {
-            return enteredQuantity;
-        }
-        return factorToStockUnit
-                .multiply(BigDecimal.valueOf(enteredQuantity))
-                .setScale(0, RoundingMode.HALF_UP)
-                .intValueExact();
+        return toStockUnitQuantity(BigDecimal.valueOf(enteredQuantity));
+    }
+
+    /**
+     * {@code enteredQuantity} in stock units before any rounding - 2.5 when a quarter of a pack of
+     * ten pieces is entered. The only use is deciding whether {@link #toStockUnitQuantity} would
+     * have to round, so a caller can refuse a fraction of something that cannot be split
+     * (PACK_ENTRY_REDESIGN.md section 7.1).
+     */
+    public BigDecimal exactStockUnits(BigDecimal enteredQuantity) {
+        return isUnitFactor() ? enteredQuantity : factorToStockUnit.multiply(enteredQuantity);
     }
 
     /**

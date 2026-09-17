@@ -141,7 +141,8 @@ public class StockManagementService {
      */
     public int toStockUnitQuantity(
             Product product, int quantity, String unit, String packagingUnit, BigDecimal packagingSize) {
-        return resolveEntry(product, quantity, null, unit, packagingUnit, packagingSize).baseQuantity();
+        return resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, packagingUnit, packagingSize)
+                .baseQuantity();
     }
 
     /** {@link #toStockUnitQuantity(Product, int, String, String, BigDecimal)} with no pack extension. */
@@ -354,7 +355,7 @@ public class StockManagementService {
         UUID tenantId = requireTenantId();
 
         ResolvedEntry entry =
-                resolveEntry(product, request.quantity(), request.unitPrice(), request.unit(), null, null);
+                resolveEntry(product, BigDecimal.valueOf(request.quantity()), request.unitPrice(), request.unit(), null, null);
         int quantityBaseUnits = entry.baseQuantity();
 
         // The authoritative ceiling is still Product.quantityOnHand - see the class javadoc's
@@ -593,7 +594,7 @@ public class StockManagementService {
      */
     private ResolvedEntry resolveEntry(
             Product product,
-            int quantity,
+            BigDecimal quantity,
             BigDecimal enteredPrice,
             String unit,
             String requestPackagingUnit,
@@ -616,8 +617,16 @@ public class StockManagementService {
         UnitOption option = UnitOptions.resolve(options, unit)
                 .orElseThrow(() -> InvalidStockUnitException.unknownUnit(product.getName(), unit, options));
 
+        // PACK_ENTRY_REDESIGN.md section 7.1. A measured stock unit rounds (12.4 kg is 12 kg, as
+        // section 3.1 always said); a counted one must come out whole, because rounding a quarter
+        // of a pack of ten pieces would record half a piece nobody has.
+        BigDecimal exactBaseQuantity = option.exactStockUnits(quantity);
+        if (UnitOptions.isCountedInWholeUnits(product.getUnitOfMeasure()) && exactBaseQuantity.stripTrailingZeros().scale() > 0) {
+            throw InvalidStockUnitException.notAWholeCount(
+                    quantity, option, exactBaseQuantity, UnitOptions.spokenPhraseOfStockUnit(product.getUnitOfMeasure()));
+        }
         int baseQuantity = option.toStockUnitQuantity(quantity);
-        if (baseQuantity == 0 && quantity != 0) {
+        if (baseQuantity == 0 && quantity.signum() != 0) {
             throw InvalidStockUnitException.roundsToZero(quantity, option, unitSymbol(product));
         }
 
@@ -630,7 +639,7 @@ public class StockManagementService {
                 baseQuantity,
                 option.toStockUnitPrice(enteredPrice),
                 typedInAnotherUnit ? option.code() : null,
-                typedInAnotherUnit ? BigDecimal.valueOf(quantity) : null,
+                typedInAnotherUnit ? quantity : null,
                 typedInAnotherUnit ? enteredPrice : null);
     }
 
