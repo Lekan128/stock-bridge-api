@@ -440,7 +440,11 @@ public class ProductManagementService {
             // resending the same unit the product already has is a no-op, not a violation, so
             // only an actual change trips the guard.
             String resolvedUnitOfMeasure = resolveUnitOfMeasure(request.unitOfMeasure());
-            if (!Objects.equals(resolvedUnitOfMeasure, product.getUnitOfMeasure())
+            // A product saved before units existed (null) may be given its first one even with
+            // stock recorded - that is the one-time fix of task 1.8, and it names what the
+            // numbers already in the ledger were counted in. Changing a unit it HAS stays refused.
+            if (product.getUnitOfMeasure() != null
+                    && !Objects.equals(resolvedUnitOfMeasure, product.getUnitOfMeasure())
                     && stockMovementRepository.existsByProductIdAndClientId(id, product.getClientId())) {
                 throw new UnitOfMeasureImmutableException();
             }

@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports.handler;
 
+import com.procurepal_services.stock_bridge_api.imports.NameSimilarity;
+import com.procurepal_services.stock_bridge_api.product.quality.ProductSetupChecks;
 import com.procurepal_services.stock_bridge_api.entity.CompanyCategory;
 import com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService;
 import com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository;
@@ -137,6 +139,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private final CompanyCategoryRepository companyCategoryRepository;
 
     private static final String CACHE_CATEGORIES = "catalog-categories-by-name";
+    private static final String CACHE_ACTIVE_PRODUCTS = "catalog-active-products";
+
+    /** How alike two names must be to be worth asking about - "Carot" and "Carrot" are. */
+    private static final double CLOSE_NAME_SCORE = 0.8;
+
+    private List<Product> activeProducts(UUID tenantId, ImportBatchCache cache) {
+        return cache.get(CACHE_ACTIVE_PRODUCTS, tenantId,
+                id -> productRepository.findAllByClientIdAndActiveTrueOrderByNameAsc(id));
+    }
 
     /** Where {@link #snapshotBeforeUpdate} keeps the category a product had, for undo. */
     private static final String BEFORE_CATEGORY_ID = "_category_id";
@@ -348,6 +359,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         validatePackagingCoherence(ctx, out, subject, unitOfMeasure, packagingUnit, packagingSize);
+        warnAboutImplausibleSetup(ctx, out, name == null ? subject : name, unitOfMeasure, packagingUnit, packagingSize);
+        if (creating && !looksLikeContinuation && name != null) {
+            warnAboutPossibleDuplicate(ctx, out, name);
+        }
 
         UnitOption countedIn = countedIn(unitOfMeasure, packagingUnit, packagingSize);
         BigDecimal quantity = quantityColumn(ctx, out, ImportFields.OPENING_STOCK,
@@ -359,10 +374,92 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
 
         if (!creating && existing != null) {
             applyUpdateRules(ctx, out, existing, subject, quantity, unitOfMeasure, costPrice);
+            warnAboutPriceChange(out, existing, costPrice, countedIn);
             out.resolvedTo(existing.getId(), existing.getName());
         }
 
         return out.build();
+    }
+
+    // ---------------------------------------------------------- sense checks (task 1.7)
+
+    /** A length unit on groceries, a bag of 12 mg: legal, and almost always a slip. Warnings only. */
+    private void warnAboutImplausibleSetup(
+            RowContext ctx, RowValidation.Builder out, String productName,
+            String unitOfMeasure, String packagingUnit, BigDecimal packagingSize) {
+        String unitColumn = ctx.fileHasColumn(ImportFields.STOCK_UNIT) ? ImportFields.STOCK_UNIT : ImportFields.UNITS_PER_PACK;
+        ProductSetupChecks.lengthUnitWarning(productName, unitOfMeasure)
+                .ifPresent(message -> out.warning(unitColumn, "UNIT_LOOKS_WRONG", message));
+        ProductSetupChecks.packSizeWarning(productName, unitOfMeasure, packagingUnit, packagingSize)
+                .ifPresent(message -> out.warning(ImportFields.UNITS_PER_PACK, "PACK_LOOKS_TOO_SMALL", message));
+    }
+
+    /**
+     * A new product whose name is one the company already has - "Carrot" when there are Carrots -
+     * or one letter away from it. Said out loud so the same thing is not added twice; still only a
+     * warning, because two genuinely different products can share a name.
+     */
+    private void warnAboutPossibleDuplicate(RowContext ctx, RowValidation.Builder out, String name) {
+        String wanted = foldName(name);
+        Product exact = null;
+        Product close = null;
+        double closeScore = 0;
+        for (Product product : activeProducts(ctx.tenantId(), ctx.cache())) {
+            String candidate = foldName(product.getName());
+            if (candidate.equals(wanted)) {
+                exact = product;
+                break;
+            }
+            if (Math.abs(candidate.length() - wanted.length()) <= 3 && !candidate.isEmpty()
+                    && candidate.charAt(0) == wanted.charAt(0)) {
+                double score = NameSimilarity.score(candidate, wanted);
+                if (score >= CLOSE_NAME_SCORE && score > closeScore) {
+                    close = product;
+                    closeScore = score;
+                }
+            }
+        }
+        if (exact != null) {
+            out.warning(ImportFields.NAME, "POSSIBLE_DUPLICATE",
+                    "You already have a product called %s (code %s). If this is the same product, leave this row out "
+                            .formatted(ImportCopy.quote(exact.getName()), exact.getSku())
+                            + "and add any new pack or supplier on that product's page; if it is a different one, "
+                            + "give it a name you can tell apart.");
+        } else if (close != null) {
+            out.warning(ImportFields.NAME, "POSSIBLE_DUPLICATE",
+                    "%s looks very like %s (code %s), which you already have. Check it is not the same product."
+                            .formatted(ImportCopy.quote(name), ImportCopy.quote(close.getName()), close.getSku()));
+        }
+    }
+
+    /** An update row's price far from what the product has been costing. */
+    private void warnAboutPriceChange(
+            RowValidation.Builder out, Product existing, BigDecimal costPrice, UnitOption countedIn) {
+        if (costPrice == null || countedIn == null || existing.getCostPrice() == null) {
+            return;
+        }
+        BigDecimal factor = countedIn.factorToStockUnit();
+        BigDecimal perStockUnit = costPrice.divide(factor, 6, java.math.RoundingMode.HALF_UP);
+        ProductSetupChecks.priceWarning(
+                        perStockUnit, existing.getCostPrice(), costPrice,
+                        existing.getCostPrice().multiply(factor), perWhat(countedIn))
+                .ifPresent(message -> out.warning(ImportFields.COST_PRICE, "PRICE_LOOKS_WRONG", message));
+    }
+
+    /** "a bag" for a pack, "per kg" for a stock unit - how a price is said out loud. */
+    static String perWhat(UnitOption option) {
+        if (option.isPack()) {
+            String label = option.label();
+            int of = label.indexOf(" of ");
+            String container = (of > 0 ? label.substring(0, of) : label).toLowerCase(Locale.ROOT);
+            return (container.matches("^[aeiou].*") ? "an " : "a ") + container;
+        }
+        String symbol = option.label();
+        return "per " + (symbol == null || symbol.isBlank() ? "unit" : symbol);
+    }
+
+    private static String foldName(String name) {
+        return name == null ? "" : name.trim().replaceAll("\\s+", " ").toLowerCase(Locale.ROOT);
     }
 
     /**
@@ -724,7 +821,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         // (2) unit_of_measure is immutable once the product has any movement. Contract 8.12.
+        // A product with no unit yet may be given one (task 1.8's fix, from a sheet).
         if (unitOfMeasure != null
+                && existing.getUnitOfMeasure() != null
                 && !Objects.equals(unitOfMeasure, existing.getUnitOfMeasure())
                 && hasMovements(ctx.tenantId(), ctx.cache(), existing.getId())) {
             String current = ImportCopy.unitLabel(existing.getUnitOfMeasure());
@@ -778,6 +877,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
      */
     @Override
     public void validateBatch(BatchContext ctx) {
+        warnAboutRepeatedNames(ctx);
         Map<String, List<ImportRowState>> bySku = new LinkedHashMap<>();
         for (ImportRowState state : ctx.states()) {
             String sku = state.text(ImportFields.SKU);
@@ -819,6 +919,26 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 state.clearErrors(ImportFields.SKU, "SKU_NOT_FOUND");
                 warnAboutIgnoredColumns(state, parent);
 
+            }
+        }
+    }
+
+    /** Two rows in one file adding a product with the same name - almost always one product twice. */
+    private void warnAboutRepeatedNames(BatchContext ctx) {
+        Map<String, ImportRowState> firstByName = new LinkedHashMap<>();
+        for (ImportRowState state : ctx.states()) {
+            if (state.isSkipped() || state.getResolvedEntityId() != null) {
+                continue;
+            }
+            String name = state.text(ImportFields.NAME);
+            if (name == null) {
+                continue;
+            }
+            ImportRowState first = firstByName.putIfAbsent(foldName(name), state);
+            if (first != null) {
+                state.addWarning(RowIssue.warning(ImportFields.NAME, "NAME_REPEATED_IN_FILE",
+                        "Row %d also adds a product called %s. If they are the same product, leave one out."
+                                .formatted(first.excelRow(), ImportCopy.quote(name))));
             }
         }
     }

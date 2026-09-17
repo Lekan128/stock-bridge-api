@@ -23,6 +23,16 @@ public class ProductManagementExceptionHandler {
         return ResponseEntity.status(ex.status()).body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<ApiError> handleStatus(org.springframework.web.server.ResponseStatusException ex) {
+        return ResponseEntity.status(ex.getStatusCode()).body(new ApiError(ex.getReason()));
+    }
+
+    @ExceptionHandler(UnitOfMeasureImmutableException.class)
+    public ResponseEntity<ApiError> handleUnitImmutable(UnitOfMeasureImmutableException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(ProductNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(ProductNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));

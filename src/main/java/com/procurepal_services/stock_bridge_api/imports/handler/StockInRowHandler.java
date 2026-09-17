@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports.handler;
 
+import com.procurepal_services.stock_bridge_api.product.quality.ProductSetupChecks;
 import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
@@ -633,14 +634,21 @@ public class StockInRowHandler implements ImportRowHandler {
         List<UnitOption> options = unitContext.options();
         UnitOption countedIn =
                 validateCountedIn(ctx, out, product, options, unitContext.packEntities(), subject);
-        RowValues.money(ctx, out, ImportFields.COST_PER_UNIT, "Price paid for one", subject);
+        BigDecimal typedPrice = RowValues.money(ctx, out, ImportFields.COST_PER_UNIT, "Price paid for one", subject);
         validateReceivedDate(ctx, out, subject);
         out.value(ImportFields.WAYBILL_OR_INVOICE_NO, ctx.text(ImportFields.WAYBILL_OR_INVOICE_NO));
         describeUnits(out, subject, product, options, countedIn, quantity);
         // Recomputed, never read from the file: the "Last price paid" a blank price will record.
-        out.value(ImportFields.LAST_PRICE_PAID, product == null || countedIn == null
+        BigDecimal lastPrice = product == null || countedIn == null
                 ? null
-                : SheetUnitOptions.lastPricePerOption(unitContext.pricePacks(), countedIn, product.getCostPrice()));
+                : SheetUnitOptions.lastPricePerOption(unitContext.pricePacks(), countedIn, product.getCostPrice());
+        out.value(ImportFields.LAST_PRICE_PAID, lastPrice);
+        // Task 1.7: a price far from the last one is usually a line total or a slipped digit.
+        if (typedPrice != null && lastPrice != null && countedIn != null) {
+            ProductSetupChecks.priceWarning(typedPrice, lastPrice, typedPrice, lastPrice,
+                            ProductCatalogRowHandler.perWhat(countedIn))
+                    .ifPresent(message -> out.warning(ImportFields.COST_PER_UNIT, "PRICE_LOOKS_WRONG", message));
+        }
     }
 
     /**
@@ -1575,13 +1583,7 @@ public class StockInRowHandler implements ImportRowHandler {
         if (productSkuSettingsService.isEnabled(ctx.tenantId())) {
             return skuGenerationService.generateAndReserveOne(ctx.tenantId(), name);
         }
-        String stem = name.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", "-").replaceAll("^-|-$", "");
-        stem = stem.isEmpty() ? "ITEM" : stem.substring(0, Math.min(stem.length(), 12));
-        String candidate = stem;
-        for (int attempt = 2; findBySku(ctx.tenantId(), ctx.cache(), candidate) != null; attempt++) {
-            candidate = stem + "-" + attempt;
-        }
-        return candidate;
+        return ProductSetupChecks.codeFromName(name, code -> findBySku(ctx.tenantId(), ctx.cache(), code) != null);
     }
 
     /** Products the review answered "add it" for, keyed by {@link #createKey}. */

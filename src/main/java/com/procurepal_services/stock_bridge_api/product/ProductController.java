@@ -51,6 +51,7 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class ProductController {
 
+    private final com.procurepal_services.stock_bridge_api.product.quality.ProductDataIssueService productDataIssueService;
     private final ProductManagementService productManagementService;
 
     @GetMapping("/template")
@@ -140,6 +141,22 @@ public class ProductController {
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public List<ProductResponse> lowStock() {
         return productManagementService.lowStock();
+    }
+
+    /** BULK_IMPORT_CX_PLAN.md task 1.8 - products whose setup needs a one-time fix. */
+    @GetMapping("/data-issues")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<com.procurepal_services.stock_bridge_api.product.quality.dto.ProductDataIssueResponse> dataIssues() {
+        return productDataIssueService.list();
+    }
+
+    /** Replaces a code an older spreadsheet damaged ("28.0"). */
+    @PostMapping("/{id}/fix-code")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ProductResponse fixCode(
+            @PathVariable UUID id,
+            @Valid @RequestBody com.procurepal_services.stock_bridge_api.product.quality.dto.FixProductCodeRequest request) {
+        return productDataIssueService.fixCode(id, request.code());
     }
 
     @GetMapping("/{id}")

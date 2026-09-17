@@ -1097,7 +1097,8 @@ class BulkImportSessionIntegrationTest {
                 "CREATE_ONLY");
 
         assertThat(session.errorCount()).isZero();
-        assertThat(session.warningCount()).isZero();
+        // A keg of 50 ml is questioned (task 1.7) - the arithmetic below is what this test is about.
+        assertThat(session.warningCount()).isEqualTo(1);
         commit(tenant, session.id());
 
         // Thirty kegs of 50 ml.
@@ -1540,6 +1541,73 @@ class BulkImportSessionIntegrationTest {
                 Map.of("vendorId", theirs.id().toString()), String.class);
         assertThat(foreign.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(foreign.getBody()).contains("couldn't find that supplier");
+    }
+
+    /**
+     * BULK_IMPORT_CX_PLAN.md task 1.7 on the product sheet: a name the company already has, a name
+     * one letter off it, the same new name twice in the file, rice counted in millimetres and a
+     * bag of 12 mg are all said out loud - as warnings, so the import can still go ahead.
+     */
+    @Test
+    void theProductSheetQuestionsDuplicatesAndImplausibleSetups() {
+        TenantLoginResponse tenant = signup("Sense Check Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Carrot,SENSE-1,,,,,KG,,,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS
+                        + "carrot,SENSE-2,,,,,KG,,,,,\n"
+                        + "Carot,SENSE-3,,,,,KG,,,,,\n"
+                        + "Garden egg,SENSE-4,,,,,KG,,,,,\n"
+                        + "Garden egg,SENSE-5,,,,,KG,,,,,\n"
+                        + "Rice,SENSE-6,,,,,MM,,,,,\n"
+                        + "Pawpaw,SENSE-7,,,,,MG,BAG,12,,,\n"
+                        + "Copper cable,SENSE-8,,,,,M,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        assertThat(session.errorCount()).isZero();
+        Map<String, List<String>> warningsBySku = new java.util.HashMap<>();
+        for (ImportRowResponse row : rows(tenant, session.id(), "ALL")) {
+            warningsBySku.put(String.valueOf(row.raw().get("sku")),
+                    row.warnings().stream().map(ImportRowResponse.Warning::message).toList());
+        }
+        assertThat(warningsBySku.get("SENSE-2")).anySatisfy(m -> assertThat(m).contains("already have a product called"));
+        assertThat(warningsBySku.get("SENSE-3")).anySatisfy(m -> assertThat(m).contains("looks very like"));
+        assertThat(warningsBySku.get("SENSE-4")).isEmpty();
+        assertThat(warningsBySku.get("SENSE-5")).anySatisfy(m -> assertThat(m).contains("also adds a product called"));
+        assertThat(warningsBySku.get("SENSE-6")).anySatisfy(m -> assertThat(m).contains("which is a length"));
+        assertThat(warningsBySku.get("SENSE-7")).anySatisfy(m -> assertThat(m).contains("A bag of 12 mg is very small"));
+        assertThat(warningsBySku.get("SENSE-8")).isEmpty();
+
+        ImportResultResponse result = commit(tenant, session.id());
+        assertThat(result.createdCount()).as("warnings never block").isEqualTo(7);
+    }
+
+    /** Task 1.7 on the stock sheet: a price wildly off the last one is usually a line total. */
+    @Test
+    void aStockSheetPriceFarFromTheLastOneIsQuestioned() {
+        TenantLoginResponse tenant = signup("Price Check Co");
+        CompanyVendorResponse dangote = createVendor(tenant, "Dangote Checks");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,PRICE-CHK,,,,,KG,BAG,50,,,\n");
+        UUID riceId = productBySku(tenant, "PRICE-CHK").id();
+        stockInApi(tenant, riceId, Map.of(
+                "quantity", 1, "unit", "BAG", "unitPrice", 42000, "companyVendorId", dangote.id().toString()));
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS
+                        + "Rice 50kg,Bag · 50 kg,10,420000,,Dangote Checks,PRICE-CHK,," + ProductRefs.encode(riceId) + "\n"
+                        + "Rice 50kg,Bag · 50 kg,1,43000,,Dangote Checks,PRICE-CHK,," + ProductRefs.encode(riceId) + "\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(session.warningCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, session, "WARNING").warnings()).singleElement().satisfies(warning -> {
+            assertThat(warning.column()).isEqualTo("cost_per_unit");
+            assertThat(warning.message()).contains("a bag is more than 5 times").contains("not the total for the line");
+        });
     }
 
     /**
