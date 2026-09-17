@@ -88,9 +88,10 @@ class BulkImportRoundTripIntegrationTest {
             "vendor_name", "vendor_sku", "is_preferred_vendor");
 
     /** UNIT_UX_CONTRACT.md section 5.2's STOCK_IN column set, in order. */
+    /** The stock sheet as it is downloaded today (BULK_IMPORT_CX_PLAN.md task 1.4). */
     private static final List<String> STOCK_IN_TEMPLATE_HEADERS = List.of(
-            "sku", "product_name", "how_you_count_it", "vendor_name", "quantity", "counted_in",
-            "cost_per_unit", "received_date", "waybill_or_invoice_no");
+            "Product", "Comes in", "How many arrived", "Price paid for one (₦)", "Last price paid (₦)",
+            "Supplier", "Your code", "Date (if different)", "Ref");
 
     private static final String EXAMPLE_MARKER = "EXAMPLE-SKU-DELETE-ME";
 
@@ -281,11 +282,9 @@ class BulkImportRoundTripIntegrationTest {
     // ------------------------------------------------ stock-in template, end to end
 
     /**
-     * The pre-filled stock sheet as a document, checked against the catalog it was generated from.
-     *
-     * <p>Design 5.3's whole argument is that the user fills exactly one column. That only holds if
-     * the other eight arrive correct, so this asserts the pre-fill cell by cell against the
-     * products it came from - and asserts {@code quantity} is the one that is blank.
+     * The stock sheet as a document, checked against the catalog it was generated from: a help
+     * tab first, the headers and guidance row, one row per way each product is bought, the
+     * supplier and last price filled in, and the two columns a person answers left blank.
      */
     @Test
     void theStockInTemplateIsPreFilledFromTheCatalogItWasGeneratedFrom() {
@@ -296,41 +295,43 @@ class BulkImportRoundTripIntegrationTest {
                 + "Salt 25kg,SS-2,,12000,,,KG,,,,,\n");
 
         try (XSSFWorkbook workbook = open(stockInTemplate(tenant))) {
-            Sheet sheet = workbook.getSheetAt(0);
+            assertThat(workbook.getSheetName(0)).isEqualTo("How to fill this in");
+            Sheet sheet = workbook.getSheet("Delivery");
             assertThat(headersOf(sheet)).containsExactlyElementsOf(STOCK_IN_TEMPLATE_HEADERS);
-            assertThat(cell(sheet, 1, "sku", STOCK_IN_TEMPLATE_HEADERS)).startsWith(EXAMPLE_MARKER);
+            assertThat(cell(sheet, 1, "Product", STOCK_IN_TEMPLATE_HEADERS)).startsWith("ⓘ");
 
-            Map<String, Integer> rowBySku = new LinkedHashMap<>();
+            Map<String, Integer> rowByCode = new LinkedHashMap<>();
             for (int i = 2; i <= sheet.getLastRowNum(); i++) {
-                rowBySku.put(cell(sheet, i, "sku", STOCK_IN_TEMPLATE_HEADERS), i);
+                rowByCode.put(cell(sheet, i, "Your code", STOCK_IN_TEMPLATE_HEADERS), i);
             }
-            assertThat(rowBySku).containsOnlyKeys("SS-1", "SS-2");
+            assertThat(rowByCode).containsOnlyKeys("SS-1", "SS-2");
 
-            int rice = rowBySku.get("SS-1");
-            assertThat(cell(sheet, rice, "product_name", STOCK_IN_TEMPLATE_HEADERS)).isEqualTo("Rice 50kg");
-            assertThat(cell(sheet, rice, "vendor_name", STOCK_IN_TEMPLATE_HEADERS))
-                    .as("pre-filled with the product's preferred supplier - design 8.1")
+            int rice = rowByCode.get("SS-1");
+            assertThat(cell(sheet, rice, "Product", STOCK_IN_TEMPLATE_HEADERS)).isEqualTo("Rice 50kg");
+            assertThat(cell(sheet, rice, "Supplier", STOCK_IN_TEMPLATE_HEADERS))
+                    .as("pre-filled with the product's preferred supplier")
                     .isEqualTo("Dangote Nigeria Plc");
-            assertThat(cell(sheet, rice, "counted_in", STOCK_IN_TEMPLATE_HEADERS))
-                    .as("the label a person reads, never the internal code - contract 7.4")
-                    .isEqualTo("kg");
-            assertThat(cell(sheet, rice, "how_you_count_it", STOCK_IN_TEMPLATE_HEADERS))
-                    .as("a product with no pack has exactly one way to count it, and the row says so")
-                    .isEqualTo("kg");
-            assertThat(numericCell(sheet, rice, "cost_per_unit", STOCK_IN_TEMPLATE_HEADERS))
-                    .as("what they last paid, from the vendor line the catalog import wrote - written as a "
-                            + "real number in a money-formatted column, not as text")
+            assertThat(cell(sheet, rice, "Comes in", STOCK_IN_TEMPLATE_HEADERS))
+                    .as("a product with no pack is bought one way, and the row says which")
+                    .isEqualTo("Loose · kg");
+            assertThat(numericCell(sheet, rice, "Last price paid (₦)", STOCK_IN_TEMPLATE_HEADERS))
+                    .as("what they last paid, as a real number")
                     .isEqualTo(42000d);
-            assertThat(cell(sheet, rice, "received_date", STOCK_IN_TEMPLATE_HEADERS)).isNotBlank();
-            assertThat(cell(sheet, rice, "quantity", STOCK_IN_TEMPLATE_HEADERS))
-                    .as("the one column the user has to fill is the one column left empty")
+            assertThat(cell(sheet, rice, "Price paid for one (₦)", STOCK_IN_TEMPLATE_HEADERS))
+                    .as("the price starts blank - a blank price uses the last one, out loud")
                     .isEmpty();
+            assertThat(cell(sheet, rice, "How many arrived", STOCK_IN_TEMPLATE_HEADERS))
+                    .as("the one column the user has to fill is left empty")
+                    .isEmpty();
+            assertThat(cell(sheet, rice, "Ref", STOCK_IN_TEMPLATE_HEADERS)).isNotBlank();
 
-            int salt = rowBySku.get("SS-2");
-            assertThat(cell(sheet, salt, "vendor_name", STOCK_IN_TEMPLATE_HEADERS))
+            int salt = rowByCode.get("SS-2");
+            assertThat(cell(sheet, salt, "Supplier", STOCK_IN_TEMPLATE_HEADERS))
                     .as("a product with no supplier yet leaves that cell blank rather than inventing one")
                     .isEmpty();
-            assertThat(cell(sheet, salt, "counted_in", STOCK_IN_TEMPLATE_HEADERS)).isEqualTo("kg");
+            assertThat(cell(sheet, salt, "Comes in", STOCK_IN_TEMPLATE_HEADERS)).isEqualTo("Loose · kg");
+            assertThat(rowByCode.keySet()).as("one supplier's products first, the unsupplied last")
+                    .containsExactly("SS-1", "SS-2");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -338,11 +339,8 @@ class BulkImportRoundTripIntegrationTest {
 
     /**
      * The stock-in journey on the real generated sheet: fill one quantity, leave the other blank,
-     * upload, commit, read the report, undo.
-     *
-     * <p>The blank row is contract section 8.11 in its natural habitat - the sheet lists the whole
-     * catalog and the user only received two of four hundred things, so a blank quantity has to be
-     * a silent skip rather than four hundred errors.
+     * upload, commit, read the report, undo. The blank row is a silent skip - the sheet lists the
+     * whole catalog and the user received two of four hundred things.
      */
     @Test
     void aStockSheetSurvivesDownloadFillUploadCommitReportAndUndo() {
@@ -353,12 +351,13 @@ class BulkImportRoundTripIntegrationTest {
                 + "Salt 25kg,SRT-2,,12000,,,KG,,,Dangote Nigeria Plc,,TRUE\n");
 
         byte[] sheet = stockInTemplate(tenant);
-        byte[] filled = setCell(sheet, STOCK_IN_TEMPLATE_HEADERS, "SRT-1", "quantity", "30");
+        byte[] filled = setCell(sheet, STOCK_IN_TEMPLATE_HEADERS, "SRT-1", "How many arrived", "30");
 
         ImportSessionResponse session = upload(tenant, filled, "stock-sheet.xlsx", "STOCK_IN", null);
         assertThat(session.rowCount())
-                .as("two catalog rows; the example row the sheet promises to skip is not one of them")
+                .as("two product rows; the help tab and the guidance row are not rows")
                 .isEqualTo(2);
+        assertThat(session.unmappedHeaders()).isEmpty();
         assertThat(session.errorCount()).as("a blank quantity is a silent skip, never an error").isZero();
         assertThat(session.status().name()).isEqualTo("READY");
 
@@ -438,12 +437,12 @@ class BulkImportRoundTripIntegrationTest {
         }
     }
 
-    /** Fills one cell of a pre-filled sheet, found by its sku - what the user does to a stock sheet. */
+    /** Fills one cell of the stock sheet, found by the product's code - what the user does to it. */
     private byte[] setCell(byte[] template, List<String> headers, String sku, String header, String value) {
         try (XSSFWorkbook workbook = open(template)) {
-            Sheet sheet = workbook.getSheetAt(0);
-            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
-                if (sku.equals(cell(sheet, i, "sku", headers))) {
+            Sheet sheet = workbook.getSheet("Delivery");
+            for (int i = 2; i <= sheet.getLastRowNum(); i++) {
+                if (sku.equals(cell(sheet, i, "Your code", headers))) {
                     Row row = sheet.getRow(i);
                     Cell cell = row.getCell(headers.indexOf(header));
                     if (cell == null) {

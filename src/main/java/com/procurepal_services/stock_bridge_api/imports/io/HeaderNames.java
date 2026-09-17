@@ -36,6 +36,12 @@ public final class HeaderNames {
     private static final Pattern INVISIBLE_CHARACTERS =
             Pattern.compile("[\\u200B\\u200C\\u200D\\u2060\\uFEFF\\u00A0]");
 
+    /**
+     * A bracketed aside - "Price paid for one (₦)", "Date (if different)". It tells the reader
+     * something about the column and is not part of its name, so it is dropped before matching.
+     */
+    private static final Pattern BRACKETED = Pattern.compile("\\s*\\([^)]*\\)");
+
     private static final Pattern SEPARATORS = Pattern.compile("[\\s.\\-\\u2010-\\u2015]+");
 
     private HeaderNames() {
@@ -52,6 +58,10 @@ public final class HeaderNames {
         String cleaned = INVISIBLE_CHARACTERS.matcher(rawHeader).replaceAll("").trim();
         if (cleaned.isEmpty()) {
             return null;
+        }
+        String unbracketed = BRACKETED.matcher(cleaned).replaceAll("").trim();
+        if (!unbracketed.isEmpty()) {
+            cleaned = unbracketed;
         }
         String key = SEPARATORS.matcher(cleaned).replaceAll("_").toLowerCase(Locale.ROOT);
         return key.isEmpty() ? null : key;

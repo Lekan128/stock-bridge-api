@@ -120,15 +120,17 @@ public final class ImportFields {
     public static final String PRODUCT_NAME = "product_name";
     public static final String QUANTITY = "quantity";
     /**
-     * The stock-in sheet's reference column - UNIT_UX_CONTRACT.md section 5.2, new here. Read
-     * only, never parsed for a value: the server recomputes it from the row's resolved product so
-     * the grid states the same answer the sheet did, even after the user has edited the file.
-     *
-     * <p>It exists as a field key at all so that {@link ImportColumnMapper} recognises the header
-     * instead of reporting it as a column we did not understand - which is what a reference
-     * column being "unmapped" would say to a user, and it is not true.
+     * The stock sheet's hidden key column (BULK_IMPORT_CX_PLAN.md task 1.4) - which product a row
+     * is about, written by {@code ProductRefs}. Wins over the code and the name, which on that
+     * sheet are there for people.
      */
-    public static final String HOW_YOU_COUNT_IT = "how_you_count_it";
+    public static final String REF = "ref";
+
+    /**
+     * The stock sheet's "Last price paid" - reference only. The server recomputes it for each row
+     * from the product and supplier, and a row with no price of its own records it.
+     */
+    public static final String LAST_PRICE_PAID = "last_price_paid";
 
     /**
      * Renamed from {@code unit} - UNIT_UX_CONTRACT.md sections 1 and 5.2. "Counted in" is the

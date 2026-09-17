@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -614,7 +615,18 @@ public class StockManagementService {
                         overridePackagingSize,
                         product.getUnitOfMeasure());
 
-        UnitOption option = UnitOptions.resolve(options, unit)
+        // A request naming this delivery's pack means THAT pack - a product can have a 50 kg bag
+        // and a supplier's 25 kg bag at once, and matching on the container alone would pick
+        // whichever came first.
+        Optional<UnitOption> requestedPack = requestPackagingUnit != null
+                        && requestPackagingSize != null
+                        && unit != null
+                        && requestPackagingUnit.equalsIgnoreCase(unit.trim())
+                ? UnitOfMeasure.fromCodeOrLabel(requestPackagingUnit)
+                        .flatMap(container -> UnitOptions.findPack(options, container.code(), requestPackagingSize))
+                : Optional.empty();
+        UnitOption option = requestedPack
+                .or(() -> UnitOptions.resolve(options, unit))
                 .orElseThrow(() -> InvalidStockUnitException.unknownUnit(product.getName(), unit, options));
 
         // PACK_ENTRY_REDESIGN.md section 7.1. A measured stock unit rounds (12.4 kg is 12 kg, as

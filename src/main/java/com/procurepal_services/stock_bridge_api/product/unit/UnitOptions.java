@@ -219,9 +219,73 @@ public final class UnitOptions {
      * codebase goes through.
      */
     public static String packLabel(String containerLabel, BigDecimal packagingSize, String stockUnitCode) {
-        String tail = symbolOf(stockUnitCode);
+        String tail = sizeUnitWord(stockUnitCode, packagingSize);
         return containerLabel + " of " + ImportCopy.count(packagingSize) + (tail.isEmpty() ? "" : " " + tail);
     }
+
+    /**
+     * The unit after a pack's size. A symbol stays as it is - "50 kg", never "50 kgs". A counted
+     * unit is a word and reads like one - "10 pieces", "1 piece" - where the bare label would give
+     * "Pack of 10 Piece".
+     */
+    public static String sizeUnitWord(String stockUnitCode, BigDecimal size) {
+        if (stockUnitCode == null || stockUnitCode.isBlank()) {
+            return "";
+        }
+        Optional<UnitOfMeasure> unit = UnitOfMeasure.fromCode(stockUnitCode);
+        if (unit.isEmpty() || unit.get().hasSymbolAbbreviation()) {
+            return symbolOf(stockUnitCode);
+        }
+        String word = unit.get().label().toLowerCase(Locale.ROOT);
+        return size != null && size.compareTo(BigDecimal.ONE) == 0 ? word : pluralise(word);
+    }
+
+    /**
+     * A stable, round-trippable name for one member of a set. The stock unit and the base units are
+     * named by their code ({@code "KG"}); a pack by its container AND size ({@code "BAG:25"}),
+     * because one product can have a 50 kg bag and a supplier's 25 kg bag at once, and a code alone
+     * would pick whichever came first. This is what an import row stores and what its picker
+     * offers, so the pack chosen on review is the pack recorded at commit.
+     *
+     * <p>{@code ":"} rather than {@code "|"}: the review grid already reads a {@code "|"}-separated
+     * suggestion as an unconfirmed new pack.
+     */
+    public static String key(UnitOption option) {
+        if (!option.isPack()) {
+            return option.code();
+        }
+        return option.code() + KEY_SEPARATOR + option.factorToStockUnit().stripTrailingZeros().toPlainString();
+    }
+
+    /**
+     * The member {@link #key} named. A bare code falls back to {@link #resolve}; a pack key must
+     * match its container and its size, and matches nothing otherwise.
+     */
+    public static Optional<UnitOption> resolveKey(List<UnitOption> options, String key) {
+        if (key == null || key.indexOf(KEY_SEPARATOR) < 0) {
+            return resolve(options, key);
+        }
+        int at = key.indexOf(KEY_SEPARATOR);
+        String code = key.substring(0, at).trim();
+        BigDecimal size;
+        try {
+            size = new BigDecimal(key.substring(at + 1).trim());
+        } catch (NumberFormatException notAKey) {
+            return Optional.empty();
+        }
+        return findPack(options, code, size);
+    }
+
+    /** The pack with this container and this size, if the set has one. */
+    public static Optional<UnitOption> findPack(List<UnitOption> options, String code, BigDecimal size) {
+        return options.stream()
+                .filter(UnitOption::isPack)
+                .filter(option -> option.code().equalsIgnoreCase(code))
+                .filter(option -> option.factorToStockUnit().compareTo(size) == 0)
+                .findFirst();
+    }
+
+    private static final String KEY_SEPARATOR = ":";
 
     /**
      * "kg or bags of 50 kg" - every valid answer, joined the way a person lists them, for

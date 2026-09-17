@@ -5,15 +5,18 @@ import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
-import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -63,7 +66,7 @@ public class StockInTemplateService {
             List<UUID> productIds, StockInTemplateFilter filter, UUID vendorId, UUID categoryId) {
         UUID tenantId = requireTenantId();
         List<Product> products = selectProducts(tenantId, productIds, filter, vendorId, categoryId);
-        return stockInExcelService.generateTemplate(templateRows(tenantId, products), LocalDate.now());
+        return stockInExcelService.generateTemplate(templateRows(tenantId, products));
     }
 
     private List<Product> selectProducts(
@@ -111,22 +114,14 @@ public class StockInTemplateService {
     }
 
     /**
-     * The pre-fill: supplier and cost from the product's PREFERRED vendor line, and the product's
-     * whole unit set - UNIT_UX_CONTRACT.md section 2.1 - from its stock unit, its own pack and that
-     * supplier's pack.
+     * One row per way each product is bought (BULK_IMPORT_CX_PLAN.md task 1.4): every pack the
+     * product or its preferred supplier has, then the stock unit - "Bag · 50 kg" and "Loose · kg".
+     * Sorted by supplier, then product, so one supplier's delivery is one block of the sheet;
+     * products with no supplier yet come last.
      *
-     * <p>Every fallback exists because the alternative is a blank cell the user has to fill, and the
-     * whole argument of BULK_IMPORT_DESIGN.md section 5.3 is that they should have to fill exactly
-     * one. A product with no vendor line yet still gets its full unit set; only the supplier and the
-     * cost are genuinely unknown, and those are the two the review screen is good at asking about.
-     *
-     * <h2>The cost handed over is per STOCK UNIT, and stays that way until the cell is written</h2>
-     * {@code ProductVendor.lastCostPrice} and {@code Product.costPrice} are both per stock unit
-     * (contract section 3.2). The sheet's {@code cost_per_unit} column is per the row's
-     * {@code counted_in}, so the two differ by the pre-filled option's factor - and that conversion
-     * is deliberately NOT done here. It depends on which option the sheet chooses to pre-fill, and
-     * that choice belongs to {@link StockInExcelService}, next to the parser that reads the column
-     * back. Doing it here would put the two halves of one round trip in two files.
+     * <p>The last price on each row is the one {@link SheetUnitOptions#lastPricePerOption} finds,
+     * the same function the import uses when the price is left blank, so the number a person sees
+     * beside the row is the number a blank cell will record.
      */
     private List<StockInTemplateRow> templateRows(UUID tenantId, List<Product> products) {
         if (products.isEmpty()) {
@@ -138,9 +133,7 @@ public class StockInTemplateService {
             preferredByProductId.put(line.getProduct().getId(), line);
         }
 
-        // Batched, same N+1-avoidance reasoning findPreferredByClientIdAndProductIdIn already
-        // states for itself - a vendor's packs (MULTI_PACK_PER_VENDOR_DESIGN.md sections 4-6) are
-        // a LAZY association, and this page can be a full catalog's worth of preferred vendors.
+        // Batched: a vendor's packs are a LAZY association, and this can be a whole catalog.
         List<UUID> preferredVendorIds = preferredByProductId.values().stream().map(ProductVendor::getId).toList();
         Map<UUID, List<ProductVendorPack>> packsByVendorId = preferredVendorIds.isEmpty()
                 ? Map.of()
@@ -149,28 +142,35 @@ public class StockInTemplateService {
                         .stream()
                         .collect(Collectors.groupingBy(pack -> pack.getProductVendor().getId()));
 
-        return products.stream()
-                .map(product -> {
-                    ProductVendor preferred = preferredByProductId.get(product.getId());
-                    List<ProductVendorPack> packs =
-                            preferred == null ? List.of() : packsByVendorId.getOrDefault(preferred.getId(), List.of());
-                    ProductVendorPack defaultPack =
-                            packs.stream().filter(ProductVendorPack::isDefault).findFirst().orElse(null);
-                    return new StockInTemplateRow(
-                            product.getId(),
-                            product.getSku(),
-                            product.getName(),
-                            preferred == null ? null : preferred.getCompanyVendor().getName(),
-                            SheetUnitOptions.forRow(
-                                    product.getUnitOfMeasure(),
-                                    product.getPackagingUnit(),
-                                    product.getPackagingSize(),
-                                    packs.stream()
-                                            .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
-                                            .toList()),
-                            preferred == null ? product.getCostPrice() : (defaultPack == null ? null : defaultPack.getLastCostPrice()));
-                })
-                .toList();
+        List<StockInTemplateRow> rows = new ArrayList<>();
+        for (Product product : products) {
+            ProductVendor preferred = preferredByProductId.get(product.getId());
+            List<ProductVendorPack> packs =
+                    preferred == null ? List.of() : packsByVendorId.getOrDefault(preferred.getId(), List.of());
+            List<UnitOption> options = SheetUnitOptions.forRow(
+                    product.getUnitOfMeasure(),
+                    product.getPackagingUnit(),
+                    product.getPackagingSize(),
+                    packs.stream()
+                            .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
+                            .toList());
+            String vendorName = preferred == null ? null : preferred.getCompanyVendor().getName();
+            for (UnitOption option : SheetUnitOptions.rowOptions(options)) {
+                rows.add(new StockInTemplateRow(
+                        product.getId(),
+                        product.getSku(),
+                        product.getName(),
+                        vendorName,
+                        option,
+                        SheetUnitOptions.lastPricePerOption(packs, option, product.getCostPrice())));
+            }
+        }
+        // Stable sort: within one product the pack rows keep their order, loose last.
+        rows.sort(Comparator
+                .comparing((StockInTemplateRow row) -> row.vendorName() == null)
+                .thenComparing(row -> row.vendorName() == null ? "" : row.vendorName().toLowerCase(Locale.ROOT))
+                .thenComparing(row -> row.productName() == null ? "" : row.productName().toLowerCase(Locale.ROOT)));
+        return rows;
     }
 
     private UUID requireTenantId() {

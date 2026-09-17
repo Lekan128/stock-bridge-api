@@ -1,9 +1,13 @@
 package com.procurepal_services.stock_bridge_api.product.bulk;
 
+import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureCategory;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
@@ -29,21 +33,16 @@ import java.util.regex.Pattern;
  *
  * <h2>What IS here</h2>
  * <ol>
- *   <li>{@link #howYouCountIt} - the reference column's text, joined the way section 5.2 words it.
- *       A cell, not a sentence, so it cannot reuse {@code UnitOptions.countedInPhrase}, which
- *       composes the middle of an error message ("kg or bags of 50 kg") in a different grammar.</li>
- *   <li>{@link #resolve} - reading a {@code counted_in} cell back when there is no product in hand
- *       yet, which is a question only a file parser asks.</li>
+ *   <li>{@link #comesInLabel} and {@link #canonical} - the stock sheet's "Comes in" wording
+ *       ("Bag · 50 kg", "Loose · kg"), written and read back.</li>
+ *   <li>{@link #rowOptions} - which ways of buying a product get a row of their own.</li>
+ *   <li>{@link #lastPricePerStockUnit} - the "Last price paid" figure, shared by the template and
+ *       the import so a blank price means the same number in both.</li>
+ *   <li>{@link #resolve} - reading a "Comes in" cell back when there is no product in hand yet,
+ *       which is a question only a file parser asks.</li>
  * </ol>
  */
 public final class SheetUnitOptions {
-
-    /**
-     * How the stock-in sheet joins a product's ways of counting into one readable cell -
-     * UNIT_UX_CONTRACT.md section 5.2. Reads as something a person scans rather than parses:
-     * "kg · or Bag of 50 kg".
-     */
-    private static final String OPTION_SEPARATOR = " · or ";
 
     /**
      * Splits a pack label back into the container that starts it and the size that names it:
@@ -79,32 +78,121 @@ public final class SheetUnitOptions {
         return UnitOptions.forProductAndSupplier(stockUnitCode, packagingUnitCode, packagingSize, supplierPacks);
     }
 
+    /** Between a container and its size on the sheet: "Bag · 50 kg". */
+    public static final String COMES_IN_SEPARATOR = " · ";
+
+    private static final Pattern LOOSE_PREFIX =
+            Pattern.compile("^loose\\b\\s*[·:\\-]?\\s*", Pattern.CASE_INSENSITIVE);
+
     /**
-     * The {@code how_you_count_it} cell - UNIT_UX_CONTRACT.md section 5.2, the column that fixes
-     * the reported complaint by putting the valid answers on the row, beside the cell that asks
-     * the question.
-     *
-     * <h2>Deviation from the contract, stated plainly</h2>
-     * The contract says "built from section 2.1's set" and gives the worked example
-     * {@code "kg · or Bag of 50 kg"} for a KG/BAG/50 product. Those two cannot both be satisfied:
-     * section 2.1 step 4 also puts mg, g and t in that product's set, so the literal reading would
-     * print {@code "kg · or Bag of 50 kg · or mg · or g · or t"}. This method follows the worked
-     * example - steps 1 to 3, the ways this particular product is actually bought and sold - and
-     * the column's header comment carries the rest ("other sizes of the same measure work too").
-     *
-     * <p>The reason is the whole purpose of the column: it exists because the sheet was confusing,
-     * and a cell listing milligrams of rice would be confusing in a new way. Nothing is lost -
-     * the SET is untouched, the {@code counted_in} dropdown still offers every base unit, and the
-     * server still accepts them. Only what is printed on the row is narrowed.
-     *
-     * <p>The steps are told apart by role rather than by position, so this stays correct if
-     * {@link UnitOptions} ever reorders: an option is one of the product's OWN ways of counting
-     * when it is the stock unit, or when its code is not a BASE-role unit (i.e. it is a pack).
+     * The "Comes in" cell for one way of buying a product (BULK_IMPORT_CX_PLAN.md task 1.4) -
+     * written by the template and offered by the review grid's picker, so both say the same thing:
+     * <ul>
+     *   <li>a pack: {@code "Bag · 50 kg"}, {@code "Pack · 10 pieces"};</li>
+     *   <li>a measured unit bought loose: {@code "Loose · kg"};</li>
+     *   <li>a counted stock unit: its own word, {@code "Piece"} - "loose pieces" says nothing more;</li>
+     *   <li>no stock unit at all: {@code "Units"}.</li>
+     * </ul>
      */
-    public static String howYouCountIt(List<UnitOption> options) {
-        return String.join(
-                OPTION_SEPARATOR,
-                options.stream().filter(SheetUnitOptions::isProductsOwnWayOfCounting).map(UnitOption::label).toList());
+    public static String comesInLabel(UnitOption option) {
+        if (option.isPack()) {
+            String label = option.label();
+            int of = label.indexOf(" of ");
+            return of < 0 ? label : label.substring(0, of) + COMES_IN_SEPARATOR + label.substring(of + 4);
+        }
+        if (option.code() == null || option.code().isBlank()) {
+            return "Units";
+        }
+        Optional<UnitOfMeasure> unit = UnitOfMeasure.fromCode(option.code());
+        if (unit.isPresent() && unit.get().category() == UnitOfMeasureCategory.COUNT) {
+            return unit.get().label();
+        }
+        return "Loose" + COMES_IN_SEPARATOR + option.label();
+    }
+
+    /**
+     * A "Comes in" cell rewritten into the grammar the older readers already understand -
+     * {@code "Bag · 50 kg"} to {@code "Bag of 50 kg"}, {@code "Loose · kg"} to {@code "kg"} - so
+     * {@link #resolvePack} and the new-pack parser stay the only readers of a size. Anything else
+     * comes back trimmed and otherwise unchanged. A non-breaking space, which a paste out of a
+     * browser or a Numbers export leaves behind, is read as a space.
+     */
+    public static String canonical(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String text = raw.replace(' ', ' ').trim();
+        Matcher loose = LOOSE_PREFIX.matcher(text);
+        if (loose.find() && loose.end() < text.length()) {
+            return text.substring(loose.end()).trim();
+        }
+        int dot = text.indexOf('·');
+        if (dot > 0 && dot < text.length() - 1) {
+            return text.substring(0, dot).trim() + " of " + text.substring(dot + 1).trim();
+        }
+        return text;
+    }
+
+    /**
+     * The ways of buying a product that each get their own row on the stock sheet: every pack
+     * (the product's own first, as the set orders them), then the stock unit. Never the
+     * same-category base units - a row for "Loose · mg" of rice would be noise.
+     */
+    public static List<UnitOption> rowOptions(List<UnitOption> options) {
+        List<UnitOption> rows = new ArrayList<>();
+        options.stream().filter(UnitOption::isPack).forEach(rows::add);
+        options.stream().filter(UnitOption::isStockUnit).findFirst().ifPresent(rows::add);
+        return rows;
+    }
+
+    /**
+     * What was last paid for ONE stock unit bought this way - the figure behind the sheet's
+     * "Last price paid", and behind a blank "Price paid for one" at import time, so the two agree.
+     *
+     * <p>Looked for in order: the pack that IS this way of buying (same container and size, or a
+     * container-less price for a loose row); then the default pack; then the product's own cost
+     * price. Every one of those is stored per stock unit (contract section 3.2).
+     *
+     * @param packs supplier packs to look in, the most specific supplier's first.
+     */
+    public static BigDecimal lastPricePerStockUnit(
+            List<ProductVendorPack> packs, UnitOption option, BigDecimal productCostPrice) {
+        for (ProductVendorPack pack : packs) {
+            if (pack.getLastCostPrice() != null && isThisWayOfBuying(pack, option)) {
+                return pack.getLastCostPrice();
+            }
+        }
+        for (ProductVendorPack pack : packs) {
+            if (pack.getLastCostPrice() != null && pack.isDefault()) {
+                return pack.getLastCostPrice();
+            }
+        }
+        return productCostPrice;
+    }
+
+    /** {@link #lastPricePerStockUnit} for ONE of {@code option} - per bag for a bag row. Null when unknown. */
+    public static BigDecimal lastPricePerOption(
+            List<ProductVendorPack> packs, UnitOption option, BigDecimal productCostPrice) {
+        BigDecimal perStockUnit = lastPricePerStockUnit(packs, option, productCostPrice);
+        if (perStockUnit == null) {
+            return null;
+        }
+        // Not rounded: a tiny per-gram price rounded to two places would record as zero.
+        return perStockUnit.multiply(option.factorToStockUnit()).stripTrailingZeros();
+    }
+
+    private static boolean isThisWayOfBuying(ProductVendorPack pack, UnitOption option) {
+        if (!option.isPack()) {
+            return pack.getPackagingUnit() == null;
+        }
+        if (pack.getPackagingUnit() == null || pack.getPackagingSize() == null) {
+            return false;
+        }
+        String code = UnitOfMeasure.fromCode(pack.getPackagingUnit())
+                .map(UnitOfMeasure::code)
+                .orElse(pack.getPackagingUnit());
+        return option.code().equalsIgnoreCase(code)
+                && pack.getPackagingSize().compareTo(option.factorToStockUnit()) == 0;
     }
 
     /**
@@ -117,7 +205,7 @@ public final class SheetUnitOptions {
      * {@code StockManagementService} use. A file parser is upstream of that: it has a SKU it has
      * not looked up yet, so it has no set to match against, and its job is only to turn what the
      * cell says into a code the row handler can then check. Keeping the two apart is what lets
-     * {@link StockInExcelService#parse} be a pure function of the file.
+     * the parse of a file stay independent of any product.
      *
      * <h2>Why the pack label needs its own step</h2>
      * {@code fromCodeOrLabel} resolves codes, display labels and trade aliases - {@code "BAG"},
@@ -139,6 +227,7 @@ public final class SheetUnitOptions {
      * reached here from a stale or hand-typed cell instead of a first-time guess.
      */
     public static Optional<UnitOfMeasure> resolve(String rawCellValue) {
+        rawCellValue = canonical(rawCellValue);
         Optional<UnitOfMeasure> direct = UnitOfMeasure.fromCodeOrLabel(rawCellValue);
         if (direct.isPresent() || rawCellValue == null) {
             return direct;
@@ -162,7 +251,7 @@ public final class SheetUnitOptions {
         }
         // A non-breaking space is what a paste out of a browser or a Numbers export leaves
         // behind, and it would stop " of " matching for a reason nobody could see.
-        Matcher matcher = PACK_LABEL.matcher(rawCellValue.replace(' ', ' ').trim());
+        Matcher matcher = PACK_LABEL.matcher(canonical(rawCellValue));
         if (!matcher.matches()) {
             return Optional.empty();
         }
@@ -182,9 +271,5 @@ public final class SheetUnitOptions {
     public record ParsedPackLabel(String code, java.math.BigDecimal size) {
     }
 
-    /** Steps 1 to 3 of section 2.1 - this product's stock unit and its packs, never step 4's base units. */
-    private static boolean isProductsOwnWayOfCounting(UnitOption option) {
-        return option.isStockUnit() || option.isPack();
-    }
 
 }

@@ -373,6 +373,32 @@ class BulkImportEngineEdgeCaseIntegrationTest {
                 .isEmpty();
     }
 
+    /**
+     * A product saved before stock units existed is written on the stock sheet as "Units". That
+     * row has to read back as the product's own unit - no unit parser would recognise the word.
+     */
+    @Test
+    void aProductWithNoStockUnitReadsItsOwnUnitsRowBack() {
+        TenantLoginResponse tenant = signup("No Unit Co");
+        UUID catalogSession = commitCatalog(tenant, CATALOG_HEADERS + "Old yam,UNITS-1,,,,,KG,,,,,\n");
+        UUID clientId = clientIdOf(catalogSession);
+        Product yam = productRepository.findByClientIdAndSku(clientId, "UNITS-1").orElseThrow();
+        yam.setUnitOfMeasure(null);
+        productRepository.saveAndFlush(yam);
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "Product,Comes in,How many arrived,Ref\nOld yam,Units,3,"
+                        + com.procurepal_services.stock_bridge_api.product.bulk.ProductRefs.encode(yam.getId()) + "\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        commit(tenant, session.id());
+        assertThat(productRepository.findByClientIdAndSku(clientId, "UNITS-1").orElseThrow().getQuantityOnHand())
+                .isEqualTo(3);
+    }
+
     // ----------------------------------------------------------------- helpers
 
     /** Pushes a file past its two-day limit without waiting two days. */
@@ -396,20 +422,26 @@ class BulkImportEngineEdgeCaseIntegrationTest {
         return response.getBody();
     }
 
-    /** The catalog SKUs in a generated stock sheet - the example row's reserved marker excluded. */
+    /** The product codes on a generated stock sheet, once each - a product can have several rows. */
     private List<String> skusInSheet(byte[] xlsx) {
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(xlsx))) {
-            Sheet sheet = workbook.getSheetAt(0);
-            assertThat(sheet.getRow(0).getCell(0).getStringCellValue()).isEqualTo("sku");
+            Sheet sheet = workbook.getSheet("Delivery");
+            int codeColumn = -1;
+            for (Cell header : sheet.getRow(0)) {
+                if ("Your code".equals(header.getStringCellValue())) {
+                    codeColumn = header.getColumnIndex();
+                }
+            }
+            assertThat(codeColumn).as("the sheet has a Your code column").isNotNegative();
             List<String> skus = new ArrayList<>();
-            for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+            for (int i = 2; i <= sheet.getLastRowNum(); i++) {
                 Row row = sheet.getRow(i);
                 if (row == null) {
                     continue;
                 }
-                Cell cell = row.getCell(0);
+                Cell cell = row.getCell(codeColumn);
                 String sku = cell == null ? null : cell.getStringCellValue();
-                if (sku != null && !sku.isBlank() && !sku.startsWith("EXAMPLE-SKU-DELETE-ME")) {
+                if (sku != null && !sku.isBlank() && !skus.contains(sku)) {
                     skus.add(sku);
                 }
             }

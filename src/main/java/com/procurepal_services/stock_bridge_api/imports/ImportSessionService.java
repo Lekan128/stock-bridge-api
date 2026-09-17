@@ -206,7 +206,7 @@ public class ImportSessionService {
      * <p>Every generated sheet carries at least one row whose {@code sku} is the reserved
      * {@code EXAMPLE-SKU-DELETE-ME} marker, and the cell beside it says, in so many words,
      * "delete this row, or leave it - example rows are skipped automatically". The legacy
-     * {@code ProductExcelService.parse}/{@code StockInExcelService.parse} have honoured that since
+     * {@code ProductExcelService.parse} (and the since-removed stock-in parser) honoured that since
      * they wrote it. This engine did not, which made the promise false through the door almost
      * every user actually comes in by: download the template, fill it in, upload that file.
      *

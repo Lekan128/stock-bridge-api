@@ -165,31 +165,21 @@ public class ImportColumnMapper {
 
     private static Map<String, String> stockInAliases() {
         Map<String, String> aliases = new LinkedHashMap<>();
-        put(aliases, ImportFields.SKU, "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
+        // The stock sheet's own headers first (BULK_IMPORT_CX_PLAN.md task 1.4). HeaderNames drops
+        // a bracketed aside, so "Price paid for one (₦)" arrives here as price_paid_for_one.
+        put(aliases, ImportFields.SKU, "your_code", "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
         put(aliases, ImportFields.PRODUCT_NAME, "product", "item", "item_name", "name", "description");
         put(aliases, ImportFields.VENDOR_NAME, "supplier", "vendor", "supplier_name", "bought_from", "source", "distributor");
-        put(aliases, ImportFields.QUANTITY, "qty", "quantity_received", "received", "amount", "qty_received", "delivered");
+        put(aliases, ImportFields.QUANTITY, "how_many_arrived", "qty", "quantity_received", "received", "amount", "qty_received", "delivered");
+        put(aliases, ImportFields.LAST_PRICE_PAID, "last_price", "previous_price");
         // "unit" and "unit_cost" lead for the same reason "quantity_on_hand" does above: they
         // are what every stock-in template published before UNIT_UX_CONTRACT.md section 5.2
         // called these columns, and section 5.2 keeps them accepted on read forever.
-        put(aliases, ImportFields.COUNTED_IN, "unit", "uom", "units", "measure", "unit_of_measure");
-        put(aliases, ImportFields.COST_PER_UNIT, "unit_cost", "cost", "cost_price", "price", "unit_price", "purchase_price", "buying_price");
-        // Removed from the sheet by section 5.2, still mapped on purpose. A number here is read,
-        // ignored, and warned about once per affected row (StockInRowHandler) - which is only
-        // possible if the column resolves to a field at all. Left unmapped it would instead be
-        // reported as a column we did not understand, which is both untrue and silent about the
-        // thing the user needs to hear: that the pack now comes from their product setup.
-        //
-        // The key itself is now "contains" (PACK_ENTRY_REDESIGN.md section 14), so both
-        // "units_per_pack" and "packaging_size" - the two headers the sheet has actually carried
-        // - have to be listed as aliases here rather than matching by identity as they used to.
-        // Old note, still true of "packaging_size": it was the header
-        // the sheet actually carried before section 5.2 removed the column - has to be listed as
-        // an alias here rather than matching by identity as it used to.
-        put(aliases, ImportFields.UNITS_PER_PACK, "units_per_pack", "packaging_size", "pack_size", "package_size", "size", "qty_per_pack", "holds", "contents");
+        put(aliases, ImportFields.COUNTED_IN, "comes_in", "unit", "uom", "units", "measure", "unit_of_measure", "pack");
+        put(aliases, ImportFields.COST_PER_UNIT, "price_paid_for_one", "price_paid", "unit_cost", "cost", "cost_price", "price", "unit_price", "purchase_price", "buying_price");
         put(aliases, ImportFields.RECEIVED_DATE, "date", "received", "delivery_date", "date_received", "invoice_date", "receipt_date");
         put(aliases, ImportFields.WAYBILL_OR_INVOICE_NO,
-                "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "ref", "doc_no");
+                "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "doc_no");
         return Map.copyOf(aliases);
     }
 

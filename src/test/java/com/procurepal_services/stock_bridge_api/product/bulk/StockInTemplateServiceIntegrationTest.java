@@ -71,16 +71,12 @@ class StockInTemplateServiceIntegrationTest {
     }
 
     /**
-     * The whole of UNIT_UX_CONTRACT.md section 5.2's column table, asserted against real rows:
-     * supplier from the preferred vendor line, every way of counting the product in
-     * {@code how_you_count_it}, the likeliest of them pre-filled into {@code counted_in}, the cost
-     * stated in that option's terms, date today - and quantity, the one column the user fills,
-     * empty.
+     * BULK_IMPORT_CX_PLAN.md task 1.4 against real rows: one row per way each product is bought,
+     * supplier from the preferred vendor line, the last price stated per that way of buying, and
+     * the two columns a person answers - quantity and price - left empty.
      *
-     * <p>{@code lastCostPrice} is ₦900, per KG, because contract section 3.2 makes every stored
-     * price per stock unit. The sheet has to state it as ₦45,000 against the 50 kg bag it pre-fills,
-     * or a user who accepts the pre-fill imports a fiftieth of what they paid - which is exactly the
-     * round trip that made UNIT_UX_REMEDIATION_PLAN.md P0-1 self-perpetuating.
+     * <p>{@code lastCostPrice} is ₦900 per KG, as stored (contract section 3.2); the bag row says
+     * ₦45,000 and the loose row ₦900.
      */
     @Test
     @Transactional
@@ -91,29 +87,28 @@ class StockInTemplateServiceIntegrationTest {
         vendorLine(rice, vendor, new BigDecimal("900"));
         product("OIL-5L", "Groundnut Oil 5L", "LITER", null, null, 10, null);
 
-        Sheet sheet = firstSheetOf(stockInTemplateService.generate(List.of(), StockInTemplateFilter.ALL, null, null));
+        Sheet sheet = dataSheetOf(stockInTemplateService.generate(List.of(), StockInTemplateFilter.ALL, null, null));
         List<String> headers = headerNames(sheet);
 
-        Row riceRow = rowWithSku(sheet, "RICE-50");
-        assertThat(riceRow.getCell(headers.indexOf("product_name")).getStringCellValue()).isEqualTo("Rice 50kg");
-        assertThat(riceRow.getCell(headers.indexOf("vendor_name")).getStringCellValue())
-                .isEqualTo("Dangote Nigeria Plc");
-        assertThat(riceRow.getCell(headers.indexOf("how_you_count_it")).getStringCellValue())
-                .as("both valid answers, on the row, beside the cell that asks the question")
-                .isEqualTo("kg · or Bag of 50 kg");
-        assertThat(riceRow.getCell(headers.indexOf("counted_in")).getStringCellValue()).isEqualTo("Bag of 50 kg");
-        assertThat(riceRow.getCell(headers.indexOf("cost_per_unit")).getNumericCellValue())
-                .as("₦900 per kg, stated per the 50 kg bag this row is counted in")
-                .isEqualTo(45000.0);
-        assertThat(riceRow.getCell(headers.indexOf("received_date"))).isNotNull();
-        assertThat(riceRow.getCell(headers.indexOf("quantity"))).as("the one column they fill").isNull();
+        List<Row> riceRows = rowsWithSku(sheet, "RICE-50");
+        assertThat(riceRows).extracting(row -> row.getCell(headers.indexOf("Comes in")).getStringCellValue())
+                .containsExactly("Bag · 50 kg", "Loose · kg");
+        assertThat(riceRows).extracting(row -> row.getCell(headers.indexOf("Last price paid (₦)")).getNumericCellValue())
+                .containsExactly(45000.0, 900.0);
+        assertThat(riceRows).allSatisfy(row -> {
+            assertThat(row.getCell(headers.indexOf("Product")).getStringCellValue()).isEqualTo("Rice 50kg");
+            assertThat(row.getCell(headers.indexOf("Supplier")).getStringCellValue()).isEqualTo("Dangote Nigeria Plc");
+            assertThat(ProductRefs.decode(row.getCell(headers.indexOf("Ref")).getStringCellValue())).contains(rice.getId());
+            assertThat(row.getCell(headers.indexOf("How many arrived"))).as("the one column they fill").isNull();
+            assertThat(row.getCell(headers.indexOf("Price paid for one (₦)"))).isNull();
+        });
 
-        // A product with no supplier line still pre-fills its unit set - only what we genuinely do
-        // not know is left blank.
-        Row oilRow = rowWithSku(sheet, "OIL-5L");
-        assertThat(oilRow.getCell(headers.indexOf("how_you_count_it")).getStringCellValue()).isEqualTo("L");
-        assertThat(oilRow.getCell(headers.indexOf("counted_in")).getStringCellValue()).isEqualTo("L");
-        assertThat(oilRow.getCell(headers.indexOf("vendor_name"))).isNull();
+        // A product with no supplier line is still listed; only what we genuinely do not know is blank.
+        List<Row> oilRows = rowsWithSku(sheet, "OIL-5L");
+        assertThat(oilRows).singleElement().satisfies(row -> {
+            assertThat(row.getCell(headers.indexOf("Comes in")).getStringCellValue()).isEqualTo("Loose · L");
+            assertThat(row.getCell(headers.indexOf("Supplier"))).isNull();
+        });
     }
 
     /** "What do we need to reorder" and "what did we just receive" are usually the same list. */
@@ -125,7 +120,7 @@ class StockInTemplateServiceIntegrationTest {
         product("FINE-1", "Plenty left", "KG", null, null, 900, 5);
 
         Sheet sheet =
-                firstSheetOf(stockInTemplateService.generate(List.of(), StockInTemplateFilter.LOW_STOCK, null, null));
+                dataSheetOf(stockInTemplateService.generate(List.of(), StockInTemplateFilter.LOW_STOCK, null, null));
 
         assertThat(skus(sheet)).contains("LOW-1").doesNotContain("FINE-1");
     }
@@ -138,7 +133,7 @@ class StockInTemplateServiceIntegrationTest {
         Product chosen = product("PICK-1", "Chosen", "KG", null, null, 5, null);
         product("PICK-2", "Not chosen", "KG", null, null, 5, null);
 
-        Sheet sheet = firstSheetOf(
+        Sheet sheet = dataSheetOf(
                 stockInTemplateService.generate(List.of(chosen.getId()), StockInTemplateFilter.ALL, null, null));
 
         assertThat(skus(sheet)).contains("PICK-1").doesNotContain("PICK-2");
@@ -154,7 +149,7 @@ class StockInTemplateServiceIntegrationTest {
         vendorLine(theirs, dangote, new BigDecimal("100"));
         product("OURS-1", "From nobody", "KG", null, null, 5, null);
 
-        Sheet sheet = firstSheetOf(stockInTemplateService.generate(
+        Sheet sheet = dataSheetOf(stockInTemplateService.generate(
                 List.of(), StockInTemplateFilter.BY_VENDOR, dangote.getId(), null));
 
         assertThat(skus(sheet)).contains("THEIRS-1").doesNotContain("OURS-1");
@@ -169,7 +164,7 @@ class StockInTemplateServiceIntegrationTest {
         tenant("Asking Tenant Co");
         product("MINE-1", "Mine", "KG", null, null, 5, null);
 
-        Sheet sheet = firstSheetOf(
+        Sheet sheet = dataSheetOf(
                 stockInTemplateService.generate(List.of(theirs.getId()), StockInTemplateFilter.ALL, null, null));
 
         assertThat(skus(sheet)).doesNotContain("OTHER-1");
@@ -246,9 +241,9 @@ class StockInTemplateServiceIntegrationTest {
      * the parse side - and stated here because it is the kind of assumption that is invisible
      * until it is wrong.
      */
-    private Sheet firstSheetOf(byte[] file) {
+    private Sheet dataSheetOf(byte[] file) {
         try (XSSFWorkbook workbook = new XSSFWorkbook(new ByteArrayInputStream(file))) {
-            return workbook.getSheetAt(0);
+            return workbook.getSheet("Delivery");
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -263,23 +258,27 @@ class StockInTemplateServiceIntegrationTest {
     }
 
     private List<String> skus(Sheet sheet) {
+        int code = headerNames(sheet).indexOf("Your code");
         List<String> skus = new ArrayList<>();
-        for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+        for (int i = 2; i <= sheet.getLastRowNum(); i++) {
             Row row = sheet.getRow(i);
-            if (row != null && row.getCell(0) != null) {
-                skus.add(row.getCell(0).getStringCellValue());
+            if (row != null && row.getCell(code) != null) {
+                skus.add(row.getCell(code).getStringCellValue());
             }
         }
         return skus;
     }
 
-    private Row rowWithSku(Sheet sheet, String sku) {
-        for (int i = 1; i <= sheet.getLastRowNum(); i++) {
+    private List<Row> rowsWithSku(Sheet sheet, String sku) {
+        int code = headerNames(sheet).indexOf("Your code");
+        List<Row> rows = new ArrayList<>();
+        for (int i = 2; i <= sheet.getLastRowNum(); i++) {
             Row row = sheet.getRow(i);
-            if (row != null && row.getCell(0) != null && sku.equals(row.getCell(0).getStringCellValue())) {
-                return row;
+            if (row != null && row.getCell(code) != null && sku.equals(row.getCell(code).getStringCellValue())) {
+                rows.add(row);
             }
         }
-        throw new AssertionError("No row for sku " + sku);
+        assertThat(rows).as("rows for sku %s", sku).isNotEmpty();
+        return rows;
     }
 }
