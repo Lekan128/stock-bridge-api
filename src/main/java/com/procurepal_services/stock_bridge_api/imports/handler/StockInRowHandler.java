@@ -1260,6 +1260,12 @@ public class StockInRowHandler implements ImportRowHandler {
         if (totalCost.signum() > 0) {
             preview.always("cost", "Total cost", deliveries, ImportCopy.money(totalCost));
         }
+        String invoice = ctx.session().getRowDefaults() == null
+                ? null
+                : ctx.session().getRowDefaults().get(ImportFields.WAYBILL_OR_INVOICE_NO);
+        if (invoice != null) {
+            preview.always("invoice", "Invoice", deliveries, invoice);
+        }
         if (!suppliers.isEmpty()) {
             preview.always("from", "From", suppliers.size(), ImportCopy.suppliers(suppliers.size()));
         }

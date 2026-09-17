@@ -102,14 +102,21 @@ public class ImportController {
             @RequestPart("file") MultipartFile file,
             @RequestPart("kind") String kind,
             @RequestPart(value = "mode", required = false) String mode,
+            @RequestPart(value = "deliveryDate", required = false) String deliveryDate,
+            @RequestPart(value = "invoiceNo", required = false) String invoiceNo,
+            @RequestPart(value = "vendorId", required = false) String vendorId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         ImportKind importKind = parseKind(kind);
         ImportMode importMode = parseMode(mode);
         // Checked before a byte is parsed: the kind is known here, so there is no reason to read
         // a ten-megabyte file for someone who was never going to be allowed to import it.
         importSessionService.requireKindAuthority(importKind);
+        // BULK_IMPORT_CX_PLAN.md task 1.5: a delivery's date, invoice and supplier, asked once.
+        var delivery = importKind == ImportKind.STOCK_IN
+                ? importSessionService.deliveryDetails(deliveryDate, invoiceNo, vendorId)
+                : null;
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(importSessionService.create(file, importKind, importMode, principal.getUserId()));
+                .body(importSessionService.create(file, importKind, importMode, principal.getUserId(), delivery));
     }
 
     @GetMapping("/{id}")

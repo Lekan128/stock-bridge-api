@@ -16,6 +16,8 @@ import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewRespons
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportLinkedPackResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportDeliveryDetails;
+import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionSummaryResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.UndoBlockedResponse;
@@ -113,6 +115,7 @@ public class ImportSessionService {
     private final ImportColumnMapper columnMapper;
     private final ImportResultReportWriter reportWriter;
     private final List<ImportRowHandler> handlers;
+    private final CompanyVendorRepository companyVendorRepository;
 
     private Map<ImportKind, ImportRowHandler> handlersByKind;
 
@@ -153,6 +156,15 @@ public class ImportSessionService {
      */
     @Transactional
     public ImportSessionResponse create(MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId) {
+        return create(file, kind, mode, actingUserId, null);
+    }
+
+    /**
+     * @param delivery a stock-in's date, invoice number and supplier, asked once on the upload
+     *     screen and applied to every row that leaves that cell blank. Ignored for a catalog import.
+     */
+    public ImportSessionResponse create(
+            MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
         SheetTable table = read(file);
         // Mode is meaningless for STOCK_IN (contract section 1) - persisted as CREATE_ONLY and
         // ignored, rather than left null, so the CHECK constraint and every later read see a
@@ -172,6 +184,7 @@ public class ImportSessionService {
                 .originalFilename(filenameOf(file))
                 .columnMapping(new LinkedHashMap<>(mapping.columnMapping()))
                 .valueMappings(new LinkedHashMap<>())
+                .rowDefaults(kind == ImportKind.STOCK_IN ? rowDefaultsOf(delivery) : null)
                 .rowCount(dataRows.size())
                 .validCount(0)
                 .errorCount(0)
@@ -559,6 +572,18 @@ public class ImportSessionService {
         // Last, so it beats the previous pass's coerced value - see applyValueMappings for why
         // that ordering is the whole point, and why it still loses to a hand edit.
         applyValueMappings(session, mappings, rawText, edited, input);
+
+        // The delivery's own date, invoice and supplier, for every row that says nothing itself.
+        // Applied after everything else, so a cleared cell falls back to them too. Seen as text
+        // the row typed, so value resolution and every later phase treat it the same way.
+        Map<String, String> defaults = session.getRowDefaults() == null ? Map.of() : session.getRowDefaults();
+        defaults.forEach((field, value) -> {
+            Object current = input.get(field);
+            if (value != null && (current == null || current.toString().isBlank())) {
+                input.put(field, value);
+                rawText.put(field, value);
+            }
+        });
 
         ImportRowState state = new ImportRowState(row, input, rawText);
         state.setSkipped(Boolean.TRUE.equals(normalized.get(ImportFields.USER_SKIPPED)));
@@ -1282,6 +1307,73 @@ public class ImportSessionService {
 
     // -------------------------------------------------------------- assembling
 
+    /**
+     * The upload screen's delivery fields, checked. The date may not be in the future (a lot
+     * dated after today would be drawn from before stock that is really on the shelf); the
+     * supplier must be one of this company's own.
+     */
+    public ImportDeliveryDetails deliveryDetails(String date, String invoiceNo, String vendorId) {
+        java.time.LocalDate parsedDate = null;
+        if (date != null && !date.isBlank()) {
+            try {
+                parsedDate = java.time.LocalDate.parse(date.trim());
+            } catch (java.time.format.DateTimeParseException e) {
+                throw new ImportExceptions.BadFile("We couldn't read that delivery date. Pick it from the calendar.");
+            }
+            // The same rule every row's own date is held to (StockInRowHandler.validateReceivedDate).
+            if (parsedDate.isAfter(java.time.LocalDate.now())) {
+                throw new ImportExceptions.BadFile("The delivery date can't be in the future.");
+            }
+        }
+        String invoice = invoiceNo == null || invoiceNo.isBlank() ? null : invoiceNo.trim();
+        if (invoice != null && invoice.length() > 200) {
+            throw new ImportExceptions.BadFile("That invoice number is too long - 200 characters at most.");
+        }
+        String supplierName = null;
+        if (vendorId != null && !vendorId.isBlank()) {
+            UUID id;
+            try {
+                id = UUID.fromString(vendorId.trim());
+            } catch (IllegalArgumentException e) {
+                throw new ImportExceptions.BadFile("We couldn't find that supplier. Pick one from the list.");
+            }
+            supplierName = companyVendorRepository.findByIdAndClientIdAndActiveTrue(id, requireTenantId())
+                    .map(vendor -> vendor.getName())
+                    .orElseThrow(() -> new ImportExceptions.BadFile(
+                            "We couldn't find that supplier. Pick one from the list."));
+        }
+        return new ImportDeliveryDetails(parsedDate, invoice, supplierName);
+    }
+
+    private static Map<String, String> rowDefaultsOf(ImportDeliveryDetails delivery) {
+        if (delivery == null || delivery.isEmpty()) {
+            return null;
+        }
+        Map<String, String> defaults = new LinkedHashMap<>();
+        if (delivery.date() != null) {
+            defaults.put(ImportFields.RECEIVED_DATE, delivery.date().toString());
+        }
+        if (delivery.invoiceNo() != null) {
+            defaults.put(ImportFields.WAYBILL_OR_INVOICE_NO, delivery.invoiceNo());
+        }
+        if (delivery.supplierName() != null) {
+            defaults.put(ImportFields.VENDOR_NAME, delivery.supplierName());
+        }
+        return defaults;
+    }
+
+    private static ImportDeliveryDetails deliveryOf(ImportSession session) {
+        Map<String, String> defaults = session.getRowDefaults();
+        if (defaults == null || defaults.isEmpty()) {
+            return null;
+        }
+        String date = defaults.get(ImportFields.RECEIVED_DATE);
+        return new ImportDeliveryDetails(
+                date == null ? null : java.time.LocalDate.parse(date),
+                defaults.get(ImportFields.WAYBILL_OR_INVOICE_NO),
+                defaults.get(ImportFields.VENDOR_NAME));
+    }
+
     private ImportSessionResponse toResponse(
             ImportSession session, List<String> unmappedHeaders, List<String> requiredFieldsMissing) {
         ImportRowHandler handler = handlerFor(session.getKind());
@@ -1323,7 +1415,8 @@ public class ImportSessionService {
                 uploaderNameOf(session),
                 session.getCreatedAt(),
                 session.getExpiresAt(),
-                session.getCommittedAt());
+                session.getCommittedAt(),
+                deliveryOf(session));
     }
 
     /**

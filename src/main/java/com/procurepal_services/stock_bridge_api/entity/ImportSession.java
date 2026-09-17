@@ -162,6 +162,15 @@ public class ImportSession extends TenantAwareEntity {
     @Column(name = "value_mappings")
     private Map<String, Object> valueMappings;
 
+    /**
+     * Values asked once on the upload screen - a delivery's date, invoice number and supplier -
+     * keyed by import field, filling any row that leaves that cell blank (BULK_IMPORT_CX_PLAN.md
+     * task 1.5). Null when there are none.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "row_defaults")
+    private Map<String, String> rowDefaults;
+
     /** Total rows parsed from the file, example rows and skipped rows included. Cached - see the class javadoc. */
     @Column(name = "row_count", nullable = false)
     private int rowCount;

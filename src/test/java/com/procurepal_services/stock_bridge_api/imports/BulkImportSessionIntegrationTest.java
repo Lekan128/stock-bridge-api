@@ -1471,6 +1471,76 @@ class BulkImportSessionIntegrationTest {
     }
 
     /**
+     * BULK_IMPORT_CX_PLAN.md task 1.5: the delivery's date, invoice number and supplier are asked
+     * once on the upload screen and fill every row that says nothing itself. A row that does say
+     * something keeps it.
+     */
+    @Test
+    void theUploadScreensDeliveryDetailsFillEveryRowThatLeavesThemBlank() {
+        TenantLoginResponse tenant = signup("Delivery Details Co");
+        CompanyVendorResponse tony = createVendor(tenant, "Tony Stores");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS
+                + "Onion,DD-1,,,,,KG,,,,,\n"
+                + "Garlic,DD-2,,,,,KG,,,,,\n");
+        String date = java.time.LocalDate.now().minusDays(3).toString();
+        String ownDate = java.time.LocalDate.now().minusDays(10).toString();
+
+        ResponseEntity<ImportSessionResponse> response = uploadRaw(
+                tenant,
+                STOCK_SHEET_HEADERS
+                        + "Onion,Loose · kg,30,800,,,DD-1,,\n"
+                        + "Garlic,Loose · kg,5,1500,,,DD-2," + ownDate + ",\n",
+                "STOCK_IN",
+                null,
+                Map.of("deliveryDate", date, "invoiceNo", "WB-00419", "vendorId", tony.id().toString()),
+                ImportSessionResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        ImportSessionResponse session = response.getBody();
+
+        assertThat(session.delivery()).isNotNull();
+        assertThat(session.delivery().date()).hasToString(date);
+        assertThat(session.delivery().invoiceNo()).isEqualTo("WB-00419");
+        assertThat(session.delivery().supplierName()).isEqualTo("Tony Stores");
+        assertThat(session.errorCount()).isZero();
+
+        List<ImportRowResponse> rows = rows(tenant, session.id(), "ALL");
+        assertThat(rows).allSatisfy(row -> {
+            assertThat(row.normalized().get("vendor_name")).isEqualTo("Tony Stores");
+            assertThat(row.normalized().get("waybill_or_invoice_no")).isEqualTo("WB-00419");
+        });
+        assertThat(rows).extracting(row -> row.normalized().get("received_date")).containsExactlyInAnyOrder(date, ownDate);
+
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("invoice");
+            assertThat(line.text()).isEqualTo("WB-00419");
+        });
+
+        commit(tenant, session.id());
+        UUID onion = productBySku(tenant, "DD-1").id();
+        assertThat(vendorLines(tenant, onion))
+                .as("the delivery's supplier is recorded against the product")
+                .anySatisfy(line -> assertThat(line.companyVendorId()).isEqualTo(tony.id()));
+    }
+
+    @Test
+    void aDeliveryDateInTheFutureOrAnotherCompanysSupplierIsRefusedAtUpload() {
+        TenantLoginResponse tenant = signup("Bad Delivery Co");
+        TenantLoginResponse other = signup("Other Supplier Co");
+        CompanyVendorResponse theirs = createVendor(other, "Not Yours Ltd");
+        String csv = STOCK_SHEET_HEADERS + "Onion,Loose · kg,30,,,,,,\n";
+
+        ResponseEntity<String> future = uploadRaw(tenant, csv, "STOCK_IN", null,
+                Map.of("deliveryDate", java.time.LocalDate.now().plusDays(5).toString()), String.class);
+        assertThat(future.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(future.getBody()).contains("can't be in the future");
+
+        ResponseEntity<String> foreign = uploadRaw(tenant, csv, "STOCK_IN", null,
+                Map.of("vendorId", theirs.id().toString()), String.class);
+        assertThat(foreign.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(foreign.getBody()).contains("couldn't find that supplier");
+    }
+
+    /**
      * One product, two bag sizes - its own 50 kg bag and a supplier's 25 kg one. The row that says
      * "Bag · 25 kg" records 25 kg bags. Matching on the word "Bag" alone used to take whichever
      * came first, on the review screen and again at commit.
@@ -2031,7 +2101,15 @@ class BulkImportSessionIntegrationTest {
     }
 
     private ImportSessionResponse upload(TenantLoginResponse tenant, String csv, String kind, String mode) {
+        ResponseEntity<ImportSessionResponse> response = uploadRaw(tenant, csv, kind, mode, Map.of(), ImportSessionResponse.class);
+        assertThat(response.getStatusCode()).as("upload must answer 201").isEqualTo(HttpStatus.CREATED);
+        return response.getBody();
+    }
+
+    private <T> ResponseEntity<T> uploadRaw(
+            TenantLoginResponse tenant, String csv, String kind, String mode, Map<String, String> extraParts, Class<T> type) {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        extraParts.forEach(body::add);
         ByteArrayResource resource = new ByteArrayResource(csv.getBytes(StandardCharsets.UTF_8)) {
             @Override
             public String getFilename() {
@@ -2045,10 +2123,7 @@ class BulkImportSessionIntegrationTest {
         }
         HttpHeaders headers = authHeaders(tenant);
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        ResponseEntity<ImportSessionResponse> response = restTemplate.exchange(
-                "/api/imports", HttpMethod.POST, new HttpEntity<>(body, headers), ImportSessionResponse.class);
-        assertThat(response.getStatusCode()).as("upload must answer 201").isEqualTo(HttpStatus.CREATED);
-        return response.getBody();
+        return restTemplate.exchange("/api/imports", HttpMethod.POST, new HttpEntity<>(body, headers), type);
     }
 
     /** Upload and commit in one go, for building the fixture a test is actually about. */
