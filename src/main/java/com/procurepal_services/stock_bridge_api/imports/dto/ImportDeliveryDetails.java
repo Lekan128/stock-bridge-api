@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.time.LocalDate;
 
 /**
@@ -12,6 +13,8 @@ import java.time.LocalDate;
  */
 public record ImportDeliveryDetails(LocalDate date, String invoiceNo, String supplierName) {
 
+    /** A helper for the server, not part of the answer - kept off the wire. */
+    @JsonIgnore
     public boolean isEmpty() {
         return date == null && invoiceNo == null && supplierName == null;
     }
