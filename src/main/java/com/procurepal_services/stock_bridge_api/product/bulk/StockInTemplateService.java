@@ -64,9 +64,19 @@ public class StockInTemplateService {
     @Transactional(readOnly = true)
     public byte[] generate(
             List<UUID> productIds, StockInTemplateFilter filter, UUID vendorId, UUID categoryId) {
+        return stockInExcelService.generateTemplate(rows(productIds, filter, vendorId, categoryId));
+    }
+
+    /**
+     * The sheet's rows as data - one per way each product is bought - for the "Record a delivery"
+     * screen (BULK_IMPORT_CX_PLAN.md task 2.1), so the screen and the spreadsheet list the same
+     * things in the same words.
+     */
+    @Transactional(readOnly = true)
+    public List<StockInTemplateRow> rows(
+            List<UUID> productIds, StockInTemplateFilter filter, UUID vendorId, UUID categoryId) {
         UUID tenantId = requireTenantId();
-        List<Product> products = selectProducts(tenantId, productIds, filter, vendorId, categoryId);
-        return stockInExcelService.generateTemplate(templateRows(tenantId, products));
+        return templateRows(tenantId, selectProducts(tenantId, productIds, filter, vendorId, categoryId));
     }
 
     private List<Product> selectProducts(

@@ -103,10 +103,11 @@ class BulkImportSessionIntegrationTest {
         assertThat(firstRow(tenant, session, "ERROR").errors())
                 .anySatisfy(error -> {
                     assertThat(error.column()).isEqualTo("sku");
-                    assertThat(error.message()).contains("already stock");
+                    assertThat(error.message()).contains("already in your catalog under this code");
                     // Design 9.6: the message names the product, never the column, and points at
-                    // the mode that would have worked.
-                    assertThat(error.message()).contains("Add or update");
+                    // what would have worked. Since task 2.3 that is no longer a mode to pick -
+                    // the modes are gone - but the sheet that carries the Ref which updates it.
+                    assertThat(error.message()).contains("Download my products");
                 });
     }
 
@@ -192,8 +193,10 @@ class BulkImportSessionIntegrationTest {
             // header on the way IN - see theOldQuantityOnHandHeaderStillMaps - but what comes back
             // out is the current key, because that is what the grid renders a cell for.
             assertThat(warning.column()).isEqualTo("opening_stock");
-            assertThat(warning.message()).contains("ignored when updating");
-            assertThat(warning.message()).contains("Record stock you received");
+            assertThat(warning.message()).contains("Stock can't be changed from this sheet");
+            // It names the two ways stock actually moves, rather than leaving the reader to guess.
+            assertThat(warning.message()).contains("Record a delivery");
+            assertThat(warning.message()).contains("stock adjustment");
         });
 
         // A warning does not block: the file is still importable, and the quantity still does
@@ -1769,7 +1772,7 @@ class BulkImportSessionIntegrationTest {
                 tenant,
                 "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
                         + "received_date,waybill_or_invoice_no\n"
-                        + "CARROT-1,Carrot,kg · or Basket of 30 kg,,12,Cart of 90 kg,90000,,\n",
+                        + "CARROT-1,Carrot,kg · or Basket of 30 kg,,12,Carton of 90 kg,90000,,\n",
                 "STOCK_IN",
                 null);
 
@@ -1779,13 +1782,41 @@ class BulkImportSessionIntegrationTest {
                 .filter(candidate -> "counted_in".equals(candidate.column()))
                 .findFirst()
                 .orElseThrow();
-        assertThat(error.message()).startsWith("Reads as a new pack: Pack of 90 kg");
+        assertThat(error.message()).startsWith("Reads as a new pack: Carton of 90 kg");
         assertThat(error.suggestion())
                 .as("a bare unit code never contains '|' - this is what tells the frontend it is a "
                         + "candidate pack rather than an ordinary \"did you mean\" guess")
                 .isNotNull();
         assertThat(error.suggestion().value()).contains("|");
-        assertThat(error.suggestion().label()).isEqualTo("Pack of 90 kg");
+        assertThat(error.suggestion().label()).isEqualTo("Carton of 90 kg");
+    }
+
+    /**
+     * The other half of that rule, and the reason the suggestion carries a third segment: "Cart"
+     * is a container word this catalog does not know, so accepting it in one click would quietly
+     * rename it "Pack". The message says so and offers only Edit - see
+     * StockInRowHandler.emitCandidatePackIssue.
+     */
+    @Test
+    void aTypedSizeNamingAContainerWeDoNotKnowIsNotOfferedAsOneClickConfirm() {
+        TenantLoginResponse tenant = signup("Unknown Container Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Carrot,CART-1,,900,,,KG,BASKET,30,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,waybill_or_invoice_no\n"
+                        + "CART-1,Carrot,kg · or Basket of 30 kg,,12,Cart of 90 kg,90000,,\n",
+                "STOCK_IN",
+                null);
+
+        ImportRowResponse.Error error = firstRow(tenant, session, "ALL").errors().stream()
+                .filter(candidate -> "counted_in".equals(candidate.column()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(error.message()).isEqualTo(
+                "We don't recognise that as a pack. Edit to add it as Pack of 90 kg or something else.");
+        assertThat(error.suggestion().value()).endsWith("|false");
     }
 
     /**

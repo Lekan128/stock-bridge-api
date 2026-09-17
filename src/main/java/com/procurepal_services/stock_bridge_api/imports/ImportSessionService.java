@@ -164,9 +164,66 @@ public class ImportSessionService {
      * @param delivery a stock-in's date, invoice number and supplier, asked once on the upload
      *     screen and applied to every row that leaves that cell blank. Ignored for a catalog import.
      */
+    @Transactional
     public ImportSessionResponse create(
             MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
-        SheetTable table = read(file);
+        return createFromTable(read(file), filenameOf(file), kind, mode, actingUserId, delivery);
+    }
+
+    /**
+     * A delivery typed into the app rather than a spreadsheet (BULK_IMPORT_CX_PLAN.md task 2.2).
+     * The lines become the rows of an import exactly as if they had been uploaded - a Ref, how
+     * it came, how many and the price - so the same checks, review screen, confirm and undo apply.
+     */
+    @Transactional
+    public ImportSessionResponse createDelivery(
+            List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery) {
+        if (lines == null || lines.isEmpty()) {
+            throw new ImportExceptions.BadFile("Add at least one thing that arrived.");
+        }
+        if (lines.size() > ImportLimits.MAX_ROWS) {
+            throw new ImportExceptions.BadFile(ImportLimits.tooManyRowsMessage(lines.size()));
+        }
+        // The name and the code travel with the ref, not because the row needs them to find its
+        // product - the ref does that - but because the review grid is the same grid an uploaded
+        // sheet gets, and a row reading only "cG9y...JQ, 2.5 bags" is not something anyone can
+        // check. product_name is also the kind's required column, and a table without it would
+        // stop at the mapping step asking which column holds the product.
+        List<String> headers = List.of(
+                ImportFields.PRODUCT_NAME, ImportFields.SKU, ImportFields.REF,
+                ImportFields.COUNTED_IN, ImportFields.QUANTITY, ImportFields.COST_PER_UNIT);
+        Map<String, Integer> indexes = new LinkedHashMap<>();
+        for (int i = 0; i < headers.size(); i++) {
+            indexes.put(headers.get(i), i);
+        }
+        List<SheetRow> rows = new ArrayList<>();
+        int line = 1;
+        for (DeliveryLine entry : lines) {
+            List<String> cells = new ArrayList<>();
+            cells.add(entry.productName());
+            cells.add(entry.sku());
+            cells.add(entry.productId() == null ? null
+                    : com.procurepal_services.stock_bridge_api.product.bulk.ProductRefs.encode(entry.productId()));
+            cells.add(entry.unit());
+            cells.add(entry.quantity() == null ? null : entry.quantity().toPlainString());
+            cells.add(entry.price() == null ? null : entry.price().toPlainString());
+            rows.add(new SheetRow(line++, cells));
+        }
+        return createFromTable(new SheetTable(headers, indexes, rows), title, ImportKind.STOCK_IN,
+                ImportMode.CREATE_ONLY, actingUserId, delivery);
+    }
+
+    /**
+     * One typed delivery line: the product (by id, and by the name and code the review grid
+     * shows), how it came ({@code UnitOptions.key}), how many, the price of one.
+     */
+    public record DeliveryLine(
+            UUID productId, String productName, String sku, String unit, BigDecimal quantity, BigDecimal price) {
+    }
+
+    private ImportSessionResponse createFromTable(
+            SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
+            ImportDeliveryDetails delivery) {
         // Mode is meaningless for STOCK_IN (contract section 1) - persisted as CREATE_ONLY and
         // ignored, rather than left null, so the CHECK constraint and every later read see a
         // legal value.
@@ -182,7 +239,7 @@ public class ImportSessionService {
                 .kind(kind)
                 .mode(effectiveMode)
                 .status(ImportStatus.PARSING)
-                .originalFilename(filenameOf(file))
+                .originalFilename(filename)
                 .columnMapping(new LinkedHashMap<>(mapping.columnMapping()))
                 .valueMappings(new LinkedHashMap<>())
                 .rowDefaults(kind == ImportKind.STOCK_IN ? rowDefaultsOf(delivery) : null)

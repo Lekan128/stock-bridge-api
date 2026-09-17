@@ -1,12 +1,9 @@
 package com.procurepal_services.stock_bridge_api.product;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadValidationException;
-import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
 import com.procurepal_services.stock_bridge_api.product.sku.InvalidSkuPatternException;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationExhaustedException;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuPatternTooLongException;
-import java.util.List;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -106,9 +103,4 @@ public class ProductManagementExceptionHandler {
                 .body(new ApiError("That SKU is already in use within this organization."));
     }
 
-    /** Body is the raw error array (not wrapped) so the frontend can render it directly. */
-    @ExceptionHandler(BulkUploadValidationException.class)
-    public ResponseEntity<List<ProductRowError>> handleBulkUploadValidation(BulkUploadValidationException ex) {
-        return ResponseEntity.badRequest().body(ex.getErrors());
-    }
 }

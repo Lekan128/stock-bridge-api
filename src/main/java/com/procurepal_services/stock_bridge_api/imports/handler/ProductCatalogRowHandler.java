@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports.handler;
 
 import com.procurepal_services.stock_bridge_api.imports.NameSimilarity;
+import com.procurepal_services.stock_bridge_api.product.bulk.ProductRefs;
 import com.procurepal_services.stock_bridge_api.product.quality.ProductSetupChecks;
 import com.procurepal_services.stock_bridge_api.entity.CompanyCategory;
 import com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService;
@@ -140,6 +141,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
 
     private static final String CACHE_CATEGORIES = "catalog-categories-by-name";
     private static final String CACHE_ACTIVE_PRODUCTS = "catalog-active-products";
+    private static final String CACHE_PRODUCTS_BY_ID = "catalog-products-by-id";
 
     /** How alike two names must be to be worth asking about - "Carot" and "Carrot" are. */
     private static final double CLOSE_NAME_SCORE = 0.8;
@@ -251,6 +253,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         fields.add(new ImportFieldDescriptor(ImportFields.VENDOR_NAME, ImportCopy.Labels.SUPPLIER,
                 ImportFieldDescriptor.Type.REFERENCE, false, false, false,
                 "Who you buy this from. The supplier on a product's row becomes its main supplier.", null, null));
+        fields.add(new ImportFieldDescriptor(ImportFields.REF, "Ref", ImportFieldDescriptor.Type.TEXT,
+                false, true, false,
+                "How a downloaded sheet recognises each product. Leave it alone.", null, null));
         fields.add(ImportFieldDescriptor.text(ImportFields.VENDOR_SKU, ImportCopy.Labels.SUPPLIERS_CODE,
                 "That supplier's own code for this product, if it differs from yours."));
         return fields;
@@ -275,7 +280,28 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         out.value(ImportFields.NAME, name);
         out.value(ImportFields.SKU, sku);
 
-        Product existing = sku == null ? null : findBySku(ctx.tenantId(), ctx.cache(), sku);
+        // BULK_IMPORT_CX_PLAN.md task 2.3: a row from "Download my products" carries the Ref of the
+        // product it came from, and updates that product - whatever its code now says, and
+        // whether or not the company generates codes.
+        String ref = ctx.text(ImportFields.REF);
+        out.value(ImportFields.REF, ref);
+        Product byRef = ProductRefs.decode(ref)
+                .map(id -> findById(ctx.tenantId(), ctx.cache(), id))
+                .orElse(null);
+        if (ref != null && byRef == null) {
+            out.warning(ImportFields.NAME, "REF_NOT_FOUND",
+                    "We couldn't find the product this row was downloaded from, so it will be added as a new product.");
+        }
+        Product existing = byRef != null ? byRef : (sku == null ? null : findBySku(ctx.tenantId(), ctx.cache(), sku));
+        if (byRef != null && sku != null && !sku.equalsIgnoreCase(byRef.getSku())) {
+            Product holder = findBySku(ctx.tenantId(), ctx.cache(), sku);
+            if (holder != null && !holder.getId().equals(byRef.getId())) {
+                out.error(ImportFields.SKU, "SKU_TAKEN",
+                        "The code %s is already used by %s. Give %s a different code, or leave its old one."
+                                .formatted(ImportCopy.quote(sku), ImportCopy.quote(holder.getName()),
+                                        ImportCopy.quote(byRef.getName())));
+            }
+        }
         // The continuation convention (design 7.1) means a second row for the same product
         // legitimately carries nothing but supplier columns - no name, no price, no unit. It
         // cannot be recognised from one row, so validateBatch decides it; what this row can do
@@ -300,7 +326,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
 
         // --- mode (design 6.3). Decided before the columns are read, because whether a column
         // is even looked at depends on whether this row creates or updates.
-        boolean creating = resolveMode(ctx, out, existing, subject, looksLikeContinuation);
+        boolean creating = byRef == null && resolveMode(ctx, out, existing, subject, looksLikeContinuation);
 
         if (seller && creating && !looksLikeContinuation) {
             BigDecimal unitPrice = RowValues.money(ctx, out, ImportFields.UNIT_PRICE, "Selling price", subject);
@@ -373,7 +399,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         validateVendorColumns(ctx, out, subject, costPrice, creating);
 
         if (!creating && existing != null) {
-            applyUpdateRules(ctx, out, existing, subject, quantity, unitOfMeasure, costPrice);
+            applyUpdateRules(ctx, out, existing, subject, quantity, unitOfMeasure, costPrice, countedIn);
             warnAboutPriceChange(out, existing, costPrice, countedIn);
             out.resolvedTo(existing.getId(), existing.getName());
         }
@@ -487,9 +513,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                         // actually lives. The review screen has no mode switch - it is chosen on
                         // the upload page - so "switch it at the top of this page" sent people
                         // looking for a control that is not there.
-                        "%s is already in your catalog under this code. Remove this row, or upload the file again "
+                        "%s is already in your catalog under this code. To change it, use Download my products, "
                                 .formatted(existing.getName())
-                                + "and choose “Update it” to change the product you already have.");
+                                + "edit that sheet and upload it back - or remove this row.");
             }
             return false;
         }
@@ -810,14 +836,18 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             String subject,
             BigDecimal quantity,
             String unitOfMeasure,
-            BigDecimal costPrice) {
+            BigDecimal costPrice,
+            UnitOption countedIn) {
+        BigDecimal factor = countedIn == null ? BigDecimal.ONE : countedIn.factorToStockUnit();
 
-        // (1) Quantity is ignored, and the grid says so. Contract section 8.8 - never silently.
-        // The message is contract section 4's, verbatim, because the frontend renders it as-is
-        // and the mock the review screen was built against contains this exact sentence.
-        if (quantity != null && quantity.signum() > 0) {
+        // (1) Stock is not changed from this sheet, and the grid says so - but only when the row
+        // actually asks for a different figure. A downloaded sheet carries today's stock on every
+        // row, and warning about all of them would bury the one that changed.
+        if (quantity != null && quantity.signum() > 0
+                && !sameNumber(quantity, BigDecimal.valueOf(existing.getQuantityOnHand()).divide(factor, 3, java.math.RoundingMode.HALF_UP))) {
             out.warning(ImportFields.OPENING_STOCK, "QUANTITY_IGNORED_ON_UPDATE",
-                    "Quantity is ignored when updating an existing product — use Record stock you received.");
+                    "Stock can't be changed from this sheet, so this number is ignored. Use Record a delivery for "
+                            + "what arrived, or a stock adjustment after a count.");
         }
 
         // (2) unit_of_measure is immutable once the product has any movement. Contract 8.12.
@@ -837,11 +867,21 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         // (3) cost_price is the weighted average and belongs to stockIn. On an update row it
         // sets the vendor line's lastCostPrice instead - which is the thing the user meant - and
         // there is nowhere to put it when the row names no supplier.
-        if (costPrice != null && ctx.text(ImportFields.VENDOR_NAME) == null) {
+        if (costPrice != null && ctx.text(ImportFields.VENDOR_NAME) == null
+                && !(existing.getCostPrice() != null && sameNumber(costPrice, existing.getCostPrice().multiply(factor)))) {
             out.warning(ImportFields.COST_PRICE, "COST_PRICE_NEEDS_VENDOR",
                     "%s already has a cost worked out from what you have actually paid, so this column only ".formatted(subject)
                             + "updates a supplier's price. Name the supplier on this row and we will update theirs.");
         }
+    }
+
+    /** Equal to the cent - what a spreadsheet round trip preserves. */
+    private static boolean sameNumber(BigDecimal left, BigDecimal right) {
+        return left.setScale(2, java.math.RoundingMode.HALF_UP).compareTo(right.setScale(2, java.math.RoundingMode.HALF_UP)) == 0;
+    }
+
+    private Product findById(UUID tenantId, ImportBatchCache cache, UUID id) {
+        return cache.get(CACHE_PRODUCTS_BY_ID, id, key -> productRepository.findByIdAndClientId(id, tenantId).orElse(null));
     }
 
     // ----------------------------------------------------------- validateBatch
@@ -1389,6 +1429,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         before.put(BEFORE_CATEGORY_ID,
                 product.getCompanyCategory() == null ? null : product.getCompanyCategory().getId().toString());
         before.put(ImportFields.NAME, product.getName());
+        before.put(ImportFields.SKU, product.getSku());
         before.put(ImportFields.DESCRIPTION, product.getDescription());
         before.put(ImportFields.UNIT_PRICE, product.getUnitPrice() == null ? null : product.getUnitPrice().toPlainString());
         before.put(ImportFields.LOW_STOCK_ALERT_AT, product.getLowStockThreshold());
@@ -1410,6 +1451,12 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private void updateProduct(BatchContext ctx, ImportRowState state, Product product) {
         Client owner = sellerDirectory.findSellerOfRecord(ctx.tenantId()).orElse(null);
         boolean seller = owner != null && owner.canSell();
+
+        String sku = state.text(ImportFields.SKU);
+        if (state.text(ImportFields.REF) != null && sku != null && !sku.equalsIgnoreCase(product.getSku())
+                && !productSkuSettingsService.isEnabled(ctx.tenantId())) {
+            product.setSku(sku);
+        }
 
         if (state.text(ImportFields.NAME) != null) {
             product.setName(state.text(ImportFields.NAME));
@@ -1752,6 +1799,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 continue;
             }
             product.setName(asString(snapshot.get(ImportFields.NAME)));
+            if (snapshot.get(ImportFields.SKU) != null) {
+                product.setSku(asString(snapshot.get(ImportFields.SKU)));
+            }
             product.setDescription(asString(snapshot.get(ImportFields.DESCRIPTION)));
             product.setUnitPrice(asDecimal(snapshot.get(ImportFields.UNIT_PRICE)));
             product.setLowStockThreshold(asInteger(snapshot.get(ImportFields.LOW_STOCK_ALERT_AT)));

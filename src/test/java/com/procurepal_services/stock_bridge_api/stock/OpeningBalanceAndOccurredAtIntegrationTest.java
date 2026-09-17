@@ -6,7 +6,8 @@ import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
@@ -113,9 +114,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         byte[] file = workbook(List.<Object[]>of(
                 new Object[] {"Rice 50kg", "OB-RICE-1", "imported with stock", 4500, 40, null, "KG", null, null}));
 
-        ResponseEntity<BulkUploadResponse> upload = upload(admin, file);
-        assertThat(upload.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        ProductResponse product = upload.getBody().products().get(0);
+        ProductResponse product = importCatalog(admin, file, "OB-RICE-1");
 
         // The counter still says what the spreadsheet said - the fix changes how it got there,
         // not what it is. costPrice comes out of stockIn's weighted-average recalculation now
@@ -173,9 +172,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         byte[] file = workbook(List.<Object[]>of(
                 new Object[] {"Garri 25kg", "OB-GARRI-1", "catalog only", 3000, null, null, "KG", null, null}));
 
-        ResponseEntity<BulkUploadResponse> upload = upload(admin, file);
-        assertThat(upload.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        ProductResponse product = upload.getBody().products().get(0);
+        ProductResponse product = importCatalog(admin, file, "OB-GARRI-1");
 
         assertThat(product.quantityOnHand()).isZero();
         // costPrice is still seeded from the cell - a row may carry a cost with no quantity
@@ -378,7 +375,12 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
                 .getBody();
     }
 
-    private ResponseEntity<BulkUploadResponse> upload(TenantLoginResponse admin, byte[] file) {
+    /**
+     * Uploads the workbook to the import engine as a product catalog, commits it, and returns the
+     * one product it created - the only way a file reaches the catalog since the legacy
+     * {@code /api/products/bulk-upload} endpoint was removed (BULK_IMPORT_CX_PLAN.md task 2.3).
+     */
+    private ProductResponse importCatalog(TenantLoginResponse admin, byte[] file, String sku) {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         HttpHeaders filePartHeaders = new HttpHeaders();
         filePartHeaders.setContentType(
@@ -390,11 +392,33 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
             }
         };
         body.add("file", new HttpEntity<>(fileResource, filePartHeaders));
+        body.add("kind", "PRODUCT_CATALOG");
+        body.add("mode", "CREATE_ONLY");
 
         HttpHeaders headers = authHeaders(admin);
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        return restTemplate.exchange(
-                "/api/products/bulk-upload", HttpMethod.POST, new HttpEntity<>(body, headers), BulkUploadResponse.class);
+        ResponseEntity<ImportSessionResponse> uploaded = restTemplate.exchange(
+                "/api/imports", HttpMethod.POST, new HttpEntity<>(body, headers), ImportSessionResponse.class);
+        assertThat(uploaded.getStatusCode()).as("upload must answer 201").isEqualTo(HttpStatus.CREATED);
+        assertThat(uploaded.getBody().errorCount()).as("the fixture file must be clean").isZero();
+
+        ResponseEntity<ImportResultResponse> committed = restTemplate.exchange(
+                "/api/imports/" + uploaded.getBody().id() + "/commit",
+                HttpMethod.POST,
+                new HttpEntity<>(authHeaders(admin)),
+                ImportResultResponse.class);
+        assertThat(committed.getStatusCode()).as("commit must answer 200").isEqualTo(HttpStatus.OK);
+        assertThat(committed.getBody().createdCount()).isEqualTo(1);
+
+        ResponseEntity<TestPage<ProductResponse>> page = restTemplate.exchange(
+                "/api/products?search=" + sku + "&size=50",
+                HttpMethod.GET,
+                new HttpEntity<>(authHeaders(admin)),
+                new ParameterizedTypeReference<>() {});
+        return page.getBody().content().stream()
+                .filter(product -> sku.equals(product.sku()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("No product with sku " + sku));
     }
 
     private byte[] workbook(List<Object[]> rows) {

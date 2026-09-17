@@ -1,6 +1,5 @@
 package com.procurepal_services.stock_bridge_api.product;
 
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
@@ -94,21 +93,6 @@ public class ProductController {
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public SkuPreviewResponse previewSku() {
         return productManagementService.previewSku();
-    }
-
-    /**
-     * V20: calls the 2-arg {@code bulkUpload(file, actingUserId)} overload, so the opening-balance
-     * {@code StockMovement} every row with a quantity now writes (BULK_IMPORT_DESIGN.md section 3)
-     * is attributed to a real user rather than {@code createdBy = null} - the same
-     * {@code @AuthenticationPrincipal} extraction {@link #create} already does for its own ledger
-     * write, and for the same reason.
-     */
-    @PostMapping(value = "/bulk-upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
-    public ResponseEntity<BulkUploadResponse> bulkUpload(
-            @RequestPart("file") MultipartFile file, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(productManagementService.bulkUpload(file, principal.getUserId()));
     }
 
     @GetMapping
