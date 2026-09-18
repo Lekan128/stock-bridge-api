@@ -76,6 +76,23 @@ public class ImportColumnMapper {
         }
     }
 
+    /**
+     * Whether this cell is the name of a column this kind understands - the question
+     * {@code PastedText} asks of line 1 to decide whether a paste has a header row at all
+     * (BULK_IMPORT_CX_PLAN.md task 3.2). Answered here because the alias tables live here and
+     * nowhere else should learn them.
+     */
+    public boolean recognisesHeader(String cell, ImportKind kind, List<ImportFieldDescriptor> fields) {
+        String header = HeaderNames.normalize(cell);
+        if (header == null) {
+            return false;
+        }
+        Map<String, String> aliases = kind == ImportKind.STOCK_IN ? STOCK_IN_ALIASES : CATALOG_ALIASES;
+        java.util.Set<String> known =
+                fields.stream().map(ImportFieldDescriptor::key).collect(java.util.stream.Collectors.toSet());
+        return known.contains(header) || known.contains(aliases.get(header));
+    }
+
     public Mapping autoMap(SheetTable table, ImportKind kind, List<ImportFieldDescriptor> fields) {
         Map<String, String> aliases = kind == ImportKind.STOCK_IN ? STOCK_IN_ALIASES : CATALOG_ALIASES;
         java.util.Set<String> known = fields.stream().map(ImportFieldDescriptor::key).collect(java.util.stream.Collectors.toSet());
@@ -134,11 +151,15 @@ public class ImportColumnMapper {
 
     private static Map<String, String> catalogAliases() {
         Map<String, String> aliases = new LinkedHashMap<>();
+        // The product sheet's own headers (BULK_IMPORT_CX_PLAN.md task 1.6) sit first in each
+        // list; HeaderNames has already dropped their "*", apostrophes and bracketed asides.
         put(aliases, ImportFields.NAME, "product", "product_name", "item", "item_name", "title", "description_of_item");
-        put(aliases, ImportFields.SKU, "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
-        put(aliases, ImportFields.DESCRIPTION, "desc", "details", "notes", "remarks");
-        put(aliases, ImportFields.UNIT_PRICE, "price", "selling_price", "sale_price", "sales_price", "list_price", "rrp");
-        put(aliases, ImportFields.COST_PRICE, "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");
+        put(aliases, ImportFields.SKU, "your_code", "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
+        put(aliases, ImportFields.DESCRIPTION, "notes", "desc", "details", "remarks");
+        put(aliases, ImportFields.BARCODE, "bar_code", "ean", "upc", "gtin", "scan_code", "product_barcode");
+        put(aliases, ImportFields.CATEGORY, "categories", "product_category", "group", "product_group");
+        put(aliases, ImportFields.UNIT_PRICE, "selling_price", "price", "sale_price", "sales_price", "list_price", "rrp");
+        put(aliases, ImportFields.COST_PRICE, "price_you_pay_for_one", "price_you_pay", "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");
         // Each of the four renamed columns leads with the spelling OUR OWN template used before
         // UNIT_UX_CONTRACT.md section 9.4 - "quantity_on_hand" (section 5.1), then section 9.4's
         // "low_stock_threshold", "unit_of_measure" and "packaging_unit"/"packaging_size". Section
@@ -150,43 +171,36 @@ public class ImportColumnMapper {
         // reached production, so there is no saved sheet whose bare number needs its old meaning
         // preserved, and preserving it was the only argument for the deleted
         // opening_stock_counted_in column.
-        put(aliases, ImportFields.OPENING_STOCK, "quantity_on_hand", "qty", "quantity", "stock", "on_hand", "opening_balance", "current_stock", "stock_on_hand", "qty_on_hand");
-        put(aliases, ImportFields.LOW_STOCK_ALERT_AT, "low_stock_threshold", "reorder_level", "reorder_point", "min_stock", "minimum_stock", "low_stock", "reorder", "alert_at");
+        put(aliases, ImportFields.OPENING_STOCK, "how_many_you_have_now", "how_many_you_have", "quantity_on_hand", "qty", "quantity", "stock", "on_hand", "opening_balance", "current_stock", "stock_on_hand", "qty_on_hand");
+        put(aliases, ImportFields.LOW_STOCK_ALERT_AT, "warn_me_when_i_have", "low_stock_threshold", "reorder_level", "reorder_point", "min_stock", "minimum_stock", "low_stock", "reorder", "alert_at");
         // "unit" stays here and still means the STOCK unit on a catalog sheet - see the per-kind
         // note in this class's javadoc for why that is not the same answer as on a stock-in sheet.
         put(aliases, ImportFields.STOCK_UNIT, "unit_of_measure", "uom", "unit", "units", "measure", "base_unit", "unit_measure", "sold_in");
-        put(aliases, ImportFields.PACK, "packaging_unit", "packaging", "pack_type", "package", "package_unit", "pack_unit");
-        put(aliases, ImportFields.UNITS_PER_PACK, "packaging_size", "pack_size", "package_size", "size", "qty_per_pack");
+        put(aliases, ImportFields.PACK, "comes_in", "packaging_unit", "packaging", "pack_type", "package", "package_unit", "pack_unit");
+        put(aliases, ImportFields.UNITS_PER_PACK, "size_of_one", "units_per_pack", "packaging_size", "pack_size", "package_size", "size", "qty_per_pack", "holds", "contents");
         put(aliases, ImportFields.VENDOR_NAME, "supplier", "vendor", "supplier_name", "bought_from", "source", "distributor");
-        put(aliases, ImportFields.VENDOR_SKU, "supplier_code", "vendor_code", "supplier_sku", "supplier_item_code", "their_code");
+        put(aliases, ImportFields.VENDOR_SKU, "suppliers_code_for_it", "suppliers_code", "supplier_code", "vendor_code", "supplier_sku", "supplier_item_code", "their_code");
         put(aliases, ImportFields.IS_PREFERRED_VENDOR, "preferred", "main_supplier", "preferred_supplier", "primary_supplier", "default_supplier");
         return Map.copyOf(aliases);
     }
 
     private static Map<String, String> stockInAliases() {
         Map<String, String> aliases = new LinkedHashMap<>();
-        put(aliases, ImportFields.SKU, "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
+        // The stock sheet's own headers first (BULK_IMPORT_CX_PLAN.md task 1.4). HeaderNames drops
+        // a bracketed aside, so "Price paid for one (₦)" arrives here as price_paid_for_one.
+        put(aliases, ImportFields.SKU, "your_code", "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
         put(aliases, ImportFields.PRODUCT_NAME, "product", "item", "item_name", "name", "description");
         put(aliases, ImportFields.VENDOR_NAME, "supplier", "vendor", "supplier_name", "bought_from", "source", "distributor");
-        put(aliases, ImportFields.QUANTITY, "qty", "quantity_received", "received", "amount", "qty_received", "delivered");
+        put(aliases, ImportFields.QUANTITY, "how_many_arrived", "qty", "quantity_received", "received", "amount", "qty_received", "delivered");
+        put(aliases, ImportFields.LAST_PRICE_PAID, "last_price", "previous_price");
         // "unit" and "unit_cost" lead for the same reason "quantity_on_hand" does above: they
         // are what every stock-in template published before UNIT_UX_CONTRACT.md section 5.2
         // called these columns, and section 5.2 keeps them accepted on read forever.
-        put(aliases, ImportFields.COUNTED_IN, "unit", "uom", "units", "measure", "unit_of_measure");
-        put(aliases, ImportFields.COST_PER_UNIT, "unit_cost", "cost", "cost_price", "price", "unit_price", "purchase_price", "buying_price");
-        // Removed from the sheet by section 5.2, still mapped on purpose. A number here is read,
-        // ignored, and warned about once per affected row (StockInRowHandler) - which is only
-        // possible if the column resolves to a field at all. Left unmapped it would instead be
-        // reported as a column we did not understand, which is both untrue and silent about the
-        // thing the user needs to hear: that the pack now comes from their product setup.
-        //
-        // The key itself is now "units_per_pack" (section 9.4), so "packaging_size" - the header
-        // the sheet actually carried before section 5.2 removed the column - has to be listed as
-        // an alias here rather than matching by identity as it used to.
-        put(aliases, ImportFields.UNITS_PER_PACK, "packaging_size", "pack_size", "package_size", "size", "qty_per_pack");
+        put(aliases, ImportFields.COUNTED_IN, "comes_in", "unit", "uom", "units", "measure", "unit_of_measure", "pack");
+        put(aliases, ImportFields.COST_PER_UNIT, "price_paid_for_one", "price_paid", "unit_cost", "cost", "cost_price", "price", "unit_price", "purchase_price", "buying_price");
         put(aliases, ImportFields.RECEIVED_DATE, "date", "received", "delivery_date", "date_received", "invoice_date", "receipt_date");
         put(aliases, ImportFields.WAYBILL_OR_INVOICE_NO,
-                "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "ref", "doc_no");
+                "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "doc_no");
         return Map.copyOf(aliases);
     }
 

@@ -13,6 +13,7 @@ import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.PatchRowRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.ValueMappingRequest;
+import com.procurepal_services.stock_bridge_api.product.bulk.ProductRefs;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -68,8 +69,13 @@ class BulkImportSessionIntegrationTest {
      * the point being made is about the current sheet.
      */
     private static final String CATALOG_HEADERS_TODAY =
-            "name,sku,description,stock_unit,pack,units_per_pack,opening_stock,low_stock_alert_at,"
+            "name,sku,description,pack,contains,opening_stock,low_stock_alert_at,"
                     + "cost_price,vendor_name,vendor_sku,is_preferred_vendor\n";
+
+    /** The stock sheet's headers as it is downloaded today (BULK_IMPORT_CX_PLAN.md task 1.4). */
+    private static final String STOCK_SHEET_HEADERS =
+            "Product,Comes in,How many arrived,Price paid for one (₦),Last price paid (₦),Supplier,Your code,"
+                    + "Date (if different),Ref\n";
 
     private static final String STOCK_IN_HEADERS =
             "sku,product_name,vendor_name,quantity,unit,unit_cost,packaging_size,received_date,reference\n";
@@ -97,10 +103,11 @@ class BulkImportSessionIntegrationTest {
         assertThat(firstRow(tenant, session, "ERROR").errors())
                 .anySatisfy(error -> {
                     assertThat(error.column()).isEqualTo("sku");
-                    assertThat(error.message()).contains("already stock");
+                    assertThat(error.message()).contains("already in your catalog under this code");
                     // Design 9.6: the message names the product, never the column, and points at
-                    // the mode that would have worked.
-                    assertThat(error.message()).contains("Add or update");
+                    // what would have worked. Since task 2.3 that is no longer a mode to pick -
+                    // the modes are gone - but the sheet that carries the Ref which updates it.
+                    assertThat(error.message()).contains("Download my products");
                 });
     }
 
@@ -186,8 +193,10 @@ class BulkImportSessionIntegrationTest {
             // header on the way IN - see theOldQuantityOnHandHeaderStillMaps - but what comes back
             // out is the current key, because that is what the grid renders a cell for.
             assertThat(warning.column()).isEqualTo("opening_stock");
-            assertThat(warning.message()).contains("ignored when updating");
-            assertThat(warning.message()).contains("Record stock you received");
+            assertThat(warning.message()).contains("Stock can't be changed from this sheet");
+            // It names the two ways stock actually moves, rather than leaving the reader to guess.
+            assertThat(warning.message()).contains("Record a delivery");
+            assertThat(warning.message()).contains("stock adjustment");
         });
 
         // A warning does not block: the file is still importable, and the quantity still does
@@ -917,6 +926,67 @@ class BulkImportSessionIntegrationTest {
     }
 
     /**
+     * Two and a half bags is a real delivery, and a spreadsheet is where people type it. The row is
+     * accepted, the preview says what the ledger will hold, and the commit records exactly 125 kg.
+     */
+    @Test
+    void aFractionalNumberOfBagsInAFileIsRecordedExactly() {
+        TenantLoginResponse tenant = signup("Half Bag Import Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,FRAC-1,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS + "FRAC-1,Rice 50kg,,2.5,BAG,45000,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(firstRow(tenant, session, "ALL").baseQuantityText()).isEqualTo("= 125 kg");
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("stock");
+            assertThat(line.text()).isEqualTo("125 kg (2.5 bags) across 1 product");
+        });
+
+        commit(tenant, session.id());
+        ProductResponse rice = productBySku(tenant, "FRAC-1");
+        assertThat(rice.quantityOnHand()).isEqualTo(125);
+        assertThat(rice.costPrice()).isEqualByComparingTo("900");
+    }
+
+    /**
+     * A quarter of a pack of ten pieces is two and a half pieces. The row says so on the review
+     * screen - naming the product and the whole numbers that would work - instead of letting the
+     * commit refuse it and roll the whole file back.
+     */
+    @Test
+    void aFractionOfAPackThatIsNotAWholeNumberOfPiecesIsFlaggedOnItsOwnRow() {
+        TenantLoginResponse tenant = signup("Quarter Pack Import Co");
+        commitCatalog(
+                tenant,
+                "CREATE_ONLY",
+                CATALOG_HEADERS
+                        + "Biro,FRAC-2,,50,,,PIECE,PACK,10,,,\n"
+                        + "Rice 50kg,FRAC-3,,900,,,KG,BAG,50,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS
+                        + "FRAC-2,Biro,,0.25,PACK,,,,\n"
+                        + "FRAC-3,Rice 50kg,,3,BAG,,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isEqualTo(1);
+        ImportRowResponse flagged = firstRow(tenant, session, "ERROR");
+        assertThat(flagged.errors()).anySatisfy(error -> {
+            assertThat(error.column()).isEqualTo("quantity");
+            assertThat(error.message())
+                    .isEqualTo("Biro: 0.25 packs of 10 pieces is 2.5 pieces — that isn't a whole number of pieces. "
+                            + "Enter 2 or 3 pieces instead.");
+        });
+    }
+
+    /**
      * Section 6.3's second half: "when the file mixes units the parenthetical is dropped and only
      * the stock-unit total is shown."
      *
@@ -1024,13 +1094,14 @@ class BulkImportSessionIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant,
                 CATALOG_HEADERS_TODAY
-                        + "Palm Oil,PACKQ-1,,Milliliter (ml),Keg,50,30,5,475,,,\n"
-                        + "Bolts,PACKQ-2,,Piece,,,600,50,3,,,\n",
+                        + "Palm Oil,PACKQ-1,,Keg,50 ml,30,5,475,,,\n"
+                        + "Bolts,PACKQ-2,,,piece,600,50,3,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
         assertThat(session.errorCount()).isZero();
-        assertThat(session.warningCount()).isZero();
+        // A keg of 50 ml is questioned (task 1.7) - the arithmetic below is what this test is about.
+        assertThat(session.warningCount()).isEqualTo(1);
         commit(tenant, session.id());
 
         // Thirty kegs of 50 ml.
@@ -1062,7 +1133,7 @@ class BulkImportSessionIntegrationTest {
         TenantLoginResponse tenant = signup("Half Keg Co");
         ImportSessionResponse session = upload(
                 tenant,
-                CATALOG_HEADERS_TODAY + "Palm Oil,HALF-1,,Milliliter (ml),Keg,50,30.5,,,,,\n",
+                CATALOG_HEADERS_TODAY + "Palm Oil,HALF-1,,Keg,50 ml,30.5,,,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
@@ -1081,7 +1152,7 @@ class BulkImportSessionIntegrationTest {
         TenantLoginResponse tenant = signup("Rounds To Zero Co");
         ImportSessionResponse session = upload(
                 tenant,
-                CATALOG_HEADERS_TODAY + "Gold Dust,ZERO-1,,Kilogram (kg),,,0.4,,,,,\n",
+                CATALOG_HEADERS_TODAY + "Gold Dust,ZERO-1,,,kg,0.4,,,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
@@ -1103,8 +1174,8 @@ class BulkImportSessionIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant,
                 CATALOG_HEADERS_TODAY
-                        + "Palm Oil,ECHO-1,,Milliliter (ml),Keg,50,30,,,,,\n"
-                        + "Bolts,ECHO-2,,Piece,,,600,,,,,\n",
+                        + "Palm Oil,ECHO-1,,Keg,50 ml,30,,,,,\n"
+                        + "Bolts,ECHO-2,,,piece,600,,,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
@@ -1146,16 +1217,14 @@ class BulkImportSessionIntegrationTest {
         ImportRowResponse row = firstRow(tenant, session, "ALL");
         assertThat(row.fieldOptions()).isNotNull().containsKey("counted_in");
         List<ImportFieldDescriptor.Option> options = row.fieldOptions().get("counted_in");
-        assertThat(options).extracting(ImportFieldDescriptor.Option::value).contains("KG", "BAG");
-        assertThat(options).extracting(ImportFieldDescriptor.Option::label).contains("kg", "Bag of 50 kg");
+        // A pack is offered by container AND size, and in the sheet's own words.
+        assertThat(options).extracting(ImportFieldDescriptor.Option::value).contains("KG", "BAG:50");
+        assertThat(options).extracting(ImportFieldDescriptor.Option::label).contains("Loose · kg", "Bag · 50 kg");
         assertThat(options).extracting(ImportFieldDescriptor.Option::value).doesNotContain("CARTON", "DRUM");
 
         // Non-negotiable 3 on the grid: what was typed, and what the ledger will take, together.
         assertThat(row.baseQuantityText()).isEqualTo("= 100 kg");
 
-        // The reference column states the same answer the sheet does, recomputed from the product
-        // rather than echoed from the file.
-        assertThat(row.normalized().get("how_you_count_it")).isEqualTo("kg · or Bag of 50 kg");
     }
 
     /**
@@ -1233,51 +1302,6 @@ class BulkImportSessionIntegrationTest {
     }
 
     /**
-     * Contract section 5.2: {@code packaging_size} is removed from the sheet, and a number left in
-     * it on an old saved copy is accepted, ignored, and warned about - never silently dropped and
-     * never used.
-     *
-     * <p>The warning lands only on rows that record something. The pre-filled template is the
-     * tenant's whole catalog, so a six-line delivery arrives as a four-hundred-row file; warning
-     * on all four hundred would be the same as warning on none (contract section 8.11's
-     * reasoning, applied to the column beside it).
-     */
-    @Test
-    void aPackagingSizeLeftOnAnOldStockInTemplateIsIgnoredOutLoudAndOnlyWhereItMatters() {
-        TenantLoginResponse tenant = signup("Ignored Pack Size Co");
-        commitCatalog(
-                tenant,
-                "CREATE_ONLY",
-                CATALOG_HEADERS
-                        + "Rice 50kg,IPS-1,,900,,,KG,BAG,50,,,\n"
-                        + "Beans 100kg,IPS-2,,900,,,KG,BAG,50,,,\n");
-
-        ImportSessionResponse session = upload(
-                tenant,
-                STOCK_IN_HEADERS
-                        + "IPS-1,Rice 50kg,,2,BAG,,25,,\n"
-                        // No quantity: nothing arrived, so nothing is said about any of its other
-                        // columns either.
-                        + "IPS-2,Beans 100kg,,,BAG,,25,,\n",
-                "STOCK_IN",
-                null);
-
-        assertThat(session.errorCount()).isZero();
-        assertThat(session.warningCount()).isEqualTo(1);
-        assertThat(firstRow(tenant, session, "WARNING").warnings()).anySatisfy(warning -> {
-            // The stock-in sheet's ignored column keeps its old HEADER ("packaging_size") but its
-            // field key moved with section 9.4, and the grid addresses cells by field key.
-            assertThat(warning.column()).isEqualTo("units_per_pack");
-            assertThat(warning.message()).contains("take the pack from your product setup");
-        });
-
-        // Ignored means ignored: 2 bags is 100 kg from the product's own pack, never 50 kg from
-        // the number in the column we just said we were not reading.
-        commit(tenant, session.id());
-        assertThat(productBySku(tenant, "IPS-1").quantityOnHand()).isEqualTo(100);
-    }
-
-    /**
      * The rename is a rename of the header, not a break in it. Contract section 5.1/5.2 keep
      * {@code quantity_on_hand}, {@code unit} and {@code unit_cost} accepted on read forever -
      * tenants hold saved copies of every template we have ever published, and a rename that costs
@@ -1295,19 +1319,23 @@ class BulkImportSessionIntegrationTest {
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
         assertThat(catalog.needsMapping()).isFalse();
-        assertThat(catalog.unmappedHeaders()).isEmpty();
+        // The main-supplier flag was retired in BULK_IMPORT_CX_PLAN.md task 1.6: the supplier on a
+        // product's row is its main one. An old sheet still imports; the column is reported.
+        assertThat(catalog.unmappedHeaders()).containsExactly("is_preferred_vendor");
         assertThat(catalog.columnMapping())
                 .containsEntry("quantity_on_hand", "opening_stock")
                 .containsEntry("low_stock_threshold", "low_stock_alert_at")
                 .containsEntry("unit_of_measure", "stock_unit")
                 .containsEntry("packaging_unit", "pack")
-                .containsEntry("packaging_size", "units_per_pack");
+                .containsEntry("packaging_size", "contains");
         commit(tenant, catalog.id());
 
         ImportSessionResponse stockIn =
                 upload(tenant, STOCK_IN_HEADERS + "OLDH-1,Rice 50kg,,2,BAG,45000,,,\n", "STOCK_IN", null);
         assertThat(stockIn.needsMapping()).isFalse();
-        assertThat(stockIn.unmappedHeaders()).isEmpty();
+        // The stock sheet stopped reading a pack size in BULK_IMPORT_CX_PLAN.md task 1.4; an old
+        // sheet still imports, and the column it no longer reads is reported rather than guessed at.
+        assertThat(stockIn.unmappedHeaders()).containsExactly("packaging_size");
         assertThat(stockIn.columnMapping())
                 .containsEntry("unit", "counted_in")
                 .containsEntry("unit_cost", "cost_per_unit");
@@ -1315,33 +1343,417 @@ class BulkImportSessionIntegrationTest {
     }
 
     /**
-     * M2's handover, and the one thing a reference column must never do: appear on the mapping
-     * screen as a column we did not understand. {@code how_you_count_it} answers the question the
-     * sheet asks; being told we do not recognise it would undo exactly the reassurance it exists
-     * to give.
+     * The stock sheet as it is downloaded today (BULK_IMPORT_CX_PLAN.md task 1.4): headers named
+     * for people, a guidance row under them, the pack written "Bag · 50 kg", and the product found
+     * by the hidden Ref even after someone edited its name on the sheet.
      */
     @Test
-    void theStockInSheetsReferenceColumnIsRecognisedRatherThanReportedAsUnknown() {
-        TenantLoginResponse tenant = signup("Reference Column Co");
-        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,REFC-1,,900,,,KG,BAG,50,,,\n");
+    void theStockSheetMatchesARowByItsRefWhateverTheNameNowSays() {
+        TenantLoginResponse tenant = signup("Ref Sheet Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,REFS-1,,900,,,KG,BAG,50,,,\n");
+        String ref = ProductRefs.encode(productBySku(tenant, "REFS-1").id());
 
         ImportSessionResponse session = upload(
                 tenant,
-                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
-                        + "received_date,waybill_or_invoice_no\n"
-                        + "REFC-1,Rice 50kg,kg · or Bag of 50 kg,,2,Bag of 50 kg,45000,,\n",
+                STOCK_SHEET_HEADERS
+                        + "ⓘ Your products,One row per way you buy it,THE ONLY COLUMN,For ONE,For reference,,,,Leave alone\n"
+                        + "Rice (renamed on the sheet),Bag · 50 kg,2,,,,REFS-1,," + ref + "\n"
+                        + "Rice (renamed on the sheet),Loose · kg,,,,,REFS-1,," + ref + "\n",
                 "STOCK_IN",
                 null);
 
         assertThat(session.unmappedHeaders()).isEmpty();
         assertThat(session.needsMapping()).isFalse();
         assertThat(session.errorCount()).isZero();
-        // The composed pack label the template writes into the cell reads back as the pack -
-        // "Bag of 50 kg" is not a unit, it is a unit and a size, and M2's SheetUnitOptions is
-        // what undoes the composition.
-        ImportRowResponse row = firstRow(tenant, session, "ALL");
-        assertThat(row.normalized().get("counted_in")).isEqualTo("BAG");
+        assertThat(session.rowCount()).as("the guidance row is not a row").isEqualTo(2);
+        assertThat(session.skippedCount()).as("the loose row had nothing in it").isEqualTo(1);
+        ImportRowResponse row = firstRow(tenant, session, "VALID");
+        assertThat(row.normalized().get("counted_in")).isEqualTo("BAG:50");
         assertThat(row.baseQuantityText()).isEqualTo("= 100 kg");
+
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "REFS-1").quantityOnHand()).isEqualTo(100);
+    }
+
+    /**
+     * A row copied to add something new keeps the Ref of the row it came from. When both its name
+     * and its code now say something else, the row is still matched - but out loud.
+     */
+    @Test
+    void aCopiedRowWhoseNameAndCodeBothDifferFromItsRefIsFlagged() {
+        TenantLoginResponse tenant = signup("Copied Row Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,COPY-1,,900,,,KG,,,,,\n");
+        String ref = ProductRefs.encode(productBySku(tenant, "COPY-1").id());
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS + "Beans,Loose · kg,5,,,,BEANS-1,," + ref + "\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(session.warningCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, session, "WARNING").warnings()).anySatisfy(warning -> {
+            assertThat(warning.column()).isEqualTo("product_name");
+            assertThat(warning.message()).contains("Rice 50kg").contains("clear the row's Ref");
+        });
+    }
+
+    /**
+     * An unknown code on a "Bag · 25 kg" row, answered with an existing product that has a 50 kg
+     * bag and a 25 kg one: the row keeps its size across passes and records 25 kg bags.
+     */
+    @Test
+    void anUnknownCodeMatchedToAProductWithTwoBagsKeepsTheBagSizeItTyped() {
+        TenantLoginResponse tenant = signup("Matched Two Bags Co");
+        CompanyVendorResponse mill = createVendor(tenant, "Quarter Mill");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,MTB-1,,900,,,KG,BAG,50,,,\n");
+        UUID riceId = productBySku(tenant, "MTB-1").id();
+        stockInApi(tenant, riceId, Map.of(
+                "quantity", 1, "unit", "BAG", "companyVendorId", mill.id().toString(),
+                "packagingUnit", "BAG", "packagingSize", 25, "saveAsSupplierDefault", true));
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS + "Rice,Bag · 25 kg,2,,,Quarter Mill,OLD-RICE-CODE,,\n",
+                "STOCK_IN",
+                null);
+        assertThat(session.errorCount()).isEqualTo(1);
+
+        ImportSessionResponse answered = resolveValue(tenant, session.id(),
+                new ValueMappingRequest("sku", "OLD-RICE-CODE", new ValueResolution("EXISTING", riceId, null, null)));
+        assertThat(answered.errorCount()).isZero();
+        assertThat(firstRow(tenant, answered, "ALL").normalized().get("counted_in")).isEqualTo("BAG:25");
+
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "MTB-1").quantityOnHand()).isEqualTo(25 + 50);
+    }
+
+    /**
+     * A product being added by this import has only its stock unit so far. A pack on its row is
+     * refused on the row - left to the commit, it would roll back every delivery in the file.
+     */
+    @Test
+    void aPackOnARowThatCreatesAProductIsRefusedOnTheRow() {
+        TenantLoginResponse tenant = signup("New Product Pack Co");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS + "Semolina,Bag · 10 kg,3,,,,,,\n",
+                "STOCK_IN",
+                null);
+        ImportSessionResponse answered = resolveValue(tenant, session.id(), new ValueMappingRequest(
+                "product_name", "Semolina",
+                new ValueResolution("CREATE_NEW", null, null, Map.of("name", "Semolina", "unitOfMeasure", "KG"))));
+
+        assertThat(answered.errorCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, answered, "ERROR").errors()).anySatisfy(error -> {
+            assertThat(error.column()).isEqualTo("counted_in");
+            assertThat(error.message()).contains("Semolina is being added counted in kg");
+        });
+    }
+
+    /**
+     * The sheet writes "Pack · 10 pieces"; someone whose delivery came in packs of twenty edits it
+     * to "Pack · 20 pieces". That is a new pack to confirm, not an unknown unit.
+     */
+    @Test
+    void aPluralCountedSizeReadsAsANewPack() {
+        TenantLoginResponse tenant = signup("Plural Pack Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Biro,PLUR-1,,,,,PIECE,PACK,10,,,\n");
+        String ref = ProductRefs.encode(productBySku(tenant, "PLUR-1").id());
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS + "Biro,Pack · 20 pieces,3,,,,PLUR-1,," + ref + "\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(firstRow(tenant, session, "ERROR").errors()).anySatisfy(error -> {
+            assertThat(error.column()).isEqualTo("counted_in");
+            assertThat(error.suggestion().value()).as("a new-pack suggestion").contains("|");
+            assertThat(error.suggestion().label()).isEqualTo("Pack of 20 pieces");
+        });
+    }
+
+    /**
+     * BULK_IMPORT_CX_PLAN.md task 1.5: the delivery's date, invoice number and supplier are asked
+     * once on the upload screen and fill every row that says nothing itself. A row that does say
+     * something keeps it.
+     */
+    @Test
+    void theUploadScreensDeliveryDetailsFillEveryRowThatLeavesThemBlank() {
+        TenantLoginResponse tenant = signup("Delivery Details Co");
+        CompanyVendorResponse tony = createVendor(tenant, "Tony Stores");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS
+                + "Onion,DD-1,,,,,KG,,,,,\n"
+                + "Garlic,DD-2,,,,,KG,,,,,\n");
+        String date = java.time.LocalDate.now().minusDays(3).toString();
+        String ownDate = java.time.LocalDate.now().minusDays(10).toString();
+
+        ResponseEntity<ImportSessionResponse> response = uploadRaw(
+                tenant,
+                STOCK_SHEET_HEADERS
+                        + "Onion,Loose · kg,30,800,,,DD-1,,\n"
+                        + "Garlic,Loose · kg,5,1500,,,DD-2," + ownDate + ",\n",
+                "STOCK_IN",
+                null,
+                Map.of("deliveryDate", date, "invoiceNo", "WB-00419", "vendorId", tony.id().toString()),
+                ImportSessionResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        ImportSessionResponse session = response.getBody();
+
+        assertThat(session.delivery()).isNotNull();
+        assertThat(session.delivery().date()).hasToString(date);
+        assertThat(session.delivery().invoiceNo()).isEqualTo("WB-00419");
+        assertThat(session.delivery().supplierName()).isEqualTo("Tony Stores");
+        assertThat(session.errorCount()).isZero();
+
+        List<ImportRowResponse> rows = rows(tenant, session.id(), "ALL");
+        assertThat(rows).allSatisfy(row -> {
+            assertThat(row.normalized().get("vendor_name")).isEqualTo("Tony Stores");
+            assertThat(row.normalized().get("waybill_or_invoice_no")).isEqualTo("WB-00419");
+        });
+        assertThat(rows).extracting(row -> row.normalized().get("received_date")).containsExactlyInAnyOrder(date, ownDate);
+
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("invoice");
+            assertThat(line.text()).isEqualTo("WB-00419");
+        });
+
+        commit(tenant, session.id());
+        UUID onion = productBySku(tenant, "DD-1").id();
+        assertThat(vendorLines(tenant, onion))
+                .as("the delivery's supplier is recorded against the product")
+                .anySatisfy(line -> assertThat(line.companyVendorId()).isEqualTo(tony.id()));
+    }
+
+    @Test
+    void aDeliveryDateInTheFutureOrAnotherCompanysSupplierIsRefusedAtUpload() {
+        TenantLoginResponse tenant = signup("Bad Delivery Co");
+        TenantLoginResponse other = signup("Other Supplier Co");
+        CompanyVendorResponse theirs = createVendor(other, "Not Yours Ltd");
+        String csv = STOCK_SHEET_HEADERS + "Onion,Loose · kg,30,,,,,,\n";
+
+        ResponseEntity<String> future = uploadRaw(tenant, csv, "STOCK_IN", null,
+                Map.of("deliveryDate", java.time.LocalDate.now().plusDays(5).toString()), String.class);
+        assertThat(future.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(future.getBody()).contains("can't be in the future");
+
+        ResponseEntity<String> foreign = uploadRaw(tenant, csv, "STOCK_IN", null,
+                Map.of("vendorId", theirs.id().toString()), String.class);
+        assertThat(foreign.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(foreign.getBody()).contains("couldn't find that supplier");
+    }
+
+    /**
+     * BULK_IMPORT_CX_PLAN.md task 1.7 on the product sheet: a name the company already has, a name
+     * one letter off it, the same new name twice in the file, rice counted in millimetres and a
+     * bag of 12 mg are all said out loud - as warnings, so the import can still go ahead.
+     */
+    @Test
+    void theProductSheetQuestionsDuplicatesAndImplausibleSetups() {
+        TenantLoginResponse tenant = signup("Sense Check Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Carrot,SENSE-1,,,,,KG,,,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                CATALOG_HEADERS
+                        + "carrot,SENSE-2,,,,,KG,,,,,\n"
+                        + "Carot,SENSE-3,,,,,KG,,,,,\n"
+                        + "Garden egg,SENSE-4,,,,,KG,,,,,\n"
+                        + "Garden egg,SENSE-5,,,,,KG,,,,,\n"
+                        + "Rice,SENSE-6,,,,,MM,,,,,\n"
+                        + "Pawpaw,SENSE-7,,,,,MG,BAG,12,,,\n"
+                        + "Copper cable,SENSE-8,,,,,M,,,,,\n",
+                "PRODUCT_CATALOG",
+                "CREATE_ONLY");
+
+        assertThat(session.errorCount()).isZero();
+        Map<String, List<String>> warningsBySku = new java.util.HashMap<>();
+        for (ImportRowResponse row : rows(tenant, session.id(), "ALL")) {
+            warningsBySku.put(String.valueOf(row.raw().get("sku")),
+                    row.warnings().stream().map(ImportRowResponse.Warning::message).toList());
+        }
+        assertThat(warningsBySku.get("SENSE-2")).anySatisfy(m -> assertThat(m).contains("already have a product called"));
+        assertThat(warningsBySku.get("SENSE-3")).anySatisfy(m -> assertThat(m).contains("looks very like"));
+        assertThat(warningsBySku.get("SENSE-4")).isEmpty();
+        assertThat(warningsBySku.get("SENSE-5")).anySatisfy(m -> assertThat(m).contains("also adds a product called"));
+        assertThat(warningsBySku.get("SENSE-6")).anySatisfy(m -> assertThat(m).contains("which is a length"));
+        assertThat(warningsBySku.get("SENSE-7")).anySatisfy(m -> assertThat(m).contains("A bag of 12 mg is very small"));
+        assertThat(warningsBySku.get("SENSE-8")).isEmpty();
+
+        ImportResultResponse result = commit(tenant, session.id());
+        assertThat(result.createdCount()).as("warnings never block").isEqualTo(7);
+    }
+
+    /** Task 1.7 on the stock sheet: a price wildly off the last one is usually a line total. */
+    @Test
+    void aStockSheetPriceFarFromTheLastOneIsQuestioned() {
+        TenantLoginResponse tenant = signup("Price Check Co");
+        CompanyVendorResponse dangote = createVendor(tenant, "Dangote Checks");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,PRICE-CHK,,,,,KG,BAG,50,,,\n");
+        UUID riceId = productBySku(tenant, "PRICE-CHK").id();
+        stockInApi(tenant, riceId, Map.of(
+                "quantity", 1, "unit", "BAG", "unitPrice", 42000, "companyVendorId", dangote.id().toString()));
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS
+                        + "Rice 50kg,Bag · 50 kg,10,420000,,Dangote Checks,PRICE-CHK,," + ProductRefs.encode(riceId) + "\n"
+                        + "Rice 50kg,Bag · 50 kg,1,43000,,Dangote Checks,PRICE-CHK,," + ProductRefs.encode(riceId) + "\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        assertThat(session.warningCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, session, "WARNING").warnings()).singleElement().satisfies(warning -> {
+            assertThat(warning.column()).isEqualTo("cost_per_unit");
+            assertThat(warning.message()).contains("a bag is more than 5 times").contains("not the total for the line");
+        });
+    }
+
+    /**
+     * One product, two bag sizes - its own 50 kg bag and a supplier's 25 kg one. The row that says
+     * "Bag · 25 kg" records 25 kg bags. Matching on the word "Bag" alone used to take whichever
+     * came first, on the review screen and again at commit.
+     */
+    @Test
+    void aProductWithTwoBagSizesRecordsTheBagTheRowNames() {
+        TenantLoginResponse tenant = signup("Two Bags Co");
+        CompanyVendorResponse mill = createVendor(tenant, "Small Bag Mill");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,TWOB-1,,900,,,KG,BAG,50,,,\n");
+        UUID riceId = productBySku(tenant, "TWOB-1").id();
+        stockInApi(tenant, riceId, Map.of(
+                "quantity", 1, "unit", "BAG", "unitPrice", 20000,
+                "companyVendorId", mill.id().toString(),
+                "packagingUnit", "BAG", "packagingSize", 25, "saveAsSupplierDefault", true));
+        assertThat(productBySku(tenant, "TWOB-1").quantityOnHand()).isEqualTo(25);
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS
+                        + "Rice 50kg,Bag · 25 kg,2,,,Small Bag Mill,TWOB-1,," + ProductRefs.encode(riceId) + "\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        assertThat(row.normalized().get("counted_in")).isEqualTo("BAG:25");
+        assertThat(row.baseQuantityText()).isEqualTo("= 50 kg");
+
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "TWOB-1").quantityOnHand()).isEqualTo(75);
+    }
+
+    /**
+     * "Price paid for one" starts blank on the sheet, with the last price beside it. Left blank,
+     * the row records that last price - and the confirm screen says how many rows did, so a stale
+     * figure is never taken without anyone seeing it.
+     */
+    @Test
+    void aBlankPriceRecordsTheLastPricePaidAndTheConfirmScreenSaysSo() {
+        TenantLoginResponse tenant = signup("Last Price Co");
+        CompanyVendorResponse dangote = createVendor(tenant, "Dangote Foods");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,LAST-1,,,,,KG,BAG,50,,,\n");
+        UUID riceId = productBySku(tenant, "LAST-1").id();
+        stockInApi(tenant, riceId, Map.of(
+                "quantity", 1, "unit", "BAG", "unitPrice", 45000, "companyVendorId", dangote.id().toString()));
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS
+                        + "Rice 50kg,Bag · 50 kg,1,,,Dangote Foods,LAST-1,," + ProductRefs.encode(riceId) + "\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isZero();
+        ImportRowResponse row = firstRow(tenant, session, "ALL");
+        assertThat(new java.math.BigDecimal(row.normalized().get("last_price_paid").toString()))
+                .isEqualByComparingTo("45000");
+        assertThat(previewOf(tenant, session).lines()).anySatisfy(line -> {
+            assertThat(line.key()).isEqualTo("last-price");
+            assertThat(line.text()).isEqualTo("1 row uses the last price you paid");
+        });
+
+        commit(tenant, session.id());
+        ProductResponse rice = productBySku(tenant, "LAST-1");
+        assertThat(rice.quantityOnHand()).isEqualTo(100);
+        // Two bags at N45,000 is N900 a kg either way - the blank price did not drag the average.
+        assertThat(rice.costPrice()).isEqualByComparingTo("900");
+    }
+
+    /**
+     * A row someone added at the bottom with just a name finds the product by that name - and a
+     * name two products share is asked about, never guessed.
+     */
+    @Test
+    void aRowWithOnlyANameFindsTheProductAndASharedNameIsAskedAbout() {
+        TenantLoginResponse tenant = signup("Name Only Co");
+        commitCatalog(
+                tenant,
+                "CREATE_ONLY",
+                CATALOG_HEADERS
+                        + "Yam,NAME-1,,,,,KG,,,,,\n"
+                        + "Carrot,NAME-2,,,,,KG,,,,,\n"
+                        + "Carrot,NAME-3,,,,,KG,,,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS
+                        + "yam,Loose · kg,12,,,,,,\n"
+                        + "Carrot,Loose · kg,5,,,,,,\n",
+                "STOCK_IN",
+                null);
+
+        assertThat(session.errorCount()).isEqualTo(1);
+        assertThat(session.unresolvedValues()).singleElement().satisfies(value -> {
+            assertThat(value.column()).isEqualTo("product_name");
+            assertThat(value.value()).isEqualTo("Carrot");
+            assertThat(value.allowCreateNew()).as("a choice between two, not a third").isFalse();
+            assertThat(value.suggestions()).hasSizeGreaterThanOrEqualTo(2);
+        });
+        assertThat(firstRow(tenant, session, "ERROR").errors())
+                .anySatisfy(error -> assertThat(error.message()).contains("more than one product called"));
+
+        UUID secondCarrot = productBySku(tenant, "NAME-3").id();
+        ImportSessionResponse answered = resolveValue(
+                tenant,
+                session.id(),
+                new ValueMappingRequest("product_name", "Carrot",
+                        new ValueResolution("EXISTING", secondCarrot, null, null)));
+        assertThat(answered.errorCount()).isZero();
+
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "NAME-1").quantityOnHand()).isEqualTo(12);
+        assertThat(productBySku(tenant, "NAME-2").quantityOnHand()).isZero();
+        assertThat(productBySku(tenant, "NAME-3").quantityOnHand()).isEqualTo(5);
+    }
+
+    /**
+     * Something arrived that is not on the sheet: a new row with only a name, answered "add it",
+     * becomes a product with a code of its own and takes the delivery.
+     */
+    @Test
+    void aNewRowWithOnlyANameCanBeAddedAndStockedInOneGo() {
+        TenantLoginResponse tenant = signup("New Name Co");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_SHEET_HEADERS + "Palm Oil 25L,Loose · L,40,1200,,,,,\n",
+                "STOCK_IN",
+                null);
+        assertThat(session.unresolvedValues()).singleElement().satisfies(value -> {
+            assertThat(value.column()).isEqualTo("product_name");
+            assertThat(value.allowCreateNew()).isTrue();
+        });
+
+        resolveValue(tenant, session.id(), new ValueMappingRequest("product_name", "Palm Oil 25L",
+                new ValueResolution("CREATE_NEW", null, null, Map.of("name", "Palm Oil 25L", "unitOfMeasure", "LITER"))));
+        ImportResultResponse result = commit(tenant, session.id());
+        assertThat(result.productsCreated()).isEqualTo(1);
+        ProductResponse oil = productBySku(tenant, "PALM-OIL-25L");
+        assertThat(oil.quantityOnHand()).isEqualTo(40);
     }
 
     /**
@@ -1360,7 +1772,7 @@ class BulkImportSessionIntegrationTest {
                 tenant,
                 "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
                         + "received_date,waybill_or_invoice_no\n"
-                        + "CARROT-1,Carrot,kg · or Basket of 30 kg,,12,Cart of 90 kg,90000,,\n",
+                        + "CARROT-1,Carrot,kg · or Basket of 30 kg,,12,Carton of 90 kg,90000,,\n",
                 "STOCK_IN",
                 null);
 
@@ -1370,13 +1782,41 @@ class BulkImportSessionIntegrationTest {
                 .filter(candidate -> "counted_in".equals(candidate.column()))
                 .findFirst()
                 .orElseThrow();
-        assertThat(error.message()).startsWith("Reads as a new pack: Pack of 90 kg");
+        assertThat(error.message()).startsWith("Reads as a new pack: Carton of 90 kg");
         assertThat(error.suggestion())
                 .as("a bare unit code never contains '|' - this is what tells the frontend it is a "
                         + "candidate pack rather than an ordinary \"did you mean\" guess")
                 .isNotNull();
         assertThat(error.suggestion().value()).contains("|");
-        assertThat(error.suggestion().label()).isEqualTo("Pack of 90 kg");
+        assertThat(error.suggestion().label()).isEqualTo("Carton of 90 kg");
+    }
+
+    /**
+     * The other half of that rule, and the reason the suggestion carries a third segment: "Cart"
+     * is a container word this catalog does not know, so accepting it in one click would quietly
+     * rename it "Pack". The message says so and offers only Edit - see
+     * StockInRowHandler.emitCandidatePackIssue.
+     */
+    @Test
+    void aTypedSizeNamingAContainerWeDoNotKnowIsNotOfferedAsOneClickConfirm() {
+        TenantLoginResponse tenant = signup("Unknown Container Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Carrot,CART-1,,900,,,KG,BASKET,30,,,\n");
+
+        ImportSessionResponse session = upload(
+                tenant,
+                "sku,product_name,how_you_count_it,vendor_name,quantity,counted_in,cost_per_unit,"
+                        + "received_date,waybill_or_invoice_no\n"
+                        + "CART-1,Carrot,kg · or Basket of 30 kg,,12,Cart of 90 kg,90000,,\n",
+                "STOCK_IN",
+                null);
+
+        ImportRowResponse.Error error = firstRow(tenant, session, "ALL").errors().stream()
+                .filter(candidate -> "counted_in".equals(candidate.column()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(error.message()).isEqualTo(
+                "We don't recognise that as a pack. Edit to add it as Pack of 90 kg or something else.");
+        assertThat(error.suggestion().value()).endsWith("|false");
     }
 
     /**
@@ -1417,7 +1857,7 @@ class BulkImportSessionIntegrationTest {
         // "BAG" above. The composed label ("Pack of 90 kg") is what `confirmPack` returns and
         // what gets written back into the CELL's raw text, never the normalized value.
         ImportRowResponse after = firstRow(tenant, session, "ALL");
-        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK");
+        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK:90");
         assertThat(after.errors()).extracting(ImportRowResponse.Error::column).doesNotContain("counted_in");
     }
 
@@ -1488,7 +1928,7 @@ class BulkImportSessionIntegrationTest {
         assertThat(response.getStatusCode()).as(response.getBody()).isEqualTo(HttpStatus.OK);
 
         ImportRowResponse after = firstRow(tenant, session, "ALL");
-        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK");
+        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK:90");
         assertThat(after.errors()).extracting(ImportRowResponse.Error::column).doesNotContain("counted_in");
         assertThat(after.warnings()).extracting(ImportRowResponse.Warning::column).doesNotContain("vendor_name");
     }
@@ -1546,7 +1986,7 @@ class BulkImportSessionIntegrationTest {
                         + "Vendor, and must still be recognised")
                 .extracting(ImportRowResponse.Error::column)
                 .doesNotContain("counted_in");
-        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK");
+        assertThat(after.normalized().get("counted_in")).isEqualTo("PACK:90");
     }
 
     private ResponseEntity<String> confirmPackRaw(
@@ -1762,7 +2202,15 @@ class BulkImportSessionIntegrationTest {
     }
 
     private ImportSessionResponse upload(TenantLoginResponse tenant, String csv, String kind, String mode) {
+        ResponseEntity<ImportSessionResponse> response = uploadRaw(tenant, csv, kind, mode, Map.of(), ImportSessionResponse.class);
+        assertThat(response.getStatusCode()).as("upload must answer 201").isEqualTo(HttpStatus.CREATED);
+        return response.getBody();
+    }
+
+    private <T> ResponseEntity<T> uploadRaw(
+            TenantLoginResponse tenant, String csv, String kind, String mode, Map<String, String> extraParts, Class<T> type) {
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        extraParts.forEach(body::add);
         ByteArrayResource resource = new ByteArrayResource(csv.getBytes(StandardCharsets.UTF_8)) {
             @Override
             public String getFilename() {
@@ -1776,10 +2224,7 @@ class BulkImportSessionIntegrationTest {
         }
         HttpHeaders headers = authHeaders(tenant);
         headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        ResponseEntity<ImportSessionResponse> response = restTemplate.exchange(
-                "/api/imports", HttpMethod.POST, new HttpEntity<>(body, headers), ImportSessionResponse.class);
-        assertThat(response.getStatusCode()).as("upload must answer 201").isEqualTo(HttpStatus.CREATED);
-        return response.getBody();
+        return restTemplate.exchange("/api/imports", HttpMethod.POST, new HttpEntity<>(body, headers), type);
     }
 
     /** Upload and commit in one go, for building the fixture a test is actually about. */
@@ -1869,6 +2314,18 @@ class BulkImportSessionIntegrationTest {
                 ImportSessionResponse.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         return response.getBody();
+    }
+
+    private void stockInApi(TenantLoginResponse tenant, UUID productId, Map<String, Object> body) {
+        HttpHeaders headers = authHeaders(tenant);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/products/" + productId + "/stock/stock-in",
+                HttpMethod.POST,
+                new HttpEntity<>(body, headers),
+                String.class);
+        assertThat(response.getStatusCode()).as("stock-in fixture must succeed: %s", response.getBody())
+                .isEqualTo(HttpStatus.OK);
     }
 
     private void stockOut(TenantLoginResponse tenant, UUID productId, int quantity) {

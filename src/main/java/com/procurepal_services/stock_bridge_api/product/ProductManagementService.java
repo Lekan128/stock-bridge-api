@@ -3,26 +3,15 @@ package com.procurepal_services.stock_bridge_api.product;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationService;
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadValidationException;
-import com.procurepal_services.stock_bridge_api.product.bulk.ParsedProductRow;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductTemplateContext;
-import com.procurepal_services.stock_bridge_api.entity.ImportKind;
-import com.procurepal_services.stock_bridge_api.entity.ImportMode;
-import com.procurepal_services.stock_bridge_api.entity.ImportStatus;
-import com.procurepal_services.stock_bridge_api.imports.ImportCommitExecutor;
-import com.procurepal_services.stock_bridge_api.imports.ImportSessionService;
-import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
-import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
-import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductVendorSnapshot;
-import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
@@ -45,12 +34,10 @@ import com.procurepal_services.stock_bridge_api.storage.S3ImageService;
 import com.procurepal_services.stock_bridge_api.storage.UploadResult;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
-import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -87,6 +74,8 @@ public class ProductManagementService {
      * "stock that came in from a spreadsheet rather than a delivery" will match on.
      */
 
+    private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
+    private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
@@ -117,22 +106,32 @@ public class ProductManagementService {
      * {@link #openingBalanceVendorId}).
      */
     private final CompanyVendorRepository companyVendorRepository;
-    private final ImportSessionService importSessionService;
-    private final ImportCommitExecutor importCommitExecutor;
     private final ProductSkuSettingsService productSkuSettingsService;
+    private final ExpectedDeliveryService expectedDeliveryService;
     private final SkuGenerationService skuGenerationService;
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
+        return list(search, active, null, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> list(String search, Boolean active, UUID categoryId, Pageable pageable) {
         UUID tenantId = requireTenantId();
-        Page<Product> page = productRepository.findAll(ProductSpecifications.forTenant(tenantId, search, active), pageable);
+        Page<Product> page = productRepository.findAll(
+                ProductSpecifications.forTenant(tenantId, search, active, categoryId), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
         Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
+        // Task 3.1's "and 10 coming", in one query for the page rather than one per row - the
+        // same reason the preferred vendors above are batched.
+        Map<UUID, BigDecimal> expected = expectedDeliveryService.outstandingByProduct(
+                tenantId, page.getContent().stream().map(Product::getId).toList());
         return page.map(product -> ProductResponse.from(
-                product,
-                preferredVendorNames.get(product.getId()),
-                null,
-                hasMultiplePacks.getOrDefault(product.getId(), false)));
+                        product,
+                        preferredVendorNames.get(product.getId()),
+                        null,
+                        hasMultiplePacks.getOrDefault(product.getId(), false))
+                .withExpectedQuantity(expected.get(product.getId())));
     }
 
     @Transactional(readOnly = true)
@@ -144,7 +143,9 @@ public class ProductManagementService {
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
         boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
-        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks);
+        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
+                .withExpectedQuantity(
+                        expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id));
     }
 
     /**
@@ -282,6 +283,7 @@ public class ProductManagementService {
         Product product = Product.builder()
                 .name(request.name())
                 .sku(sku)
+                .barcode(assertBarcodeAvailable(tenantId, request.barcode(), null))
                 .description(request.description())
                 .unitPrice(isSeller ? request.unitPrice() : null)
                 .lowStockThreshold(request.lowStockThreshold())
@@ -297,6 +299,7 @@ public class ProductManagementService {
                 // for an ordinary buying company it is also PENDING and is never read
                 // by anything - see ProductModerationRules.
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
+                .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
 
         List<String> warnings = new ArrayList<>();
@@ -401,6 +404,13 @@ public class ProductManagementService {
         if (request.description() != null) {
             product.setDescription(request.description());
         }
+        // Task 3.3: absent leaves it alone, blank clears it - the only way to take a barcode off a
+        // product that was given the wrong one, and what frees it for the product that owns it.
+        if (request.barcode() != null) {
+            product.setBarcode(request.barcode().isBlank()
+                    ? null
+                    : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
+        }
         if (request.unitPrice() != null) {
             // A non-seller has no selling-price surface at all - see create() - so a
             // stale client still sending one here is silently ignored rather than
@@ -431,7 +441,11 @@ public class ProductManagementService {
             // resending the same unit the product already has is a no-op, not a violation, so
             // only an actual change trips the guard.
             String resolvedUnitOfMeasure = resolveUnitOfMeasure(request.unitOfMeasure());
-            if (!Objects.equals(resolvedUnitOfMeasure, product.getUnitOfMeasure())
+            // A product saved before units existed (null) may be given its first one even with
+            // stock recorded - that is the one-time fix of task 1.8, and it names what the
+            // numbers already in the ledger were counted in. Changing a unit it HAS stays refused.
+            if (product.getUnitOfMeasure() != null
+                    && !Objects.equals(resolvedUnitOfMeasure, product.getUnitOfMeasure())
                     && stockMovementRepository.existsByProductIdAndClientId(id, product.getClientId())) {
                 throw new UnitOfMeasureImmutableException();
             }
@@ -442,6 +456,11 @@ public class ProductManagementService {
         }
         if (request.packagingSize() != null) {
             product.setPackagingSize(request.packagingSize());
+        }
+        if (Boolean.TRUE.equals(request.clearCategory())) {
+            product.setCompanyCategory(null);
+        } else if (request.categoryId() != null) {
+            product.setCompanyCategory(companyCategoryService.require(request.categoryId()));
         }
         // Both checked against the RESULTING state, not the request: a patch that supplies
         // only one of the packagingUnit/packagingSize pair is fine so long as the product
@@ -538,7 +557,12 @@ public class ProductManagementService {
     public byte[] exportActiveProducts() {
         UUID tenantId = requireTenantId();
         List<Product> products = productRepository.findAll(ProductSpecifications.forTenant(tenantId, null, true));
-        return productExcelService.exportProducts(products, preferredVendorSnapshotsFor(tenantId, products));
+        // The seller flag is resolved here rather than inside ProductExcelService for the reason
+        // generateTemplate states, and for the same reason the two files must agree on it: the
+        // export IS the template once it has your products in it.
+        Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
+        return productExcelService.exportProducts(
+                products, preferredVendorSnapshotsFor(tenantId, products), owner != null && owner.canSell());
     }
 
     /**
@@ -563,15 +587,18 @@ public class ProductManagementService {
         // and a pack's vendorSku is routinely null - the common case is a vendor line with no
         // code recorded at all - so this collects by hand rather than via toMap.
         Map<UUID, String> vendorSkuByVendorId = new HashMap<>();
+        Map<UUID, BigDecimal> lastCostByVendorId = new HashMap<>();
         for (ProductVendorPack pack : productVendorPackRepository
                 .findAllByProductVendorIdInAndIsDefaultTrue(preferred.stream().map(ProductVendor::getId).toList())) {
             vendorSkuByVendorId.put(pack.getProductVendor().getId(), pack.getVendorSku());
+            lastCostByVendorId.put(pack.getProductVendor().getId(), pack.getLastCostPrice());
         }
         return preferred.stream()
                 .collect(Collectors.toMap(
                         vendor -> vendor.getProduct().getId(),
                         vendor -> new ProductVendorSnapshot(
-                                vendor.getCompanyVendor().getName(), vendorSkuByVendorId.get(vendor.getId()), vendor.isPreferred())));
+                                vendor.getCompanyVendor().getName(), vendorSkuByVendorId.get(vendor.getId()),
+                                vendor.isPreferred(), lastCostByVendorId.get(vendor.getId()))));
     }
 
     /**
@@ -596,212 +623,12 @@ public class ProductManagementService {
                 .stream()
                 .map(CompanyVendor::getName)
                 .toList();
-        return productExcelService.generateTemplate(
-                new ProductTemplateContext(isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId)));
-    }
-
-    /**
-     * V1: creates only, all-or-nothing. ProductExcelService.parse() already
-     * rejects the file (with the full set of header/row errors) if any row is
-     * structurally invalid or duplicates a sku within the file itself; this
-     * method adds one more pass checking each remaining candidate row against
-     * existing tenant products, so a row that looks fine on its own can still
-     * be rejected for reusing a sku that's already in the catalog. The two
-     * passes aren't merged into a single error list - if the file has
-     * structural errors, the DB pass never runs, so a user fixing those errors
-     * could still hit a sku conflict on their next attempt. That's an
-     * acceptable tradeoff for V1's fail-fast simplicity over a more complete
-     * "all known errors in one response" experience; partial-success (mode b)
-     * was not implemented for the same reason - simpler for a user cleaning up
-     * a spreadsheet to reason about "nothing happened, fix these" than
-     * reconciling which rows silently landed and which didn't.
-     *
-     * <h2>V20: this is now a shim, and what that did and did not change</h2>
-     * BULK_IMPORT_DESIGN.md section 10 keeps this endpoint but reimplements it as
-     * {@code POST /api/imports} plus an immediate commit with CREATE_ONLY, so nothing that
-     * already integrates breaks while there stops being a second way to create a product from a
-     * spreadsheet. The response shape is unchanged, and validation failures still arrive as
-     * {@code BulkUploadValidationException} carrying {@code List<ProductRowError>}.
-     *
-     * <p>The write really does go through the engine now, which is what matters: one code path
-     * stamps {@code import_batch_id}, one writes the opening-balance {@code StockMovement} that
-     * non-negotiable 1 of contract section 8 requires (<b>no quantity reaches {@code
-     * products.quantity_on_hand} without a movement</b>, on every path including this one), and
-     * an upload made here is undoable from the imports screen exactly like any other.
-     *
-     * <h2>Why validation still runs through the M2 parser first</h2>
-     * A deliberate, and the only, deviation from a pure shim. This endpoint's error <em>copy</em>
-     * is part of its frozen interface: {@code ProductBulkImportExportIntegrationTest} asserts on
-     * {@code "is required"} exactly, on {@code "not a recognized unit of measure"}, and on
-     * messages that name {@code unit_of_measure} and {@code packaging_size} as their subject.
-     * The review grid's copy is bound by the opposite rule - design 9.6 forbids a column name as
-     * an error subject and requires a sentence a person would say - so the two vocabularies
-     * genuinely cannot be the same strings. Routing validation through the engine and translating
-     * its verdicts back would mean maintaining a second, invisible copy deck whose only consumer
-     * is a test, and getting one of eleven mappings wrong would break a caller silently.
-     *
-     * <p>There is also a substantive difference the translation could not paper over: for a
-     * buying company the engine has no {@code unit_price} field at all (contract section 5 omits
-     * it for a non-seller), while this endpoint has always parsed and rejected a malformed value
-     * in that column whoever uploaded it.
-     *
-     * <p>So: the parser decides whether the file is acceptable, in the words it has always used;
-     * the engine decides what happens to it. The cost is that the file is read twice, which is a
-     * fair price on a compatibility path.
-     */
-    @Transactional
-    public BulkUploadResponse bulkUpload(MultipartFile file) {
-        return bulkUpload(file, null);
-    }
-
-    /**
-     * @param actingUserId attributed on the opening-balance {@code StockMovement} each row with
-     *     quantity now writes - see {@code StockMovement.createdBy}, and {@link #create(
-     *     CreateProductRequest, MultipartFile, UUID)}, which took the same overload shape for
-     *     the same reason when V19 gave product creation a ledger write. V1's own {@code
-     *     stock_movements} comment already anticipated this: {@code created_by} is nullable
-     *     "to support bulk imports".
-     */
-    @Transactional
-    public BulkUploadResponse bulkUpload(MultipartFile file, UUID actingUserId) {
-        UUID tenantId = requireTenantId();
-
-        // One lookup answers two questions, same as create(): whether unit_price is a required
-        // column/cell for THIS upload (ProductExcelService.parse needs to know before it even
-        // validates headers), and - through the engine below - the moderation stamp every
-        // created row gets.
-        Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
-        boolean isSeller = owner != null && owner.canSell();
-        boolean skuAutoGenerated = productSkuSettingsService.isEnabled(tenantId);
-
-        // Phase one: the frozen validation. See the method javadoc for why this still runs
-        // through M2's parser rather than through the engine's own validation pass.
-        List<ParsedProductRow> parsedRows = productExcelService.parse(file, isSeller, skuAutoGenerated);
-        // Moot, and skipped outright, when auto-generated: parse() above never read a sku cell
-        // (row.sku() is null on every row), so there is nothing here to check against the
-        // catalog - the server's own generated values are checked for collisions later, inside
-        // SkuGenerationService, not against a value that was never supplied.
-        if (!skuAutoGenerated) {
-            List<ProductRowError> duplicateSkuErrors = new ArrayList<>();
-            for (ParsedProductRow row : parsedRows) {
-                if (productRepository.findByClientIdAndSku(tenantId, row.sku()).isPresent()) {
-                    duplicateSkuErrors.add(new ProductRowError(
-                            row.excelRow(), "sku", "SKU already exists in your product catalog"));
-                }
-            }
-            if (!duplicateSkuErrors.isEmpty()) {
-                throw new BulkUploadValidationException(duplicateSkuErrors);
-            }
-        }
-
-        // Phase two: the write, through the session engine. Design 10's "POST /api/imports +
-        // immediate commit with CREATE_ONLY", so there is exactly one code path that creates a
-        // product from a spreadsheet row, one that stamps import_batch_id, and one that writes
-        // the opening-balance movement design 3 requires.
-        ImportSessionResponse session =
-                importSessionService.create(file, ImportKind.PRODUCT_CATALOG, ImportMode.CREATE_ONLY, actingUserId);
-        if (session.status() != ImportStatus.READY) {
-            // A catalog-kind session confirms no packs (ImportRowHandler.confirmPack is stock-in
-            // only), so there is never anything for the discard to be offered a choice about.
-            importSessionService.discard(session.id(), java.util.List.of());
-            throw new BulkUploadValidationException(engineErrors(session.id()));
-        }
-
-        // Always synchronous, whatever the row count. This endpoint has answered with the
-        // created products since the day it shipped and its callers are written against that;
-        // handing back a 202 they have no way to poll would break them far more thoroughly than
-        // a slow response. Running inline also keeps the whole shim inside one transaction,
-        // which is what preserves the "nothing happened, fix these" semantics its callers expect.
-        importCommitExecutor.runNow(importSessionService.beginCommit(session.id(), actingUserId));
-
-        List<Product> created = productRepository.findAllByClientIdAndImportBatchId(tenantId, session.id()).stream()
-                .sorted(java.util.Comparator.comparing(Product::getSku))
+        List<String> categoryNames = companyCategoryRepository.findAllByClientIdOrderByNameAsc(tenantId).stream()
+                .map(com.procurepal_services.stock_bridge_api.entity.CompanyCategory::getName)
                 .toList();
-        return new BulkUploadResponse(
-                created.size(), created.stream().map(ProductResponse::from).toList());
+        return productExcelService.generateTemplate(new ProductTemplateContext(
+                isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames));
     }
-
-    /**
-     * Whatever the engine objected to, in the legacy error shape.
-     *
-     * <p>Unreachable in practice - phase one has already accepted the file, and the engine's
-     * validation is a superset of nothing that the parser rejects - but a shim that silently
-     * reported success because it could not translate a failure would be far worse than one that
-     * reports the failure in slightly unfamiliar words. The prose here is the review grid's, not
-     * the parser's, which is honest about where the objection came from.
-     */
-    private List<ProductRowError> engineErrors(UUID sessionId) {
-        List<ProductRowError> errors = new ArrayList<>();
-        for (ImportRowResponse row : importSessionService
-                .rows(sessionId, "ERROR", org.springframework.data.domain.Pageable.ofSize(ImportLimits.MAX_ROWS))
-                .getContent()) {
-            for (ImportRowResponse.Error error : row.errors()) {
-                errors.add(new ProductRowError(row.excelRow(), error.column(), error.message()));
-            }
-        }
-        if (errors.isEmpty()) {
-            errors.add(new ProductRowError(1, "file", "We could not import this file. Please check it and try again."));
-        }
-        return errors;
-    }
-
-
-    /**
-     * The tenant's active suppliers keyed by name, built once per upload and only when the file
-     * used the {@code vendor_name} column at all.
-     *
-     * <h2>Exact (case- and space-insensitive) matching only, on purpose</h2>
-     * No fuzzy matching here, and that is not an omission. "Dangote Ltd" against a directory
-     * holding "Dangote Nigeria Plc" is a genuine question - it might be the same company, it might
-     * be a second supplier with a similar name - and BULK_IMPORT_DESIGN.md section 6.4 puts that
-     * question on the review screen, asked once per distinct value with suggestions ranked and a
-     * "create new supplier" option beside them. Guessing it here would attach a delivery to the
-     * wrong company's ledger silently, which is precisely the kind of invented fact section 9.6
-     * forbids. The compatibility path has no review screen to ask on, so an unmatched name simply
-     * leaves the movement unattributed - the same "the spreadsheet didn't say" outcome as before.
-     *
-     * <p>Later duplicates lose to the first, matching the alphabetical order the directory read
-     * returns: two active vendors with names differing only in casing is a data-entry accident,
-     * and picking the first one deterministically beats picking whichever the map happened to
-     * hold.
-     */
-
-    /**
-     * Case-folded, whitespace-collapsed - so "dangote nigeria plc" and "Dangote  Nigeria Plc"
-     * match the directory entry a user copied out of it by hand. Anything beyond that (dropping
-     * "Ltd", stemming, edit distance) is the review screen's job, for the reason
-     * {@link #openingBalanceVendorId} states.
-     */
-
-    /**
-     * Same moderation stamp as {@link #create}. Bulk upload is exactly the path a vendor
-     * with a large catalogue uses, so leaving it on the column default would be the one
-     * way to get several hundred unmoderated listings in at once - and, conversely, it
-     * is why ProcurePal's own bulk imports must still come out APPROVED rather than
-     * filling the operator's queue with its own spreadsheet.
-     *
-     * <p>{@code isSeller}/{@code owner} are the single lookup {@link #bulkUpload} already made
-     * - not re-resolved here - matching create()'s "one lookup answers two questions" comment.
-     * A non-seller's row.unitPrice() is discarded exactly like create() discards a stale
-     * unitPrice from a non-seller request; a seller's row is guaranteed non-null here because
-     * ProductExcelService.parse() already rejected the file otherwise, so no defensive re-check
-     * is needed. row.unitOfMeasure()/row.packagingUnit()/row.packagingSize() have already been
-     * validated, role-checked and cross-validated by parse() - persisted as-is, not re-validated.
-     *
-     * <h2>V20: quantityOnHand starts at zero here, whatever the row said</h2>
-     * {@code row.quantityOnHand()} is deliberately NOT copied onto the product. It is applied
-     * through the ledger by {@code ProductCatalogRowHandler}'s opening-balance pass, which brings
-     * the counter to the row's number as a consequence of a real {@code StockMovement} rather
-     * than as an assertion nothing backs - a quantity with no movement behind it has no vendor,
-     * no cost basis, no delivery date, and writes no allocation row when it is later sold.
-     *
-     * <p>{@code costPrice} is still seeded here rather than left to the ledger. That is not an
-     * inconsistency: a row may carry a cost with no quantity ("this is what we pay for it, we
-     * just have none right now"), and there is no movement for that case to hang a cost on. When
-     * the row DOES carry quantity, {@code stockIn}'s weighted-average recalculation runs against
-     * a product with zero on hand and simply returns the delivery's own price - the same value,
-     * arrived at honestly.
-     */
 
     private void applyImage(Product product, MultipartFile image, List<String> warnings) {
         UploadResult result = s3ImageService.uploadProductImage(image);
@@ -923,6 +750,33 @@ public class ProductManagementService {
         return productRepository.findByIdForCurrentTenant(id).orElseThrow(ProductNotFoundException::new);
     }
 
+    /**
+     * The barcode, trimmed, once it is known that no other product in this company has it. Null
+     * and blank pass straight through: most products have no barcode, and the partial unique index
+     * is built so any number of them can coexist.
+     */
+    private String assertBarcodeAvailable(UUID tenantId, String barcode, UUID selfId) {
+        if (barcode == null || barcode.isBlank()) {
+            return null;
+        }
+        String clean = barcode.trim();
+        productRepository.findByClientIdAndBarcodeAndActiveTrue(tenantId, clean)
+                .filter(other -> !other.getId().equals(selfId))
+                .ifPresent(other -> {
+                    throw new BarcodeTakenException(clean, other.getName());
+                });
+        return clean;
+    }
+
+    /** The product this barcode is on, for a scan. */
+    @Transactional(readOnly = true)
+    public Product requireByBarcode(String barcode) {
+        return productRepository
+                .findByClientIdAndBarcodeAndActiveTrue(requireTenantId(), barcode == null ? "" : barcode.trim())
+                .orElseThrow(() -> new ProductNotFoundException(
+                        "No product in your catalog has that barcode yet."));
+    }
+
     private UUID requireTenantId() {
         UUID tenantId = TenantContext.get();
         if (tenantId == null) {
@@ -930,4 +784,5 @@ public class ProductManagementService {
         }
         return tenantId;
     }
+
 }

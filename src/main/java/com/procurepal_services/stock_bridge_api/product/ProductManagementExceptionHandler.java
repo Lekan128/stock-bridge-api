@@ -1,12 +1,9 @@
 package com.procurepal_services.stock_bridge_api.product;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadValidationException;
-import com.procurepal_services.stock_bridge_api.product.bulk.ProductRowError;
 import com.procurepal_services.stock_bridge_api.product.sku.InvalidSkuPatternException;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationExhaustedException;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuPatternTooLongException;
-import java.util.List;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -17,6 +14,22 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice(assignableTypes = ProductController.class)
 public class ProductManagementExceptionHandler {
 
+    @ExceptionHandler(com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryException.class)
+    public ResponseEntity<ApiError> handleCategory(
+            com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryException ex) {
+        return ResponseEntity.status(ex.status()).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(org.springframework.web.server.ResponseStatusException.class)
+    public ResponseEntity<ApiError> handleStatus(org.springframework.web.server.ResponseStatusException ex) {
+        return ResponseEntity.status(ex.getStatusCode()).body(new ApiError(ex.getReason()));
+    }
+
+    @ExceptionHandler(UnitOfMeasureImmutableException.class)
+    public ResponseEntity<ApiError> handleUnitImmutable(UnitOfMeasureImmutableException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(ProductNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(ProductNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
@@ -24,6 +37,11 @@ public class ProductManagementExceptionHandler {
 
     @ExceptionHandler(SkuTakenException.class)
     public ResponseEntity<ApiError> handleSkuTaken(SkuTakenException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(BarcodeTakenException.class)
+    public ResponseEntity<ApiError> handleBarcodeTaken(BarcodeTakenException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
 
@@ -90,9 +108,4 @@ public class ProductManagementExceptionHandler {
                 .body(new ApiError("That SKU is already in use within this organization."));
     }
 
-    /** Body is the raw error array (not wrapped) so the frontend can render it directly. */
-    @ExceptionHandler(BulkUploadValidationException.class)
-    public ResponseEntity<List<ProductRowError>> handleBulkUploadValidation(BulkUploadValidationException ex) {
-        return ResponseEntity.badRequest().body(ex.getErrors());
-    }
 }

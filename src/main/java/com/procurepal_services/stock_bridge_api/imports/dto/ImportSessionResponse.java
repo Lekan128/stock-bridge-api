@@ -50,5 +50,6 @@ public record ImportSessionResponse(
         String uploadedByName,
         OffsetDateTime createdAt,
         OffsetDateTime expiresAt,
-        OffsetDateTime committedAt) {
+        OffsetDateTime committedAt,
+        ImportDeliveryDetails delivery) {
 }

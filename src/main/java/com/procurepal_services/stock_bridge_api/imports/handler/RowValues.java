@@ -23,7 +23,7 @@ import java.util.Set;
  * text to yes/no - each returning the value AND adding the error when it cannot.
  *
  * <h2>Why this is not just a call to the M2 parsers</h2>
- * {@code ProductExcelService.parse} and {@code StockInExcelService.parse} already coerce these
+ * {@code ProductExcelService.parse} (and the since-removed stock-in parser) coerce these
  * columns, and the review pipeline cannot use either. Both are all-or-nothing: they collect
  * errors and throw {@code BulkUploadValidationException}, returning rows only when the file is
  * perfect. That is exactly right for the one-shot compatibility endpoint they serve, and exactly

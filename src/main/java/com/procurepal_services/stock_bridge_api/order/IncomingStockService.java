@@ -260,7 +260,7 @@ public class IncomingStockService {
             stockManagementService.stockIn(
                     locked.getId(),
                     new StockInRequest(
-                            quantity,
+                            BigDecimal.valueOf(quantity),
                             item.getUnitPrice(),
                             "Received from marketplace order " + order.getOrderNumber(),
                             stockInUnit,

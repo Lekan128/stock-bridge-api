@@ -4,6 +4,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import java.math.BigDecimal;
@@ -91,7 +92,41 @@ public record CreateProductRequest(
         String unitOfMeasure,
         String packagingUnit,
         @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
-        @Valid InitialVendor initialVendor) {
+        @Valid InitialVendor initialVendor,
+        UUID categoryId,
+        /** The barcode on the box (task 3.3). Optional, and unique per company where given. */
+        @Size(max = 64) String barcode) {
+
+    /** The shape before the barcode (task 3.3). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, null);
+    }
+
+    /** The shape before company categories (V32) - no category. */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, null);
+    }
 
     /**
      * The product's first supplier line, filled in on the same screen as the product itself -

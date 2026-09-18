@@ -102,7 +102,22 @@ final class UnitOfMeasureAliases {
             // (SAP, NetSuite, Sage all emit one of them) - both mean "an uncounted discrete
             // item", which is exactly what PIECE is for.
             Map.entry(UnitOfMeasure.PIECE, List.of("PC", "PIECE", "UNIT", "EACH", "EA", "ITEM", "NO", "NOS")),
-            Map.entry(UnitOfMeasure.PACK, List.of("PACK", "PKT", "PACKET", "PK", "SACHET")),
+            // "SACHET" is deliberately NOT here any more: PACK_ENTRY_REDESIGN.md section 4 makes
+            // SACHET its own BASE constant, so a sachet is now a thing you hand over rather than
+            // a synonym for the pack it arrives in. It still resolves in a packaging_unit column
+            // (a COUNT unit whose declared role is BASE may serve as a PACK), so "sachet" in a
+            // pack column keeps working - it just lands on SACHET instead of PACK, which is what
+            // the word actually means. Leaving it here would be a build failure: register()
+            // throws on a duplicate, and SACHET's own label derives the same key.
+            Map.entry(UnitOfMeasure.PACK, List.of("PACK", "PKT", "PACKET", "PK")),
+            // The sealed retail items - section 4. "BTL" and "CTN"-style abbreviations are what
+            // appear on a waybill; "CAN" is the word half of Nigeria uses for a tin of tomatoes
+            // or malt, and it cannot collide with KEG's "JERRY CAN", which normalizes to a
+            // distinct two-word key.
+            Map.entry(UnitOfMeasure.BOTTLE, List.of("BOTTLE", "BTL", "BOT")),
+            Map.entry(UnitOfMeasure.SACHET, List.of("SACHET", "SACH", "SCHT")),
+            Map.entry(UnitOfMeasure.TIN, List.of("TIN", "CAN", "TN")),
+            Map.entry(UnitOfMeasure.TUBE, List.of("TUBE", "TB")),
             Map.entry(UnitOfMeasure.DOZEN, List.of("DOZEN", "DOZ", "DZ", "DZN")),
             Map.entry(UnitOfMeasure.BOX, List.of("BOX", "BOXE", "BX")),
             Map.entry(UnitOfMeasure.CARTON, List.of("CARTON", "CTN", "CARTN", "CRTN")),

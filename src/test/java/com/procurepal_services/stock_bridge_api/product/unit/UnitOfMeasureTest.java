@@ -19,9 +19,16 @@ class UnitOfMeasureTest {
 
         assertThat(codes)
                 .containsExactlyInAnyOrder(
-                        // COUNT
-                        "PIECE", "PACK", "DOZEN", "BOX", "CARTON", "CASE", "CRATE", "BAG", "SACK", "BALE",
-                        "BUNDLE", "DRUM", "KEG", "PALLET", "SET", "PAIR", "ROLL", "TRAY", "BASKET",
+                        // COUNT - BASE role. Still only PIECE: a stock unit must be invariant
+                        // across the containers a product arrives in, so a CONTAINER word is
+                        // never one. See PACK_ENTRY_REDESIGN.md section 4.
+                        "PIECE",
+                        // COUNT - PACKAGING role. BOTTLE/SACHET/TIN/TUBE joined this list so that
+                        // "Bottle of 750 ml" is expressible at all - it was not before, which is
+                        // what pushed the 750 into the units-per-pack column.
+                        "PACK", "DOZEN", "BOX", "CARTON", "CASE", "CRATE", "BAG", "SACK", "BALE",
+                        "BUNDLE", "DRUM", "KEG", "BOTTLE", "SACHET", "TIN", "TUBE",
+                        "PALLET", "SET", "PAIR", "ROLL", "TRAY", "BASKET",
                         // WEIGHT
                         "MG", "G", "KG", "T",
                         // VOLUME
@@ -48,7 +55,8 @@ class UnitOfMeasureTest {
                 .filter(u -> u.category() == UnitOfMeasureCategory.LENGTH)
                 .count();
 
-        assertThat(countUnits).isEqualTo(19);
+        // 19 + the four sealed-retail CONTAINERS of PACK_ENTRY_REDESIGN.md section 4.
+        assertThat(countUnits).isEqualTo(23);
         assertThat(weightUnits).isEqualTo(4);
         assertThat(volumeUnits).isEqualTo(2);
         assertThat(lengthUnits).isEqualTo(3);
@@ -84,19 +92,30 @@ class UnitOfMeasureTest {
 
     /**
      * PIECE is the one COUNT-category constant reused as the generic BASE unit for uncounted
-     * discrete goods (see its javadoc); the other 18 COUNT constants are all PACKAGING. All 9
-     * WEIGHT/VOLUME/LENGTH constants are BASE - a product is never "packaged as a kilogram".
+     * discrete goods; the other 22 COUNT constants are all PACKAGING. All 9 WEIGHT/VOLUME/LENGTH
+     * constants are BASE - a product is never "packaged as a kilogram".
+     *
+     * <p>BOTTLE/SACHET/TIN/TUBE are PACKAGING and that is load-bearing: PACK_ENTRY_REDESIGN.md
+     * section 4 records why a container word must never be a stock unit. The same water bought as
+     * a 750 ml bottle today and a 2 L keg tomorrow is ONE product with one balance, and
+     * unitOfMeasure is immutable once stock moves - so a BOTTLE stock unit would strand the user
+     * on a second product for the same water.
      */
     @Test
     void roleAssignmentMatchesTheDocumentedSplit() {
         assertThat(UnitOfMeasure.PIECE.role()).isEqualTo(UnitOfMeasureRole.BASE);
+        assertThat(UnitOfMeasure.BOTTLE.role()).isEqualTo(UnitOfMeasureRole.PACKAGING);
+        assertThat(UnitOfMeasure.SACHET.role()).isEqualTo(UnitOfMeasureRole.PACKAGING);
+        assertThat(UnitOfMeasure.TIN.role()).isEqualTo(UnitOfMeasureRole.PACKAGING);
+        assertThat(UnitOfMeasure.TUBE.role()).isEqualTo(UnitOfMeasureRole.PACKAGING);
 
         Set<UnitOfMeasure> packagingCountUnits = Set.of(
                 UnitOfMeasure.PACK, UnitOfMeasure.DOZEN, UnitOfMeasure.BOX, UnitOfMeasure.CARTON, UnitOfMeasure.CASE,
                 UnitOfMeasure.CRATE, UnitOfMeasure.BAG, UnitOfMeasure.SACK, UnitOfMeasure.BALE, UnitOfMeasure.BUNDLE,
                 UnitOfMeasure.DRUM, UnitOfMeasure.KEG, UnitOfMeasure.PALLET, UnitOfMeasure.SET, UnitOfMeasure.PAIR,
-                UnitOfMeasure.ROLL, UnitOfMeasure.TRAY, UnitOfMeasure.BASKET);
-        assertThat(packagingCountUnits).hasSize(18);
+                UnitOfMeasure.ROLL, UnitOfMeasure.TRAY, UnitOfMeasure.BASKET,
+                UnitOfMeasure.BOTTLE, UnitOfMeasure.SACHET, UnitOfMeasure.TIN, UnitOfMeasure.TUBE);
+        assertThat(packagingCountUnits).hasSize(22);
         assertThat(packagingCountUnits).allSatisfy(unit -> assertThat(unit.role()).isEqualTo(UnitOfMeasureRole.PACKAGING));
 
         Set<UnitOfMeasure> weightVolumeLengthUnits = Set.of(
@@ -106,10 +125,12 @@ class UnitOfMeasureTest {
         assertThat(weightVolumeLengthUnits).hasSize(9);
         assertThat(weightVolumeLengthUnits).allSatisfy(unit -> assertThat(unit.role()).isEqualTo(UnitOfMeasureRole.BASE));
 
-        assertThat(UnitOfMeasure.baseUnits()).hasSize(10); // PIECE + the 9 weight/volume/length units
-        // 18 declared PACKAGING + PIECE, which is declared BASE but may serve as a pack: a
+        // PIECE + the 9 weight/volume/length units. UNCHANGED by section 4 - the stock-unit
+        // picker must not grow with container words, which is that section's whole correction.
+        assertThat(UnitOfMeasure.baseUnits()).hasSize(10);
+        // 22 declared PACKAGING + PIECE, which is declared BASE but may serve as a pack: a
         // turmeric sold in 34 g pieces is G + PIECE + 34. See UnitOfMeasure.canServeAs.
-        assertThat(UnitOfMeasure.packagingUnits()).hasSize(19);
+        assertThat(UnitOfMeasure.packagingUnits()).hasSize(23);
     }
 
     /**

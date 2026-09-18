@@ -8,25 +8,17 @@ import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.TestRestTemplate;
@@ -61,9 +53,8 @@ import org.springframework.util.MultiValueMap;
  * out per path rather than folded into one loop.
  *
  * <p>Every path that can move stock is covered: a catalog import's opening balances, a stock-in
- * import, the undo of each, and the compatibility shim at {@code POST /api/products/bulk-upload}
- * that contract section 3 keeps alive. The shim is included deliberately - it is the one caller
- * that predates the ledger rule, and it is the one nobody would think to re-check.
+ * import, and the undo of each. (The old {@code POST /api/products/bulk-upload} shim is gone -
+ * BULK_IMPORT_CX_PLAN.md task 2.3 - so the import engine is the only way a file moves stock.)
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureTestRestTemplate
@@ -78,11 +69,6 @@ class BulkImportLedgerIntegrityIntegrationTest {
 
     private static final String STOCK_IN_HEADERS =
             "sku,product_name,vendor_name,quantity,unit,unit_cost,packaging_size,received_date,reference\n";
-
-    /** The legacy shim's column set for a non-seller company - ProductExcelService.ALL_HEADER_NAMES minus unit_price. */
-    private static final List<String> LEGACY_COMPANY_HEADERS = List.of(
-            "name", "sku", "description", "cost_price", "quantity_on_hand", "low_stock_threshold",
-            "unit_of_measure", "packaging_unit", "packaging_size");
 
     @Autowired
     private TestRestTemplate restTemplate;
@@ -167,9 +153,9 @@ class BulkImportLedgerIntegrityIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant,
                 "name,sku,description,cost_price,opening_stock,low_stock_alert_at,"
-                        + "stock_unit,pack,units_per_pack,vendor_name,vendor_sku,is_preferred_vendor\n"
-                        + "Mango,OSU-BAGS,,36000,12,,KG,BAG,40,,,\n"
-                        + "Cassava,OSU-KG,,900,12,,KG,,,,,\n",
+                        + "pack,contains,vendor_name,vendor_sku,is_preferred_vendor\n"
+                        + "Mango,OSU-BAGS,,36000,12,,BAG,40 KG,,,\n"
+                        + "Cassava,OSU-KG,,900,12,,,KG,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
         ImportResultResponse result = commit(tenant, session.id());
@@ -277,39 +263,6 @@ class BulkImportLedgerIntegrityIntegrationTest {
         // Back to the opening balance, and the ledger says so too.
         assertThat(productBySku(tenant, "LEDG-SU1").quantityOnHand()).isEqualTo(10);
         assertLedgerReconciles(tenant, "LEDG-SU1");
-    }
-
-    // ------------------------------------------------------ the compatibility shim
-
-    /**
-     * {@code POST /api/products/bulk-upload} - the endpoint contract section 3 keeps alive,
-     * reimplemented on top of the new engine. It is the path most likely to have kept the old
-     * behaviour of writing {@code quantity_on_hand} straight onto the row, because its own tests
-     * assert on {@code BulkUploadResponse} and never look at the ledger.
-     */
-    @Test
-    void theLegacyBulkUploadShimWritesALedgerMovementForEveryQuantityItSets() {
-        TenantLoginResponse tenant = signup("Ledger Shim Co");
-        byte[] file = legacyWorkbook(List.of(
-                new Object[] {"Rice 50kg", "LEDG-B1", "A bag of rice", 42000, 60, 5, "KG", null, null},
-                new Object[] {"Beans 100kg", "LEDG-B2", "A bag of beans", 52000, null, null, "KG", null, null}));
-
-        ResponseEntity<BulkUploadResponse> response = restTemplate.exchange(
-                "/api/products/bulk-upload", HttpMethod.POST, legacyMultipart(tenant, file), BulkUploadResponse.class);
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
-        assertThat(response.getBody().createdCount()).isEqualTo(2);
-
-        assertThat(productBySku(tenant, "LEDG-B1").quantityOnHand()).isEqualTo(60);
-        assertThat(movements(tenant, productBySku(tenant, "LEDG-B1").id()))
-                .as("the shim must not set quantity_on_hand without a movement - contract section 8.1 "
-                        + "says EVERY path, and names this one")
-                .singleElement()
-                .satisfies(movement -> {
-                    assertThat(movement.movementType()).isEqualTo(MovementType.IN);
-                    assertThat(movement.quantity()).isEqualTo(60);
-                });
-        assertLedgerReconciles(tenant, "LEDG-B1");
-        assertLedgerReconciles(tenant, "LEDG-B2");
     }
 
     // ------------------------------------------------------------------- FIFO
@@ -498,53 +451,6 @@ class BulkImportLedgerIntegrityIntegrationTest {
                         new HttpEntity<>(authHeaders(tenant)),
                         ProductResponse.class)
                 .getBody();
-    }
-
-    /** The legacy shim takes .xlsx only, so this one file is built with POI rather than as CSV. */
-    private byte[] legacyWorkbook(List<Object[]> rows) {
-        try (Workbook workbook = new XSSFWorkbook()) {
-            Sheet sheet = workbook.createSheet("Products");
-            Row header = sheet.createRow(0);
-            for (int i = 0; i < LEGACY_COMPANY_HEADERS.size(); i++) {
-                header.createCell(i).setCellValue(LEGACY_COMPANY_HEADERS.get(i));
-            }
-            int rowIndex = 1;
-            for (Object[] values : rows) {
-                Row row = sheet.createRow(rowIndex++);
-                for (int i = 0; i < values.length; i++) {
-                    if (values[i] == null) {
-                        continue;
-                    }
-                    if (values[i] instanceof Number number) {
-                        row.createCell(i).setCellValue(number.doubleValue());
-                    } else {
-                        row.createCell(i).setCellValue(values[i].toString());
-                    }
-                }
-            }
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            workbook.write(out);
-            return out.toByteArray();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
-    private HttpEntity<MultiValueMap<String, Object>> legacyMultipart(TenantLoginResponse tenant, byte[] file) {
-        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
-        HttpHeaders filePartHeaders = new HttpHeaders();
-        filePartHeaders.setContentType(
-                MediaType.parseMediaType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"));
-        ByteArrayResource fileResource = new ByteArrayResource(file) {
-            @Override
-            public String getFilename() {
-                return "products.xlsx";
-            }
-        };
-        body.add("file", new HttpEntity<>(fileResource, filePartHeaders));
-        HttpHeaders headers = authHeaders(tenant);
-        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-        return new HttpEntity<>(body, headers);
     }
 
     private TenantLoginResponse signup(String name) {

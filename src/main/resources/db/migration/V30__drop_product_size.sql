@@ -1,0 +1,33 @@
+-- Drops products.size, added by V29 six hours earlier and never used in anger.
+--
+-- ============================================================================
+-- WHY IT IS GOING AWAY
+-- ============================================================================
+-- V29 added it to give "750 ml" a home, on the theory that a user holding that
+-- number would otherwise put it in packaging_size. The theory was right about
+-- the cause and wrong about the cure: a product with pack=Bottle and
+-- packaging_size=750 ALREADY states that a bottle holds 750 ml, so `size` was a
+-- second place to write the same fact.
+--
+-- Two columns holding one fact is worse than none. The buyer's words:
+--
+--   "Look at the example you gave, water size 750ml, what if it is bag? The
+--    thing is still NOT intuitive."
+--
+-- Exactly so. A bag of rice would carry size="50 kg" beside packaging_size=50,
+-- and the reader has to work out which one drives the arithmetic. Deleting the
+-- column removes the question.
+--
+-- The real fix is on the sheet and the form, not in the schema: the three
+-- remaining columns are reordered and renamed to read as one sentence -
+-- pack, contains, stock_unit - "Bag contains 50 kg". See
+-- PACK_ENTRY_REDESIGN.md section 14.
+--
+-- Safe to drop outright rather than deprecate: V29 has not reached production,
+-- no UI ever shipped that wrote it, and its own comment declared it inert
+-- ("never parsed or used in any calculation"), so nothing can depend on a value
+-- in it.
+-- ----------------------------------------------------------------------------
+
+ALTER TABLE products
+    DROP COLUMN IF EXISTS size;

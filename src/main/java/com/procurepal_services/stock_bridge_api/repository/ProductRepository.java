@@ -47,6 +47,13 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
     @Query("SELECT p FROM Product p WHERE p.id = :id AND p.clientId = :clientId")
     Optional<Product> findByIdAndClientIdForUpdate(@Param("id") UUID id, @Param("clientId") UUID clientId);
 
+    /**
+     * The scan lookup (BULK_IMPORT_CX_PLAN.md task 3.3), and the guard that keeps it meaningful.
+     * Active products only: a barcode freed by deactivating a product should be usable again, and
+     * scanning must never land on something no longer in the catalog.
+     */
+    Optional<Product> findByClientIdAndBarcodeAndActiveTrue(UUID clientId, String barcode);
+
     // ------------------------------------------------------------------------
     // Marketplace.
     //

@@ -1,6 +1,5 @@
 package com.procurepal_services.stock_bridge_api.product;
 
-import com.procurepal_services.stock_bridge_api.product.bulk.BulkUploadResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.product.dto.UpdateProductRequest;
@@ -51,6 +50,7 @@ import org.springframework.web.multipart.MultipartFile;
 @RequiredArgsConstructor
 public class ProductController {
 
+    private final com.procurepal_services.stock_bridge_api.product.quality.ProductDataIssueService productDataIssueService;
     private final ProductManagementService productManagementService;
 
     @GetMapping("/template")
@@ -95,28 +95,14 @@ public class ProductController {
         return productManagementService.previewSku();
     }
 
-    /**
-     * V20: calls the 2-arg {@code bulkUpload(file, actingUserId)} overload, so the opening-balance
-     * {@code StockMovement} every row with a quantity now writes (BULK_IMPORT_DESIGN.md section 3)
-     * is attributed to a real user rather than {@code createdBy = null} - the same
-     * {@code @AuthenticationPrincipal} extraction {@link #create} already does for its own ledger
-     * write, and for the same reason.
-     */
-    @PostMapping(value = "/bulk-upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
-    public ResponseEntity<BulkUploadResponse> bulkUpload(
-            @RequestPart("file") MultipartFile file, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(productManagementService.bulkUpload(file, principal.getUserId()));
-    }
-
     @GetMapping
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public Page<ProductResponse> list(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Boolean active,
+            @RequestParam(required = false) UUID categoryId,
             @PageableDefault(size = 20) Pageable pageable) {
-        return productManagementService.list(search, active, pageable);
+        return productManagementService.list(search, active, categoryId, pageable);
     }
 
     /**
@@ -139,6 +125,22 @@ public class ProductController {
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public List<ProductResponse> lowStock() {
         return productManagementService.lowStock();
+    }
+
+    /** BULK_IMPORT_CX_PLAN.md task 1.8 - products whose setup needs a one-time fix. */
+    @GetMapping("/data-issues")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<com.procurepal_services.stock_bridge_api.product.quality.dto.ProductDataIssueResponse> dataIssues() {
+        return productDataIssueService.list();
+    }
+
+    /** Replaces a code an older spreadsheet damaged ("28.0"). */
+    @PostMapping("/{id}/fix-code")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ProductResponse fixCode(
+            @PathVariable UUID id,
+            @Valid @RequestBody com.procurepal_services.stock_bridge_api.product.quality.dto.FixProductCodeRequest request) {
+        return productDataIssueService.fixCode(id, request.code());
     }
 
     @GetMapping("/{id}")

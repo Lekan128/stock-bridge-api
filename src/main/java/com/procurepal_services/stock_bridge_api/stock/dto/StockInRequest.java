@@ -14,6 +14,12 @@ import java.util.UUID;
  * ledger; every stored quantity (this movement, {@code Product.quantityOnHand}, the vendor's
  * cached rollups) stays in base units, unchanged since before V19.
  *
+ * <p>It is a decimal because what is typed is not always whole: two and a half bags of 50 kg is
+ * 125 kg exactly. It used to be an {@code Integer}, and the JSON reader truncated 2.5 to 2 without
+ * a word, so the stock-in form recorded 100 kg. The conversion to whole stock units happens once,
+ * in {@code StockManagementService.resolveEntry}, which also refuses a fraction of something that
+ * cannot be split (a quarter of a pack of ten pieces).
+ *
  * <h2>unit - which of the product's units this quantity and this price were entered in</h2>
  * Optional. Must be the {@code code} of one of the options in this product's unit set - its
  * stock unit, its own pack, or a same-category base unit with a static factor - as derived by
@@ -100,7 +106,7 @@ import java.util.UUID;
  * note is more likely correct than whatever an earlier one said.
  */
 public record StockInRequest(
-        @NotNull @Positive Integer quantity,
+        @NotNull @Positive BigDecimal quantity,
         @DecimalMin(value = "0", inclusive = true) BigDecimal unitPrice,
         @Size(max = 1000) String note,
         String unit,
@@ -113,7 +119,7 @@ public record StockInRequest(
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockInRequest(Integer quantity, BigDecimal unitPrice, String note) {
-        this(quantity, unitPrice, note, null, null, null, null, null, null, null);
+        this(decimal(quantity), unitPrice, note, null, null, null, null, null, null, null);
     }
 
     /**
@@ -132,7 +138,7 @@ public record StockInRequest(
             BigDecimal packagingSize,
             OffsetDateTime occurredAt,
             Boolean saveAsSupplierDefault) {
-        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+        this(decimal(quantity), unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
                 saveAsSupplierDefault, null);
     }
 
@@ -182,5 +188,9 @@ public record StockInRequest(
             String packagingUnit,
             BigDecimal packagingSize) {
         this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, null, null);
+    }
+
+    private static BigDecimal decimal(Integer quantity) {
+        return quantity == null ? null : BigDecimal.valueOf(quantity);
     }
 }
