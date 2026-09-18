@@ -132,21 +132,52 @@ public class ExpectedDeliveryService {
     }
 
     /**
-     * How much of each product is still expected, for the product list's "and N coming".
+     * How much of each product is still expected, <b>in that product's own stock unit</b>, for the
+     * product list's "and N coming".
      *
      * <p>Kept separate from {@code Product.incoming_quantity} deliberately - see
      * {@link ExpectedDelivery}'s own note on why a promise and a paid marketplace order must not be
      * added together.
+     *
+     * <h2>Why this converts instead of summing</h2>
+     * Each line is counted in the unit it was ordered in. Ten 50 kg bags and five loose kg are
+     * "10" and "5", and 15 is not a quantity of anything - least of all one to print beside
+     * "1,000 kg on hand". So every line is taken to the product's stock unit first, which is the
+     * only basis on which two of them can be added, and is the number the figure beside it is in.
      */
     @Transactional(readOnly = true)
     public Map<UUID, BigDecimal> outstandingByProduct(UUID tenantId, List<UUID> productIds) {
         if (productIds == null || productIds.isEmpty()) {
             return Map.of();
         }
-        Map<UUID, BigDecimal> outstanding = new HashMap<>();
-        for (Object[] row : expectedDeliveryRepository.outstandingByProduct(tenantId, productIds)) {
-            outstanding.put((UUID) row[0], (BigDecimal) row[1]);
+        List<Object[]> rows = expectedDeliveryRepository.outstandingByProductAndUnit(tenantId, productIds);
+        if (rows.isEmpty()) {
+            return Map.of();
         }
+        Map<UUID, Product> products = new HashMap<>();
+        for (Product product : productRepository.findAllById(
+                rows.stream().map(row -> (UUID) row[0]).distinct().toList())) {
+            products.put(product.getId(), product);
+        }
+
+        Map<UUID, BigDecimal> outstanding = new HashMap<>();
+        for (Object[] row : rows) {
+            UUID productId = (UUID) row[0];
+            String unit = (String) row[1];
+            BigDecimal quantity = (BigDecimal) row[2];
+            Product product = products.get(productId);
+            if (product == null || quantity == null) {
+                continue;
+            }
+            BigDecimal inStockUnits = UnitOptions.resolveKey(UnitOptions.forProduct(product), unit)
+                    .map(option -> quantity.multiply(option.factorToStockUnit()))
+                    // The pack has been changed or removed since the order was placed. The number
+                    // is then in a unit nothing can convert, so it is left as counted rather than
+                    // silently multiplied by a factor that no longer applies.
+                    .orElse(quantity);
+            outstanding.merge(productId, inStockUnits, BigDecimal::add);
+        }
+        outstanding.replaceAll((productId, total) -> total.stripTrailingZeros());
         return outstanding;
     }
 

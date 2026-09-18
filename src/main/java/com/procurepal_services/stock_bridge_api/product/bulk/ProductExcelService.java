@@ -97,7 +97,7 @@ public class ProductExcelService {
     /** Template and export column order: what it is, how you buy it, what you have, the rest. */
     static final List<String> SHEET_FIELDS = List.of(
             "name", "sku", "pack", "contains", "vendor_name", "opening_stock", "cost_price", "unit_price",
-            "low_stock_alert_at", "category", "description", "vendor_sku");
+            "low_stock_alert_at", "category", "description", "vendor_sku", "barcode");
 
     static final Map<String, String> SHEET_HEADERS = Map.ofEntries(
             Map.entry("name", "Product name *"),
@@ -112,6 +112,7 @@ public class ProductExcelService {
             Map.entry("category", "Category"),
             Map.entry("description", "Notes"),
             Map.entry("vendor_sku", "Supplier's code for it"),
+            Map.entry("barcode", "Barcode"),
             Map.entry("ref", "Ref"));
 
     /**
@@ -135,12 +136,14 @@ public class ProductExcelService {
             Map.entry("category", "Optional. Pick one or type a new one - we'll add it."),
             Map.entry("description", "Optional. Anything you want on the product page."),
             Map.entry("vendor_sku", "Optional. The supplier's own code, if they use one."),
+            Map.entry("barcode", "Optional. The barcode on the box, so you can scan it later."),
             Map.entry("ref", "Leave alone - it's how we recognise the product."));
 
     private static final Map<String, Integer> SHEET_WIDTHS = Map.ofEntries(
             Map.entry("name", 30), Map.entry("sku", 16), Map.entry("pack", 14), Map.entry("contains", 18),
             Map.entry("vendor_name", 22), Map.entry("opening_stock", 16), Map.entry("cost_price", 18),
             Map.entry("unit_price", 16), Map.entry("low_stock_alert_at", 16), Map.entry("category", 16),
+            Map.entry("barcode", 18),
             Map.entry("description", 26), Map.entry("vendor_sku", 18), Map.entry("ref", 12));
 
     /**

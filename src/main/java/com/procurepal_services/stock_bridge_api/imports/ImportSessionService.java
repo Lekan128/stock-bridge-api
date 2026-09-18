@@ -28,6 +28,7 @@ import com.procurepal_services.stock_bridge_api.imports.io.HeaderNames;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportResultReport;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportResultReportWriter;
+import com.procurepal_services.stock_bridge_api.imports.io.PastedText;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetRow;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetTable;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReadException;
@@ -214,6 +215,34 @@ public class ImportSessionService {
         }
         return createFromTable(new SheetTable(headers, indexes, rows), title, ImportKind.STOCK_IN,
                 ImportMode.CREATE_ONLY, actingUserId, delivery, expectedDeliveryId);
+    }
+
+    /**
+     * A block of text somebody pasted, as an ordinary import (BULK_IMPORT_CX_PLAN.md task 3.2).
+     *
+     * <p>The supplier sent the list on WhatsApp, or it is already in a spreadsheet on the same
+     * laptop. Saving that to a file and finding it again in a file picker is three steps of
+     * nothing, so the text comes straight in and everything after this point - review, confirm,
+     * commit, undo - is the path a file takes.
+     */
+    @Transactional
+    public ImportSessionResponse createFromPaste(
+            String text, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
+        ImportRowHandler handler = handlerFor(kind);
+        SheetTable table = PastedText.read(
+                text, cell -> columnMapper.recognisesHeader(cell, kind, handler.fields()));
+        if (table.rows().isEmpty()) {
+            throw new ImportExceptions.BadFile(
+                    "We could not find any rows in that. Paste the lines themselves, one per row.");
+        }
+        return createFromTable(table, pasteTitle(kind), kind, mode, actingUserId, delivery);
+    }
+
+    /** What the recent-imports list calls a paste, since there is no filename to show. */
+    private static String pasteTitle(ImportKind kind) {
+        String when = java.time.LocalDate.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.ENGLISH));
+        return (kind == ImportKind.STOCK_IN ? "Pasted delivery, " : "Pasted products, ") + when;
     }
 
     /**

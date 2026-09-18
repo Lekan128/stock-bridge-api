@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
+import com.procurepal_services.stock_bridge_api.product.ProductNotFoundException;
 import com.procurepal_services.stock_bridge_api.companyvendor.InvalidProductVendorPackException;
 import com.procurepal_services.stock_bridge_api.imports.dto.UndoBlockedResponse;
 import org.springframework.http.HttpStatus;
@@ -76,6 +77,19 @@ public class ImportExceptionHandler {
     @ExceptionHandler(InvalidProductVendorPackException.class)
     public ResponseEntity<ApiError> handleInvalidPack(InvalidProductVendorPackException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    /**
+     * The scan lookup found nothing (BULK_IMPORT_CX_PLAN.md task 3.3). 404 is the whole point of
+     * that endpoint's contract - it is what lets the screen offer "add it as a new product"
+     * without a second round trip - and without this handler it arrives as a 500, because
+     * {@code ProductManagementExceptionHandler}'s {@code assignableTypes} scoping covers
+     * {@code ProductController} and not {@link ImportController}. Same trap as the pack handler
+     * above.
+     */
+    @ExceptionHandler(ProductNotFoundException.class)
+    public ResponseEntity<ApiError> handleProductNotFound(ProductNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
     }
 
     /**

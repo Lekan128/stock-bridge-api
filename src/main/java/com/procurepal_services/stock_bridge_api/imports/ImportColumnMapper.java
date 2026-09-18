@@ -76,6 +76,23 @@ public class ImportColumnMapper {
         }
     }
 
+    /**
+     * Whether this cell is the name of a column this kind understands - the question
+     * {@code PastedText} asks of line 1 to decide whether a paste has a header row at all
+     * (BULK_IMPORT_CX_PLAN.md task 3.2). Answered here because the alias tables live here and
+     * nowhere else should learn them.
+     */
+    public boolean recognisesHeader(String cell, ImportKind kind, List<ImportFieldDescriptor> fields) {
+        String header = HeaderNames.normalize(cell);
+        if (header == null) {
+            return false;
+        }
+        Map<String, String> aliases = kind == ImportKind.STOCK_IN ? STOCK_IN_ALIASES : CATALOG_ALIASES;
+        java.util.Set<String> known =
+                fields.stream().map(ImportFieldDescriptor::key).collect(java.util.stream.Collectors.toSet());
+        return known.contains(header) || known.contains(aliases.get(header));
+    }
+
     public Mapping autoMap(SheetTable table, ImportKind kind, List<ImportFieldDescriptor> fields) {
         Map<String, String> aliases = kind == ImportKind.STOCK_IN ? STOCK_IN_ALIASES : CATALOG_ALIASES;
         java.util.Set<String> known = fields.stream().map(ImportFieldDescriptor::key).collect(java.util.stream.Collectors.toSet());
@@ -139,6 +156,7 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.NAME, "product", "product_name", "item", "item_name", "title", "description_of_item");
         put(aliases, ImportFields.SKU, "your_code", "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
         put(aliases, ImportFields.DESCRIPTION, "notes", "desc", "details", "remarks");
+        put(aliases, ImportFields.BARCODE, "bar_code", "ean", "upc", "gtin", "scan_code", "product_barcode");
         put(aliases, ImportFields.CATEGORY, "categories", "product_category", "group", "product_group");
         put(aliases, ImportFields.UNIT_PRICE, "selling_price", "price", "sale_price", "sales_price", "list_price", "rrp");
         put(aliases, ImportFields.COST_PRICE, "price_you_pay_for_one", "price_you_pay", "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");

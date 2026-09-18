@@ -23,6 +23,9 @@ public final class ImportFields {
     public static final String SKU = "sku";
     public static final String DESCRIPTION = "description";
 
+    /** The barcode on the box (BULK_IMPORT_CX_PLAN.md task 3.3). */
+    public static final String BARCODE = "barcode";
+
     public static final String UNIT_PRICE = "unit_price";
     public static final String COST_PRICE = "cost_price";
 

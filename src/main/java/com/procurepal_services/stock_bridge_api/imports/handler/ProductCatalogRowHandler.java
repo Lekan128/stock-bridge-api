@@ -206,6 +206,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                         : "Your own code for this product. It has to be unique in your catalog."));
         fields.add(ImportFieldDescriptor.text(ImportFields.DESCRIPTION, "Notes",
                 "Anything you want shown on the product page."));
+        fields.add(ImportFieldDescriptor.text(ImportFields.BARCODE, "Barcode",
+                "The barcode on the box, if it has one. Lets you scan it when a delivery arrives."));
         fields.add(ImportFieldDescriptor.text(ImportFields.CATEGORY, "Category",
                 "One of your categories, or a new one - we add any you don't have yet."));
         // Kept although new templates no longer carry the column - PACK_ENTRY_REDESIGN.md section
@@ -322,6 +324,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         out.value(ImportFields.DESCRIPTION, ctx.text(ImportFields.DESCRIPTION));
+        out.value(ImportFields.BARCODE, ctx.text(ImportFields.BARCODE));
         validateCategory(ctx, out, subject);
 
         // --- mode (design 6.3). Decided before the columns are read, because whether a column
@@ -918,6 +921,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     @Override
     public void validateBatch(BatchContext ctx) {
         warnAboutRepeatedNames(ctx);
+        checkBarcodes(ctx);
         Map<String, List<ImportRowState>> bySku = new LinkedHashMap<>();
         for (ImportRowState state : ctx.states()) {
             String sku = state.text(ImportFields.SKU);
@@ -964,6 +968,41 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     }
 
     /** Two rows in one file adding a product with the same name - almost always one product twice. */
+    /**
+     * A barcode identifies exactly one product in a company - {@code uq_products_client_barcode},
+     * the partial unique index (task 3.3). Checked here for the same reason the preferred-supplier
+     * rule is: left to the database it surfaces as a constraint violation half way through the
+     * commit, which rolls back the whole import and names an index rather than a row.
+     *
+     * <p>Two rows sharing one, and a row claiming one another product already has, are both
+     * errors. A row that is simply updating the product that already owns that barcode is not.
+     */
+    private void checkBarcodes(BatchContext ctx) {
+        Map<String, ImportRowState> seen = new LinkedHashMap<>();
+        for (ImportRowState state : ctx.states()) {
+            String barcode = state.text(ImportFields.BARCODE);
+            if (barcode == null || barcode.isBlank()) {
+                continue;
+            }
+            String key = barcode.trim().toUpperCase(Locale.ROOT);
+            ImportRowState first = seen.putIfAbsent(key, state);
+            if (first != null) {
+                state.addError(RowIssue.error(ImportFields.BARCODE, "DUPLICATE_BARCODE",
+                        "Row %d already has this barcode. A barcode can only be on one product, or a scan would not know which."
+                                .formatted(first.excelRow())));
+                continue;
+            }
+            Product owner = productRepository
+                    .findByClientIdAndBarcodeAndActiveTrue(ctx.tenantId(), barcode.trim())
+                    .orElse(null);
+            if (owner != null && !owner.getId().equals(state.getResolvedEntityId())) {
+                state.addError(RowIssue.error(ImportFields.BARCODE, "BARCODE_TAKEN",
+                        "%s already has this barcode. A barcode can only be on one product."
+                                .formatted(owner.getName())));
+            }
+        }
+    }
+
     private void warnAboutRepeatedNames(BatchContext ctx) {
         Map<String, ImportRowState> firstByName = new LinkedHashMap<>();
         for (ImportRowState state : ctx.states()) {
@@ -1390,6 +1429,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 .name(state.text(ImportFields.NAME))
                 .sku(state.text(ImportFields.SKU))
                 .description(state.text(ImportFields.DESCRIPTION))
+                .barcode(state.text(ImportFields.BARCODE))
                 .unitPrice(seller ? decimalOf(state, ImportFields.UNIT_PRICE) : null)
                 .costPrice(perStockUnitPriceOf(state, ImportFields.COST_PRICE))
                 // Zero, always. Contract section 8.1: no quantity reaches quantity_on_hand
@@ -1431,6 +1471,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         before.put(ImportFields.NAME, product.getName());
         before.put(ImportFields.SKU, product.getSku());
         before.put(ImportFields.DESCRIPTION, product.getDescription());
+        before.put(ImportFields.BARCODE, product.getBarcode());
         before.put(ImportFields.UNIT_PRICE, product.getUnitPrice() == null ? null : product.getUnitPrice().toPlainString());
         before.put(ImportFields.LOW_STOCK_ALERT_AT, product.getLowStockThreshold());
         before.put(ImportFields.STOCK_UNIT, product.getUnitOfMeasure());
@@ -1463,6 +1504,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         if (state.text(ImportFields.DESCRIPTION) != null) {
             product.setDescription(state.text(ImportFields.DESCRIPTION));
+        }
+        if (state.text(ImportFields.BARCODE) != null) {
+            product.setBarcode(state.text(ImportFields.BARCODE));
         }
         if (seller && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
             product.setUnitPrice(decimalOf(state, ImportFields.UNIT_PRICE));
@@ -1803,6 +1847,11 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 product.setSku(asString(snapshot.get(ImportFields.SKU)));
             }
             product.setDescription(asString(snapshot.get(ImportFields.DESCRIPTION)));
+            // Only snapshots taken since barcodes existed carry the key; older ones leave it be,
+            // so an undo of an older import does not quietly strip a barcode added since.
+            if (snapshot.containsKey(ImportFields.BARCODE)) {
+                product.setBarcode(asString(snapshot.get(ImportFields.BARCODE)));
+            }
             product.setUnitPrice(asDecimal(snapshot.get(ImportFields.UNIT_PRICE)));
             product.setLowStockThreshold(asInteger(snapshot.get(ImportFields.LOW_STOCK_ALERT_AT)));
             product.setUnitOfMeasure(asString(snapshot.get(ImportFields.STOCK_UNIT)));

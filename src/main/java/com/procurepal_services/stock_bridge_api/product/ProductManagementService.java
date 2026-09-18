@@ -283,6 +283,7 @@ public class ProductManagementService {
         Product product = Product.builder()
                 .name(request.name())
                 .sku(sku)
+                .barcode(assertBarcodeAvailable(tenantId, request.barcode(), null))
                 .description(request.description())
                 .unitPrice(isSeller ? request.unitPrice() : null)
                 .lowStockThreshold(request.lowStockThreshold())
@@ -402,6 +403,13 @@ public class ProductManagementService {
         }
         if (request.description() != null) {
             product.setDescription(request.description());
+        }
+        // Task 3.3: absent leaves it alone, blank clears it - the only way to take a barcode off a
+        // product that was given the wrong one, and what frees it for the product that owns it.
+        if (request.barcode() != null) {
+            product.setBarcode(request.barcode().isBlank()
+                    ? null
+                    : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
         }
         if (request.unitPrice() != null) {
             // A non-seller has no selling-price surface at all - see create() - so a
@@ -740,6 +748,33 @@ public class ProductManagementService {
 
     private Product findTenantProductOrThrow(UUID id) {
         return productRepository.findByIdForCurrentTenant(id).orElseThrow(ProductNotFoundException::new);
+    }
+
+    /**
+     * The barcode, trimmed, once it is known that no other product in this company has it. Null
+     * and blank pass straight through: most products have no barcode, and the partial unique index
+     * is built so any number of them can coexist.
+     */
+    private String assertBarcodeAvailable(UUID tenantId, String barcode, UUID selfId) {
+        if (barcode == null || barcode.isBlank()) {
+            return null;
+        }
+        String clean = barcode.trim();
+        productRepository.findByClientIdAndBarcodeAndActiveTrue(tenantId, clean)
+                .filter(other -> !other.getId().equals(selfId))
+                .ifPresent(other -> {
+                    throw new BarcodeTakenException(clean, other.getName());
+                });
+        return clean;
+    }
+
+    /** The product this barcode is on, for a scan. */
+    @Transactional(readOnly = true)
+    public Product requireByBarcode(String barcode) {
+        return productRepository
+                .findByClientIdAndBarcodeAndActiveTrue(requireTenantId(), barcode == null ? "" : barcode.trim())
+                .orElseThrow(() -> new ProductNotFoundException(
+                        "No product in your catalog has that barcode yet."));
     }
 
     private UUID requireTenantId() {

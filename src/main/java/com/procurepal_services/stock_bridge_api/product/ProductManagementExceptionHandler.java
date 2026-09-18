@@ -40,6 +40,11 @@ public class ProductManagementExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(BarcodeTakenException.class)
+    public ResponseEntity<ApiError> handleBarcodeTaken(BarcodeTakenException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(SkuRequiredException.class)
     public ResponseEntity<ApiError> handleSkuRequired(SkuRequiredException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));

@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.product.dto;
 
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
 import java.util.UUID;
 
@@ -77,7 +78,27 @@ public record UpdateProductRequest(
         String packagingUnit,
         @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
         UUID categoryId,
-        Boolean clearCategory) {
+        Boolean clearCategory,
+        /** The barcode on the box (task 3.3). Absent leaves it alone; blank clears it. */
+        @Size(max = 64) String barcode) {
+
+    /** The shape before the barcode (task 3.3) - leaves it as it is. */
+    public UpdateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            Boolean active,
+            Boolean removeImage,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            UUID categoryId,
+            Boolean clearCategory) {
+        this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure,
+                packagingUnit, packagingSize, categoryId, clearCategory, null);
+    }
 
     /** The shape before company categories (V32) - leaves the category as it is. */
     public UpdateProductRequest(
@@ -92,6 +113,6 @@ public record UpdateProductRequest(
             String packagingUnit,
             BigDecimal packagingSize) {
         this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure,
-                packagingUnit, packagingSize, null, null);
+                packagingUnit, packagingSize, null, null, null);
     }
 }

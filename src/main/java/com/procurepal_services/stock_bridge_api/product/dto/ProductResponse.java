@@ -12,6 +12,8 @@ public record ProductResponse(
         UUID id,
         String name,
         String sku,
+        // Task 3.3: the barcode on the box, when the product has one.
+        String barcode,
         String description,
         BigDecimal unitPrice,
         BigDecimal costPrice,
@@ -138,6 +140,7 @@ public record ProductResponse(
                 product.getId(),
                 product.getName(),
                 product.getSku(),
+                product.getBarcode(),
                 product.getDescription(),
                 product.getUnitPrice(),
                 product.getCostPrice(),
@@ -170,7 +173,7 @@ public record ProductResponse(
      */
     public ProductResponse withExpectedQuantity(BigDecimal expected) {
         return new ProductResponse(
-                id, name, sku, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
+                id, name, sku, barcode, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName);

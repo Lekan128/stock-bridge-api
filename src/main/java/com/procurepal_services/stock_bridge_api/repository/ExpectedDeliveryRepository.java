@@ -25,18 +25,24 @@ public interface ExpectedDeliveryRepository extends JpaRepository<ExpectedDelive
     Optional<ExpectedDelivery> findByIdAndClientId(UUID id, UUID clientId);
 
     /**
-     * How much of each product is still expected, as rows of {productId, outstanding}. One query
-     * for a whole page of products - the same N+1 the batched preferred-vendor read avoids.
+     * Every still-owed line for these products, as rows of {productId, unit, outstanding}.
+     * One query for a whole page - the same N+1 the batched preferred-vendor read avoids.
      *
      * <p>Only OPEN expectations count, and only the part not yet received. A line that has arrived
      * in full contributes nothing, and an over-delivery contributes nothing rather than a negative
      * that would quietly cancel out another line's genuine shortfall.
+     *
+     * <p><b>Deliberately not summed here.</b> Each line is counted in the unit it was ordered in,
+     * so ten 50 kg bags and five loose kg are 10 and 5 - and adding those gives 15, which is not a
+     * quantity of anything. The rows come back per unit and the service converts each to the
+     * product's stock unit before adding, the same rule the review grid's "never sum across stock
+     * units" line follows.
      */
-    @Query("select l.product.id, sum(l.quantity - l.receivedQuantity) from ExpectedDeliveryLine l "
+    @Query("select l.product.id, l.unit, sum(l.quantity - l.receivedQuantity) from ExpectedDeliveryLine l "
             + "where l.expectedDelivery.clientId = :clientId "
             + "and l.expectedDelivery.status = com.procurepal_services.stock_bridge_api.entity.ExpectedDeliveryStatus.OPEN "
             + "and l.quantity > l.receivedQuantity "
             + "and l.product.id in :productIds "
-            + "group by l.product.id")
-    List<Object[]> outstandingByProduct(UUID clientId, List<UUID> productIds);
+            + "group by l.product.id, l.unit")
+    List<Object[]> outstandingByProductAndUnit(UUID clientId, List<UUID> productIds);
 }

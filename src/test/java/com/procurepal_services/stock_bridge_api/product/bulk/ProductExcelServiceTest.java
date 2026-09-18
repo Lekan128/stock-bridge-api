@@ -57,7 +57,7 @@ class ProductExcelServiceTest {
         assertThat(headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false, List.of()))))
                 .containsExactly("Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
                         "How many you have now", "Price you pay for one (₦)", "Selling price (₦) *",
-                        "Warn me when I have", "Category", "Notes", "Supplier's code for it");
+                        "Warn me when I have", "Category", "Notes", "Supplier's code for it", "Barcode");
     }
 
     @Test

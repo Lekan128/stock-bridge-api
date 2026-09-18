@@ -13,6 +13,7 @@ import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionSummaryResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.PasteRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.PatchRowRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.SkipRowRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.ValueMappingRequest;
@@ -298,6 +299,27 @@ public class ImportController {
      * The "Record a delivery" screen's list - the stock sheet's rows as data, with the same
      * filters (BULK_IMPORT_CX_PLAN.md task 2.1).
      */
+    /**
+     * Rows pasted straight in - off WhatsApp, or out of a spreadsheet on the same laptop
+     * (BULK_IMPORT_CX_PLAN.md task 3.2). It builds the same session an upload builds, so every
+     * screen after this one is the one a file gets.
+     */
+    @PostMapping("/paste")
+    public ResponseEntity<ImportSessionResponse> paste(
+            @Valid @RequestBody PasteRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        ImportKind importKind = parseKind(request.kind());
+        ImportMode importMode = parseMode(request.mode());
+        importSessionService.requireKindAuthority(importKind);
+        var delivery = importKind == ImportKind.STOCK_IN
+                ? importSessionService.deliveryDetails(
+                        request.deliveryDate(), request.invoiceNo(), request.vendorId())
+                : null;
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(importSessionService.createFromPaste(
+                        request.text(), importKind, importMode, principal.getUserId(), delivery));
+    }
+
     @GetMapping("/delivery-lines")
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public List<DeliveryLineResponse> deliveryLines(
@@ -317,6 +339,21 @@ public class ImportController {
                         row.lastPricePerOption(),
                         row.vendorName()))
                 .toList();
+    }
+
+    /**
+     * What a scanned barcode should add to the delivery (BULK_IMPORT_CX_PLAN.md task 3.3): the
+     * matching product's lines, in the very shape {@code /delivery-lines} returns, so the screen
+     * adds the row with no second lookup and no special case.
+     *
+     * <p>404 when nothing matches, which is what lets the screen offer "add it as a new product"
+     * without another round trip.
+     */
+    @GetMapping("/delivery-lines/by-barcode/{barcode}")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public List<DeliveryLineResponse> deliveryLinesByBarcode(@PathVariable String barcode) {
+        UUID productId = productManagementService.requireByBarcode(barcode).getId();
+        return deliveryLines(productId.toString(), null, null, null);
     }
 
     /**

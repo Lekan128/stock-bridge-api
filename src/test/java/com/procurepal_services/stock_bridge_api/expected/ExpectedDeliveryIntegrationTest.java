@@ -92,9 +92,31 @@ class ExpectedDeliveryIntegrationTest {
                 List.of(new ExpectedDeliveryRequest.Line(rice.id(), "BAG:50", new BigDecimal("10"), null))));
 
         ProductResponse after = productById(tenant, rice.id());
-        assertThat(after.expectedQuantity()).as("10 bags, in the unit it was ordered in").isEqualByComparingTo("10");
+        assertThat(after.expectedQuantity())
+                .as("10 bags of 50 kg, stated in kg - the unit the figure beside it is in")
+                .isEqualByComparingTo("500");
         assertThat(after.quantityOnHand()).isZero();
         assertThat(after.incomingQuantity()).as("that number belongs to paid marketplace orders").isZero();
+    }
+
+    /**
+     * Ten 50 kg bags and five loose kg are "10" and "5" in the units they were ordered in, and 15
+     * is not a quantity of anything - least of all one to print beside "on hand", which is in kg.
+     * The figure is converted to the product's own stock unit before anything is added.
+     */
+    @Test
+    void whatIsComingIsConvertedToOneUnitRatherThanAddingBagsToKilograms() {
+        TenantLoginResponse tenant = signup("Mixed Units Coming Co");
+        ProductResponse rice = product(tenant, "Rice", "MU-RICE", "KG", "BAG", new BigDecimal("50"));
+
+        create(tenant, new ExpectedDeliveryRequest(null, null, null, null,
+                List.of(new ExpectedDeliveryRequest.Line(rice.id(), "BAG:50", new BigDecimal("10"), null))));
+        create(tenant, new ExpectedDeliveryRequest(null, null, null, null,
+                List.of(new ExpectedDeliveryRequest.Line(rice.id(), "KG", new BigDecimal("5"), null))));
+
+        assertThat(productById(tenant, rice.id()).expectedQuantity())
+                .as("10 bags of 50 kg plus 5 kg is 505 kg, never 15")
+                .isEqualByComparingTo("505");
     }
 
     @Test
@@ -138,7 +160,9 @@ class ExpectedDeliveryIntegrationTest {
         assertThat(after.outstandingLines()).isEqualTo(1);
         assertThat(after.lines().get(0).receivedQuantity()).isEqualByComparingTo("4");
         assertThat(after.lines().get(0).outstanding()).isEqualByComparingTo("6");
-        assertThat(productById(tenant, rice.id()).expectedQuantity()).isEqualByComparingTo("6");
+        assertThat(productById(tenant, rice.id()).expectedQuantity())
+                .as("six bags still owed, in kg")
+                .isEqualByComparingTo("300");
         assertThat(productById(tenant, rice.id()).quantityOnHand()).isEqualTo(200);
     }
 
@@ -163,7 +187,9 @@ class ExpectedDeliveryIntegrationTest {
         assertThat(after.status().name()).as("un-received, so it is owed again").isEqualTo("OPEN");
         assertThat(after.lines().get(0).receivedQuantity()).isEqualByComparingTo("0");
         assertThat(productById(tenant, rice.id()).quantityOnHand()).isZero();
-        assertThat(productById(tenant, rice.id()).expectedQuantity()).isEqualByComparingTo("10");
+        assertThat(productById(tenant, rice.id()).expectedQuantity())
+                .as("owed again, in kg")
+                .isEqualByComparingTo("500");
     }
 
     @Test

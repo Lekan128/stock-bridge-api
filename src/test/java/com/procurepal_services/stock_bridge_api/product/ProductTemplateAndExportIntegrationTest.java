@@ -59,12 +59,12 @@ class ProductTemplateAndExportIntegrationTest {
     private static final List<String> COMPANY_HEADERS = List.of(
             "Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
             "How many you have now", "Price you pay for one (₦)", "Warn me when I have",
-            "Category", "Notes", "Supplier's code for it");
+            "Category", "Notes", "Supplier's code for it", "Barcode");
     // The seller template's full column set - the same, plus the selling price they list at.
     private static final List<String> FULL_HEADERS = List.of(
             "Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
             "How many you have now", "Price you pay for one (₦)", "Selling price (₦) *", "Warn me when I have",
-            "Category", "Notes", "Supplier's code for it");
+            "Category", "Notes", "Supplier's code for it", "Barcode");
 
     @Autowired
     private TestRestTemplate restTemplate;

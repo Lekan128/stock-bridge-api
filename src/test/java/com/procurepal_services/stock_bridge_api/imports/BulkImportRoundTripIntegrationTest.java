@@ -74,7 +74,7 @@ class BulkImportRoundTripIntegrationTest {
     private static final List<String> CATALOG_TEMPLATE_HEADERS = List.of(
             "Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
             "How many you have now", "Price you pay for one (₦)", "Warn me when I have",
-            "Category", "Notes", "Supplier's code for it");
+            "Category", "Notes", "Supplier's code for it", "Barcode");
 
     /** The stock sheet as it is downloaded today (BULK_IMPORT_CX_PLAN.md task 1.4). */
     private static final List<String> STOCK_IN_TEMPLATE_HEADERS = List.of(
