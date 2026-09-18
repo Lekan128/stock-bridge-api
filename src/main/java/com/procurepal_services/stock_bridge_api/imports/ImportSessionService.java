@@ -185,6 +185,14 @@ public class ImportSessionService {
         if (lines == null || lines.isEmpty()) {
             throw new ImportExceptions.BadFile("Add at least one thing that arrived.");
         }
+        if (expectedDeliveryId != null) {
+            // Proved to be this company's before it is stored, rather than left for the commit to
+            // find. The credit is tenant-scoped either way, so a foreign id could never move
+            // another company's record - but it would be accepted here, sit on the session, and
+            // then quietly credit nothing, leaving a storekeeper watching an order that stays open
+            // with no idea why. An id that is not yours is a 404, said at the point it is offered.
+            expectedDeliveryService.require(expectedDeliveryId);
+        }
         if (lines.size() > ImportLimits.MAX_ROWS) {
             throw new ImportExceptions.BadFile(ImportLimits.tooManyRowsMessage(lines.size()));
         }

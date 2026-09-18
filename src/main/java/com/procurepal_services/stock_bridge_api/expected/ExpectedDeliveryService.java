@@ -10,6 +10,7 @@ import com.procurepal_services.stock_bridge_api.expected.dto.ExpectedDeliveryRes
 import com.procurepal_services.stock_bridge_api.product.bulk.SheetUnitOptions;
 import com.procurepal_services.stock_bridge_api.product.bulk.StockInTemplateRow;
 import com.procurepal_services.stock_bridge_api.product.bulk.StockInTemplateService;
+import com.procurepal_services.stock_bridge_api.product.unit.Decimals;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.ExpectedDeliveryRepository;
@@ -177,7 +178,8 @@ public class ExpectedDeliveryService {
                     .orElse(quantity);
             outstanding.merge(productId, inStockUnits, BigDecimal::add);
         }
-        outstanding.replaceAll((productId, total) -> total.stripTrailingZeros());
+        // Never "5E+2" for 500 - see Decimals for why that is the trap it is.
+        outstanding.replaceAll((productId, total) -> Decimals.plain(total));
         return outstanding;
     }
 

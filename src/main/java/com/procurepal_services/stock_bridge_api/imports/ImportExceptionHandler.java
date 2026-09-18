@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
+import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryException;
 import com.procurepal_services.stock_bridge_api.product.ProductNotFoundException;
 import com.procurepal_services.stock_bridge_api.companyvendor.InvalidProductVendorPackException;
 import com.procurepal_services.stock_bridge_api.imports.dto.UndoBlockedResponse;
@@ -90,6 +91,16 @@ public class ImportExceptionHandler {
     @ExceptionHandler(ProductNotFoundException.class)
     public ResponseEntity<ApiError> handleProductNotFound(ProductNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    /**
+     * A delivery offered against an expected delivery that is not this company's, or no longer
+     * exists (task 3.1). Same {@code assignableTypes} trap as the two handlers above: the
+     * expected-delivery controller's own advice does not cover {@link ImportController}.
+     */
+    @ExceptionHandler(ExpectedDeliveryException.class)
+    public ResponseEntity<ApiError> handleExpectedDelivery(ExpectedDeliveryException ex) {
+        return ResponseEntity.status(ex.status()).body(new ApiError(ex.getMessage()));
     }
 
     /**

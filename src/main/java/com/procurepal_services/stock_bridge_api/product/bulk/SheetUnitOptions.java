@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.product.bulk;
 
 import com.procurepal_services.stock_bridge_api.entity.ProductVendorPack;
+import com.procurepal_services.stock_bridge_api.product.unit.Decimals;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureCategory;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
@@ -177,8 +178,10 @@ public final class SheetUnitOptions {
         if (perStockUnit == null) {
             return null;
         }
-        // Not rounded: a tiny per-gram price rounded to two places would record as zero.
-        return perStockUnit.multiply(option.factorToStockUnit()).stripTrailingZeros();
+        // Not rounded: a tiny per-gram price rounded to two places would record as zero. Plain
+        // rather than stripped, because N42,000 reaching the delivery screen as "4.2E+4" is not a
+        // price anybody recognises - see Decimals.
+        return Decimals.plain(perStockUnit.multiply(option.factorToStockUnit()));
     }
 
     private static boolean isThisWayOfBuying(ProductVendorPack pack, UnitOption option) {

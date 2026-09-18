@@ -117,6 +117,14 @@ class ExpectedDeliveryIntegrationTest {
         assertThat(productById(tenant, rice.id()).expectedQuantity())
                 .as("10 bags of 50 kg plus 5 kg is 505 kg, never 15")
                 .isEqualByComparingTo("505");
+
+        // And it reaches the WIRE as a plain number - asserted on the raw JSON, because a
+        // BigDecimal read back through Jackson would hide the difference. stripTrailingZeros()
+        // alone sends 500 as "5E+2": JavaScript parses that back correctly, but it reads like
+        // nothing any storekeeper would recognise in a log, an export or a stricter client.
+        String raw = restTemplate.exchange("/api/products/" + rice.id(), HttpMethod.GET,
+                new HttpEntity<>(json(tenant)), String.class).getBody();
+        assertThat(raw).contains("\"expectedQuantity\":505").doesNotContain("E+");
     }
 
     @Test
@@ -284,6 +292,71 @@ class ExpectedDeliveryIntegrationTest {
                 new HttpEntity<>(json(theirs)), String.class).getStatusCode())
                 .isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(references(theirs, "")).isEmpty();
+    }
+
+    /**
+     * The tenant boundary on the receive path. The credit is tenant-scoped, so a foreign id could
+     * never move another company's record - but accepting it here would leave a storekeeper
+     * watching an order that stays open with nothing to explain it, so it is refused at the point
+     * it is offered.
+     */
+    @Test
+    void aDeliveryCannotBeOfferedAgainstAnotherCompanysExpectedDelivery() {
+        TenantLoginResponse mine = signup("Boundary Mine Co");
+        TenantLoginResponse theirs = signup("Boundary Theirs Co");
+        ProductResponse myRice = product(mine, "Rice", "BD-RICE", "KG", "BAG", new BigDecimal("50"));
+        ProductResponse theirRice = product(theirs, "Rice", "BD-RICE-T", "KG", "BAG", new BigDecimal("50"));
+        ExpectedDeliveryResponse myOrder = create(mine, new ExpectedDeliveryRequest(null, null, null, null,
+                List.of(new ExpectedDeliveryRequest.Line(myRice.id(), "BAG:50", new BigDecimal("10"), null))));
+
+        ResponseEntity<String> attempt = restTemplate.exchange("/api/imports/delivery", HttpMethod.POST,
+                new HttpEntity<>(new DeliveryRequest(null, null, null, myOrder.id(),
+                        List.of(new DeliveryRequest.Line(theirRice.id(), "BAG:50", BigDecimal.ONE, null))),
+                        json(theirs)),
+                String.class);
+
+        assertThat(attempt.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(expectation(mine, myOrder.id()).lines().get(0).receivedQuantity())
+                .as("nothing of mine moved")
+                .isEqualByComparingTo("0");
+    }
+
+    /**
+     * And the same boundary on the line itself: a product id from another company is not part of
+     * this company's catalog, so there is no way of buying it to record.
+     */
+    @Test
+    void anExpectationCannotBeWrittenAgainstAnotherCompanysProduct() {
+        TenantLoginResponse mine = signup("Foreign Product Mine Co");
+        TenantLoginResponse theirs = signup("Foreign Product Theirs Co");
+        ProductResponse theirRice = product(theirs, "Rice", "FP-RICE", "KG", "BAG", new BigDecimal("50"));
+
+        ResponseEntity<String> attempt = restTemplate.exchange("/api/expected-deliveries", HttpMethod.POST,
+                new HttpEntity<>(new ExpectedDeliveryRequest(null, null, null, null,
+                        List.of(new ExpectedDeliveryRequest.Line(theirRice.id(), "BAG:50", BigDecimal.TEN, null))),
+                        json(mine)),
+                String.class);
+
+        assertThat(attempt.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(attempt.getBody()).contains("no longer in your catalog");
+    }
+
+    /** A supplier from another company's directory cannot be named on your order either. */
+    @Test
+    void anExpectationCannotNameAnotherCompanysSupplier() {
+        TenantLoginResponse mine = signup("Foreign Supplier Mine Co");
+        TenantLoginResponse theirs = signup("Foreign Supplier Theirs Co");
+        CompanyVendorResponse theirTony = vendor(theirs, "Tony Stores");
+        ProductResponse myRice = product(mine, "Rice", "FS-RICE", "KG", null, null);
+
+        ResponseEntity<String> attempt = restTemplate.exchange("/api/expected-deliveries", HttpMethod.POST,
+                new HttpEntity<>(new ExpectedDeliveryRequest(theirTony.id(), null, null, null,
+                        List.of(new ExpectedDeliveryRequest.Line(myRice.id(), "KG", BigDecimal.TEN, null))),
+                        json(mine)),
+                String.class);
+
+        assertThat(attempt.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(attempt.getBody()).contains("supplier");
     }
 
     // ------------------------------------------------------------------------------ helpers ----
