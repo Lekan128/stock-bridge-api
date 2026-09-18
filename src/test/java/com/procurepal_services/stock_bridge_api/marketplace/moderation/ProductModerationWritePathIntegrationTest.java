@@ -245,7 +245,8 @@ class ProductModerationWritePathIntegrationTest {
                 7,
                 true,
                 null,
-                null, null,
+                null,
+                null,
                 null));
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);

@@ -663,6 +663,83 @@ class ProductManagementIntegrationTest {
         assertThat(detailAsA.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
+    /**
+     * V28: deactivation is a soft delete, so it has to be undoable. Before {@code
+     * POST /api/products/{id}/activate} existed the only way back was an {@code active: true} on
+     * the multipart PUT - re-submitting the whole form to flip one boolean.
+     *
+     * <p>Asserts idempotence too: a second activate answers 204 rather than failing. "Make sure
+     * this is on" is what the caller means, and failing the second click of a button whose first
+     * click worked would be a worse answer than doing nothing.
+     */
+    @Test
+    void aDeactivatedProductCanBeActivatedAgain() {
+        TenantLoginResponse company = signup("Reactivation Co");
+        ProductResponse created = createProduct(
+                        company,
+                        new CreateProductRequest("Broom", "REACT-1", null, null, null, null, null, null, null),
+                        false)
+                .getBody();
+        assertThat(created.active()).isTrue();
+
+        ResponseEntity<Void> deactivated = restTemplate.exchange(
+                "/api/products/" + created.id(),
+                HttpMethod.DELETE,
+                new HttpEntity<>(authHeaders(company)),
+                Void.class);
+        assertThat(deactivated.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(fetch(company, created.id()).active()).isFalse();
+
+        ResponseEntity<Void> activated = restTemplate.exchange(
+                "/api/products/" + created.id() + "/activate",
+                HttpMethod.POST,
+                new HttpEntity<>(authHeaders(company)),
+                Void.class);
+        assertThat(activated.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(fetch(company, created.id()).active()).isTrue();
+
+        ResponseEntity<Void> again = restTemplate.exchange(
+                "/api/products/" + created.id() + "/activate",
+                HttpMethod.POST,
+                new HttpEntity<>(authHeaders(company)),
+                Void.class);
+        assertThat(again.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(fetch(company, created.id()).active()).isTrue();
+    }
+
+    /** Activating somebody else's product is a 404, not a 403 - the id must not be confirmed. */
+    @Test
+    void activateIsScopedToTheCallersTenant() {
+        TenantLoginResponse tenantA = signup("Activate Tenant A");
+        TenantLoginResponse tenantB = signup("Activate Tenant B");
+        ProductResponse productA = createProduct(
+                        tenantA,
+                        new CreateProductRequest("Broom", "REACT-2", null, null, null, null, null, null, null),
+                        false)
+                .getBody();
+        restTemplate.exchange(
+                "/api/products/" + productA.id(), HttpMethod.DELETE, new HttpEntity<>(authHeaders(tenantA)), Void.class);
+
+        ResponseEntity<ApiError> asB = restTemplate.exchange(
+                "/api/products/" + productA.id() + "/activate",
+                HttpMethod.POST,
+                new HttpEntity<>(authHeaders(tenantB)),
+                ApiError.class);
+
+        assertThat(asB.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(fetch(tenantA, productA.id()).active()).isFalse();
+    }
+
+    private ProductResponse fetch(TenantLoginResponse asAdmin, UUID productId) {
+        return restTemplate
+                .exchange(
+                        "/api/products/" + productId,
+                        HttpMethod.GET,
+                        new HttpEntity<>(authHeaders(asAdmin)),
+                        ProductResponse.class)
+                .getBody();
+    }
+
     private ResponseEntity<ProductResponse> createProduct(
             TenantLoginResponse asAdmin, CreateProductRequest request, boolean withImage) {
         return restTemplate.exchange(

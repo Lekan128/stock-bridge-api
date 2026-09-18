@@ -53,6 +53,15 @@ public class Product extends TenantAwareEntity {
     @Column(nullable = false)
     private String sku;
 
+    /**
+     * The barcode on the box - EAN, UPC, or whatever the supplier printed (task 3.3). Unique per
+     * company where present, so a scan lands on exactly one product; null for most products,
+     * which is why the index that enforces it is partial. Not unique globally: two companies
+     * stocking the same tin of milk each have their own row.
+     */
+    @Column(length = 64)
+    private String barcode;
+
     @Column(columnDefinition = "TEXT")
     private String description;
 
@@ -119,6 +128,14 @@ public class Product extends TenantAwareEntity {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "category_id")
     private ProductCategory category;
+
+    /**
+     * The company's own category for this product (V32) - not {@link #category}, which is the
+     * marketplace's. Null when uncategorised.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "company_category_id")
+    private CompanyCategory companyCategory;
 
     /**
      * Listed on the public marketplace catalog.

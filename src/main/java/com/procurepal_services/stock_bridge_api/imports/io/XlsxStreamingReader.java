@@ -132,15 +132,21 @@ final class XlsxStreamingReader {
     }
 
     private static InputStream firstSheet(org.apache.poi.xssf.eventusermodel.XSSFReader reader) throws Exception {
-        Iterator<InputStream> sheets = reader.getSheetsData();
-        if (!sheets.hasNext()) {
-            throw new SpreadsheetReadException(
-                    SpreadsheetReadException.Reason.NO_HEADER_ROW, "This file has no sheets in it.");
+        org.apache.poi.xssf.eventusermodel.XSSFReader.SheetIterator sheets =
+                (org.apache.poi.xssf.eventusermodel.XSSFReader.SheetIterator) reader.getSheetsData();
+        // Workbook order, so this is the leftmost tab - the one the user was looking at - except
+        // that a help tab in front of the data (TemplateConventions) is stepped over. The hidden
+        // lookup sheet our templates carry is always created after the data sheet, so it can
+        // never be picked up here by accident.
+        while (sheets.hasNext()) {
+            InputStream sheet = sheets.next();
+            if (!TemplateConventions.isHelpSheet(sheets.getSheetName())) {
+                return sheet;
+            }
+            sheet.close();
         }
-        // Workbook order, so this is the leftmost tab - the one the user was looking at. The
-        // hidden _lookups sheet this module's own templates carry is always created after the
-        // data sheet, so it can never be picked up here by accident.
-        return sheets.next();
+        throw new SpreadsheetReadException(
+                SpreadsheetReadException.Reason.NO_HEADER_ROW, "This file has no sheets in it.");
     }
 
     private static void parse(InputStream sheet, DefaultHandler handler) throws Exception {

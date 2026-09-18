@@ -43,7 +43,10 @@ public record SheetTable(List<String> headers, Map<String, Integer> columnIndexe
                 indexes.putIfAbsent(normalized, i);
             }
         }
-        return new SheetTable(rawHeaders, indexes, rows);
+        List<SheetRow> dataRows = rows.stream()
+                .filter(row -> !TemplateConventions.isGuidanceRow(row.cells()))
+                .toList();
+        return new SheetTable(rawHeaders, indexes, dataRows);
     }
 
     /** The column index for a normalized header name, or null when the file does not have that column. */

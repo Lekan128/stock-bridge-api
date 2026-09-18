@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports;
 
+import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_NAME_MARKER_PREFIX;
 import static com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService.EXAMPLE_SKU_MARKER_PREFIX;
 
@@ -16,6 +17,9 @@ import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewRespons
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportLinkedPackResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportDeliveryDetails;
+import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
+import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionSummaryResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.UndoBlockedResponse;
@@ -24,6 +28,7 @@ import com.procurepal_services.stock_bridge_api.imports.io.HeaderNames;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportResultReport;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportResultReportWriter;
+import com.procurepal_services.stock_bridge_api.imports.io.PastedText;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetRow;
 import com.procurepal_services.stock_bridge_api.imports.io.SheetTable;
 import com.procurepal_services.stock_bridge_api.imports.io.SpreadsheetReadException;
@@ -113,6 +118,8 @@ public class ImportSessionService {
     private final ImportColumnMapper columnMapper;
     private final ImportResultReportWriter reportWriter;
     private final List<ImportRowHandler> handlers;
+    private final CompanyVendorRepository companyVendorRepository;
+    private final ExpectedDeliveryService expectedDeliveryService;
 
     private Map<ImportKind, ImportRowHandler> handlersByKind;
 
@@ -153,7 +160,116 @@ public class ImportSessionService {
      */
     @Transactional
     public ImportSessionResponse create(MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId) {
-        SheetTable table = read(file);
+        return create(file, kind, mode, actingUserId, null);
+    }
+
+    /**
+     * @param delivery a stock-in's date, invoice number and supplier, asked once on the upload
+     *     screen and applied to every row that leaves that cell blank. Ignored for a catalog import.
+     */
+    @Transactional
+    public ImportSessionResponse create(
+            MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
+        return createFromTable(read(file), filenameOf(file), kind, mode, actingUserId, delivery);
+    }
+
+    /**
+     * A delivery typed into the app rather than a spreadsheet (BULK_IMPORT_CX_PLAN.md task 2.2).
+     * The lines become the rows of an import exactly as if they had been uploaded - a Ref, how
+     * it came, how many and the price - so the same checks, review screen, confirm and undo apply.
+     */
+    @Transactional
+    public ImportSessionResponse createDelivery(
+            List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID expectedDeliveryId) {
+        if (lines == null || lines.isEmpty()) {
+            throw new ImportExceptions.BadFile("Add at least one thing that arrived.");
+        }
+        if (expectedDeliveryId != null) {
+            // Proved to be this company's before it is stored, rather than left for the commit to
+            // find. The credit is tenant-scoped either way, so a foreign id could never move
+            // another company's record - but it would be accepted here, sit on the session, and
+            // then quietly credit nothing, leaving a storekeeper watching an order that stays open
+            // with no idea why. An id that is not yours is a 404, said at the point it is offered.
+            expectedDeliveryService.require(expectedDeliveryId);
+        }
+        if (lines.size() > ImportLimits.MAX_ROWS) {
+            throw new ImportExceptions.BadFile(ImportLimits.tooManyRowsMessage(lines.size()));
+        }
+        // The name and the code travel with the ref, not because the row needs them to find its
+        // product - the ref does that - but because the review grid is the same grid an uploaded
+        // sheet gets, and a row reading only "cG9y...JQ, 2.5 bags" is not something anyone can
+        // check. product_name is also the kind's required column, and a table without it would
+        // stop at the mapping step asking which column holds the product.
+        List<String> headers = List.of(
+                ImportFields.PRODUCT_NAME, ImportFields.SKU, ImportFields.REF,
+                ImportFields.COUNTED_IN, ImportFields.QUANTITY, ImportFields.COST_PER_UNIT);
+        Map<String, Integer> indexes = new LinkedHashMap<>();
+        for (int i = 0; i < headers.size(); i++) {
+            indexes.put(headers.get(i), i);
+        }
+        List<SheetRow> rows = new ArrayList<>();
+        int line = 1;
+        for (DeliveryLine entry : lines) {
+            List<String> cells = new ArrayList<>();
+            cells.add(entry.productName());
+            cells.add(entry.sku());
+            cells.add(entry.productId() == null ? null
+                    : com.procurepal_services.stock_bridge_api.product.bulk.ProductRefs.encode(entry.productId()));
+            cells.add(entry.unit());
+            cells.add(entry.quantity() == null ? null : entry.quantity().toPlainString());
+            cells.add(entry.price() == null ? null : entry.price().toPlainString());
+            rows.add(new SheetRow(line++, cells));
+        }
+        return createFromTable(new SheetTable(headers, indexes, rows), title, ImportKind.STOCK_IN,
+                ImportMode.CREATE_ONLY, actingUserId, delivery, expectedDeliveryId);
+    }
+
+    /**
+     * A block of text somebody pasted, as an ordinary import (BULK_IMPORT_CX_PLAN.md task 3.2).
+     *
+     * <p>The supplier sent the list on WhatsApp, or it is already in a spreadsheet on the same
+     * laptop. Saving that to a file and finding it again in a file picker is three steps of
+     * nothing, so the text comes straight in and everything after this point - review, confirm,
+     * commit, undo - is the path a file takes.
+     */
+    @Transactional
+    public ImportSessionResponse createFromPaste(
+            String text, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
+        ImportRowHandler handler = handlerFor(kind);
+        SheetTable table = PastedText.read(
+                text, cell -> columnMapper.recognisesHeader(cell, kind, handler.fields()));
+        if (table.rows().isEmpty()) {
+            throw new ImportExceptions.BadFile(
+                    "We could not find any rows in that. Paste the lines themselves, one per row.");
+        }
+        return createFromTable(table, pasteTitle(kind), kind, mode, actingUserId, delivery);
+    }
+
+    /** What the recent-imports list calls a paste, since there is no filename to show. */
+    private static String pasteTitle(ImportKind kind) {
+        String when = java.time.LocalDate.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.ENGLISH));
+        return (kind == ImportKind.STOCK_IN ? "Pasted delivery, " : "Pasted products, ") + when;
+    }
+
+    /**
+     * One typed delivery line: the product (by id, and by the name and code the review grid
+     * shows), how it came ({@code UnitOptions.key}), how many, the price of one.
+     */
+    public record DeliveryLine(
+            UUID productId, String productName, String sku, String unit, BigDecimal quantity, BigDecimal price) {
+    }
+
+    private ImportSessionResponse createFromTable(
+            SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
+            ImportDeliveryDetails delivery) {
+        return createFromTable(table, filename, kind, mode, actingUserId, delivery, null);
+    }
+
+    private ImportSessionResponse createFromTable(
+            SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
+            ImportDeliveryDetails delivery, UUID expectedDeliveryId) {
         // Mode is meaningless for STOCK_IN (contract section 1) - persisted as CREATE_ONLY and
         // ignored, rather than left null, so the CHECK constraint and every later read see a
         // legal value.
@@ -169,9 +285,11 @@ public class ImportSessionService {
                 .kind(kind)
                 .mode(effectiveMode)
                 .status(ImportStatus.PARSING)
-                .originalFilename(filenameOf(file))
+                .originalFilename(filename)
                 .columnMapping(new LinkedHashMap<>(mapping.columnMapping()))
                 .valueMappings(new LinkedHashMap<>())
+                .rowDefaults(kind == ImportKind.STOCK_IN ? rowDefaultsOf(delivery) : null)
+                .expectedDeliveryId(expectedDeliveryId)
                 .rowCount(dataRows.size())
                 .validCount(0)
                 .errorCount(0)
@@ -206,7 +324,7 @@ public class ImportSessionService {
      * <p>Every generated sheet carries at least one row whose {@code sku} is the reserved
      * {@code EXAMPLE-SKU-DELETE-ME} marker, and the cell beside it says, in so many words,
      * "delete this row, or leave it - example rows are skipped automatically". The legacy
-     * {@code ProductExcelService.parse}/{@code StockInExcelService.parse} have honoured that since
+     * {@code ProductExcelService.parse} (and the since-removed stock-in parser) honoured that since
      * they wrote it. This engine did not, which made the promise false through the door almost
      * every user actually comes in by: download the template, fill it in, upload that file.
      *
@@ -230,6 +348,27 @@ public class ImportSessionService {
      * either.
      */
     private List<SheetRow> withoutExampleRows(SheetTable table, Map<String, String> columnMapping) {
+        // The product sheet's worked examples (BULK_IMPORT_CX_PLAN.md task 1.6) are ordinary
+        // rows; one still exactly as shipped is dropped, like the guidance rows above it.
+        List<SheetRow> rows = table.rows().stream()
+                .filter(row -> !ProductExcelService.isShippedExample(valuesByField(table, row, columnMapping)))
+                .toList();
+        return withoutMarkedExampleRows(new SheetTable(table.headers(), table.columnIndexes(), rows), columnMapping);
+    }
+
+    private static Map<String, String> valuesByField(SheetTable table, SheetRow row, Map<String, String> columnMapping) {
+        Map<String, String> values = new LinkedHashMap<>();
+        columnMapping.forEach((header, field) -> {
+            if (field != null) {
+                String value = table.value(row, header);
+                values.put(field, value == null ? "" : value);
+            }
+        });
+        return values;
+    }
+
+    /** The older templates' example rows, marked by a reserved prefix on the code or the name. */
+    private List<SheetRow> withoutMarkedExampleRows(SheetTable table, Map<String, String> columnMapping) {
         String skuHeader = columnMapping.entrySet().stream()
                 .filter(entry -> ImportFields.SKU.equals(entry.getValue()))
                 .map(Map.Entry::getKey)
@@ -559,6 +698,18 @@ public class ImportSessionService {
         // Last, so it beats the previous pass's coerced value - see applyValueMappings for why
         // that ordering is the whole point, and why it still loses to a hand edit.
         applyValueMappings(session, mappings, rawText, edited, input);
+
+        // The delivery's own date, invoice and supplier, for every row that says nothing itself.
+        // Applied after everything else, so a cleared cell falls back to them too. Seen as text
+        // the row typed, so value resolution and every later phase treat it the same way.
+        Map<String, String> defaults = session.getRowDefaults() == null ? Map.of() : session.getRowDefaults();
+        defaults.forEach((field, value) -> {
+            Object current = input.get(field);
+            if (value != null && (current == null || current.toString().isBlank())) {
+                input.put(field, value);
+                rawText.put(field, value);
+            }
+        });
 
         ImportRowState state = new ImportRowState(row, input, rawText);
         state.setSkipped(Boolean.TRUE.equals(normalized.get(ImportFields.USER_SKIPPED)));
@@ -949,6 +1100,42 @@ public class ImportSessionService {
         session.setCommittedAt(OffsetDateTime.now());
         session.setSkippedCount(outcome.skippedCount());
         importSessionRepository.saveAndFlush(session);
+
+        // Task 3.1: if this stock-in was started from an expectation, tell it what actually
+        // arrived. Last, and only after the commit itself has been written, so a receipt is never
+        // credited against stock that did not land.
+        expectedDeliveryService.credit(
+                session.getExpectedDeliveryId(), session.getClientId(), receiptsOf(batch.states()));
+    }
+
+    /**
+     * What a committed stock-in received, keyed by product and the unit it was counted in - the
+     * pair an expected line is written in, so the two can be matched without guessing.
+     *
+     * <p>Only rows that actually committed count. A skipped or failed row moved no stock and must
+     * not settle anything.
+     */
+    private Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receiptsOf(List<ImportRowState> states) {
+        Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receipts = new LinkedHashMap<>();
+        for (ImportRowState state : states) {
+            String outcome = state.getOutcome();
+            boolean committed = ImportFields.OUTCOME_CREATED.equals(outcome)
+                    || ImportFields.OUTCOME_UPDATED.equals(outcome);
+            if (state.getResolvedEntityId() == null || !committed) {
+                continue;
+            }
+            Object unit = state.getNormalized().get(ImportFields.COUNTED_IN);
+            Object quantity = state.getNormalized().get(ImportFields.QUANTITY);
+            if (unit == null || quantity == null) {
+                continue;
+            }
+            BigDecimal amount = new BigDecimal(quantity.toString());
+            receipts.merge(
+                    new ExpectedDeliveryService.ReceiptKey(state.getResolvedEntityId(), unit.toString()),
+                    amount,
+                    BigDecimal::add);
+        }
+        return receipts;
     }
 
     /**
@@ -1035,7 +1222,8 @@ public class ImportSessionService {
                 session.getStatus() == ImportStatus.COMMITTED && !undone,
                 undone ? "You have already undone this import." : null,
                 "/api/imports/" + session.getId() + "/report",
-                targetUrlFor(session));
+                targetUrlFor(session),
+                session.getKind());
     }
 
     /**
@@ -1122,7 +1310,35 @@ public class ImportSessionService {
         mappings.putResult(result);
         session.setValueMappings(mappings.toMap());
         importSessionRepository.saveAndFlush(session);
+
+        // Task 3.1: an undone receipt un-receives exactly what it credited, reopening the
+        // expectation if it had been closed. Read back off the rows rather than remembered, so it
+        // reverses what was actually committed and not what was once intended.
+        expectedDeliveryService.uncredit(
+                session.getExpectedDeliveryId(), tenantId, receiptsOfRows(allRows(session)));
         return resultOf(session);
+    }
+
+    /** {@link #receiptsOf} for rows read back from the database, as undo has them. */
+    private Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receiptsOfRows(List<ImportSessionRow> rows) {
+        Map<ExpectedDeliveryService.ReceiptKey, BigDecimal> receipts = new LinkedHashMap<>();
+        for (ImportSessionRow row : rows) {
+            Map<String, Object> normalized = row.getNormalized();
+            if (row.getResolvedEntityId() == null || normalized == null
+                    || row.getStatus() != ImportRowStatus.COMMITTED) {
+                continue;
+            }
+            Object unit = normalized.get(ImportFields.COUNTED_IN);
+            Object quantity = normalized.get(ImportFields.QUANTITY);
+            if (unit == null || quantity == null) {
+                continue;
+            }
+            receipts.merge(
+                    new ExpectedDeliveryService.ReceiptKey(row.getResolvedEntityId(), unit.toString()),
+                    new BigDecimal(quantity.toString()),
+                    BigDecimal::add);
+        }
+        return receipts;
     }
 
     // ------------------------------------------------------------------ report
@@ -1281,6 +1497,73 @@ public class ImportSessionService {
 
     // -------------------------------------------------------------- assembling
 
+    /**
+     * The upload screen's delivery fields, checked. The date may not be in the future (a lot
+     * dated after today would be drawn from before stock that is really on the shelf); the
+     * supplier must be one of this company's own.
+     */
+    public ImportDeliveryDetails deliveryDetails(String date, String invoiceNo, String vendorId) {
+        java.time.LocalDate parsedDate = null;
+        if (date != null && !date.isBlank()) {
+            try {
+                parsedDate = java.time.LocalDate.parse(date.trim());
+            } catch (java.time.format.DateTimeParseException e) {
+                throw new ImportExceptions.BadFile("We couldn't read that delivery date. Pick it from the calendar.");
+            }
+            // The same rule every row's own date is held to (StockInRowHandler.validateReceivedDate).
+            if (parsedDate.isAfter(java.time.LocalDate.now())) {
+                throw new ImportExceptions.BadFile("The delivery date can't be in the future.");
+            }
+        }
+        String invoice = invoiceNo == null || invoiceNo.isBlank() ? null : invoiceNo.trim();
+        if (invoice != null && invoice.length() > 200) {
+            throw new ImportExceptions.BadFile("That invoice number is too long - 200 characters at most.");
+        }
+        String supplierName = null;
+        if (vendorId != null && !vendorId.isBlank()) {
+            UUID id;
+            try {
+                id = UUID.fromString(vendorId.trim());
+            } catch (IllegalArgumentException e) {
+                throw new ImportExceptions.BadFile("We couldn't find that supplier. Pick one from the list.");
+            }
+            supplierName = companyVendorRepository.findByIdAndClientIdAndActiveTrue(id, requireTenantId())
+                    .map(vendor -> vendor.getName())
+                    .orElseThrow(() -> new ImportExceptions.BadFile(
+                            "We couldn't find that supplier. Pick one from the list."));
+        }
+        return new ImportDeliveryDetails(parsedDate, invoice, supplierName);
+    }
+
+    private static Map<String, String> rowDefaultsOf(ImportDeliveryDetails delivery) {
+        if (delivery == null || delivery.isEmpty()) {
+            return null;
+        }
+        Map<String, String> defaults = new LinkedHashMap<>();
+        if (delivery.date() != null) {
+            defaults.put(ImportFields.RECEIVED_DATE, delivery.date().toString());
+        }
+        if (delivery.invoiceNo() != null) {
+            defaults.put(ImportFields.WAYBILL_OR_INVOICE_NO, delivery.invoiceNo());
+        }
+        if (delivery.supplierName() != null) {
+            defaults.put(ImportFields.VENDOR_NAME, delivery.supplierName());
+        }
+        return defaults;
+    }
+
+    private static ImportDeliveryDetails deliveryOf(ImportSession session) {
+        Map<String, String> defaults = session.getRowDefaults();
+        if (defaults == null || defaults.isEmpty()) {
+            return null;
+        }
+        String date = defaults.get(ImportFields.RECEIVED_DATE);
+        return new ImportDeliveryDetails(
+                date == null ? null : java.time.LocalDate.parse(date),
+                defaults.get(ImportFields.WAYBILL_OR_INVOICE_NO),
+                defaults.get(ImportFields.VENDOR_NAME));
+    }
+
     private ImportSessionResponse toResponse(
             ImportSession session, List<String> unmappedHeaders, List<String> requiredFieldsMissing) {
         ImportRowHandler handler = handlerFor(session.getKind());
@@ -1322,7 +1605,8 @@ public class ImportSessionService {
                 uploaderNameOf(session),
                 session.getCreatedAt(),
                 session.getExpiresAt(),
-                session.getCommittedAt());
+                session.getCommittedAt(),
+                deliveryOf(session));
     }
 
     /**

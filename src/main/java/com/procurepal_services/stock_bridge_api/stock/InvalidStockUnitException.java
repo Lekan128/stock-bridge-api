@@ -2,6 +2,8 @@ package com.procurepal_services.stock_bridge_api.stock;
 
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 
 /**
@@ -18,7 +20,7 @@ import java.util.List;
  * with a message that names <b>every valid option</b>, which is contract non-negotiable 4's rule
  * ("never ask a question whose valid answers you do not show") applied to an error.
  *
- * <p>Both factories below compose their sentence from {@link UnitOptions}, the same source the
+ * <p>Every factory below composes its sentence from {@link UnitOptions}, the same source the
  * picker and the spreadsheet's reference column read, so the error can never list a set the UI
  * did not offer. Neither ever contains a UUID or a column name - non-negotiable 6, and section
  * 4's rule for this class specifically.
@@ -73,10 +75,36 @@ public class InvalidStockUnitException extends RuntimeException {
      * @param stockUnitSymbol the product's stock unit, short form ("kg").
      */
     public static InvalidStockUnitException roundsToZero(
-            int enteredQuantity, UnitOption enteredOption, String stockUnitSymbol) {
+            BigDecimal enteredQuantity, UnitOption enteredOption, String stockUnitSymbol) {
         String entered = UnitOptions.spokenPhrase(enteredOption);
-        return new InvalidStockUnitException(enteredQuantity + " " + entered + " is less than one whole "
+        return new InvalidStockUnitException(plain(enteredQuantity) + " " + entered + " is less than one whole "
                 + stockUnitSymbol + " — enter this in " + entered
                 + " by changing this product's stock unit, or enter a larger amount.");
+    }
+
+    /**
+     * PACK_ENTRY_REDESIGN.md section 7.1: a fraction of a pack is refused when it does not come to
+     * a whole number of something that cannot be split. "0.25 packs of 10 pieces is 2.5 pieces" -
+     * rounding it would record half a biro that nobody has. The message states the arithmetic and
+     * offers the whole numbers either side, so the user is not left guessing what would work.
+     *
+     * @param exactStockUnits the unrounded result, e.g. 2.5.
+     * @param stockUnitPhrase the stock unit as it reads mid-sentence, plural ("pieces").
+     */
+    public static InvalidStockUnitException notAWholeCount(
+            BigDecimal enteredQuantity, UnitOption enteredOption, BigDecimal exactStockUnits, String stockUnitPhrase) {
+        BigDecimal below = exactStockUnits.setScale(0, RoundingMode.FLOOR);
+        BigDecimal above = exactStockUnits.setScale(0, RoundingMode.CEILING);
+        String suggestion = below.signum() > 0
+                ? "Enter " + plain(below) + " or " + plain(above) + " " + stockUnitPhrase + " instead."
+                : "Enter " + plain(above) + " " + stockUnitPhrase + " instead.";
+        return new InvalidStockUnitException(plain(enteredQuantity) + " " + UnitOptions.spokenPhrase(enteredOption)
+                + " is " + plain(exactStockUnits) + " " + stockUnitPhrase
+                + " — that isn't a whole number of " + stockUnitPhrase + ". " + suggestion);
+    }
+
+    /** 2.50 reads as 2.5 and 3.0 as 3, never 3E+0. */
+    private static String plain(BigDecimal value) {
+        return value.stripTrailingZeros().toPlainString();
     }
 }

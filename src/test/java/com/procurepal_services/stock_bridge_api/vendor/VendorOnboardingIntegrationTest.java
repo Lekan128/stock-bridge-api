@@ -483,6 +483,10 @@ class VendorOnboardingIntegrationTest {
                         new CreateVendorRequest(
                                 "Offline Vendor " + unique, slug, null, "0805 999 0000",
                                 "3 Balogun Street", null, "Ibadan", "Oyo", null,
+                                // V28 payout/registration block - optional, and exercised here
+                                // because this is the one creation path that can supply it (the
+                                // waitlist form asks for none of it).
+                                "Zenith Bank", "0011223344", "Offline Vendor Ltd", "RC 998877",
                                 "offline-" + unique, PASSWORD, PASSWORD),
                         authHeaders(superAdminToken)),
                 SuperAdminVendorDetail.class);
@@ -493,6 +497,10 @@ class VendorOnboardingIntegrationTest {
         assertThat(vendor.email()).isNull();
         assertThat(vendor.applicationId()).as("nobody applied - we went to them").isNull();
         assertThat(vendor.username()).isEqualTo("offline-" + unique);
+        assertThat(vendor.bankName()).isEqualTo("Zenith Bank");
+        assertThat(vendor.bankAccountNumber()).isEqualTo("0011223344");
+        assertThat(vendor.bankAccountName()).isEqualTo("Offline Vendor Ltd");
+        assertThat(vendor.cacNumber()).isEqualTo("RC 998877");
 
         Client client = clientRepository.findById(vendor.id()).orElseThrow();
         assertThat(client.getClientType()).isEqualTo(ClientType.VENDOR);
@@ -522,6 +530,7 @@ class VendorOnboardingIntegrationTest {
                         new CreateVendorRequest(
                                 "Typo Vendor " + unique, null, null, "0805 000 1111",
                                 null, null, null, null, null,
+                                null, null, null, null,
                                 "typo-" + unique, PASSWORD, "something-else-entirely"),
                         authHeaders(superAdminToken)),
                 ApiError.class);
@@ -731,7 +740,9 @@ class VendorOnboardingIntegrationTest {
                         new HttpEntity<>(
                                 new CreateVendorRequest(
                                         "Direct Vendor " + unique, "direct-vendor-" + unique, null, "0805 222 3333",
-                                        null, null, null, null, null, "direct-" + unique, PASSWORD, PASSWORD),
+                                        null, null, null, null, null,
+                                        null, null, null, null,
+                                        "direct-" + unique, PASSWORD, PASSWORD),
                                 authHeaders(token)),
                         SuperAdminVendorDetail.class)
                 .getBody();

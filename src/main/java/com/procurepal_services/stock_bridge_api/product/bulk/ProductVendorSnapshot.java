@@ -16,5 +16,14 @@ package com.procurepal_services.stock_bridge_api.product.bulk;
  * @param preferred always true in practice, since only the preferred line is exported; carried
  *     explicitly so the exported cell says {@code TRUE} rather than the writer assuming it.
  */
-public record ProductVendorSnapshot(String vendorName, String vendorSku, boolean preferred) {
+/**
+ * @param lastCostPrice the supplier's last price per stock unit (its default pack), or null -
+ *     what the export writes as "Price you pay for one", so re-uploading an unchanged sheet
+ *     changes nothing.
+ */
+public record ProductVendorSnapshot(String vendorName, String vendorSku, boolean preferred, java.math.BigDecimal lastCostPrice) {
+
+    public ProductVendorSnapshot(String vendorName, String vendorSku, boolean preferred) {
+        this(vendorName, vendorSku, preferred, null);
+    }
 }
