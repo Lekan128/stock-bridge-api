@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports.dto;
 
 import com.procurepal_services.stock_bridge_api.entity.ImportStatus;
+import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import java.util.List;
 import java.util.UUID;
 
@@ -22,6 +23,10 @@ import java.util.UUID;
  *     endpoints is authenticated and a bare link sends no bearer token. The frontend fetches it
  *     as a blob through its authed client; the field exists so the path is not hardcoded there.
  * @param targetUrl where "View products" goes, already filtered to what this run touched.
+ * @param kind which import this was. Added by PACK_ENTRY_REDESIGN.md section 16 so the result
+ *     screen can hand a finished PRODUCT import straight on to "now record your stock" - the job
+ *     onboarding is actually for - without inferring the kind from counts that both kinds share
+ *     (a stock-in import can create products inline too).
  */
 public record ImportResultResponse(
         UUID sessionId,
@@ -38,5 +43,6 @@ public record ImportResultResponse(
         boolean undoable,
         String undoBlockedReason,
         String reportUrl,
-        String targetUrl) {
+        String targetUrl,
+        ImportKind kind) {
 }

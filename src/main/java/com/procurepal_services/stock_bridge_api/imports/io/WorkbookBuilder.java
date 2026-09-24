@@ -112,6 +112,83 @@ public final class WorkbookBuilder implements AutoCloseable {
     }
 
     /** Bold, on a light fill - the header row has to read as chrome rather than as the first record. */
+    /**
+     * The grey line under the headers that says, per column, what goes in it - readable in every
+     * spreadsheet app, including the phone ones that never show a cell comment. Its first cell is
+     * prefixed with {@link TemplateConventions#GUIDANCE_MARKER} so the readers drop it; the header
+     * and this row stay frozen together, and the filter arrows sit on it so sorting never moves it.
+     */
+    public void writeGuidanceRow(List<String> hints) {
+        Row row = sheet.createRow(1);
+        row.setHeightInPoints(48);
+        for (int i = 0; i < hints.size(); i++) {
+            String hint = hints.get(i);
+            Cell cell = row.createCell(i);
+            cell.setCellValue(i == 0 ? TemplateConventions.GUIDANCE_MARKER + " " + hint : hint);
+            cell.setCellStyle(guidanceStyle());
+        }
+        sheet.createFreezePane(0, 2);
+        sheet.setAutoFilter(new org.apache.poi.ss.util.CellRangeAddress(1, 1, 0, hints.size() - 1));
+    }
+
+    public CellStyle guidanceStyle() {
+        return stylesByKey.computeIfAbsent("guidance", key -> {
+            Font font = workbook.createFont();
+            font.setItalic(true);
+            font.setFontHeightInPoints((short) 9);
+            font.setColor(IndexedColors.GREY_50_PERCENT.getIndex());
+            CellStyle style = workbook.createCellStyle();
+            style.setFont(font);
+            style.setWrapText(true);
+            style.setVerticalAlignment(org.apache.poi.ss.usermodel.VerticalAlignment.TOP);
+            style.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+            style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+            return style;
+        });
+    }
+
+    /**
+     * A tab in front of the data that explains the file in a few lines - the first thing a person
+     * sees when it opens. The readers skip it by name ({@link TemplateConventions#isHelpSheet}).
+     * Lines starting with a digit are numbered steps and are set a size larger.
+     */
+    public void addHelpSheet(String title, List<String> lines) {
+        Sheet help = workbook.createSheet(TemplateConventions.HELP_SHEET_NAME);
+        help.setColumnWidth(0, 100 * 256);
+        Font titleFont = workbook.createFont();
+        titleFont.setBold(true);
+        titleFont.setFontHeightInPoints((short) 16);
+        CellStyle titleStyle = workbook.createCellStyle();
+        titleStyle.setFont(titleFont);
+        Font stepFont = workbook.createFont();
+        stepFont.setFontHeightInPoints((short) 12);
+        CellStyle stepStyle = workbook.createCellStyle();
+        stepStyle.setFont(stepFont);
+        stepStyle.setWrapText(true);
+        CellStyle bodyStyle = workbook.createCellStyle();
+        bodyStyle.setWrapText(true);
+
+        Cell titleCell = help.createRow(0).createCell(0);
+        titleCell.setCellValue(title);
+        titleCell.setCellStyle(titleStyle);
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            Cell cell = help.createRow(i + 2).createCell(0);
+            cell.setCellValue(line);
+            cell.setCellStyle(!line.isEmpty() && Character.isDigit(line.charAt(0)) ? stepStyle : bodyStyle);
+        }
+        workbook.setSheetOrder(TemplateConventions.HELP_SHEET_NAME, 0);
+        // Opens on the help tab; the data tab is one click away and named for what it holds.
+        workbook.setActiveSheet(0);
+        workbook.setSelectedTab(0);
+        sheet.setSelected(false);
+    }
+
+    /** Hides a column the reader needs and a person does not - the stock sheet's Ref. */
+    public void hideColumn(int columnIndex) {
+        sheet.setColumnHidden(columnIndex, true);
+    }
+
     public CellStyle headerStyle() {
         return stylesByKey.computeIfAbsent("header", key -> {
             Font bold = workbook.createFont();
@@ -191,7 +268,9 @@ public final class WorkbookBuilder implements AutoCloseable {
     public CellStyle primaryInputStyle() {
         return stylesByKey.computeIfAbsent("primaryInput", key -> {
             CellStyle style = workbook.createCellStyle();
-            style.setDataFormat(creationHelper.createDataFormat().getFormat("#,##0"));
+            // General, not "#,##0": a delivery can be two and a half bags, and a whole-number
+            // format would show the 2.5 someone just typed as 3.
+            style.setDataFormat(creationHelper.createDataFormat().getFormat("General"));
             style.setFillForegroundColor(IndexedColors.LEMON_CHIFFON.getIndex());
             style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
             return style;

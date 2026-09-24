@@ -406,7 +406,7 @@ class MultiVendorInventoryIntegrationTest {
                 "/api/company-vendors",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CompanyVendorRequest(namePrefix + " " + suffix, "0800" + suffix, null, null, null, null, null, null),
+                        new CompanyVendorRequest(namePrefix + " " + suffix, "0800" + suffix, null, null, null, null, null, null, null, null, null, null),
                         authHeaders(admin)),
                 CompanyVendorResponse.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);

@@ -18,7 +18,18 @@ final class ProductSpecifications {
     }
 
     static Specification<Product> forTenant(UUID clientId, String search, Boolean active) {
+        return forTenant(clientId, search, active, null);
+    }
+
+    /**
+     * @param categoryId the company category to narrow to, or null for all. The category itself is
+     *     fetched with each page of products, so naming it on every row costs no extra query.
+     */
+    static Specification<Product> forTenant(UUID clientId, String search, Boolean active, UUID categoryId) {
         return (root, query, cb) -> {
+            if (query != null && Product.class.equals(query.getResultType())) {
+                root.fetch("companyCategory", jakarta.persistence.criteria.JoinType.LEFT);
+            }
             List<Predicate> predicates = new ArrayList<>();
             predicates.add(cb.equal(root.get("clientId"), clientId));
 
@@ -30,6 +41,10 @@ final class ProductSpecifications {
 
             if (active != null) {
                 predicates.add(cb.equal(root.get("active"), active));
+            }
+
+            if (categoryId != null) {
+                predicates.add(cb.equal(root.get("companyCategory").get("id"), categoryId));
             }
 
             return cb.and(predicates.toArray(new Predicate[0]));

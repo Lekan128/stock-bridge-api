@@ -5,22 +5,30 @@ import com.procurepal_services.stock_bridge_api.entity.ImportMode;
 import com.procurepal_services.stock_bridge_api.imports.dto.ColumnMappingRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ConfirmPackRequest;
+import com.procurepal_services.stock_bridge_api.imports.dto.DeliveryLineResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.DeliveryRequest;
+import com.procurepal_services.stock_bridge_api.imports.dto.ImportDeliveryDetails;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportLinkedPackResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportResultResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportRowResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionSummaryResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.PasteRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.PatchRowRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.SkipRowRequest;
 import com.procurepal_services.stock_bridge_api.imports.dto.ValueMappingRequest;
 import com.procurepal_services.stock_bridge_api.imports.io.ImportLimits;
 import com.procurepal_services.stock_bridge_api.product.ProductManagementService;
+import com.procurepal_services.stock_bridge_api.product.bulk.SheetUnitOptions;
 import com.procurepal_services.stock_bridge_api.product.bulk.StockInTemplateFilter;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
+import com.procurepal_services.stock_bridge_api.product.bulk.StockInTemplateRow;
 import com.procurepal_services.stock_bridge_api.product.bulk.StockInTemplateService;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import jakarta.validation.Valid;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -102,14 +110,21 @@ public class ImportController {
             @RequestPart("file") MultipartFile file,
             @RequestPart("kind") String kind,
             @RequestPart(value = "mode", required = false) String mode,
+            @RequestPart(value = "deliveryDate", required = false) String deliveryDate,
+            @RequestPart(value = "invoiceNo", required = false) String invoiceNo,
+            @RequestPart(value = "vendorId", required = false) String vendorId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         ImportKind importKind = parseKind(kind);
         ImportMode importMode = parseMode(mode);
         // Checked before a byte is parsed: the kind is known here, so there is no reason to read
         // a ten-megabyte file for someone who was never going to be allowed to import it.
         importSessionService.requireKindAuthority(importKind);
+        // BULK_IMPORT_CX_PLAN.md task 1.5: a delivery's date, invoice and supplier, asked once.
+        var delivery = importKind == ImportKind.STOCK_IN
+                ? importSessionService.deliveryDetails(deliveryDate, invoiceNo, vendorId)
+                : null;
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(importSessionService.create(file, importKind, importMode, principal.getUserId()));
+                .body(importSessionService.create(file, importKind, importMode, principal.getUserId(), delivery));
     }
 
     @GetMapping("/{id}")
@@ -280,6 +295,128 @@ public class ImportController {
      * {@code BY_CATEGORY}. The contract records that no UI reaches them yet and that the backend
      * side should be built anyway, so it is.
      */
+    /**
+     * The "Record a delivery" screen's list - the stock sheet's rows as data, with the same
+     * filters (BULK_IMPORT_CX_PLAN.md task 2.1).
+     */
+    /**
+     * Rows pasted straight in - off WhatsApp, or out of a spreadsheet on the same laptop
+     * (BULK_IMPORT_CX_PLAN.md task 3.2). It builds the same session an upload builds, so every
+     * screen after this one is the one a file gets.
+     */
+    @PostMapping("/paste")
+    public ResponseEntity<ImportSessionResponse> paste(
+            @Valid @RequestBody PasteRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        ImportKind importKind = parseKind(request.kind());
+        ImportMode importMode = parseMode(request.mode());
+        importSessionService.requireKindAuthority(importKind);
+        var delivery = importKind == ImportKind.STOCK_IN
+                ? importSessionService.deliveryDetails(
+                        request.deliveryDate(), request.invoiceNo(), request.vendorId())
+                : null;
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(importSessionService.createFromPaste(
+                        request.text(), importKind, importMode, principal.getUserId(), delivery));
+    }
+
+    @GetMapping("/delivery-lines")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public List<DeliveryLineResponse> deliveryLines(
+            @RequestParam(required = false) String productIds,
+            @RequestParam(required = false) StockInTemplateFilter filter,
+            @RequestParam(required = false) UUID vendorId,
+            @RequestParam(required = false) UUID categoryId) {
+        List<UUID> ids = parseIds(productIds);
+        return stockInTemplateService.rows(ids, ids.isEmpty() ? filter : null, vendorId, categoryId).stream()
+                .map(row -> new DeliveryLineResponse(
+                        row.productId(),
+                        row.productName(),
+                        row.sku(),
+                        UnitOptions.key(row.option()),
+                        SheetUnitOptions.comesInLabel(row.option()),
+                        row.option().isPack(),
+                        row.lastPricePerOption(),
+                        row.vendorName()))
+                .toList();
+    }
+
+    /**
+     * What a scanned barcode should add to the delivery (BULK_IMPORT_CX_PLAN.md task 3.3): the
+     * matching product's lines, in the very shape {@code /delivery-lines} returns, so the screen
+     * adds the row with no second lookup and no special case.
+     *
+     * <p>404 when nothing matches, which is what lets the screen offer "add it as a new product"
+     * without another round trip.
+     */
+    @GetMapping("/delivery-lines/by-barcode/{barcode}")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public List<DeliveryLineResponse> deliveryLinesByBarcode(@PathVariable String barcode) {
+        UUID productId = productManagementService.requireByBarcode(barcode).getId();
+        return deliveryLines(productId.toString(), null, null, null);
+    }
+
+    /**
+     * A delivery typed into the app - becomes an import like an uploaded stock sheet, so the
+     * review, confirm and undo that follow are the same (BULK_IMPORT_CX_PLAN.md task 2.2).
+     */
+    @PostMapping("/delivery")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public ResponseEntity<ImportSessionResponse> recordDelivery(
+            @Valid @RequestBody DeliveryRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        importSessionService.requireKindAuthority(ImportKind.STOCK_IN);
+        ImportDeliveryDetails delivery = importSessionService.deliveryDetails(
+                request.deliveryDate(), request.invoiceNo(),
+                request.vendorId() == null ? null : request.vendorId().toString());
+        // Read back through the tenant's own catalog, the same way the picker's lines were: an id
+        // from another tenant simply has no name here, and lands as a row that cannot find its
+        // product rather than one that quietly stocks somebody else's shelf.
+        Map<UUID, StockInTemplateRow> named = namesOf(request.lines());
+        List<ImportSessionService.DeliveryLine> lines = request.lines().stream()
+                .map(line -> {
+                    StockInTemplateRow product = named.get(line.productId());
+                    return new ImportSessionService.DeliveryLine(
+                            line.productId(),
+                            product == null ? null : product.productName(),
+                            product == null ? null : product.sku(),
+                            line.unit(), line.quantity(), line.price());
+                })
+                .toList();
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(importSessionService.createDelivery(
+                        lines, deliveryTitle(delivery), principal.getUserId(), delivery,
+                        request.expectedDeliveryId()));
+    }
+
+    /**
+     * The name and code of each product a typed delivery names, by id. Read through the same
+     * tenant-scoped query the picker's lines come from, in one round trip rather than one per
+     * line; a product with several packs appears once, since only its name and code are wanted.
+     */
+    private Map<UUID, StockInTemplateRow> namesOf(List<DeliveryRequest.Line> lines) {
+        List<UUID> ids = lines.stream()
+                .map(DeliveryRequest.Line::productId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        return stockInTemplateService.rows(ids, null, null, null).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        StockInTemplateRow::productId, row -> row, (first, second) -> first));
+    }
+
+    /** What the recent-imports list calls a typed delivery: "Delivery from Tony Stores, 15 Sep 2026". */
+    private static String deliveryTitle(ImportDeliveryDetails delivery) {
+        java.time.LocalDate date = delivery.date() == null ? java.time.LocalDate.now() : delivery.date();
+        String when = date.format(java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.ENGLISH));
+        return delivery.supplierName() == null
+                ? "Delivery, " + when
+                : "Delivery from " + delivery.supplierName() + ", " + when;
+    }
+
     @GetMapping("/templates/stock-in")
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public ResponseEntity<byte[]> stockInTemplate(

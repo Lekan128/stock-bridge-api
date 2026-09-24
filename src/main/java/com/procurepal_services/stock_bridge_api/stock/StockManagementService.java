@@ -21,6 +21,7 @@ import com.procurepal_services.stock_bridge_api.stock.dto.ProductLotResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockAdjustmentRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementSummaryResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockOutRequest;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
@@ -31,6 +32,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Optional;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -140,7 +142,8 @@ public class StockManagementService {
      */
     public int toStockUnitQuantity(
             Product product, int quantity, String unit, String packagingUnit, BigDecimal packagingSize) {
-        return resolveEntry(product, quantity, null, unit, packagingUnit, packagingSize).baseQuantity();
+        return resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, packagingUnit, packagingSize)
+                .baseQuantity();
     }
 
     /** {@link #toStockUnitQuantity(Product, int, String, String, BigDecimal)} with no pack extension. */
@@ -353,7 +356,7 @@ public class StockManagementService {
         UUID tenantId = requireTenantId();
 
         ResolvedEntry entry =
-                resolveEntry(product, request.quantity(), request.unitPrice(), request.unit(), null, null);
+                resolveEntry(product, BigDecimal.valueOf(request.quantity()), request.unitPrice(), request.unit(), null, null);
         int quantityBaseUnits = entry.baseQuantity();
 
         // The authoritative ceiling is still Product.quantityOnHand - see the class javadoc's
@@ -592,7 +595,7 @@ public class StockManagementService {
      */
     private ResolvedEntry resolveEntry(
             Product product,
-            int quantity,
+            BigDecimal quantity,
             BigDecimal enteredPrice,
             String unit,
             String requestPackagingUnit,
@@ -612,11 +615,30 @@ public class StockManagementService {
                         overridePackagingSize,
                         product.getUnitOfMeasure());
 
-        UnitOption option = UnitOptions.resolve(options, unit)
+        // A request naming this delivery's pack means THAT pack - a product can have a 50 kg bag
+        // and a supplier's 25 kg bag at once, and matching on the container alone would pick
+        // whichever came first.
+        Optional<UnitOption> requestedPack = requestPackagingUnit != null
+                        && requestPackagingSize != null
+                        && unit != null
+                        && requestPackagingUnit.equalsIgnoreCase(unit.trim())
+                ? UnitOfMeasure.fromCodeOrLabel(requestPackagingUnit)
+                        .flatMap(container -> UnitOptions.findPack(options, container.code(), requestPackagingSize))
+                : Optional.empty();
+        UnitOption option = requestedPack
+                .or(() -> UnitOptions.resolve(options, unit))
                 .orElseThrow(() -> InvalidStockUnitException.unknownUnit(product.getName(), unit, options));
 
+        // PACK_ENTRY_REDESIGN.md section 7.1. A measured stock unit rounds (12.4 kg is 12 kg, as
+        // section 3.1 always said); a counted one must come out whole, because rounding a quarter
+        // of a pack of ten pieces would record half a piece nobody has.
+        BigDecimal exactBaseQuantity = option.exactStockUnits(quantity);
+        if (UnitOptions.isCountedInWholeUnits(product.getUnitOfMeasure()) && exactBaseQuantity.stripTrailingZeros().scale() > 0) {
+            throw InvalidStockUnitException.notAWholeCount(
+                    quantity, option, exactBaseQuantity, UnitOptions.spokenPhraseOfStockUnit(product.getUnitOfMeasure()));
+        }
         int baseQuantity = option.toStockUnitQuantity(quantity);
-        if (baseQuantity == 0 && quantity != 0) {
+        if (baseQuantity == 0 && quantity.signum() != 0) {
             throw InvalidStockUnitException.roundsToZero(quantity, option, unitSymbol(product));
         }
 
@@ -629,7 +651,7 @@ public class StockManagementService {
                 baseQuantity,
                 option.toStockUnitPrice(enteredPrice),
                 typedInAnotherUnit ? option.code() : null,
-                typedInAnotherUnit ? BigDecimal.valueOf(quantity) : null,
+                typedInAnotherUnit ? quantity : null,
                 typedInAnotherUnit ? enteredPrice : null);
     }
 
@@ -696,16 +718,76 @@ public class StockManagementService {
             throw new ProductNotFoundException();
         }
         return stockMovementRepository
-                .findAll(StockMovementSpecifications.forTenant(tenantId, productId, null, null, null), pageable)
+                .findAll(StockMovementSpecifications.forTenant(tenantId, productId, null, null, null, null), pageable)
                 .map(StockMovementResponse::from);
     }
 
+    /**
+     * The stock in/out report - every movement in the tenant, filtered and paged. "What did we
+     * actually take in that cost that much", which is the question the dashboard's Stock In/Out
+     * Value cards raise and could not answer.
+     *
+     * <p>Reads the same ledger the cards aggregate, over the same {@code occurredAt} range, so
+     * the two reconcile by construction - see {@code StockMovementSpecifications.forTenant} for
+     * the date-column choice and for the fetch joins that keep this one query per page rather
+     * than one per row.
+     */
     @Transactional(readOnly = true)
     public Page<StockMovementResponse> allMovements(
-            OffsetDateTime from, OffsetDateTime to, MovementType movementType, Pageable pageable) {
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            Pageable pageable) {
         return stockMovementRepository
-                .findAll(StockMovementSpecifications.forTenant(requireTenantId(), null, from, to, movementType), pageable)
+                .findAll(
+                        StockMovementSpecifications.forTenant(
+                                requireTenantId(), productId, companyVendorId, from, to, movementType),
+                        pageable)
                 .map(StockMovementResponse::from);
+    }
+
+    /**
+     * What {@link #allMovements}' whole filtered set adds up to, summed in the database rather
+     * than over the page the caller happens to be looking at - see
+     * {@code StockMovementSummaryResponse}.
+     *
+     * <p>Takes the same six arguments as {@link #allMovements} minus the paging, deliberately:
+     * the moment the two accept different filters, the footer starts contradicting the table.
+     */
+    @Transactional(readOnly = true)
+    public StockMovementSummaryResponse movementSummary(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId) {
+        List<Object[]> rows = stockMovementRepository.summarise(
+                requireTenantId(),
+                productId,
+                companyVendorId,
+                movementType == null ? null : movementType.name(),
+                from,
+                to);
+        // A conditional aggregate with no GROUP BY always returns exactly one row, zeroes
+        // included, so an empty list here would mean the query stopped being an aggregate.
+        // Answered as an all-zero summary rather than an exception: a report footer is not
+        // worth a 500, and every branch below would read zero anyway.
+        if (rows.isEmpty()) {
+            return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0);
+        }
+        Object[] row = rows.getFirst();
+        return new StockMovementSummaryResponse(
+                (BigDecimal) row[0],
+                (BigDecimal) row[1],
+                ((Number) row[2]).longValue(),
+                ((Number) row[3]).longValue(),
+                ((Number) row[4]).longValue(),
+                ((Number) row[5]).longValue(),
+                ((Number) row[6]).longValue(),
+                ((Number) row[7]).longValue(),
+                ((Number) row[8]).longValue());
     }
 
     /**

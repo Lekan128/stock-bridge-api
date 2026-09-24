@@ -471,6 +471,77 @@ class UnitAndPriceNormalisationIntegrationTest {
     // Helpers
     // -----------------------------------------------------------------------------------
 
+    // ===================================================================== fractional quantities
+
+    /**
+     * Two and a half bags is a real delivery. The request carries the number exactly as typed, and
+     * the one conversion in resolveEntry turns it into 125 kg - never 2 bags (100 kg), which is what
+     * an integer quantity field silently made of it.
+     */
+    @Test
+    void twoAndAHalfBagsAreRecordedAsExactlyOneHundredAndTwentyFiveKg() {
+        TenantLoginResponse admin = signup("Half Bag Co");
+        ProductResponse product = createRiceProduct(admin, "UPN-FR1");
+
+        StockMutationResponse receipt = stockInRaw(admin, product.id(), "2.5", "45000", "BAG", StockMutationResponse.class)
+                .getBody();
+
+        assertThat(receipt.movement().quantity()).isEqualTo(125);
+        assertThat(receipt.product().quantityOnHand()).isEqualTo(125);
+        assertThat(receipt.movement().unitPriceAtTime()).isEqualByComparingTo("900");
+    }
+
+    /**
+     * A fraction of a pack that does not land on a whole stock unit is refused when the stock unit
+     * is something you count. A quarter of a pack of ten biros is two and a half biros, and there is
+     * no such thing as half a biro on a shelf (PACK_ENTRY_REDESIGN.md section 7.1).
+     */
+    @Test
+    void aFractionOfAPackThatIsNotAWholeNumberOfPiecesIsRefused() {
+        TenantLoginResponse admin = signup("Quarter Pack Co");
+        ProductResponse product = createProduct(admin, "Biro", "UPN-FR2", "PIECE", "PACK", new BigDecimal("10"));
+
+        ResponseEntity<ApiError> response = stockInRaw(admin, product.id(), "0.25", null, "PACK", ApiError.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody().message()).contains("2.5").contains("whole");
+
+        StockMutationResponse half = stockInRaw(admin, product.id(), "0.5", null, "PACK", StockMutationResponse.class)
+                .getBody();
+        assertThat(half.movement().quantity()).isEqualTo(5);
+    }
+
+    /**
+     * A measured stock unit rounds, as contract section 3.1 has always said: 12.4 kg of a product
+     * counted in whole kg is stored as 12 kg. Refusing it would be the software being right about a
+     * technicality and wrong about the scale in the storeroom.
+     */
+    @Test
+    void aFractionOfAMeasuredStockUnitIsRoundedToTheNearestWholeUnit() {
+        TenantLoginResponse admin = signup("Rounded Kg Co");
+        ProductResponse product = createRiceProduct(admin, "UPN-FR3");
+
+        StockMutationResponse receipt = stockInRaw(admin, product.id(), "12.4", null, "KG", StockMutationResponse.class)
+                .getBody();
+
+        assertThat(receipt.movement().quantity()).isEqualTo(12);
+    }
+
+    /** Posts the body as JSON text, so a decimal reaches the server exactly as a browser sends it. */
+    private <T> ResponseEntity<T> stockInRaw(
+            TenantLoginResponse admin, UUID productId, String quantity, String unitPrice, String unit, Class<T> type) {
+        String json = "{\"quantity\":" + quantity
+                + (unitPrice == null ? "" : ",\"unitPrice\":" + unitPrice)
+                + ",\"unit\":\"" + unit + "\"}";
+        HttpHeaders headers = authHeaders(admin);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return restTemplate.exchange(
+                "/api/products/" + productId + "/stock/stock-in",
+                HttpMethod.POST,
+                new HttpEntity<>(json, headers),
+                type);
+    }
+
     private void assertNoUuid(String message) {
         assertThat(UUID_ANYWHERE.matcher(message).find())
                 .as("user-visible string must contain no id: %s", message)
@@ -531,8 +602,13 @@ class UnitAndPriceNormalisationIntegrationTest {
 
     /** Rice, counted in kg, packed 50 kg to the bag - the product from the complaint. */
     private ProductResponse createRiceProduct(TenantLoginResponse admin, String sku) {
+        return createProduct(admin, "Rice 50kg", sku, "KG", "BAG", new BigDecimal("50"));
+    }
+
+    private ProductResponse createProduct(
+            TenantLoginResponse admin, String name, String sku, String stockUnit, String pack, BigDecimal packSize) {
         CreateProductRequest request = new CreateProductRequest(
-                "Rice 50kg", sku, null, null, null, "KG", "BAG", new BigDecimal("50"), null);
+                name, sku, null, null, null, stockUnit, pack, packSize, null);
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         HttpHeaders productPartHeaders = new HttpHeaders();
         productPartHeaders.setContentType(MediaType.APPLICATION_JSON);
@@ -552,7 +628,7 @@ class UnitAndPriceNormalisationIntegrationTest {
                 "/api/company-vendors",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new CompanyVendorRequest(name, "0800" + suffix, null, null, null, null, null, null),
+                        new CompanyVendorRequest(name, "0800" + suffix, null, null, null, null, null, null, null, null, null, null),
                         authHeaders(admin)),
                 CompanyVendorResponse.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);

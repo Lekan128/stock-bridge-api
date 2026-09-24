@@ -8,6 +8,7 @@ import com.procurepal_services.stock_bridge_api.stock.dto.ProductLotResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockAdjustmentRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementSummaryResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockOutRequest;
 import jakarta.validation.Valid;
@@ -106,14 +107,51 @@ public class StockController {
         return stockManagementService.lots(productId, open);
     }
 
+    /**
+     * The stock in/out report: every movement in the tenant over a date range, filterable by
+     * direction, product and supplier. This is the drill-down behind the dashboard's Stock In
+     * Value / Stock Out Value cards - "we took in that much, what was it" - and reads the same
+     * ledger those cards aggregate over the same {@code occurredAt} range, so a total on the
+     * dashboard and the rows here reconcile.
+     *
+     * <p>{@code from}/{@code to} bracket when the delivery or sale HAPPENED, not when it was
+     * keyed in; see {@code StockMovementSpecifications.forTenant}. Sorted newest-occurring first
+     * by default, which is how a person reads a ledger, with {@code createdAt} still available
+     * as an explicit sort for anyone auditing data entry instead.
+     *
+     * <p>Gated by {@code MANAGE_INVENTORY} rather than {@code VIEW_ANALYTICS}: this is the raw
+     * ledger, row by row with prices and suppliers on it, not an aggregate. It is exactly the
+     * data {@link #history} already exposes one product at a time, so it takes the same
+     * authority - a wider audience for the same rows would be a new disclosure wearing a report's
+     * clothes.
+     */
     @GetMapping("/api/stock/movements")
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public Page<StockMovementResponse> allMovements(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
             @RequestParam(required = false) MovementType movementType,
-            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
-        return stockManagementService.allMovements(from, to, movementType, pageable);
+            @RequestParam(required = false) UUID productId,
+            @RequestParam(required = false) UUID companyVendorId,
+            @PageableDefault(size = 20, sort = "occurredAt", direction = Sort.Direction.DESC) Pageable pageable) {
+        return stockManagementService.allMovements(from, to, movementType, productId, companyVendorId, pageable);
+    }
+
+    /**
+     * What the whole of {@link #allMovements}' filtered set adds up to - the report's totals row.
+     * Same five filters, no paging: the sum is over everything that matches, not over the page
+     * being viewed. See {@code StockMovementSummaryResponse} for why the unpriced counts come
+     * back alongside the money.
+     */
+    @GetMapping("/api/stock/movements/summary")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public StockMovementSummaryResponse movementSummary(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            @RequestParam(required = false) MovementType movementType,
+            @RequestParam(required = false) UUID productId,
+            @RequestParam(required = false) UUID companyVendorId) {
+        return stockManagementService.movementSummary(from, to, movementType, productId, companyVendorId);
     }
 
     /**
