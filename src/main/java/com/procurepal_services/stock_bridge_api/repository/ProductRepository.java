@@ -36,6 +36,22 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
             + "AND p.lowStockThreshold IS NOT NULL AND p.quantityOnHand <= p.lowStockThreshold")
     long countLowStockByClientId(@Param("clientId") UUID clientId);
 
+    /** quantityOnHand <= 0, active only - independent of whether a low-stock threshold is set. */
+    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true "
+            + "AND p.quantityOnHand <= 0")
+    long countOutOfStockByClientId(@Param("clientId") UUID clientId);
+
+    /**
+     * The union this and the two queries above partition into three for {@code AnalyticsService}'s
+     * "well stocked" figure (active count minus this): out of stock OR (has a threshold and at or
+     * below it). Written as one query, not `countLowStockByClientId + countOutOfStockByClientId`,
+     * because a product at zero with a threshold set satisfies both and a sum would double-count it.
+     */
+    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true "
+            + "AND (p.quantityOnHand <= 0 "
+            + "OR (p.lowStockThreshold IS NOT NULL AND p.quantityOnHand <= p.lowStockThreshold))")
+    long countNeedsAttentionByClientId(@Param("clientId") UUID clientId);
+
     /**
      * Row-locks the product for the duration of the caller's transaction, so
      * two concurrent stock movements against the same product serialize

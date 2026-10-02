@@ -58,9 +58,19 @@ public class AnalyticsService {
         long totalUnitsOut = stockMovementRepository.sumQuantity(clientId, MovementType.OUT, range[0], range[1]);
         long lowStockProductCount = productRepository.countLowStockByClientId(clientId);
         long activeProductCount = productRepository.countByClientIdAndActive(clientId, true);
+        long outOfStockProductCount = productRepository.countOutOfStockByClientId(clientId);
+        long wellStockedProductCount =
+                activeProductCount - productRepository.countNeedsAttentionByClientId(clientId);
 
         return new AnalyticsSummaryResponse(
-                totalInValue, totalOutValue, totalUnitsIn, totalUnitsOut, lowStockProductCount, activeProductCount);
+                totalInValue,
+                totalOutValue,
+                totalUnitsIn,
+                totalUnitsOut,
+                lowStockProductCount,
+                activeProductCount,
+                outOfStockProductCount,
+                wellStockedProductCount);
     }
 
     @Transactional(readOnly = true)
