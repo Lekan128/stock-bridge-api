@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -60,11 +61,25 @@ public record StockOutRequest(
         @DecimalMin(value = "0", inclusive = true) BigDecimal unitPrice,
         @Size(max = 1000) String note,
         String unit,
-        List<Allocation> allocations) {
+        List<Allocation> allocations,
+        // A4: when the sale actually happened. Null means now. A phone that recorded it offline
+        // sends the moment it was entered, so the ledger dates it truthfully once it arrives.
+        OffsetDateTime occurredAt,
+        // A4: recorded offline and arriving late - see StockInRequest.recordedOffline.
+        Boolean recordedOffline) {
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note) {
         this(quantity, unitPrice, note, null, null);
+    }
+
+    /** The shape before {@code occurredAt} and {@code recordedOffline} (A4). */
+    public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations) {
+        this(quantity, unitPrice, note, unit, allocations, null, null);
+    }
+
+    public boolean isRecordedOffline() {
+        return Boolean.TRUE.equals(recordedOffline);
     }
 
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */

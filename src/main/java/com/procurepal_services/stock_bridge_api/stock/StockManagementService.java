@@ -19,6 +19,7 @@ import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.ProductLotResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockAdjustmentRequest;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementSummaryResponse;
@@ -194,6 +195,7 @@ public class StockManagementService {
                 request.packagingUnit(),
                 request.packagingSize());
         int quantityBaseUnits = entry.baseQuantity();
+        boolean absorbed = request.isRecordedOffline() && stockMovementRepository.existsCountAfter(productId, occurredAt);
 
         if (request.companyVendorId() == null
                 && productVendorRepository.countByClientIdAndProductId(tenantId, productId) > 0) {
@@ -235,7 +237,9 @@ public class StockManagementService {
         }
 
         product.setCostPrice(recomputeWeightedAverageCost(product, quantityBaseUnits, entry.basePrice()));
-        product.setQuantityOnHand(product.getQuantityOnHand() + quantityBaseUnits);
+        if (!absorbed) {
+            product.setQuantityOnHand(product.getQuantityOnHand() + quantityBaseUnits);
+        }
 
         StockMovement movement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
@@ -253,6 +257,9 @@ public class StockManagementService {
                 .enteredQuantity(entry.enteredQuantity())
                 .enteredUnitPrice(entry.enteredUnitPrice())
                 .build());
+        if (absorbed) {
+            recordAbsorbedByLaterCount(product, -quantityBaseUnits, occurredAt, actingUserId);
+        }
 
         return StockMutationResponse.ofStockIn(product, movement, vendorIsNewToProduct, cheaperVendorHint);
     }
@@ -358,11 +365,16 @@ public class StockManagementService {
         ResolvedEntry entry =
                 resolveEntry(product, BigDecimal.valueOf(request.quantity()), request.unitPrice(), request.unit(), null, null);
         int quantityBaseUnits = entry.baseQuantity();
+        OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
+        // A sale from before a later stock count, arriving late from an offline phone: the count
+        // already saw the shelf without these goods, so the shelf figure must not move again - and
+        // the ceiling below, which guards today's figure, does not apply to it.
+        boolean absorbed = request.isRecordedOffline() && stockMovementRepository.existsCountAfter(productId, occurredAt);
 
         // The authoritative ceiling is still Product.quantityOnHand - see the class javadoc's
         // "cached counter, lot ledger is the source of truth underneath it, not a replacement"
         // and the reasoning below for why the ledger alone cannot be trusted as the ceiling yet.
-        if (quantityBaseUnits > product.getQuantityOnHand()) {
+        if (!absorbed && quantityBaseUnits > product.getQuantityOnHand()) {
             throw new InsufficientStockException(product.getQuantityOnHand(), quantityBaseUnits, unitSymbol(product));
         }
 
@@ -373,11 +385,14 @@ public class StockManagementService {
                 : resolveManualAllocations(
                         lockedLotsOldestFirst, request.allocations(), quantityBaseUnits, unitSymbol(product));
 
-        product.setQuantityOnHand(product.getQuantityOnHand() - quantityBaseUnits);
+        if (!absorbed) {
+            product.setQuantityOnHand(product.getQuantityOnHand() - quantityBaseUnits);
+        }
 
         StockMovement outMovement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
                 .movementType(MovementType.OUT)
+                .occurredAt(occurredAt)
                 .quantity(quantityBaseUnits)
                 .unitPriceAtTime(entry.basePrice())
                 .note(request.note())
@@ -415,7 +430,68 @@ public class StockManagementService {
                             draw.lot().getOccurredAt(), lotVendor == null ? null : lotVendor.getName())));
         }
 
+        if (absorbed) {
+            recordAbsorbedByLaterCount(product, quantityBaseUnits, occurredAt, actingUserId);
+        }
+
         return StockMutationResponse.ofStockOut(product, outMovement, breakdown);
+    }
+
+    /**
+     * A stock count (A4, decision D1): {@code countedQuantity} was on the shelf at {@code countedAt}.
+     *
+     * <p>Today's figure is that count carried forward by everything recorded as happening after
+     * it - so a count made on a phone that was offline, arriving after another phone's sales,
+     * does not erase them. Online, with nothing after "now", this is exactly the old absolute
+     * adjustment.
+     *
+     * <p>A count older than one already recorded is superseded: the shelf has been looked at since,
+     * and the newer look wins. The product comes back unchanged with no movement, which is how the
+     * caller can tell. A count that finds exactly what the books say is still recorded (as a zero
+     * difference), because later writes are judged against it.
+     */
+    @Transactional
+    public StockMutationResponse count(UUID productId, StockCountRequest request, UUID actingUserId) {
+        Product product = lockProductOrThrow(productId);
+        OffsetDateTime countedAt = resolveOccurredAt(request.countedAt());
+        if (stockMovementRepository.existsCountAfter(productId, countedAt)) {
+            return StockMutationResponse.of(product, null);
+        }
+        long carriedForward = stockMovementRepository.netChangeAfter(productId, countedAt);
+        // Sales recorded after the count can exceed it (the count was wrong, or stock arrived
+        // unrecorded); the shelf cannot hold less than nothing.
+        int target = (int) Math.max(0, request.countedQuantity() + carriedForward);
+        int delta = target - product.getQuantityOnHand();
+        product.setQuantityOnHand(target);
+
+        StockMovement movement = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(delta)
+                .count(true)
+                .occurredAt(countedAt)
+                .note(request.note() == null || request.note().isBlank() ? "Stock count" : request.note())
+                .createdBy(reference(actingUserId))
+                .build());
+        return StockMutationResponse.of(product, movement);
+    }
+
+    /**
+     * Records that a late write from an offline phone was already reflected in a stock count taken
+     * after it (A4): the movement itself stays in the ledger - lots, costs and history need it - and
+     * this adjustment cancels its effect on the shelf figure, so the ledger still adds up.
+     *
+     * @param effect the signed change this adjustment makes: minus a late delivery, plus a late sale.
+     */
+    private void recordAbsorbedByLaterCount(Product product, int effect, OffsetDateTime occurredAt, UUID actingUserId) {
+        stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(effect)
+                .occurredAt(occurredAt)
+                .note("Already in a later stock count: recorded on a phone while offline, before that count")
+                .createdBy(reference(actingUserId))
+                .build());
     }
 
     /**

@@ -172,6 +172,15 @@ public class StockMovement extends TenantAwareEntity {
     private OffsetDateTime occurredAt = OffsetDateTime.now();
 
     /**
+     * True for the ADJUSTMENT a stock count wrote (V38): an observation of the shelf at
+     * {@link #occurredAt}, not a correction. See {@code StockManagementService.count} for what that
+     * changes - superseding older counts, and absorbing late writes from before it.
+     */
+    @Builder.Default
+    @Column(name = "is_count", nullable = false, updatable = false)
+    private boolean count = false;
+
+    /**
      * The {@link ImportSession} whose commit wrote this movement, or null for anything recorded
      * by hand, by an order receipt, or by the pre-V20 paths. Added V20; see
      * BULK_IMPORT_DESIGN.md section 6.5 ("Every entity written by a commit carries the

@@ -115,7 +115,31 @@ public record StockInRequest(
         @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
         OffsetDateTime occurredAt,
         Boolean saveAsSupplierDefault,
-        String vendorSku) {
+        String vendorSku,
+        // A4: this delivery was recorded on a phone while offline and is arriving late. Only such
+        // a write is checked against stock counts taken since - see StockManagementService. Absent
+        // and false both mean "recorded now", which is every caller before A4.
+        Boolean recordedOffline) {
+
+    /** The shape before {@code recordedOffline} (A4); every server-side caller still uses it. */
+    public StockInRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt,
+            Boolean saveAsSupplierDefault,
+            String vendorSku) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+                saveAsSupplierDefault, vendorSku, null);
+    }
+
+    public boolean isRecordedOffline() {
+        return Boolean.TRUE.equals(recordedOffline);
+    }
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockInRequest(Integer quantity, BigDecimal unitPrice, String note) {

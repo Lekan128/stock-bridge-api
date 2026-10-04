@@ -6,6 +6,7 @@ import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.CostBasisAnomalyResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.ProductLotResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockAdjustmentRequest;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementSummaryResponse;
@@ -90,6 +91,21 @@ public class StockController {
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return idempotent(idempotencyKey, "ADJUSTMENT", productId, request,
                 () -> stockManagementService.adjust(productId, request, principal.getUserId()));
+    }
+
+    /**
+     * A stock count (A4): what was on the shelf, and when. Replaces Adjust's "set it to N" - see
+     * StockManagementService.count. Same authority as Adjust.
+     */
+    @PostMapping("/api/products/{productId}/stock/count")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public ResponseEntity<StockMutationResponse> count(
+            @PathVariable UUID productId,
+            @Valid @RequestBody StockCountRequest request,
+            @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return idempotent(idempotencyKey, "COUNT", productId, request,
+                () -> stockManagementService.count(productId, request, principal.getUserId()));
     }
 
     private ResponseEntity<StockMutationResponse> idempotent(

@@ -14,6 +14,20 @@ import org.springframework.data.repository.query.Param;
 
 public interface StockMovementRepository extends TenantScopedRepository<StockMovement, UUID>, JpaSpecificationExecutor<StockMovement> {
 
+    /** Whether this product was counted after {@code after} (A4) - see {@code StockMovement.count}. */
+    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.count = true AND m.occurredAt > :after")
+    boolean existsCountAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
+
+    /**
+     * The net effect on the shelf of everything recorded as happening after {@code after}: IN adds,
+     * OUT takes away, an ADJUSTMENT is already a signed difference. What a count taken at
+     * {@code after} has to be carried forward by to be today's figure.
+     */
+    @Query("SELECT COALESCE(SUM(CASE WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT "
+            + "THEN -m.quantity ELSE m.quantity END), 0) "
+            + "FROM StockMovement m WHERE m.product.id = :productId AND m.occurredAt > :after")
+    long netChangeAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
+
     /**
      * Whether this product has ever had a movement recorded. Backs the V19 rule that {@code
      * Product.unitOfMeasure} becomes immutable once true - see {@code Product}'s javadoc on
