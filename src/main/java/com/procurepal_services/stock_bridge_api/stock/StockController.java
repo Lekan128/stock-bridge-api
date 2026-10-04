@@ -108,6 +108,21 @@ public class StockController {
                 () -> stockManagementService.count(productId, request, principal.getUserId()));
     }
 
+    /**
+     * Undo (B2, decision D8): void a stock write made moments ago, as if it had never been made.
+     * Any of the three stock authorities may ask; the service then holds the caller to the
+     * authority of the write itself, and to being the person who made it, within two minutes,
+     * while it is still the product's latest write. 409 with the reason otherwise.
+     */
+    @PostMapping("/api/products/{productId}/stock/movements/{movementId}/void")
+    @PreAuthorize("hasAnyAuthority('STOCK_IN', 'STOCK_OUT', 'MANAGE_INVENTORY')")
+    public ResponseEntity<StockMutationResponse> voidWrite(
+            @PathVariable UUID productId,
+            @PathVariable UUID movementId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ResponseEntity.ok(stockManagementService.voidWrite(productId, movementId, principal.getUserId()));
+    }
+
     private ResponseEntity<StockMutationResponse> idempotent(
             String idempotencyKey,
             String operation,

@@ -6,6 +6,7 @@ import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
@@ -295,4 +296,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
             @Param("limit") int limit);
+
+    /** The most recent write on a product - a void (D8) is only exact while its write is still this. */
+    Optional<StockMovement> findFirstByProductIdOrderByCreatedAtDescIdDesc(UUID productId);
 }

@@ -28,6 +28,11 @@ public class StockManagementExceptionHandler {
      * gives for answering 409 rather than 400 on its own state conflict. Body carries the real
      * numbers alongside the message - MULTI_VENDOR_INVENTORY_DESIGN.md section 8.
      */
+    @ExceptionHandler(StockWriteNotUndoableException.class)
+    public ResponseEntity<ApiError> handleNotUndoable(StockWriteNotUndoableException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(InsufficientStockException.class)
     public ResponseEntity<InsufficientStockErrorResponse> handleInsufficientStock(InsufficientStockException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
