@@ -142,11 +142,27 @@ class RefreshTokenRotationIntegrationTest {
         assertThat(refresh(REFRESH, "not-a-real-token")).isEqualTo(HttpStatus.UNAUTHORIZED);
     }
 
-    /** Two tabs restoring the same session at the same moment: neither is logged out. */
+    /**
+     * Two tabs restoring the same session at the same moment: neither is logged out, and the
+     * session carries on whichever tab's answer ends up stored.
+     *
+     * <p>Tabs share one stored token - whichever reply lands last overwrites the other - so what
+     * has to hold is that EITHER returned token works as the next refresh. Each case gets its own
+     * session, because using one tab's token retires the other's; checking both in sequence on one
+     * session would test two devices, not two tabs, and pass or fail on thread timing.
+     */
     @Test
     void twoTabsRefreshingTheSameTokenAtOnceBothStaySignedIn() throws Exception {
-        String shared = signup().tokens().refreshToken();
+        for (int storedTab = 0; storedTab < 2; storedTab++) {
+            List<String> tokens = refreshTwiceAtOnce(signup().tokens().refreshToken());
+            assertThat(refresh(REFRESH, tokens.get(storedTab)))
+                    .as("next refresh with tab %d's token", storedTab)
+                    .isEqualTo(HttpStatus.OK);
+        }
+    }
 
+    /** Fires two refreshes with the same token at once; both must succeed. Returns their tokens. */
+    private List<String> refreshTwiceAtOnce(String shared) throws Exception {
         ExecutorService executor = Executors.newFixedThreadPool(2);
         CountDownLatch start = new CountDownLatch(1);
         try {
@@ -154,14 +170,13 @@ class RefreshTokenRotationIntegrationTest {
                     executor.submit(() -> awaitThenRefresh(start, shared)),
                     executor.submit(() -> awaitThenRefresh(start, shared)));
             start.countDown();
-
+            List<String> tokens = new java.util.ArrayList<>();
             for (Future<ResponseEntity<AuthTokens>> tab : tabs) {
-                assertThat(tab.get(20, TimeUnit.SECONDS).getStatusCode()).isEqualTo(HttpStatus.OK);
+                ResponseEntity<AuthTokens> response = tab.get(20, TimeUnit.SECONDS);
+                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+                tokens.add(response.getBody().refreshToken());
             }
-            // Each tab's next refresh, in turn, keeps working too.
-            for (Future<ResponseEntity<AuthTokens>> tab : tabs) {
-                assertThat(refresh(REFRESH, tab.get().getBody().refreshToken())).isEqualTo(HttpStatus.OK);
-            }
+            return tokens;
         } finally {
             executor.shutdownNow();
         }
