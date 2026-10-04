@@ -6,7 +6,6 @@ import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantUserSummary;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.ClientType;
-import com.procurepal_services.stock_bridge_api.entity.RefreshToken;
 import com.procurepal_services.stock_bridge_api.entity.SubjectType;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.jwt.JwtService;
@@ -83,11 +82,13 @@ public class AuthService {
 
     @Transactional
     public AuthTokens refresh(String rawRefreshToken) {
-        RefreshToken existing = refreshTokenService.findValid(rawRefreshToken)
-                .filter(token -> token.getSubjectType() == SubjectType.USER)
+        // Usable rather than merely valid: also accepts a token whose replacement the client never
+        // received (a lost reply) - see RefreshTokenService for the rule and its limits.
+        RefreshTokenService.UsableToken existing = refreshTokenService.findUsable(rawRefreshToken)
+                .filter(token -> token.subjectType() == SubjectType.USER)
                 .orElseThrow(InvalidRefreshTokenException::new);
 
-        User user = userRepository.findById(existing.getSubjectId())
+        User user = userRepository.findById(existing.subjectId())
                 .filter(User::isActive)
                 .orElseThrow(InvalidRefreshTokenException::new);
 
@@ -105,8 +106,7 @@ public class AuthService {
                 .orElseThrow(InvalidRefreshTokenException::new);
 
         // Rotate: the old refresh token is single-use, limiting replay if it leaked.
-        refreshTokenService.revoke(existing);
-        String newRefreshToken = refreshTokenService.issue(SubjectType.USER, user.getId());
+        String newRefreshToken = refreshTokenService.rotate(existing);
         String accessToken = jwtService.issueTenantAccessToken(user, client, PermissionCodes.of(user));
 
         return new AuthTokens(accessToken, newRefreshToken, jwtService.accessTokenExpirationSeconds());
@@ -114,6 +114,6 @@ public class AuthService {
 
     @Transactional
     public void logout(String rawRefreshToken) {
-        refreshTokenService.revoke(rawRefreshToken);
+        refreshTokenService.revokeSession(rawRefreshToken);
     }
 }

@@ -53,6 +53,14 @@ public class RefreshToken {
     @Column(name = "revoked_at")
     private OffsetDateTime revokedAt;
 
+    /**
+     * The token that replaced this one when it was rotated; null if it never was, or if it was
+     * retired by logout. See {@code V36__refresh_token_replaced_by.sql} and
+     * {@code RefreshTokenService.findUsable} for the one case it re-admits a retired token.
+     */
+    @Column(name = "replaced_by_id")
+    private UUID replacedById;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;
