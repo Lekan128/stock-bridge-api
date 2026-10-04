@@ -180,7 +180,7 @@ public class ProductManagementService {
      * whose only pack is its own, with zero vendor-specific overrides, reports {@code false} -
      * that field is not "a default among several", it is the only one.
      */
-    private Map<UUID, Boolean> hasMultiplePacksFor(List<Product> products) {
+    public Map<UUID, Boolean> hasMultiplePacksFor(List<Product> products) {
         if (products.isEmpty()) {
             return Map.of();
         }

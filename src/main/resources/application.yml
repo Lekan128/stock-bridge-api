@@ -20,6 +20,16 @@ spring:
       max-file-size: 5MB
       max-request-size: 6MB
 
+# Compress JSON responses for clients that ask (every browser does). Added for the on-device
+# catalogue's first sync (A3): 100,000 products are ~26 MB of JSON uncompressed - minutes on a
+# phone's mobile data - and roughly a tenth of that gzipped. Every other JSON answer benefits too.
+# Small responses are left alone: under ~2 KB, compressing costs more than it saves.
+server:
+  compression:
+    enabled: true
+    mime-types: application/json
+    min-response-size: 2KB
+
 app:
   jwt:
     secret: ${JWT_SECRET}

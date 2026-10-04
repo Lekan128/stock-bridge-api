@@ -15,6 +15,13 @@ import org.springframework.data.repository.query.Param;
 
 public interface ProductRepository extends TenantScopedRepository<Product, UUID>, JpaSpecificationExecutor<Product> {
 
+    /**
+     * Products for the sync feed (A3), with the company category each row names fetched in the
+     * same query. Order is the caller's: the feed sorts by id or by change order itself.
+     */
+    @Query("SELECT p FROM Product p LEFT JOIN FETCH p.companyCategory WHERE p.clientId = :clientId AND p.id IN :ids")
+    List<Product> findForSync(@Param("clientId") UUID clientId, @Param("ids") Collection<UUID> ids);
+
     Optional<Product> findByClientIdAndSku(UUID clientId, String sku);
 
     /**

@@ -18,4 +18,28 @@ public enum StockStatus {
     LOW,
     /** Neither of the above — has stock, and it's above the alert line (or no alert is set). */
     OK,
+    ;
+
+    /**
+     * The value {@code ProductSpecifications.stockStatusPredicate} filters on, computed for one
+     * product - so the sync feed (A3) labels each row exactly the way the list filter selects it.
+     */
+    public static StockStatus of(int quantityOnHand, Integer lowStockThreshold) {
+        if (quantityOnHand <= 0) {
+            return OUT;
+        }
+        if (lowStockThreshold != null && quantityOnHand <= lowStockThreshold) {
+            return LOW;
+        }
+        return OK;
+    }
+
+    /**
+     * {@code ProductResponse.isLowStock}: at or below a set threshold, zero included. Deliberately
+     * not the same as {@code of(...) == LOW} - see this enum's javadoc for why the badge and the
+     * filter disagree at zero.
+     */
+    public static boolean isLowStock(int quantityOnHand, Integer lowStockThreshold) {
+        return lowStockThreshold != null && quantityOnHand <= lowStockThreshold;
+    }
 }
