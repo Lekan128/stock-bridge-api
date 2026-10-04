@@ -15,18 +15,21 @@ import jakarta.validation.Valid;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
+import java.util.function.Supplier;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -42,35 +45,69 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class StockController {
 
+    /** Request header naming one intended stock write - see {@link StockIdempotencyService}. */
+    static final String IDEMPOTENCY_KEY_HEADER = "Idempotency-Key";
+    /** Set on a response that is the stored answer to an earlier request with the same key. */
+    static final String IDEMPOTENT_REPLAYED_HEADER = "Idempotent-Replayed";
+
     private final StockManagementService stockManagementService;
+    private final StockIdempotencyService stockIdempotencyService;
     /** Backs the one-off Phase 0 cost audit below - read-only, see that class. */
     private final CostBasisAuditService costBasisAuditService;
 
+    /**
+     * The three writes below take an optional {@code Idempotency-Key}. Without one they behave
+     * exactly as before; with one, sending the same request twice records it once.
+     */
     @PostMapping("/api/products/{productId}/stock/stock-in")
     @PreAuthorize("hasAuthority('STOCK_IN')")
-    public StockMutationResponse stockIn(
+    public ResponseEntity<StockMutationResponse> stockIn(
             @PathVariable UUID productId,
             @Valid @RequestBody StockInRequest request,
+            @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return stockManagementService.stockIn(productId, request, principal.getUserId());
+        return idempotent(idempotencyKey, "STOCK_IN", productId, request,
+                () -> stockManagementService.stockIn(productId, request, principal.getUserId()));
     }
 
     @PostMapping("/api/products/{productId}/stock/stock-out")
     @PreAuthorize("hasAuthority('STOCK_OUT')")
-    public StockMutationResponse stockOut(
+    public ResponseEntity<StockMutationResponse> stockOut(
             @PathVariable UUID productId,
             @Valid @RequestBody StockOutRequest request,
+            @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return stockManagementService.stockOut(productId, request, principal.getUserId());
+        return idempotent(idempotencyKey, "STOCK_OUT", productId, request,
+                () -> stockManagementService.stockOut(productId, request, principal.getUserId()));
     }
 
     @PostMapping("/api/products/{productId}/stock/adjustment")
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
-    public StockMutationResponse adjust(
+    public ResponseEntity<StockMutationResponse> adjust(
             @PathVariable UUID productId,
             @Valid @RequestBody StockAdjustmentRequest request,
+            @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return stockManagementService.adjust(productId, request, principal.getUserId());
+        return idempotent(idempotencyKey, "ADJUSTMENT", productId, request,
+                () -> stockManagementService.adjust(productId, request, principal.getUserId()));
+    }
+
+    private ResponseEntity<StockMutationResponse> idempotent(
+            String idempotencyKey,
+            String operation,
+            UUID productId,
+            Object request,
+            Supplier<StockMutationResponse> action) {
+        if (idempotencyKey == null) {
+            return ResponseEntity.ok(action.get());
+        }
+        StockIdempotencyService.Result result =
+                stockIdempotencyService.execute(idempotencyKey, operation, productId, request, action);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.ok();
+        if (result.replayed()) {
+            builder.header(IDEMPOTENT_REPLAYED_HEADER, "true");
+        }
+        return builder.body(result.response());
     }
 
     @GetMapping("/api/products/{productId}/stock/history")

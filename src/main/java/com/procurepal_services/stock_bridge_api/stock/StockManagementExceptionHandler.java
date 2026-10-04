@@ -60,4 +60,20 @@ public class StockManagementExceptionHandler {
     public ResponseEntity<ApiError> handleFutureOccurredAt(FutureOccurredAtException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
+
+    @ExceptionHandler(InvalidIdempotencyKeyException.class)
+    public ResponseEntity<ApiError> handleInvalidIdempotencyKey(InvalidIdempotencyKeyException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    /** 422: the request is well-formed, but the key it carries already names a different one. */
+    @ExceptionHandler(IdempotencyKeyReusedException.class)
+    public ResponseEntity<ApiError> handleIdempotencyKeyReused(IdempotencyKeyReusedException ex) {
+        return ResponseEntity.unprocessableContent().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(IdempotencyKeyInProgressException.class)
+    public ResponseEntity<ApiError> handleIdempotencyKeyInProgress(IdempotencyKeyInProgressException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
 }

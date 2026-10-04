@@ -239,7 +239,13 @@ public class SecurityConfig {
         // and never preflight, and the review screens were developed against an in-memory mock
         // that made no HTTP request at all. CorsIntegrationTest now preflights PATCH explicitly.
         configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type"));
+        // Idempotency-Key is sent on every stock write (StockIdempotencyService). A header missing
+        // from this list fails the browser's preflight with a bare 403 before any controller runs -
+        // the PATCH lesson above, for headers - so CorsIntegrationTest preflights it explicitly.
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key"));
+        // Exposed so the client can tell a replayed answer from a fresh one; a non-safelisted
+        // response header is otherwise hidden from cross-origin JavaScript.
+        configuration.setExposedHeaders(List.of("Idempotent-Replayed"));
         // The frontend sends bearer tokens via the Authorization header and keeps
         // them in memory/localStorage rather than cookies, so there's no
         // cross-site cookie to protect and no reason to allow credentialed CORS

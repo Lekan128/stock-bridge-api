@@ -121,6 +121,30 @@ class CorsIntegrationTest {
                 .contains("PATCH");
     }
 
+    /**
+     * Every stock write sends {@code Idempotency-Key}. A request header missing from
+     * {@code allowedHeaders} fails the preflight exactly the way PATCH did above, which here would
+     * mean no stock could be received or issued from a browser at all.
+     */
+    @Test
+    void preflightAllowsTheIdempotencyKeyHeaderEveryStockWriteSends() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.ORIGIN, FRONTEND_ORIGIN);
+        headers.set(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST");
+        headers.set(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization,content-type,idempotency-key");
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/products/" + UUID.randomUUID() + "/stock/stock-in",
+                HttpMethod.OPTIONS,
+                new HttpEntity<>(headers),
+                String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getHeaders().getFirst(HttpHeaders.ACCESS_CONTROL_ALLOW_HEADERS))
+                .as("a header missing from this list is never sent by the browser")
+                .containsIgnoringCase("idempotency-key");
+    }
+
     /** Every method this API actually serves, so a new one cannot be added without being allowed. */
     @Test
     void everyMethodTheApiServesIsAllowedCrossOrigin() {
