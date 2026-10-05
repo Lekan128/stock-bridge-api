@@ -53,6 +53,8 @@ public class StockController {
 
     private final StockManagementService stockManagementService;
     private final StockIdempotencyService stockIdempotencyService;
+    /** Re-checks the caller's current permissions before each write is recorded (D2). */
+    private final StockWritePermissionGuard permissionGuard;
     /** Backs the one-off Phase 0 cost audit below - read-only, see that class. */
     private final CostBasisAuditService costBasisAuditService;
 
@@ -68,7 +70,10 @@ public class StockController {
             @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return idempotent(idempotencyKey, "STOCK_IN", productId, request,
-                () -> stockManagementService.stockIn(productId, request, principal.getUserId()));
+                () -> {
+                    permissionGuard.require(principal.getUserId(), "STOCK_IN");
+                    return stockManagementService.stockIn(productId, request, principal.getUserId());
+                });
     }
 
     @PostMapping("/api/products/{productId}/stock/stock-out")
@@ -79,7 +84,10 @@ public class StockController {
             @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return idempotent(idempotencyKey, "STOCK_OUT", productId, request,
-                () -> stockManagementService.stockOut(productId, request, principal.getUserId()));
+                () -> {
+                    permissionGuard.require(principal.getUserId(), "STOCK_OUT");
+                    return stockManagementService.stockOut(productId, request, principal.getUserId());
+                });
     }
 
     @PostMapping("/api/products/{productId}/stock/adjustment")
@@ -90,7 +98,10 @@ public class StockController {
             @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return idempotent(idempotencyKey, "ADJUSTMENT", productId, request,
-                () -> stockManagementService.adjust(productId, request, principal.getUserId()));
+                () -> {
+                    permissionGuard.require(principal.getUserId(), "MANAGE_INVENTORY");
+                    return stockManagementService.adjust(productId, request, principal.getUserId());
+                });
     }
 
     /**
@@ -105,7 +116,10 @@ public class StockController {
             @RequestHeader(name = IDEMPOTENCY_KEY_HEADER, required = false) String idempotencyKey,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return idempotent(idempotencyKey, "COUNT", productId, request,
-                () -> stockManagementService.count(productId, request, principal.getUserId()));
+                () -> {
+                    permissionGuard.require(principal.getUserId(), "MANAGE_INVENTORY");
+                    return stockManagementService.count(productId, request, principal.getUserId());
+                });
     }
 
     /**

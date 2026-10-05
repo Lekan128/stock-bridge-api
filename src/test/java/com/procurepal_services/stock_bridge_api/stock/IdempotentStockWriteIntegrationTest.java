@@ -12,7 +12,9 @@ import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockOutRequest;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -136,6 +138,31 @@ class IdempotentStockWriteIntegrationTest {
 
         assertThat(reused.getStatusCode()).isEqualTo(HttpStatus.UNPROCESSABLE_CONTENT);
         assertThat(quantityOnHand(admin, product.id())).isEqualTo(10);
+    }
+
+    /**
+     * The phone's outbox stamps when the write happened on a resend, which the first try never
+     * carried. That is the same write, not a reused key (found by the Phase H chaos run: a lost
+     * reply turned into "needs you" for a delivery the server had recorded).
+     */
+    @Test
+    void aResendCarryingWhenItHappenedIsStillAReplay() {
+        TenantLoginResponse admin = signup("Idem Timing Co");
+        ProductResponse product = createProduct(admin, "IDEM-8");
+        String key = UUID.randomUUID().toString();
+
+        post(admin, product.id(), "stock-in", Map.of("quantity", 9), key);
+        ResponseEntity<StockMutationResponse> resend = post(
+                admin,
+                product.id(),
+                "stock-in",
+                Map.of("quantity", 9, "occurredAt", OffsetDateTime.now().minusMinutes(3).toString(), "recordedOffline", true),
+                key);
+
+        assertThat(resend.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(resend.getHeaders().getFirst(StockController.IDEMPOTENT_REPLAYED_HEADER)).isEqualTo("true");
+        assertThat(quantityOnHand(admin, product.id())).isEqualTo(9);
+        assertThat(history(admin, product.id())).hasSize(1);
     }
 
     /** A failed write leaves no key behind, so the same intended write can succeed later. */

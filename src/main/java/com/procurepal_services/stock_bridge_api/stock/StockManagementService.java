@@ -40,8 +40,6 @@ import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -103,6 +101,7 @@ public class StockManagementService {
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final ProductVendorRepository productVendorRepository;
     private final UserRepository userRepository;
+    private final StockWritePermissionGuard stockWritePermissionGuard;
     /**
      * Owns the {@code ProductVendor} find-or-create/receipt bookkeeping and the cheaper-vendor
      * comparison - see that class for why this logic lives there rather than being duplicated
@@ -824,18 +823,14 @@ public class StockManagementService {
                 .orElseThrow(() -> new StockWriteNotUndoableException("That stock change was not found."));
 
         // Undoing a write takes the authority the write itself took - a stock-out's void is a
-        // STOCK_OUT action - so a permission removed in the meantime is respected.
+        // STOCK_OUT action - checked against the user's role as it is now, not as the access token
+        // remembers it, so a permission removed in the meantime is respected.
         String authority = switch (movement.getMovementType()) {
             case IN -> "STOCK_IN";
             case OUT -> "STOCK_OUT";
             case ADJUSTMENT -> "MANAGE_INVENTORY";
         };
-        boolean allowed = SecurityContextHolder.getContext().getAuthentication() != null
-                && SecurityContextHolder.getContext().getAuthentication().getAuthorities().stream()
-                        .anyMatch(granted -> authority.equals(granted.getAuthority()));
-        if (!allowed) {
-            throw new AccessDeniedException("Your account can no longer record this.");
-        }
+        stockWritePermissionGuard.require(actingUserId, authority);
 
         StockWriteUndoStore.Snapshot snapshot = stockWriteUndoStore
                 .find(tenantId, movementId)

@@ -54,6 +54,7 @@ public class ProductSyncService {
     @Transactional(readOnly = true)
     public ProductSnapshotPage snapshot(UUID afterId, int limit) {
         UUID tenantId = requireTenantId();
+        useCustomPlans();
         String cursor = afterId == null
                 ? SyncCursor.beforeHorizon(jdbc.queryForObject("SELECT " + HORIZON, Map.of(), Long.class)).encode()
                 : null;
@@ -86,6 +87,7 @@ public class ProductSyncService {
     @Transactional(readOnly = true)
     public ProductChangesPage changes(String cursorText, int limit) {
         UUID tenantId = requireTenantId();
+        useCustomPlans();
         SyncCursor cursor = SyncCursor.decode(cursorText);
 
         List<ChangeRow> changes = jdbc.query(
@@ -172,6 +174,23 @@ public class ProductSyncService {
         if (deleted > 0) {
             log.info("Compacted {} superseded product change rows", deleted);
         }
+    }
+
+    /**
+     * Plans this transaction's statements for the values they are run with, never a cached generic
+     * plan (Phase H, found at 100,000 products).
+     *
+     * <p>Each page fetches up to 5,000 products by id, and their packs and deliveries, with an
+     * {@code IN} list. Planned for the actual ids, Postgres hashes that list. A generic plan - which
+     * the driver's prepared statements switch to after a few executions - can't, and it is costed
+     * for the average company, which has a handful of products: so it walked the big company's
+     * whole {@code client_id} index comparing every row against all 2,000 ids, and a 2,000-row
+     * page went from ~70 ms to 3 seconds, a full sync from 10 seconds to two minutes. Re-planning a
+     * few statements per page costs a millisecond or two. {@code SET LOCAL} ends with the
+     * transaction, so the pooled connection goes back as it came.
+     */
+    private void useCustomPlans() {
+        jdbc.getJdbcTemplate().execute("SET LOCAL plan_cache_mode = force_custom_plan");
     }
 
     private static UUID requireTenantId() {

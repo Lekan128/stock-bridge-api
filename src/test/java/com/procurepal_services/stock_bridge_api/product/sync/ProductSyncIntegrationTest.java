@@ -10,6 +10,7 @@ import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
+import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
 import java.sql.Connection;
 import java.util.ArrayList;
@@ -30,6 +31,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
 
@@ -61,6 +63,12 @@ class ProductSyncIntegrationTest {
 
     @Autowired
     private DataSource dataSource;
+
+    @Autowired
+    private ProductSyncService productSyncService;
+
+    @Autowired
+    private TransactionTemplate transactions;
 
     @Test
     void aFullSnapshotPagesThroughEveryProductOnceWithTheListsOwnFigures() {
@@ -309,6 +317,32 @@ class ProductSyncIntegrationTest {
                 restTemplate.exchange("/api/products", HttpMethod.POST, new HttpEntity<>(body, headers), ProductResponse.class);
         assertThat(response.getStatusCode().is2xxSuccessful()).as("create %s: %s", sku, response.getStatusCode()).isTrue();
         return response.getBody();
+    }
+
+    /**
+     * Phase H, 100,000 products: a cached generic plan turned each page's 2,000-id lookups into a
+     * linear scan of the company (3 s a page). The sync's transactions plan for their real values,
+     * and the setting ends with them rather than following the pooled connection elsewhere.
+     */
+    @Test
+    void syncPagesArePlannedForTheirOwnValuesAndTheSettingStaysInTheirTransaction() {
+        TenantLoginResponse admin = signup("Sync Plans");
+        createProduct(admin, "PLAN-1", null, null);
+        UUID clientId = jdbc.queryForObject("SELECT client_id FROM users WHERE id = ?", UUID.class, admin.user().id());
+
+        TenantContext.set(clientId);
+        try {
+            String inside = transactions.execute(status -> {
+                productSyncService.snapshot(null, 10);
+                return jdbc.queryForObject("SHOW plan_cache_mode", String.class);
+            });
+            String after = transactions.execute(status -> jdbc.queryForObject("SHOW plan_cache_mode", String.class));
+
+            assertThat(inside).isEqualTo("force_custom_plan");
+            assertThat(after).isEqualTo("auto");
+        } finally {
+            TenantContext.clear();
+        }
     }
 
     private TenantLoginResponse signup(String name) {

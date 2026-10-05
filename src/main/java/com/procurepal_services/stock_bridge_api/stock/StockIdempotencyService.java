@@ -18,7 +18,9 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 /**
  * Makes a stock write safe to send twice - see {@code V35__stock_idempotency_keys.sql} for the
@@ -137,8 +139,20 @@ public class StockIdempotencyService {
         }
     }
 
+    /**
+     * When the write happened, not what it was. The offline outbox stamps these on a resend (the
+     * phone only learns it was offline once the first try fails), so a retry of a write whose reply
+     * was lost carries them while the original did not. Hashing them turned that retry into a
+     * "key reused" conflict for a write the server had already recorded once.
+     */
+    private static final List<String> TIMING_FIELDS = List.of("occurredAt", "recordedOffline", "countedAt");
+
     private String hash(String operation, UUID productId, Object request) {
-        String material = operation + '|' + productId + '|' + jsonMapper.writeValueAsString(request);
+        JsonNode body = jsonMapper.valueToTree(request);
+        if (body instanceof ObjectNode object) {
+            object.remove(TIMING_FIELDS);
+        }
+        String material = operation + '|' + productId + '|' + jsonMapper.writeValueAsString(body);
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest);
