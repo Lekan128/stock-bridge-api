@@ -126,7 +126,7 @@ button if `EMAIL_APP_BASE_URL` is blank.
 
 | | |
 |---|---|
-| **URL** | `{FRONTEND}/checkout/return` |
+| **URL** | `{FRONTEND}/marketplace/checkout/return` (the old `/checkout/return` still redirects there) |
 | **Where to add it** | `MONNIFY_REDIRECT_URL` — sent by this API on every init-transaction call, so there is nothing to paste into Monnify |
 | **Constraint** | Must be a route the frontend actually serves, and its host must match `FRONTEND_ORIGIN` |
 
@@ -150,7 +150,7 @@ For each of production and staging:
 - [ ] `EMAIL_APP_BASE_URL` = frontend origin; `EMAIL_UNSUBSCRIBE_API_BASE_URL` = backend origin
 - [ ] `EMAIL_UNSUBSCRIBE_SECRET` set (and **not** shared with `JWT_SECRET` — rotating that one is
       routine, rotating this one kills every unsubscribe link ever mailed)
-- [ ] `MONNIFY_REDIRECT_URL` points at that environment's `/checkout/return`
+- [ ] `MONNIFY_REDIRECT_URL` points at that environment's `/marketplace/checkout/return`
 - [ ] SES account is **out of the sandbox** — otherwise everything above is correct and real
       customers still receive nothing
 

@@ -239,6 +239,20 @@ app:
   # either behaves correctly. They exist so an operator watching somebody pump an
   # unauthenticated, mail-sending, row-creating endpoint can tighten it without a
   # release.
+  # The Procurepaddy founding offer (LANDING_PAGE_PLAN.md §1, owners' decisions 2026-10-05). The
+  # landing page's "63 of 100 setups left · 4 of 10 this week · ends 1 February 2027" are counts
+  # over setup_requests against these.
+  founding:
+    total: ${FOUNDING_TOTAL:100}
+    weekly-capacity: ${FOUNDING_WEEKLY_CAPACITY:10}
+    # The first day the offer is closed: paid plans start.
+    ends-on: ${FOUNDING_ENDS_ON:2027-02-01}
+    zone: Africa/Lagos
+    # Setup requests one caller (by address, and by WhatsApp number) may make per window.
+    submit-limit: ${FOUNDING_SUBMIT_LIMIT:5}
+    submit-window: ${FOUNDING_SUBMIT_WINDOW:1h}
+    # The same WhatsApp number asking again within this long is the same request.
+    duplicate-window: ${FOUNDING_DUPLICATE_WINDOW:30d}
   vendor-waitlist:
     # How many applications one caller may submit per window. Checked against TWO
     # keys per submission - the caller's source address and the submitted email -
@@ -262,8 +276,11 @@ app:
     # Sandbox by default. Production is https://api.monnify.com - see ENVIRONMENT.md.
     base-url: ${MONNIFY_BASE_URL:https://sandbox.monnify.com}
     # Where Monnify sends the buyer after the hosted checkout. Must match a route
-    # the frontend actually serves (/checkout/return).
-    redirect-url: ${MONNIFY_REDIRECT_URL:http://localhost:5173/checkout/return}
+    # the frontend actually serves: /marketplace/checkout/return since the
+    # marketplace moved under /marketplace (the landing page took /). The old
+    # /checkout/return still redirects there with its query string, so a
+    # deployment whose MONNIFY_REDIRECT_URL still names it keeps working.
+    redirect-url: ${MONNIFY_REDIRECT_URL:http://localhost:5173/marketplace/checkout/return}
     connect-timeout: ${MONNIFY_CONNECT_TIMEOUT:10s}
     # Generous: init-transaction is not fast, and a timeout here costs a buyer
     # their checkout. Anything that does time out is caught by the sweep below.

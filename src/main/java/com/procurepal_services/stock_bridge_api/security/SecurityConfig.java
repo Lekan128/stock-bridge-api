@@ -63,6 +63,14 @@ public class SecurityConfig {
         // already has. It is rate limited the same way, by the same mechanism -
         // see VendorWaitlistRateLimiter.
         "/api/vendor-waitlist",
+        // The Procurepaddy landing page's founding offer: its live numbers, and booking a setup
+        // with a business name and a WhatsApp number (LANDING_PAGE_PLAN.md). Public by
+        // necessity: the lead comes before any account. Same HAZARD as the rest of this list
+        // (no principal, tenant filter disabled); setup_requests is deliberately not tenant-scoped
+        // and SetupRequestService uses plain JDBC. Rate limited per address and per number - see
+        // SetupRequestRateLimiter.
+        "/api/public/founding-offer",
+        "/api/public/setup-requests",
         "/api/superadmin/auth/login",
         "/api/superadmin/auth/refresh",
         "/actuator/health",
