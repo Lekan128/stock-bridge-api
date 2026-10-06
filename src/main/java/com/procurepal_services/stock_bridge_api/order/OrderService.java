@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.email.verification.VerifiedEmailGuard;
 import com.procurepal_services.stock_bridge_api.address.DeliveryAddressService;
 import com.procurepal_services.stock_bridge_api.cart.CartService;
 import com.procurepal_services.stock_bridge_api.entity.Branch;
@@ -61,6 +62,7 @@ public class OrderService {
     private final CatalogStockService catalogStockService;
     private final OrderNumberAllocator orderNumberAllocator;
     private final OrderResponseAssembler orderResponseAssembler;
+    private final VerifiedEmailGuard verifiedEmailGuard;
 
     /**
      * Turns the cart into orders - plural, since a basket holding several sellers'
@@ -99,6 +101,9 @@ public class OrderService {
      */
     @Transactional
     public OrderResponse place(PlaceOrderRequest request, UUID actingUserId) {
+        // Before anything is priced or locked: an unverified buyer is refused outright,
+        // and the checkout quote has already told them why (see CheckoutService.quote).
+        verifiedEmailGuard.requireVerified(actingUserId);
         UUID clientId = requireTenantId();
         Client client = checkoutService.requireClient();
         CheckoutService.PricedCart priced = checkoutService.price();

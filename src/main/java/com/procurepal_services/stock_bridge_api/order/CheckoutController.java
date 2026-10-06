@@ -2,9 +2,11 @@ package com.procurepal_services.stock_bridge_api.order;
 
 import com.procurepal_services.stock_bridge_api.order.dto.CheckoutQuoteRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.CheckoutQuoteResponse;
+import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,7 +30,9 @@ public class CheckoutController {
     private final CheckoutService checkoutService;
 
     @PostMapping("/quote")
-    public CheckoutQuoteResponse quote(@Valid @RequestBody(required = false) CheckoutQuoteRequest request) {
-        return checkoutService.quote(request);
+    public CheckoutQuoteResponse quote(
+            @Valid @RequestBody(required = false) CheckoutQuoteRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return checkoutService.quote(request, principal.getUserId());
     }
 }

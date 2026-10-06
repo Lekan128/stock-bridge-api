@@ -73,6 +73,22 @@ class EmailSenderTest {
         verify(sesV2Client).sendEmail(any(SendEmailRequest.class));
     }
 
+    /** The demo seed's admin@demo.example and friends can never receive mail - never hand them to the provider. */
+    @Test
+    void neverSendsToAReservedTestDomain() {
+        EmailMessage demoOnly = new EmailMessage(
+                List.of("admin@demo.example", "x@acme.test"), "Payment did not go through", "<p>Hi</p>", "Hi");
+        assertThat(sender(CONFIGURED).send(demoOnly)).isFalse();
+        verify(sesV2Client, org.mockito.Mockito.never()).sendEmail(any(SendEmailRequest.class));
+
+        EmailMessage mixed = new EmailMessage(
+                List.of("admin@demo.example", "buyer@example.com"), "Order PP-1 confirmed", "<p>Hi</p>", "Hi");
+        assertThat(sender(CONFIGURED).send(mixed)).isTrue();
+        ArgumentCaptor<SendEmailRequest> request = ArgumentCaptor.forClass(SendEmailRequest.class);
+        verify(sesV2Client).sendEmail(request.capture());
+        assertThat(request.getValue().destination().toAddresses()).containsExactly("buyer@example.com");
+    }
+
     @Test
     void buildsTheRequestFromTheConfiguredIdentity() {
         sender(CONFIGURED).send(MESSAGE);

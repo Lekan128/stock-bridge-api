@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.email.verification.VerifiedEmailGuard;
 import com.procurepal_services.stock_bridge_api.address.dto.DeliveryAddressResponse;
 import com.procurepal_services.stock_bridge_api.address.DeliveryAddressService;
 import com.procurepal_services.stock_bridge_api.entity.Cart;
@@ -88,6 +89,7 @@ public class CheckoutService {
     private final DeliveryAddressService deliveryAddressService;
     private final CatalogStockService catalogStockService;
     private final SellerDirectory sellerDirectory;
+    private final VerifiedEmailGuard verifiedEmailGuard;
 
     /** One priced line. Carries the live catalog product so order creation can snapshot from it. */
     public record PricedLine(
@@ -164,7 +166,7 @@ public class CheckoutService {
      * very first visit to checkout and nowhere else.
      */
     @Transactional
-    public CheckoutQuoteResponse quote(CheckoutQuoteRequest request) {
+    public CheckoutQuoteResponse quote(CheckoutQuoteRequest request, UUID actingUserId) {
         PricedCart priced = price();
         MarketplaceSettings settings = priced.settings();
         Client client = requireClient();
@@ -174,6 +176,13 @@ public class CheckoutService {
                 .orElse(null);
 
         List<String> blockers = new ArrayList<>(priced.blockers());
+        // First, because it is the one blocker no edit to the cart or address can clear.
+        // OrderService.place enforces the same rule; this is what lets checkout explain it
+        // before the buyer fills in three steps.
+        boolean emailVerificationRequired = !verifiedEmailGuard.isVerified(actingUserId);
+        if (emailVerificationRequired) {
+            blockers.addFirst("Confirm your email address to place orders.");
+        }
         if (address == null) {
             blockers.add("Add a delivery address before checking out.");
         }
@@ -200,7 +209,8 @@ public class CheckoutService {
                 settings.getPayOnDeliveryMaxOrderValue(),
                 address == null ? null : DeliveryAddressResponse.from(address),
                 priced.unavailable(),
-                toSellerGroups(priced));
+                toSellerGroups(priced),
+                emailVerificationRequired);
     }
 
     /** The priced groups, projected for the checkout screen. Seller identity only - no commission rate. */

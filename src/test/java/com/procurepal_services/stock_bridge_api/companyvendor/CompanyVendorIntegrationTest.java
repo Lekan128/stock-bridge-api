@@ -26,6 +26,7 @@ import com.procurepal_services.stock_bridge_api.order.dto.ReceiveOrderRequest;
 import com.procurepal_services.stock_bridge_api.purchase.dto.PurchaseHistoryEntry;
 import com.procurepal_services.stock_bridge_api.purchase.dto.PurchaseSource;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
+import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
@@ -80,6 +81,9 @@ class CompanyVendorIntegrationTest {
 
     @Autowired
     private ClientRepository clientRepository;
+
+    @Autowired
+    private UserRepository userRepository;
 
     @Autowired
     private ProductRepository productRepository;
@@ -967,6 +971,13 @@ class CompanyVendorIntegrationTest {
                 restTemplate.postForObject("/api/clients/signup", request, TenantLoginResponse.class);
         assertThat(login).isNotNull();
         UUID clientId = clientRepository.findBySlug(login.user().clientIdentifier()).orElseThrow().getId();
+        // Ordering and paying require a confirmed email (VerifiedEmailGuard). Flipped
+        // directly rather than by clicking a link, which is not what these tests are about.
+        userRepository.findById(login.user().id()).ifPresent(user -> {
+            user.setEmailVerified(true);
+            user.setEmailVerifiedAt(java.time.OffsetDateTime.now());
+            userRepository.saveAndFlush(user);
+        });
         return new Buyer(login, clientId);
     }
 

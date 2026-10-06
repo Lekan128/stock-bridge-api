@@ -122,6 +122,18 @@ public class OrderPaymentApplicationService implements OrderPaymentApplication {
                                 ? ""
                                 : " (" + success.paymentMethodUsed() + ")"),
                         null);
+            } else if (order.getStatus() == OrderStatus.CANCELLED) {
+                // Money arrived for an order the abandoned-checkout sweep (or the buyer)
+                // already cancelled - e.g. a bank transfer that settled after the 24h
+                // deadline. Recorded as paid so the money is visible, but nothing is
+                // fulfilled automatically: ops must refund or reinstate it by hand.
+                log.error(
+                        "Payment {} arrived for CANCELLED order {} - recorded as PAID; needs a manual refund "
+                                + "or reinstatement",
+                        success.paymentReference(),
+                        order.getOrderNumber());
+                // No "ProcurePal will start preparing your order" - nobody will.
+                continue;
             } else {
                 // A pay-on-delivery order being settled, or a late payment against an
                 // order the seller already advanced. Money is recorded; fulfilment is
@@ -157,12 +169,28 @@ public class OrderPaymentApplicationService implements OrderPaymentApplication {
             // Deliberately NOT set to PaymentStatus.FAILED. The order stays PENDING /
             // PENDING_PAYMENT so the buyer can start a fresh attempt on the same order;
             // the failed attempt is recorded on the payments row, which is where an
-            // attempt belongs. The 24h sweep is what eventually cancels a dead checkout.
+            // attempt belongs. The 24h sweep is what eventually cancels a dead checkout,
+            // via expireUnpaidCheckout - never via this method, which leaves the order
+            // payable and would therefore be re-run on it every sweep.
             //
             // Notified per order rather than once for the group: each order is what the
             // buyer sees in their history, and "payment failed" against a basket they
             // can no longer identify is not actionable.
             orderLifecycleService.notifyPaymentFailed(order, reason);
+        }
+    }
+
+    @Override
+    @Transactional
+    public void expireUnpaidCheckout(UUID anchorOrderId, String reason) {
+        for (Order order : lockCheckoutGroup(anchorOrderId)) {
+            // Re-checked under the lock: the sweep selected these rows unlocked, and a
+            // payment applied in between must win over the clock.
+            if (order.getPaymentStatus() == PaymentStatus.PAID
+                    || order.getStatus() != OrderStatus.PENDING_PAYMENT) {
+                continue;
+            }
+            orderLifecycleService.expireUnpaid(order, reason);
         }
     }
 

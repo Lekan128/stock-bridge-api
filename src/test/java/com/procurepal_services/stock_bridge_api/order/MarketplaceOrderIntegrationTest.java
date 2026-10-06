@@ -38,6 +38,7 @@ import com.procurepal_services.stock_bridge_api.order.dto.ReceiveOrderRequest;
 import com.procurepal_services.stock_bridge_api.order.dto.ReorderResponse;
 import com.procurepal_services.stock_bridge_api.product.sku.dto.UpdateProductSkuSettingsRequest;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
+import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
@@ -93,6 +94,9 @@ class MarketplaceOrderIntegrationTest {
 
     @Autowired
     private ClientRepository clientRepository;
+
+    @Autowired
+    private UserRepository userRepository;
 
     @Autowired
     private ProductRepository productRepository;
@@ -264,6 +268,33 @@ class MarketplaceOrderIntegrationTest {
                         buyer.headers()),
                 ApiError.class);
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    /**
+     * Only a confirmed address may order. The quote says so up front (and flags it, so
+     * checkout can offer a resend button), and the order endpoint enforces it.
+     */
+    @Test
+    void anUnverifiedBuyerIsToldToConfirmTheirEmailAndCannotPlaceAnOrder() {
+        Buyer buyer = signupUnverifiedBuyer("Unverified Buyer Co");
+        Product product = cheapestInStockCatalogProduct();
+        addToCart(buyer, product, product.getMinOrderQuantity());
+        createAddress(buyer);
+
+        CheckoutQuoteResponse quote = quote(buyer);
+
+        assertThat(quote.emailVerificationRequired()).isTrue();
+        assertThat(quote.canCheckout()).isFalse();
+        assertThat(quote.blockers().getFirst()).contains("Confirm your email");
+
+        ResponseEntity<ApiError> refused = restTemplate.exchange(
+                "/api/orders",
+                HttpMethod.POST,
+                new HttpEntity<>(
+                        new PlaceOrderRequest(PaymentMethod.MONNIFY, null, null, null, null), buyer.headers()),
+                ApiError.class);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(refused.getBody().message()).contains("Confirm your email");
     }
 
     @Test
@@ -1578,6 +1609,19 @@ class MarketplaceOrderIntegrationTest {
     }
 
     private Buyer signupBuyer(String name) {
+        Buyer buyer = signupUnverifiedBuyer(name);
+        // Ordering and paying require a confirmed email (VerifiedEmailGuard). Flipped
+        // directly rather than by clicking a link, which is not what these tests are about.
+        userRepository.findById(buyer.login().user().id()).ifPresent(user -> {
+            user.setEmailVerified(true);
+            user.setEmailVerifiedAt(java.time.OffsetDateTime.now());
+            userRepository.saveAndFlush(user);
+        });
+        return buyer;
+    }
+
+    /** A brand-new signup exactly as the API leaves it: email not yet confirmed. */
+    private Buyer signupUnverifiedBuyer(String name) {
         String unique = UUID.randomUUID().toString();
         ClientSignupRequest request = new ClientSignupRequest(
                 name + " " + unique.substring(0, 8), null, "owner-" + unique + "@example.com", PASSWORD, PASSWORD);

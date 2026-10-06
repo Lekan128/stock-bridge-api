@@ -165,21 +165,17 @@ public class PaymentReconciliationService {
      * {@link #cancelAbandonedCheckouts()} on this same bean, and a self-invocation
      * bypasses the Spring proxy entirely - the annotation would read as a
      * per-order transaction boundary while silently providing none, which is worse
-     * than having none. The order module's {@code applyPaymentFailure} owns its own
+     * than having none. The order module's {@code expireUnpaidCheckout} owns its own
      * boundary; the try/catch around this call is what keeps one bad order from
      * taking the batch down.
+     *
+     * <p>{@code expireUnpaidCheckout}, NOT {@code applyPaymentFailure}. The latter
+     * leaves the order payable and emails the buyer, so calling it here re-selected
+     * and re-emailed every stale order on every run - every five minutes, forever.
      */
     private void cancelOne(Order order) {
-        // The latest attempt, if any - an order can be abandoned before checkout was
-        // ever initialized, in which case there is no reference to report.
-        String paymentReference = paymentRepository.findAllByOrderIdOrderByCreatedAtDesc(order.getId()).stream()
-                .findFirst()
-                .map(Payment::getPaymentReference)
-                .orElse(null);
-
-        orderPaymentApplication.applyPaymentFailure(
+        orderPaymentApplication.expireUnpaidCheckout(
                 order.getId(),
-                paymentReference,
                 "Cancelled automatically: no payment received within "
                         + properties.reconciliation().abandonedCheckoutGrace().toHours() + " hours");
     }

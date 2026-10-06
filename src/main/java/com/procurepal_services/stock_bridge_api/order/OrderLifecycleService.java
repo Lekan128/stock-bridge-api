@@ -109,29 +109,59 @@ public class OrderLifecycleService {
             catalogStockService.dispatch(order, actingUserId);
         }
         if (target == OrderStatus.CANCELLED) {
-            order.setCancellationReason(note);
-            // Only orders that ever reached PLACED have incoming stock to give back -
-            // a PENDING_PAYMENT order never created any.
-            if (previous != OrderStatus.PENDING_PAYMENT) {
-                incomingStockService.reverse(order);
-            }
-            // Nothing to give back on ProcurePal's side, ever. CANCELLED is unreachable
-            // from OUT_FOR_DELIVERY onwards, so a cancelled order is by construction one
-            // whose goods never left the warehouse and whose stock was never deducted.
-            // Its reserved-but-undispatched quantity simply stops counting towards
-            // CatalogStockService.committedQuantity, which frees the stock for the next
-            // buyer with no write at all.
-            //
-            // And the money half. Today this finds nothing to reverse for exactly the
-            // reason above - an order that accrued cannot subsequently be cancelled, so
-            // there is no accrual here to undo - and it is wired anyway, quietly, for
-            // the same reason everything else in this method is: the day somebody widens
-            // the state machine to allow a post-delivery cancellation, a vendor being
-            // paid for goods that came back is not a bug anyone would notice quickly.
-            // See VendorLedgerService.reverseForCancellation.
-            vendorLedgerService.reverseForCancellation(order, note, actingUserId);
+            applyCancellation(order, previous, note, actingUserId);
         }
         notifyBuyerOfStatus(order, target, note);
+    }
+
+    /**
+     * Cancels a checkout that was never paid for, WITHOUT telling anybody.
+     *
+     * <h2>Why this is silent when every other cancellation notifies</h2>
+     * The buyer did not ask for this and ProcurePal did not decide it - a clock did,
+     * and the buyer was shown that clock at checkout and on the order page ("unpaid
+     * orders are cancelled after 24 hours"). An email at this point would be news to
+     * nobody: they already know they did not pay. It is also the one cancellation
+     * driven by a scheduler rather than a person, which is exactly the kind of
+     * sender that turns a notification into a loop the moment its guard is wrong -
+     * as the abandoned-checkout sweep did before this method existed, re-sending
+     * "payment did not go through" to every stale order every five minutes.
+     *
+     * <p>The audit trail is still written (status event plus cancellation reason),
+     * so the order page explains what happened to anyone who looks.
+     */
+    @Transactional
+    public void expireUnpaid(Order order, String note) {
+        OrderStatus previous = order.getStatus();
+        requireTransition(previous, OrderStatus.CANCELLED);
+        order.setStatus(OrderStatus.CANCELLED);
+        stamp(order, OrderStatus.CANCELLED);
+        recordEvent(order, previous, OrderStatus.CANCELLED, note, null);
+        applyCancellation(order, previous, note, null);
+    }
+
+    private void applyCancellation(Order order, OrderStatus previous, String note, UUID actingUserId) {
+        order.setCancellationReason(note);
+        // Only orders that ever reached PLACED have incoming stock to give back -
+        // a PENDING_PAYMENT order never created any.
+        if (previous != OrderStatus.PENDING_PAYMENT) {
+            incomingStockService.reverse(order);
+        }
+        // Nothing to give back on ProcurePal's side, ever. CANCELLED is unreachable
+        // from OUT_FOR_DELIVERY onwards, so a cancelled order is by construction one
+        // whose goods never left the warehouse and whose stock was never deducted.
+        // Its reserved-but-undispatched quantity simply stops counting towards
+        // CatalogStockService.committedQuantity, which frees the stock for the next
+        // buyer with no write at all.
+        //
+        // And the money half. Today this finds nothing to reverse for exactly the
+        // reason above - an order that accrued cannot subsequently be cancelled, so
+        // there is no accrual here to undo - and it is wired anyway, quietly, for
+        // the same reason everything else in this method is: the day somebody widens
+        // the state machine to allow a post-delivery cancellation, a vendor being
+        // paid for goods that came back is not a bug anyone would notice quickly.
+        // See VendorLedgerService.reverseForCancellation.
+        vendorLedgerService.reverseForCancellation(order, note, actingUserId);
     }
 
     /**

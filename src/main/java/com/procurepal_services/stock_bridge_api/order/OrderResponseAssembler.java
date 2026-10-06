@@ -56,6 +56,7 @@ public class OrderResponseAssembler {
     private final ClientRepository clientRepository;
     private final OrderRepository orderRepository;
     private final SellerDirectory sellerDirectory;
+    private final UnpaidOrderExpiry unpaidOrderExpiry;
 
     /** {@code includeCustomer} is true only for the seller's views - see OrderCustomerResponse. */
     @Transactional(readOnly = true)
@@ -69,7 +70,8 @@ public class OrderResponseAssembler {
                 customerOf(order, includeCustomer),
                 placedByUsername(order),
                 sellerOf(order),
-                siblingsOf(order));
+                siblingsOf(order),
+                unpaidOrderExpiry.paymentDueBy(order));
     }
 
     @Transactional(readOnly = true)
@@ -78,7 +80,8 @@ public class OrderResponseAssembler {
                 order,
                 (int) orderItemRepository.countByOrderId(order.getId()),
                 customerOf(order, includeCustomer),
-                sellerOf(order));
+                sellerOf(order),
+                unpaidOrderExpiry.paymentDueBy(order));
     }
 
     private OrderSellerResponse sellerOf(Order order) {
