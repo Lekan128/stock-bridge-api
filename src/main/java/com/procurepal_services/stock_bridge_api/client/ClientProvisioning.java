@@ -91,6 +91,29 @@ public class ClientProvisioning {
     }
 
     /**
+     * A login slug generated from the company's name, for a signup that didn't choose one
+     * (LANDING_PAGE_PLAN.md §4: the shop is told its Company ID afterwards rather than asked to
+     * invent one). Never refuses: a taken slug gets {@code -2}, {@code -3} and so on. A race on the
+     * same name still lands on {@code uq_clients_slug}, as with {@link #requireAvailableSlug}.
+     */
+    public String generateAvailableSlug(String name) {
+        String base = slugify(name);
+        if (base.length() > 56) {
+            base = base.substring(0, 56).replaceAll("-+$", "");
+        }
+        if (clientRepository.findBySlug(base).isEmpty()) {
+            return base;
+        }
+        for (int suffix = 2; suffix < 100; suffix++) {
+            String candidate = base + "-" + suffix;
+            if (clientRepository.findBySlug(candidate).isEmpty()) {
+                return candidate;
+            }
+        }
+        return base + "-" + UUID.randomUUID().toString().substring(0, 6);
+    }
+
+    /**
      * Lowercased, non-alphanumerics collapsed to single hyphens, no leading or
      * trailing hyphen.
      *

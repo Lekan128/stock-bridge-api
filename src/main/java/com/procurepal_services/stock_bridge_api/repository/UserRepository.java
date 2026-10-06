@@ -10,6 +10,13 @@ public interface UserRepository extends TenantScopedRepository<User, UUID> {
 
     Optional<User> findByClientIdAndUsername(UUID clientId, String username);
 
+    /**
+     * The account holder (at most one per client, by a partial unique index). Used at login, with no
+     * tenant context, so the owner can sign in with the phone or the email they signed up with,
+     * whichever of the two became the username.
+     */
+    Optional<User> findFirstByClientIdAndRootTrue(UUID clientId);
+
     long countByClientIdAndRole_NameAndActiveTrue(UUID clientId, String roleName);
 
     /** Whether any user (active or not) still holds this role - the guard on RoleManagementService.delete. */

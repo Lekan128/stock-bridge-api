@@ -19,6 +19,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param submitWindow   the rolling window for {@code submitLimit}
  * @param duplicateWindow a second request for the same WhatsApp number within this long is the
  *                        same request, not a second founding place
+ * @param alertWebhookUrl optional. Every new setup request is also POSTed here as
+ *                        {@code {"text": "..."}}, the shape Slack, Google Chat and Mattermost
+ *                        incoming webhooks accept, so the team's phones buzz within seconds
+ *                        (speed to lead, plan rule 5). The email to the support inbox is sent
+ *                        either way; email alone is too slow to answer within 5 minutes.
  */
 @ConfigurationProperties(prefix = "app.founding")
 public record FoundingOfferProperties(
@@ -28,7 +33,8 @@ public record FoundingOfferProperties(
         ZoneId zone,
         Integer submitLimit,
         Duration submitWindow,
-        Duration duplicateWindow) {
+        Duration duplicateWindow,
+        String alertWebhookUrl) {
 
     public FoundingOfferProperties {
         total = total == null || total < 0 ? 100 : total;
@@ -38,5 +44,6 @@ public record FoundingOfferProperties(
         submitLimit = submitLimit == null || submitLimit < 1 ? 5 : submitLimit;
         submitWindow = submitWindow == null || submitWindow.isZero() || submitWindow.isNegative() ? Duration.ofHours(1) : submitWindow;
         duplicateWindow = duplicateWindow == null || duplicateWindow.isNegative() ? Duration.ofDays(30) : duplicateWindow;
+        alertWebhookUrl = alertWebhookUrl == null || alertWebhookUrl.isBlank() ? null : alertWebhookUrl.trim();
     }
 }

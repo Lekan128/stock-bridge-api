@@ -126,8 +126,12 @@ Base path `/api`, grouped by area:
 
 | Path | Covers |
 |---|---|
-| `/api/clients/signup` | New tenant signup |
-| `/api/auth` | Tenant login/refresh |
+| `/api/clients/signup` | New tenant signup. Business name, password, and a WhatsApp number or an email (or both); the Company ID is generated from the name (`-2`, `-3`… when taken) unless one is given. A `setupRequestId` links the landing page's setup request to the new account |
+| `/api/auth` | Tenant login/refresh. The account holder may log in with the phone number (typed any way: `0803…`, `+234…`) or the email they signed up with |
+| `/api/public/founding-offer`, `/api/public/setup-requests` | Public: the landing page's live founding-offer numbers, and booking a setup (business name + WhatsApp). Each new request emails the support inbox and, with `FOUNDING_ALERT_WEBHOOK_URL` set, posts to a Slack/Google Chat/Mattermost webhook |
+| `/api/onboarding` | The signed-in shop's setup checklist numbers; `POST /product-list` sends one file of its product list ("Send us your list", 5 MB, Excel/CSV/PDF/photos), booking a setup request if it has none |
+| `/api/superadmin/first-week`, `/api/superadmin/clients/{id}/product-list`, `/api/superadmin/clients/{id}/support-session` | Super admin: new shops' first week (activation, the funnel, messages sent), the lists shops sent, and opening a shop that asked for a setup as its Procurepaddy support account (role `PROCUREPADDY_SUPPORT`: products, stock and suppliers only; the owner can switch it off) |
+| `/api/superadmin/setup-requests` | Super admin: the setup queue: list by tab, counts with the median reply time, and `PATCH` a request's status or note. The first move out of `NEW` stamps `contacted_at` (speed to lead) |
 | `/api/superadmin/auth` | Super admin login/refresh |
 | `/api/superadmin/clients` | Super admin: manage tenants |
 | `/api/superadmin/analytics/aggregate` | Super admin: cross-tenant STOCK MOVEMENT value per client |

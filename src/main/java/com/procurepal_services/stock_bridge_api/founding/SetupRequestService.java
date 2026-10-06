@@ -33,17 +33,23 @@ public class SetupRequestService {
     private final NamedParameterJdbcTemplate jdbc;
     private final FoundingOfferProperties properties;
     private final SetupRequestRateLimiter rateLimiter;
+    private final SetupRequestAlerts alerts;
     private final Clock clock;
 
     @Autowired
-    public SetupRequestService(NamedParameterJdbcTemplate jdbc, FoundingOfferProperties properties, SetupRequestRateLimiter rateLimiter) {
-        this(jdbc, properties, rateLimiter, Clock.systemUTC());
+    public SetupRequestService(
+            NamedParameterJdbcTemplate jdbc, FoundingOfferProperties properties, SetupRequestRateLimiter rateLimiter,
+            SetupRequestAlerts alerts) {
+        this(jdbc, properties, rateLimiter, alerts, Clock.systemUTC());
     }
 
-    SetupRequestService(NamedParameterJdbcTemplate jdbc, FoundingOfferProperties properties, SetupRequestRateLimiter rateLimiter, Clock clock) {
+    SetupRequestService(
+            NamedParameterJdbcTemplate jdbc, FoundingOfferProperties properties, SetupRequestRateLimiter rateLimiter,
+            SetupRequestAlerts alerts, Clock clock) {
         this.jdbc = jdbc;
         this.properties = properties;
         this.rateLimiter = rateLimiter;
+        this.alerts = alerts;
         this.clock = clock;
     }
 
@@ -104,18 +110,95 @@ public class SetupRequestService {
                 : weekStart(today());
 
         UUID id = UUID.randomUUID();
+        String businessName = request.businessName().trim();
+        String source = request.source() == null ? "landing" : request.source();
+        OffsetDateTime now = OffsetDateTime.now(clock);
         jdbc.update(
                 "INSERT INTO setup_requests (id, business_name, whatsapp, source, counts_as_founding, created_at)"
                         + " VALUES (:id, :businessName, :whatsapp, :source, :founding, :createdAt)",
                 new MapSqlParameterSource()
                         .addValue("id", id)
-                        .addValue("businessName", request.businessName().trim())
+                        .addValue("businessName", businessName)
                         .addValue("whatsapp", whatsapp)
-                        .addValue("source", request.source() == null ? "landing" : request.source())
+                        .addValue("source", source)
                         .addValue("founding", offer.open())
-                        .addValue("createdAt", OffsetDateTime.now(clock)));
-        log.info("Setup requested: {} ({}), founding={}, week of {}", request.businessName().trim(), whatsapp, offer.open(), setupWeek);
+                        .addValue("createdAt", now));
+        log.info("Setup requested: {} ({}), founding={}, week of {}", businessName, whatsapp, offer.open(), setupWeek);
+        alerts.newRequest(businessName, whatsapp, source, offer.open(), setupWeek, now);
         return new SetupRequestResponse(id, offer.open(), false, setupWeek);
+    }
+
+    /**
+     * The shop behind a setup request has created its account: remember which one, so the queue
+     * shows it and "lead to signup" can be counted (plan §4, what we measure).
+     *
+     * <p>By the request's id when the signup came from the landing page's "Create your password"
+     * (it carries {@code ?setup=}); otherwise by the WhatsApp number, the shop's most recent request
+     * that no account has claimed yet. A request already linked to an account is never moved.
+     */
+    @Transactional
+    public void linkToClient(UUID setupRequestId, String whatsapp, UUID clientId) {
+        int linked = 0;
+        if (setupRequestId != null) {
+            linked = jdbc.update(
+                    "UPDATE setup_requests SET client_id = :clientId, updated_at = now() WHERE id = :id AND client_id IS NULL",
+                    new MapSqlParameterSource().addValue("clientId", clientId).addValue("id", setupRequestId));
+        }
+        if (linked == 0 && whatsapp != null) {
+            jdbc.update(
+                    "UPDATE setup_requests SET client_id = :clientId, updated_at = now() WHERE id = ("
+                            + " SELECT id FROM setup_requests WHERE whatsapp = :whatsapp AND client_id IS NULL"
+                            + " AND created_at > :since ORDER BY created_at DESC LIMIT 1)",
+                    new MapSqlParameterSource()
+                            .addValue("clientId", clientId)
+                            .addValue("whatsapp", whatsapp)
+                            .addValue("since", OffsetDateTime.now(clock).minus(properties.duplicateWindow())));
+        }
+    }
+
+    /**
+     * The setup request behind a shop that has an account, for "Send us your list" in the app: its
+     * linked request if it has one, otherwise a new one (source {@code app}), linked to it. A shop
+     * that signed up without the landing page still gets the setup it is now asking for.
+     *
+     * @return the request's id, and whether it was just created
+     */
+    @Transactional
+    public LinkedRequest requestForClient(UUID clientId, String businessName, String whatsapp) {
+        List<UUID> linked = jdbc.queryForList(
+                "SELECT id FROM setup_requests WHERE client_id = :clientId ORDER BY created_at DESC LIMIT 1",
+                Map.of("clientId", clientId), UUID.class);
+        if (!linked.isEmpty()) {
+            return new LinkedRequest(linked.getFirst(), false);
+        }
+        FoundingOfferStatus offer = status();
+        UUID id = UUID.randomUUID();
+        OffsetDateTime now = OffsetDateTime.now(clock);
+        jdbc.update(
+                "INSERT INTO setup_requests (id, business_name, whatsapp, source, counts_as_founding, client_id, created_at)"
+                        + " VALUES (:id, :businessName, :whatsapp, 'app', :founding, :clientId, :createdAt)",
+                new MapSqlParameterSource()
+                        .addValue("id", id)
+                        .addValue("businessName", businessName)
+                        .addValue("whatsapp", whatsapp == null ? "" : whatsapp)
+                        .addValue("founding", offer.open())
+                        .addValue("clientId", clientId)
+                        .addValue("createdAt", now));
+        return new LinkedRequest(id, true);
+    }
+
+    /** A list has arrived: a request still waiting, or only contacted, moves to LIST_RECEIVED. */
+    @Transactional
+    public void markListReceived(UUID setupRequestId) {
+        // contacted_at is left alone: the shop sending its list is not the team replying, and the
+        // request stays in the team's Waiting tab until somebody does.
+        jdbc.update(
+                "UPDATE setup_requests SET status = 'LIST_RECEIVED', updated_at = now()"
+                        + " WHERE id = :id AND status IN ('NEW', 'CONTACTED')",
+                Map.of("id", setupRequestId));
+    }
+
+    public record LinkedRequest(UUID id, boolean created) {
     }
 
     private int foundingTaken() {

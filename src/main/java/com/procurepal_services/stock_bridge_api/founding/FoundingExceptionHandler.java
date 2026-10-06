@@ -9,7 +9,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = FoundingController.class)
+@RestControllerAdvice(assignableTypes = {FoundingController.class, SuperAdminSetupRequestController.class})
 public class FoundingExceptionHandler {
 
     @ExceptionHandler(SetupRequestThrottledException.class)
@@ -22,6 +22,16 @@ public class FoundingExceptionHandler {
 
     @ExceptionHandler(InvalidWhatsAppNumberException.class)
     public ResponseEntity<ApiError> invalidNumber(InvalidWhatsAppNumberException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SetupRequestNotFoundException.class)
+    public ResponseEntity<ApiError> notFound(SetupRequestNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiError> badArgument(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiError(ex.getMessage()));
     }
 

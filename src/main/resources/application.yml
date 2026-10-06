@@ -253,6 +253,10 @@ app:
     submit-window: ${FOUNDING_SUBMIT_WINDOW:1h}
     # The same WhatsApp number asking again within this long is the same request.
     duplicate-window: ${FOUNDING_DUPLICATE_WINDOW:30d}
+    # Optional: a Slack, Google Chat or Mattermost incoming-webhook URL. Every new setup request is
+    # posted there as well as emailed to app.email.vendor-waitlist-address (the support inbox), so
+    # the person on the WhatsApp rota hears about it within seconds. Blank: email only.
+    alert-webhook-url: ${FOUNDING_ALERT_WEBHOOK_URL:}
   vendor-waitlist:
     # How many applications one caller may submit per window. Checked against TWO
     # keys per submission - the caller's source address and the submitted email -

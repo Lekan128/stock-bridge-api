@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  * {@code +2348031234567}. Anything that isn't a Nigerian mobile number is refused, so the team
  * never gets a lead it can't message.
  */
-final class WhatsAppNumbers {
+public final class WhatsAppNumbers {
 
     /** +234, then a mobile prefix (70x, 80x, 81x, 90x, 91x…), then 8 digits. */
     private static final Pattern NIGERIAN_MOBILE = Pattern.compile("^\\+234[789][01]\\d{8}$");
@@ -17,7 +17,7 @@ final class WhatsAppNumbers {
     private WhatsAppNumbers() {
     }
 
-    static Optional<String> normalise(String typed) {
+    public static Optional<String> normalise(String typed) {
         if (typed == null) {
             return Optional.empty();
         }

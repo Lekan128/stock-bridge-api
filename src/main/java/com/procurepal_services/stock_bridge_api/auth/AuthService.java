@@ -8,11 +8,13 @@ import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.ClientType;
 import com.procurepal_services.stock_bridge_api.entity.SubjectType;
 import com.procurepal_services.stock_bridge_api.entity.User;
+import com.procurepal_services.stock_bridge_api.founding.WhatsAppNumbers;
 import com.procurepal_services.stock_bridge_api.jwt.JwtService;
 import com.procurepal_services.stock_bridge_api.jwt.RefreshTokenService;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import java.util.List;
+import java.util.Optional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -44,7 +46,20 @@ public class AuthService {
             throw new ClientSuspendedException();
         }
 
-        User user = userRepository.findByClientIdAndUsername(client.getId(), request.username())
+        // The exact username first, so no existing username (an email, "warehouse-lead", digits a
+        // sub-user was given) changes meaning. Then, for the account holder only, the phone or the
+        // email they signed up with, however the phone is typed (0803 123 4567, +234...): since the
+        // landing page's step 4 an owner may have either as the username, and shouldn't have to
+        // remember which.
+        String typed = request.username().trim();
+        Optional<String> typedNumber = WhatsAppNumbers.normalise(typed);
+        User user = userRepository.findByClientIdAndUsername(client.getId(), typed)
+                .or(() -> typedNumber
+                        .filter(number -> !number.equals(typed))
+                        .flatMap(number -> userRepository.findByClientIdAndUsername(client.getId(), number)))
+                .or(() -> userRepository.findFirstByClientIdAndRootTrue(client.getId())
+                        .filter(owner -> typed.equalsIgnoreCase(owner.getEmail())
+                                || (owner.getPhone() != null && typedNumber.map(owner.getPhone()::equals).orElse(false))))
                 .filter(User::isActive)
                 .orElseThrow(InvalidCredentialsException::new);
 

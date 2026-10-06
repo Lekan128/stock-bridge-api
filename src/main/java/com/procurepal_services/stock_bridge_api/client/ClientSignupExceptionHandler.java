@@ -33,6 +33,11 @@ public class ClientSignupExceptionHandler {
      * constraint is the real source of truth here; this just keeps the
      * response a clean 409 instead of a raw 500.
      */
+    @ExceptionHandler(SignupContactException.class)
+    public ResponseEntity<ApiError> handleContact(SignupContactException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)

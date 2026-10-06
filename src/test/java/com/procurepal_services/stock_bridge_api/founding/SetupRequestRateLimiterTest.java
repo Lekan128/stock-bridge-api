@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 class SetupRequestRateLimiterTest {
 
     private final SetupRequestRateLimiter limiter = new SetupRequestRateLimiter(
-            new FoundingOfferProperties(null, null, null, null, 2, Duration.ofHours(1), null));
+            new FoundingOfferProperties(null, null, null, null, 2, Duration.ofHours(1), null, null));
 
     @Test
     void aCallerGetsItsLimitThenWaits() {
