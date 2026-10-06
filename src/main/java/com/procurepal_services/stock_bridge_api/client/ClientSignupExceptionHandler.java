@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.client;
 
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -21,6 +22,19 @@ public class ClientSignupExceptionHandler {
     @ExceptionHandler(ClientIdentifierTakenException.class)
     public ResponseEntity<ApiError> handleIdentifierTaken(ClientIdentifierTakenException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SignupThrottledException.class)
+    public ResponseEntity<ApiError> handleThrottled(SignupThrottledException ex) {
+        long seconds = Math.max(1, (ex.getRetryAfter().toMillis() + 999) / 1000);
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, Long.toString(seconds))
+                .body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(SignupRejectedException.class)
+    public ResponseEntity<ApiError> handleRejected(SignupRejectedException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiError(ex.getMessage()));
     }
 
     @ExceptionHandler(PasswordMismatchException.class)

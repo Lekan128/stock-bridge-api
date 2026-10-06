@@ -98,6 +98,11 @@ public class OrderPaymentApplicationService implements OrderPaymentApplication {
                     group.getFirst().getOrderNumber(), groupTotal, amountPaid);
         }
 
+        // Collected rather than notified inside the loop: the buyer gets ONE email for this
+        // payment however many orders it covered, sent after every order has moved.
+        List<Order> placedNow = new ArrayList<>();
+        List<Order> settledLate = new ArrayList<>();
+
         for (Order order : group) {
             if (order.getPaymentStatus() == PaymentStatus.PAID) {
                 // The expected outcome of a replayed webhook, not an error worth failing
@@ -122,6 +127,7 @@ public class OrderPaymentApplicationService implements OrderPaymentApplication {
                                 ? ""
                                 : " (" + success.paymentMethodUsed() + ")"),
                         null);
+                placedNow.add(order);
             } else if (order.getStatus() == OrderStatus.CANCELLED) {
                 // Money arrived for an order the abandoned-checkout sweep (or the buyer)
                 // already cancelled - e.g. a bank transfer that settled after the 24h
@@ -144,14 +150,19 @@ public class OrderPaymentApplicationService implements OrderPaymentApplication {
                         order.getOrderNumber(),
                         order.getStatus(),
                         success.paymentReference());
+                settledLate.add(order);
             }
-            orderLifecycleService.notifyPaymentReceived(order);
         }
+
+        // enterPlaced has already told each seller (its new-order notice says "paid").
+        orderLifecycleService.notifyCheckoutConfirmed(placedNow);
+        orderLifecycleService.notifyLatePayment(settledLate);
     }
 
     @Override
     @Transactional
     public void applyPaymentFailure(UUID anchorOrderId, String paymentReference, String reason) {
+        List<Order> stillPayable = new ArrayList<>();
         for (Order order : lockCheckoutGroup(anchorOrderId)) {
             if (order.getPaymentStatus() == PaymentStatus.PAID) {
                 // A failed attempt arriving after a successful one (a retry the buyer
@@ -173,11 +184,11 @@ public class OrderPaymentApplicationService implements OrderPaymentApplication {
             // via expireUnpaidCheckout - never via this method, which leaves the order
             // payable and would therefore be re-run on it every sweep.
             //
-            // Notified per order rather than once for the group: each order is what the
-            // buyer sees in their history, and "payment failed" against a basket they
-            // can no longer identify is not actionable.
-            orderLifecycleService.notifyPaymentFailed(order, reason);
+            stillPayable.add(order);
         }
+        // A bell entry per order (each is what the buyer sees in their history), but one
+        // email for the attempt - it was one payment, so it is one piece of news.
+        orderLifecycleService.notifyPaymentFailed(stillPayable, reason);
     }
 
     @Override

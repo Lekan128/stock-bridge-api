@@ -21,6 +21,7 @@ import com.procurepal_services.stock_bridge_api.entity.PaymentMethod;
 import com.procurepal_services.stock_bridge_api.entity.PaymentStatus;
 import com.procurepal_services.stock_bridge_api.entity.PaymentTerms;
 import com.procurepal_services.stock_bridge_api.entity.PaymentVerificationSource;
+import com.procurepal_services.stock_bridge_api.order.dto.CancelOrderRequest;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductApprovalStatus;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
@@ -97,6 +98,17 @@ class MarketplaceOrderIntegrationTest {
 
     @Autowired
     private UserRepository userRepository;
+
+    /**
+     * Spied, not mocked: everything still runs (and drops quietly, email being off in tests),
+     * and the tests can count which emails each event asked for. That count IS the feature -
+     * one email per event per reader.
+     */
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    private com.procurepal_services.stock_bridge_api.email.EmailNotificationService emailNotificationService;
+
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Autowired
     private ProductRepository productRepository;
@@ -1290,6 +1302,103 @@ class MarketplaceOrderIntegrationTest {
 
         // The cart is emptied once, not once per order.
         assertThat(getCart(buyer).items()).isEmpty();
+    }
+
+    /**
+     * One card payment for a two-seller basket: each SELLER hears about their own order
+     * (bell + one email that already says "paid"), ProcurePal hears nothing about the
+     * vendor's order, and the buyer gets ONE email for the whole checkout - not a receipt
+     * and a payment email per order.
+     */
+    @Test
+    void aPaidSplitCheckoutTellsEachSellerAboutTheirOwnOrderAndTheBuyerOnce() {
+        Buyer buyer = signupBuyer("Notified Basket Co");
+        Buyer vendor = signupVendorSeller("Notified Vendor Co", "0.0750");
+        addToCart(buyer, plantCatalogProduct(40, 1), 2);
+        addToCart(buyer, plantSellerProduct(vendor.clientId(), "5000.00", 40), 3);
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.MONNIFY, createAddress(buyer).id());
+        List<Order> group = ordersInGroupOf(placed.id());
+        BigDecimal groupTotal = group.stream().map(Order::getTotal).reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        org.mockito.Mockito.clearInvocations(emailNotificationService);
+        orderPaymentApplication.applyPaymentSuccess(placed.id(), new PaymentSuccess(
+                "PAY-" + UUID.randomUUID(), "TX-" + UUID.randomUUID(), groupTotal,
+                java.time.OffsetDateTime.now(), "CARD", PaymentVerificationSource.WEBHOOK));
+
+        Order vendorOrder = group.stream()
+                .filter(order -> order.getSellerClientId().equals(vendor.clientId())).findFirst().orElseThrow();
+        Order ownOrder = group.stream()
+                .filter(order -> !order.getSellerClientId().equals(vendor.clientId())).findFirst().orElseThrow();
+
+        // The bell: each NEW_ORDER lands with that order's seller.
+        assertThat(newOrderRecipientsOf(vendorOrder.getId())).containsExactly(vendor.clientId());
+        assertThat(newOrderRecipientsOf(ownOrder.getId())).containsExactly(platformOwner().getId());
+
+        // Email: one per seller, one for the buyer, and no separate payment emails.
+        org.mockito.Mockito.verify(emailNotificationService, org.mockito.Mockito.times(2))
+                .newOrderForSeller(org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(emailNotificationService, org.mockito.Mockito.times(1))
+                .checkoutConfirmedForBuyer(org.mockito.ArgumentMatchers.argThat(orders -> orders.size() == 2));
+        org.mockito.Mockito.verify(emailNotificationService, org.mockito.Mockito.never())
+                .latePaymentReceived(org.mockito.ArgumentMatchers.any());
+    }
+
+    /**
+     * A buyer cancelling: the seller - who may be about to pack it - is told; the buyer, who
+     * pressed the button, gets no email about it.
+     */
+    @Test
+    void aBuyerCancellationTellsTheSellerAndDoesNotEmailTheBuyer() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Cancelling Buyer Co");
+        Product product = plantCatalogProduct(40, 1);
+        addToCart(buyer, product, product.getMinOrderQuantity());
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, createAddress(buyer).id());
+
+        org.mockito.Mockito.clearInvocations(emailNotificationService);
+        ResponseEntity<OrderResponse> cancelled = restTemplate.exchange(
+                "/api/orders/" + placed.id() + "/cancel",
+                HttpMethod.POST,
+                new HttpEntity<>(new CancelOrderRequest("Ordered by mistake"), buyer.headers()),
+                OrderResponse.class);
+        assertThat(cancelled.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        org.mockito.Mockito.verify(emailNotificationService)
+                .orderCancelledByBuyer(org.mockito.ArgumentMatchers.argThat(order -> order.getId().equals(placed.id())),
+                        org.mockito.ArgumentMatchers.eq("Ordered by mistake"));
+        org.mockito.Mockito.verify(emailNotificationService, org.mockito.Mockito.never())
+                .orderStatusChanged(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM notifications WHERE order_id = ? AND client_id = ? AND type = 'ORDER_STATUS_CHANGED'",
+                        Integer.class, placed.id(), platformOwner().getId()))
+                .isEqualTo(1);
+    }
+
+    /** Confirmed and processing are the seller's internal steps: bell only. Out for delivery is emailed. */
+    @Test
+    void onlyTheStatusChangesABuyerWaitsForAreEmailed() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Quiet Updates Co");
+        Product product = plantCatalogProduct(40, 1);
+        addToCart(buyer, product, product.getMinOrderQuantity());
+        OrderResponse placed = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, createAddress(buyer).id());
+        Buyer operator = loginAsPlatformOwner();
+
+        org.mockito.Mockito.clearInvocations(emailNotificationService);
+        advance(operator, placed.id(), OrderStatus.CONFIRMED);
+        advance(operator, placed.id(), OrderStatus.PROCESSING);
+        advance(operator, placed.id(), OrderStatus.OUT_FOR_DELIVERY);
+
+        org.mockito.Mockito.verify(emailNotificationService, org.mockito.Mockito.times(1))
+                .orderStatusChanged(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.eq(OrderStatus.OUT_FOR_DELIVERY), org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(emailNotificationService, org.mockito.Mockito.times(1))
+                .orderStatusChanged(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.any());
+    }
+
+    private List<UUID> newOrderRecipientsOf(UUID orderId) {
+        return jdbc.queryForList(
+                "SELECT client_id FROM notifications WHERE order_id = ? AND type = 'NEW_ORDER'", UUID.class, orderId);
     }
 
     /**

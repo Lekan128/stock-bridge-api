@@ -31,7 +31,17 @@ public record ClientSignupRequest(
         @Size(max = 50, message = "That phone number is too long.") String phone,
         // The landing page's setup request this signup follows, from "Create your password"
         // (?setup=). Optional.
-        UUID setupRequestId) {
+        UUID setupRequestId,
+        // Honeypot. The sign-up form renders this field hidden from people (off-screen, not
+        // focusable, autocomplete off), so a human never fills it and a naive form-filling bot
+        // does. Anything here means the request is refused. Deliberately named like a real field.
+        @Size(max = 500) String website) {
+
+    public ClientSignupRequest(
+            String name, String clientIdentifier, String adminEmail, String password, String confirmPassword,
+            String phone, UUID setupRequestId) {
+        this(name, clientIdentifier, adminEmail, password, confirmPassword, phone, setupRequestId, null);
+    }
 
     /**
      * The five-argument form, kept so the (many) existing callers and tests that
@@ -41,13 +51,13 @@ public record ClientSignupRequest(
      */
     public ClientSignupRequest(
             String name, String clientIdentifier, String adminEmail, String password, String confirmPassword) {
-        this(name, clientIdentifier, adminEmail, password, confirmPassword, null, null);
+        this(name, clientIdentifier, adminEmail, password, confirmPassword, null, null, null);
     }
 
     /** The six-argument form, from before signup could follow a setup request. */
     public ClientSignupRequest(
             String name, String clientIdentifier, String adminEmail, String password, String confirmPassword,
             String phone) {
-        this(name, clientIdentifier, adminEmail, password, confirmPassword, phone, null);
+        this(name, clientIdentifier, adminEmail, password, confirmPassword, phone, null, null);
     }
 }

@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.profile;
 
+import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
 import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.User;
@@ -37,6 +38,7 @@ public class ProfileService {
     private final ClientRepository clientRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailVerificationService emailVerificationService;
+    private final EmailNotificationService emailNotificationService;
 
     @Transactional(readOnly = true)
     public ProfileResponse get(UUID callerId) {
@@ -53,12 +55,13 @@ public class ProfileService {
         User user = findSelfOrThrow(callerId);
         // Before the field is overwritten, because the decision below is about the
         // difference between the old value and the new one.
-        applyAddressChange(user, normalize(request.email()));
+        AddressChange change = applyAddressChange(user, normalize(request.email()));
         user.setFirstName(normalize(request.firstName()));
         user.setLastName(normalize(request.lastName()));
         user.setEmail(normalize(request.email()));
         user.setPhone(normalize(request.phone()));
         user.setJobTitle(normalize(request.jobTitle()));
+        notifyAddressChange(user, change);
         return ProfileResponse.from(user, findClientOrThrow(user));
     }
 
@@ -97,13 +100,12 @@ public class ProfileService {
      * what makes this comparison total.
      *
      * <h2>What it deliberately does not do</h2>
-     * It does not send a new verification email. A PUT that mails an
-     * attacker-chosen address is precisely the unbounded send primitive
-     * {@code EmailVerificationRateLimiter} exists to prevent, and rate-limiting a
-     * profile save would mean a user could be refused a name change because of
-     * their email history. The user gets emailVerified=false back in this very
-     * response, the frontend renders the prompt, and the rate-limited resend
-     * endpoint is one click away.
+     * It does not send anything itself - {@link #notifyAddressChange} does, after the
+     * row holds the new address. The confirmation link it sends spends the SAME
+     * per-user budget as the resend endpoint, so a PUT is still not an unbounded
+     * "mail any address" primitive; and an exhausted budget skips the send rather
+     * than refusing the save, so nobody is refused a name change because of their
+     * email history.
      *
      * <p>It also clears the flag for the OLD address as a side effect, since the
      * flag is per-row rather than per-address. That is a real, accepted cost - a
@@ -111,12 +113,13 @@ public class ProfileService {
      * until they confirm it. The alternative is trusting an address nobody has
      * confirmed, and between the two only one of them can be undone by the user.
      */
-    private void applyAddressChange(User user, String newEmail) {
+    private AddressChange applyAddressChange(User user, String newEmail) {
         String before = effectiveAddress(user.getEmail(), user.getUsername());
         String after = effectiveAddress(newEmail, user.getUsername());
         if (Objects.equals(before, after)) {
-            return;
+            return null;
         }
+        boolean wasVerified = user.isEmailVerified();
 
         // Any live token is bound to the address it was mailed to, so after this
         // edit it can never be redeemed anyway - verify() would refuse it on the
@@ -129,6 +132,34 @@ public class ProfileService {
         if (user.isEmailVerified()) {
             user.setEmailVerified(false);
             user.setEmailVerifiedAt(null);
+        }
+        return new AddressChange(before, after, wasVerified);
+    }
+
+    /** What an edit did to the account's address, for the two emails that follow it. */
+    private record AddressChange(String before, String after, boolean wasVerified) {
+    }
+
+    /**
+     * The two emails an address change warrants, sent AFTER the row holds the new address
+     * (the confirmation link is bound to whatever the row says):
+     * <ul>
+     *   <li>a confirmation link to the NEW address, so the user does not have to hunt for
+     *       a resend button - rate-limited with the resend budget, never failing the save;</li>
+     *   <li>a security notice to the OLD address, only if it had been confirmed, so a
+     *       takeover is visible to the person who still controls the old inbox.</li>
+     * </ul>
+     */
+    private void notifyAddressChange(User user, AddressChange change) {
+        if (change == null) {
+            return;
+        }
+        if (change.wasVerified() && change.before() != null) {
+            emailNotificationService.emailAddressChanged(
+                    change.before(), user, change.after() == null ? "(no address)" : change.after());
+        }
+        if (change.after() != null) {
+            emailVerificationService.sendAfterAddressChange(user);
         }
     }
 

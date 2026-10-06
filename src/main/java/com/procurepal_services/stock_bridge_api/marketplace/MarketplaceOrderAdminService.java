@@ -176,7 +176,8 @@ public class MarketplaceOrderAdminService {
                             + " is not a pay-on-delivery order; its payment is handled by the provider.");
         }
         order.setPaymentStatus(PaymentStatus.PAID);
-        orderLifecycleService.notifyPaymentReceived(order);
+        // The seller pressed this, so only the buyer is told - their receipt for the cash.
+        orderLifecycleService.notifyCashCollected(order);
         return orderResponseAssembler.detail(order, true);
     }
 

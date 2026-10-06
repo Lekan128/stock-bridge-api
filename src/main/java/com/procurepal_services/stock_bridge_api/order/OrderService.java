@@ -217,6 +217,13 @@ public class OrderService {
             created.add(order);
         }
 
+        if (payOnDelivery) {
+            // ONE receipt for the whole checkout, after every order exists - not one per
+            // seller from inside the loop. A card checkout gets its receipt when the
+            // payment verifies (OrderPaymentApplicationService), through the same method.
+            orderLifecycleService.notifyCheckoutConfirmed(created);
+        }
+
         cartService.clearItems(priced.cart().getId());
         return orderResponseAssembler.detail(created.getFirst(), false);
     }
@@ -245,9 +252,10 @@ public class OrderService {
             throw new InvalidOrderTransitionException(
                     "Order " + order.getOrderNumber() + " can no longer be cancelled. Contact ProcurePal support.");
         }
-        orderLifecycleService.transition(
+        // cancelByBuyer, not transition: the buyer needs no email about the button they just
+        // pressed, but the seller - who may be about to pick it - does.
+        orderLifecycleService.cancelByBuyer(
                 order,
-                OrderStatus.CANCELLED,
                 blankToNull(request == null ? null : request.reason()),
                 actingUserId);
         return orderResponseAssembler.detail(order, false);

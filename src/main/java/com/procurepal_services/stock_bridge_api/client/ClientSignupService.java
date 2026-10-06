@@ -16,6 +16,7 @@ import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.user.TenantRoles;
+import java.time.Duration;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -50,9 +51,20 @@ public class ClientSignupService {
     private final EmailNotificationService emailNotificationService;
     private final EmailVerificationService emailVerificationService;
     private final SetupRequestService setupRequestService;
+    private final SignupRateLimiter signupRateLimiter;
 
     @Transactional
-    public TenantLoginResponse signup(ClientSignupRequest request) {
+    public TenantLoginResponse signup(ClientSignupRequest request, String clientIp) {
+        // The honeypot first: a filled hidden field is a bot, and it should not even spend
+        // the rate limit of the address it typed in (that address may be a victim's).
+        if (request.website() != null && !request.website().isBlank()) {
+            throw new SignupRejectedException();
+        }
+        // Before anything is written or mailed. See SignupProperties for the two limits.
+        Duration wait = signupRateLimiter.tryAcquire(request.adminEmail(), clientIp);
+        if (!wait.isZero()) {
+            throw new SignupThrottledException(wait);
+        }
         // Optional since the landing page's step 4: the form shows the password instead.
         if (request.confirmPassword() != null && !request.password().equals(request.confirmPassword())) {
             throw new PasswordMismatchException();

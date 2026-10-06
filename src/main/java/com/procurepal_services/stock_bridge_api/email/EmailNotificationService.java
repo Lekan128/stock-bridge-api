@@ -56,41 +56,84 @@ public class EmailNotificationService {
     private final OrderItemRepository orderItemRepository;
     private final ClientRepository clientRepository;
 
-    /** To ProcurePal: a company just placed an order. Pairs with NotificationType.NEW_ORDER. */
-    public void newOrderPlaced(Order order) {
-        dispatcher.dispatchQuietly(() -> OrderEmails.newOrderForOperator(
-                recipients.forOperator(), order, itemsOf(order), buyerNameOf(order), baseUrl()));
+    /**
+     * To the SELLER of one order - ProcurePal or the vendor - the moment it becomes real.
+     * Pairs with NotificationType.NEW_ORDER. One per order; for a card checkout it already
+     * says "paid", so the seller gets no separate payment email for the same moment.
+     */
+    public void newOrderForSeller(Order order) {
+        dispatcher.dispatchQuietly(() -> OrderEmails.newOrderForSeller(
+                recipients.forSeller(order), order, itemsOf(order), buyerNameOf(order), baseUrl()));
     }
 
     /**
-     * To the buyer: their receipt. Has no in-app counterpart, and should not - the
-     * buyer is looking at the confirmation screen when this fires, so a bell entry
-     * would tell them what they can already see. The email is for the inbox they
-     * will search later.
+     * To the buyer: ONE receipt for everything one checkout just made real - a section per
+     * seller, and for a card checkout it doubles as the payment confirmation. See
+     * {@link OrderEmails#checkoutConfirmedForBuyer} for why this replaced one receipt plus
+     * one payment email per order.
      */
-    public void orderConfirmedForBuyer(Order order) {
-        dispatcher.dispatchQuietly(() -> OrderEmails.orderPlacedForBuyer(
-                recipients.forOrderBuyer(order), order, itemsOf(order), baseUrl()));
+    public void checkoutConfirmedForBuyer(List<Order> orders) {
+        if (orders == null || orders.isEmpty()) {
+            return;
+        }
+        dispatcher.dispatchQuietly(() -> OrderEmails.checkoutConfirmedForBuyer(
+                recipients.forOrderBuyer(orders.getFirst()),
+                orders.stream()
+                        .map(order -> new OrderEmails.SellerPart(order, itemsOf(order), sellerNameOf(order)))
+                        .toList(),
+                baseUrl()));
     }
 
-    /** To the buyer: ProcurePal moved the order along, or cancelled it. */
+    /** To the buyer: the seller moved the order to a step worth an email (see OrderLifecycleService). */
     public void orderStatusChanged(Order order, OrderStatus target, String note) {
         dispatcher.dispatchQuietly(() -> OrderEmails.orderStatusChangedForBuyer(
                 recipients.forOrderBuyer(order), order, target, note, baseUrl()));
     }
 
-    /** To both sides: a card payment verified. */
-    public void paymentReceived(Order order) {
-        dispatcher.dispatchQuietly(() -> OrderEmails.paymentReceivedForBuyer(
-                recipients.forOrderBuyer(order), order, baseUrl()));
-        dispatcher.dispatchQuietly(() -> OrderEmails.paymentReceivedForOperator(
-                recipients.forOperator(), order, buyerNameOf(order), baseUrl()));
+    /** To the seller: the buyer cancelled, so do not prepare or dispatch it. */
+    public void orderCancelledByBuyer(Order order, String reason) {
+        dispatcher.dispatchQuietly(() -> OrderEmails.orderCancelledByBuyerForSeller(
+                recipients.forSeller(order), order, buyerNameOf(order), reason, baseUrl()));
     }
 
-    /** To the buyer: a card payment did not complete, and the order is still payable. */
-    public void paymentFailed(Order order, String reason) {
+    /**
+     * Money arrived for orders that were ALREADY placed (late or pay-on-delivery settlement).
+     * One email to the buyer for the whole payment, one to each order's seller. A normal card
+     * checkout never comes here - its receipt and the sellers' new-order emails say "paid".
+     */
+    public void latePaymentReceived(List<Order> orders) {
+        if (orders == null || orders.isEmpty()) {
+            return;
+        }
+        paymentReceiptForBuyer(orders);
+        for (Order order : orders) {
+            dispatcher.dispatchQuietly(() -> OrderEmails.paymentReceivedForSeller(
+                    recipients.forSeller(order), order, buyerNameOf(order), baseUrl()));
+        }
+    }
+
+    /** To the account's OLD address: its email was changed (see AccountEmails.emailAddressChanged). */
+    public void emailAddressChanged(String oldAddress, User user, String newAddress) {
+        dispatcher.dispatchQuietly(() -> AccountEmails.emailAddressChanged(
+                List.of(oldAddress), user.getUsername(), clientNameOf(user.getClientId()), newAddress));
+    }
+
+    /** To the buyer only: one receipt for a payment on orders that were already placed. */
+    public void paymentReceiptForBuyer(List<Order> orders) {
+        if (orders == null || orders.isEmpty()) {
+            return;
+        }
+        dispatcher.dispatchQuietly(() -> OrderEmails.paymentReceivedForBuyer(
+                recipients.forOrderBuyer(orders.getFirst()), orders, baseUrl()));
+    }
+
+    /** To the buyer: a card payment was declined or short, once for the attempt. The orders are still payable. */
+    public void paymentFailed(List<Order> orders, String reason) {
+        if (orders == null || orders.isEmpty()) {
+            return;
+        }
         dispatcher.dispatchQuietly(() -> OrderEmails.paymentFailedForBuyer(
-                recipients.forOrderBuyer(order), order, reason, baseUrl()));
+                recipients.forOrderBuyer(orders.getFirst()), orders, reason, baseUrl()));
     }
 
     /**
@@ -356,6 +399,13 @@ public class EmailNotificationService {
         return clientRepository.findById(order.getClientId())
                 .map(Client::getName)
                 .orElse("A customer");
+    }
+
+    /** Null when unknown; the template then says "The seller" rather than a wrong name. */
+    private String sellerNameOf(Order order) {
+        return order.getSellerClientId() == null
+                ? null
+                : clientRepository.findById(order.getSellerClientId()).map(Client::getName).orElse(null);
     }
 
     private String clientNameOf(UUID clientId) {

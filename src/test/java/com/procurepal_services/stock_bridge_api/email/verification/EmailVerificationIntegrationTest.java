@@ -73,6 +73,9 @@ class EmailVerificationIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    private com.procurepal_services.stock_bridge_api.email.EmailNotificationService emailNotificationService;
+
     @LocalServerPort
     private int port;
 
@@ -265,6 +268,43 @@ class EmailVerificationIntegrationTest {
         ProfileResponse me = profile(owner);
         assertThat(me.emailVerified()).isFalse();
         assertThat(userRepository.findById(owner.user().id()).orElseThrow().getEmailVerifiedAt()).isNull();
+    }
+
+    /**
+     * Changing the address sends the confirmation link to the NEW one straight away (no hunting
+     * for a resend button), and - because the old one had been confirmed - a security notice to
+     * the OLD one, so a takeover is visible to whoever still holds the old inbox.
+     */
+    @Test
+    void changingAConfirmedAddressConfirmsTheNewOneAndWarnsTheOldOne() {
+        TenantLoginResponse owner = signup("Moving House Co");
+        assertThat(verify(issueRawToken(owner)).getStatusCode()).isEqualTo(HttpStatus.OK);
+        String oldAddress = owner.user().username();
+        String newAddress = "moved-" + UUID.randomUUID() + "@example.com";
+
+        changeEmail(owner, newAddress);
+
+        assertThat(countLiveTokensFor(owner)).isEqualTo(1);
+        org.mockito.Mockito.verify(emailNotificationService).verifyEmailAddress(
+                org.mockito.ArgumentMatchers.argThat(user -> user.getId().equals(owner.user().id())),
+                org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(emailNotificationService).emailAddressChanged(
+                org.mockito.ArgumentMatchers.eq(oldAddress.toLowerCase()),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(newAddress.toLowerCase()));
+    }
+
+    /** An address that was never confirmed may be a typo; the notice must not go to a stranger. */
+    @Test
+    void changingAnUnconfirmedAddressDoesNotMailTheOldOne() {
+        TenantLoginResponse owner = signup("Typo Fix Co");
+
+        changeEmail(owner, "fixed-" + UUID.randomUUID() + "@example.com");
+
+        org.mockito.Mockito.verify(emailNotificationService, org.mockito.Mockito.never()).emailAddressChanged(
+                org.mockito.ArgumentMatchers.argThat(address -> address.equalsIgnoreCase(owner.user().username())),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        assertThat(countLiveTokensFor(owner)).isEqualTo(1);
     }
 
     @Test

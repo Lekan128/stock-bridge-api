@@ -354,6 +354,31 @@ public final class AccountEmails {
     }
 
     /**
+     * To the OLD address, when the email on an account changes. The standard account-takeover
+     * guard: if somebody else changed it, the real owner hears about it at the address they
+     * still control, with the new address named so support can act on it. Only sent when the
+     * old address had been confirmed - an unconfirmed one may be a typo, and mailing a typo
+     * is mailing a stranger.
+     */
+    public static EmailMessage emailAddressChanged(
+            List<String> to, String login, String companyName, String newAddress) {
+        String body = paragraphHtml("The email address on your Procure Paddy account was changed to "
+                        + bold(newAddress) + ". We sent a confirmation link there.")
+                + detailTable(List.of(new Detail("Log in with", login), new Detail("Company", companyName)))
+                + paragraph("If you made this change, there is nothing else to do.")
+                + callout("If this wasn't you, reply to this email straight away. Someone signed in to your "
+                        + "account may have changed it.");
+        String text = "The email address on your Procure Paddy account (" + login + " at " + companyName
+                + ") was changed to " + newAddress + ". We sent a confirmation link there.\n\n"
+                + "If you made this change, there is nothing else to do.\n"
+                + "If this wasn't you, reply to this email straight away.\n";
+        return new EmailMessage(to, "The email on your Procure Paddy account was changed",
+                page(BRAND, "Your email address was changed", "Your account's email was changed to " + newAddress + ".",
+                        body),
+                text, EmailKind.SECURITY);
+    }
+
+    /**
      * After a self-service reset. The admin-reset alert above blames an administrator,
      * which would be false here; this one says the account holder did it, and tells
      * them what to do if they did not.
