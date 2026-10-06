@@ -3,23 +3,35 @@ package com.procurepal_services.stock_bridge_api.client.dto;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+import java.util.UUID;
 
+/**
+ * Self-service signup.
+ *
+ * <p>A shop signs up with a business name, an email, its WhatsApp number and a password. The email
+ * is required (the owners' decision of 2026-10-06: it is how Procurepaddy writes to the company) and
+ * is the owner's username; the WhatsApp number is how the setup team reaches them, and the owner can
+ * log in with it too, typed any way (AuthService). The older shape (no phone, a confirmed password)
+ * still works unchanged.
+ */
 public record ClientSignupRequest(
-        @NotBlank String name,
-        // Optional - auto-suggested from name (lowercased/hyphenated) if blank.
+        @NotBlank(message = "Enter your business name.") String name,
+        // Optional. Blank means generate one from the name (with -2, -3... if that is taken).
         String clientIdentifier,
-        // Signup's admin username is specifically required to be an email, even
-        // though usernames in general aren't (see users.username in the schema).
-        @NotBlank @Email String adminEmail,
+        // Required: the owner's username, and where Procurepaddy writes to the company.
+        @NotBlank(message = "Enter your email address.") @Email(message = "Enter a valid email address.") String adminEmail,
         // Length-only for now; tighten later (mixed case/digits/symbols) once
         // there's a product decision on password policy.
-        @NotBlank @Size(min = 8) String password,
-        @NotBlank String confirmPassword,
-        // Optional company phone. Length-only validation deliberately: Nigerian
-        // numbers get typed as 0803..., +234 803..., with spaces and with dashes,
-        // and rejecting a signup over a phone format would be a self-inflicted
-        // wound. Normalising it is a later concern.
-        @Size(max = 50) String phone) {
+        @NotBlank(message = "Enter a password.") @Size(min = 8, message = "Use at least 8 characters for the password.") String password,
+        // Optional since step 4 (the form shows the password instead of asking twice). When
+        // present it must match.
+        String confirmPassword,
+        // The shop's WhatsApp number. Optional here (older callers send none; the sign-up form
+        // requires it). A Nigerian mobile number is stored in +234 form and logs the owner in too.
+        @Size(max = 50, message = "That phone number is too long.") String phone,
+        // The landing page's setup request this signup follows, from "Create your password"
+        // (?setup=). Optional.
+        UUID setupRequestId) {
 
     /**
      * The five-argument form, kept so the (many) existing callers and tests that
@@ -29,6 +41,13 @@ public record ClientSignupRequest(
      */
     public ClientSignupRequest(
             String name, String clientIdentifier, String adminEmail, String password, String confirmPassword) {
-        this(name, clientIdentifier, adminEmail, password, confirmPassword, null);
+        this(name, clientIdentifier, adminEmail, password, confirmPassword, null, null);
+    }
+
+    /** The six-argument form, from before signup could follow a setup request. */
+    public ClientSignupRequest(
+            String name, String clientIdentifier, String adminEmail, String password, String confirmPassword,
+            String phone) {
+        this(name, clientIdentifier, adminEmail, password, confirmPassword, phone, null);
     }
 }

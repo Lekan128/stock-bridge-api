@@ -112,14 +112,20 @@ public class ProductManagementService {
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, Pageable pageable) {
-        return list(search, active, null, pageable);
+        return list(search, active, null, null, pageable);
     }
 
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(String search, Boolean active, UUID categoryId, Pageable pageable) {
+        return list(search, active, categoryId, null, pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> list(
+            String search, Boolean active, UUID categoryId, StockStatus stockStatus, Pageable pageable) {
         UUID tenantId = requireTenantId();
         Page<Product> page = productRepository.findAll(
-                ProductSpecifications.forTenant(tenantId, search, active, categoryId), pageable);
+                ProductSpecifications.forTenant(tenantId, search, active, categoryId, stockStatus), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
         Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
         // Task 3.1's "and 10 coming", in one query for the page rather than one per row - the
@@ -174,7 +180,7 @@ public class ProductManagementService {
      * whose only pack is its own, with zero vendor-specific overrides, reports {@code false} -
      * that field is not "a default among several", it is the only one.
      */
-    private Map<UUID, Boolean> hasMultiplePacksFor(List<Product> products) {
+    public Map<UUID, Boolean> hasMultiplePacksFor(List<Product> products) {
         if (products.isEmpty()) {
             return Map.of();
         }

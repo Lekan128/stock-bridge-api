@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.product.dto;
 
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.product.StockStatus;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import java.math.BigDecimal;
@@ -134,8 +135,7 @@ public record ProductResponse(
 
     public static ProductResponse from(
             Product product, String preferredVendorName, List<String> warnings, boolean hasMultiplePacks) {
-        boolean lowStock = product.getLowStockThreshold() != null
-                && product.getQuantityOnHand() <= product.getLowStockThreshold();
+        boolean lowStock = StockStatus.isLowStock(product.getQuantityOnHand(), product.getLowStockThreshold());
         return new ProductResponse(
                 product.getId(),
                 product.getName(),

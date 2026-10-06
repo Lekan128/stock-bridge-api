@@ -58,6 +58,11 @@ app:
   super-admin:
     username: ${SUPERADMIN_USERNAME:admin}
     password: ${SUPERADMIN_PASSWORD:changeme}
+  # Every local setup request comes from one address (localhost), so the real limit of 5 an hour
+  # (application.yml) stops a developer, or the landing e2e suite run three times, within the hour.
+  # SetupRequestRateLimiterTest covers the limit itself.
+  founding:
+    submit-limit: ${FOUNDING_SUBMIT_LIMIT:500}
   # No app.platform-owner default here on purpose. Locally the platform owner
   # already comes from db/seed/V9001, complete with a demo catalog the bootstrap
   # runner does not create - two mechanisms racing to insert the same tenant

@@ -6,6 +6,7 @@ import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
@@ -13,6 +14,20 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface StockMovementRepository extends TenantScopedRepository<StockMovement, UUID>, JpaSpecificationExecutor<StockMovement> {
+
+    /** Whether this product was counted after {@code after} (A4) - see {@code StockMovement.count}. */
+    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.count = true AND m.occurredAt > :after")
+    boolean existsCountAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
+
+    /**
+     * The net effect on the shelf of everything recorded as happening after {@code after}: IN adds,
+     * OUT takes away, an ADJUSTMENT is already a signed difference. What a count taken at
+     * {@code after} has to be carried forward by to be today's figure.
+     */
+    @Query("SELECT COALESCE(SUM(CASE WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT "
+            + "THEN -m.quantity ELSE m.quantity END), 0) "
+            + "FROM StockMovement m WHERE m.product.id = :productId AND m.occurredAt > :after")
+    long netChangeAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
 
     /**
      * Whether this product has ever had a movement recorded. Backs the V19 rule that {@code
@@ -281,4 +296,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
             @Param("limit") int limit);
+
+    /** The most recent write on a product - a void (D8) is only exact while its write is still this. */
+    Optional<StockMovement> findFirstByProductIdOrderByCreatedAtDescIdDesc(UUID productId);
 }

@@ -4,7 +4,6 @@ import com.procurepal_services.stock_bridge_api.auth.dto.AuthTokens;
 import com.procurepal_services.stock_bridge_api.auth.dto.SuperAdminLoginRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.SuperAdminLoginResponse;
 import com.procurepal_services.stock_bridge_api.auth.dto.SuperAdminSummary;
-import com.procurepal_services.stock_bridge_api.entity.RefreshToken;
 import com.procurepal_services.stock_bridge_api.entity.SubjectType;
 import com.procurepal_services.stock_bridge_api.entity.SuperAdmin;
 import com.procurepal_services.stock_bridge_api.jwt.JwtService;
@@ -42,15 +41,15 @@ public class SuperAdminAuthService {
 
     @Transactional
     public AuthTokens refresh(String rawRefreshToken) {
-        RefreshToken existing = refreshTokenService.findValid(rawRefreshToken)
-                .filter(token -> token.getSubjectType() == SubjectType.SUPER_ADMIN)
+        // Same lost-reply rule as the tenant refresh - see RefreshTokenService.
+        RefreshTokenService.UsableToken existing = refreshTokenService.findUsable(rawRefreshToken)
+                .filter(token -> token.subjectType() == SubjectType.SUPER_ADMIN)
                 .orElseThrow(InvalidRefreshTokenException::new);
 
-        SuperAdmin admin = superAdminRepository.findById(existing.getSubjectId())
+        SuperAdmin admin = superAdminRepository.findById(existing.subjectId())
                 .orElseThrow(InvalidRefreshTokenException::new);
 
-        refreshTokenService.revoke(existing);
-        String newRefreshToken = refreshTokenService.issue(SubjectType.SUPER_ADMIN, admin.getId());
+        String newRefreshToken = refreshTokenService.rotate(existing);
         String accessToken = jwtService.issueSuperAdminAccessToken(admin);
 
         return new AuthTokens(accessToken, newRefreshToken, jwtService.accessTokenExpirationSeconds());
@@ -58,6 +57,6 @@ public class SuperAdminAuthService {
 
     @Transactional
     public void logout(String rawRefreshToken) {
-        refreshTokenService.revoke(rawRefreshToken);
+        refreshTokenService.revokeSession(rawRefreshToken);
     }
 }

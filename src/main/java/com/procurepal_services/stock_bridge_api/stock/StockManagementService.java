@@ -12,6 +12,7 @@ import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductVendorPackRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductVendorRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementAllocationRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
@@ -19,6 +20,7 @@ import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.ProductLotResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockAdjustmentRequest;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockInRequest;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMovementSummaryResponse;
@@ -27,6 +29,7 @@ import com.procurepal_services.stock_bridge_api.stock.dto.StockOutRequest;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -36,6 +39,7 @@ import java.util.Optional;
 import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
@@ -87,6 +91,7 @@ import org.springframework.transaction.annotation.Transactional;
  * conversions become identities - which is why closing a fifty-fold hole changed no existing
  * caller (contract non-negotiable 8).
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class StockManagementService {
@@ -96,12 +101,16 @@ public class StockManagementService {
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final ProductVendorRepository productVendorRepository;
     private final UserRepository userRepository;
+    private final StockWritePermissionGuard stockWritePermissionGuard;
     /**
      * Owns the {@code ProductVendor} find-or-create/receipt bookkeeping and the cheaper-vendor
      * comparison - see that class for why this logic lives there rather than being duplicated
      * here.
      */
     private final ProductVendorService productVendorService;
+    /** What a write changed that a void (D8) can't read back off the movement - see V39. */
+    private final StockWriteUndoStore stockWriteUndoStore;
+    private final ProductVendorPackRepository productVendorPackRepository;
 
     /**
      * Records a delivery. Weighted-average cost is recalculated unconditionally (guarding the
@@ -194,6 +203,7 @@ public class StockManagementService {
                 request.packagingUnit(),
                 request.packagingSize());
         int quantityBaseUnits = entry.baseQuantity();
+        boolean absorbed = request.isRecordedOffline() && stockMovementRepository.existsCountAfter(productId, occurredAt);
 
         if (request.companyVendorId() == null
                 && productVendorRepository.countByClientIdAndProductId(tenantId, productId) > 0) {
@@ -201,6 +211,7 @@ public class StockManagementService {
         }
 
         boolean vendorIsNewToProduct = false;
+        ProductVendorService.PackChange packChange = null;
         StockMutationResponse.CheaperVendorHint cheaperVendorHint = null;
         CompanyVendor companyVendor = null;
         if (request.companyVendorId() != null) {
@@ -219,6 +230,7 @@ public class StockManagementService {
                     // supplier's standing default ONLY on an explicit opt-in. Absent means false.
                     request.savesAsSupplierDefault());
             vendorIsNewToProduct = receipt.vendorIsNewToProduct();
+            packChange = receipt.packChange();
             companyVendor = receipt.vendor().getCompanyVendor();
             if (entry.basePrice() != null) {
                 // Both sides of this comparison are now per stock unit: the candidate vendors'
@@ -234,8 +246,11 @@ public class StockManagementService {
             }
         }
 
+        BigDecimal priorCostPrice = product.getCostPrice();
         product.setCostPrice(recomputeWeightedAverageCost(product, quantityBaseUnits, entry.basePrice()));
-        product.setQuantityOnHand(product.getQuantityOnHand() + quantityBaseUnits);
+        if (!absorbed) {
+            product.setQuantityOnHand(product.getQuantityOnHand() + quantityBaseUnits);
+        }
 
         StockMovement movement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
@@ -253,6 +268,30 @@ public class StockManagementService {
                 .enteredQuantity(entry.enteredQuantity())
                 .enteredUnitPrice(entry.enteredUnitPrice())
                 .build());
+        if (absorbed) {
+            recordAbsorbedByLaterCount(product, -quantityBaseUnits, occurredAt, actingUserId);
+        } else if (importBatchId == null) {
+            // Undoable for two minutes (D8) - unless undoing it would also have to unpick a
+            // supplier set up, or a pack saved, by this very delivery.
+            String reason = vendorIsNewToProduct
+                    ? "This was the first delivery from this supplier for this product, so undoing it would also remove"
+                            + " the supplier. Record a count to correct the figure."
+                    : packChange != null && (packChange.created() || packChange.madeDefault())
+                            ? "This delivery saved a pack for the supplier, so it can't be undone. Record a count to"
+                                    + " correct the figure."
+                            : null;
+            // The snapshot row references the movement, which JPA has not written yet.
+            stockMovementRepository.flush();
+            stockWriteUndoStore.record(
+                    movement.getId(),
+                    tenantId,
+                    actingUserId,
+                    priorCostPrice,
+                    packChange == null ? null : packChange.packId(),
+                    packChange == null ? null : packChange.priorLastCostPrice(),
+                    packChange == null ? null : packChange.priorVendorSku(),
+                    reason);
+        }
 
         return StockMutationResponse.ofStockIn(product, movement, vendorIsNewToProduct, cheaperVendorHint);
     }
@@ -358,11 +397,16 @@ public class StockManagementService {
         ResolvedEntry entry =
                 resolveEntry(product, BigDecimal.valueOf(request.quantity()), request.unitPrice(), request.unit(), null, null);
         int quantityBaseUnits = entry.baseQuantity();
+        OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
+        // A sale from before a later stock count, arriving late from an offline phone: the count
+        // already saw the shelf without these goods, so the shelf figure must not move again - and
+        // the ceiling below, which guards today's figure, does not apply to it.
+        boolean absorbed = request.isRecordedOffline() && stockMovementRepository.existsCountAfter(productId, occurredAt);
 
         // The authoritative ceiling is still Product.quantityOnHand - see the class javadoc's
         // "cached counter, lot ledger is the source of truth underneath it, not a replacement"
         // and the reasoning below for why the ledger alone cannot be trusted as the ceiling yet.
-        if (quantityBaseUnits > product.getQuantityOnHand()) {
+        if (!absorbed && quantityBaseUnits > product.getQuantityOnHand()) {
             throw new InsufficientStockException(product.getQuantityOnHand(), quantityBaseUnits, unitSymbol(product));
         }
 
@@ -373,11 +417,14 @@ public class StockManagementService {
                 : resolveManualAllocations(
                         lockedLotsOldestFirst, request.allocations(), quantityBaseUnits, unitSymbol(product));
 
-        product.setQuantityOnHand(product.getQuantityOnHand() - quantityBaseUnits);
+        if (!absorbed) {
+            product.setQuantityOnHand(product.getQuantityOnHand() - quantityBaseUnits);
+        }
 
         StockMovement outMovement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
                 .movementType(MovementType.OUT)
+                .occurredAt(occurredAt)
                 .quantity(quantityBaseUnits)
                 .unitPriceAtTime(entry.basePrice())
                 .note(request.note())
@@ -415,7 +462,75 @@ public class StockManagementService {
                             draw.lot().getOccurredAt(), lotVendor == null ? null : lotVendor.getName())));
         }
 
+        if (absorbed) {
+            recordAbsorbedByLaterCount(product, quantityBaseUnits, occurredAt, actingUserId);
+        } else {
+            // Undoable for two minutes (D8): the lots it drew from are on its allocation rows.
+            stockMovementRepository.flush();
+            stockWriteUndoStore.record(outMovement.getId(), tenantId, actingUserId, null, null, null, null, null);
+        }
+
         return StockMutationResponse.ofStockOut(product, outMovement, breakdown);
+    }
+
+    /**
+     * A stock count (A4, decision D1): {@code countedQuantity} was on the shelf at {@code countedAt}.
+     *
+     * <p>Today's figure is that count carried forward by everything recorded as happening after
+     * it - so a count made on a phone that was offline, arriving after another phone's sales,
+     * does not erase them. Online, with nothing after "now", this is exactly the old absolute
+     * adjustment.
+     *
+     * <p>A count older than one already recorded is superseded: the shelf has been looked at since,
+     * and the newer look wins. The product comes back unchanged with no movement, which is how the
+     * caller can tell. A count that finds exactly what the books say is still recorded (as a zero
+     * difference), because later writes are judged against it.
+     */
+    @Transactional
+    public StockMutationResponse count(UUID productId, StockCountRequest request, UUID actingUserId) {
+        Product product = lockProductOrThrow(productId);
+        OffsetDateTime countedAt = resolveOccurredAt(request.countedAt());
+        if (stockMovementRepository.existsCountAfter(productId, countedAt)) {
+            return StockMutationResponse.of(product, null);
+        }
+        long carriedForward = stockMovementRepository.netChangeAfter(productId, countedAt);
+        // Sales recorded after the count can exceed it (the count was wrong, or stock arrived
+        // unrecorded); the shelf cannot hold less than nothing.
+        int target = (int) Math.max(0, request.countedQuantity() + carriedForward);
+        int delta = target - product.getQuantityOnHand();
+        product.setQuantityOnHand(target);
+
+        StockMovement movement = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(delta)
+                .count(true)
+                .occurredAt(countedAt)
+                .note(request.note() == null || request.note().isBlank() ? "Stock count" : request.note())
+                .createdBy(reference(actingUserId))
+                .build());
+        // Undoable for two minutes (D8): the difference it made is the movement's own quantity.
+        stockMovementRepository.flush();
+        stockWriteUndoStore.record(movement.getId(), requireTenantId(), actingUserId, null, null, null, null, null);
+        return StockMutationResponse.of(product, movement);
+    }
+
+    /**
+     * Records that a late write from an offline phone was already reflected in a stock count taken
+     * after it (A4): the movement itself stays in the ledger - lots, costs and history need it - and
+     * this adjustment cancels its effect on the shelf figure, so the ledger still adds up.
+     *
+     * @param effect the signed change this adjustment makes: minus a late delivery, plus a late sale.
+     */
+    private void recordAbsorbedByLaterCount(Product product, int effect, OffsetDateTime occurredAt, UUID actingUserId) {
+        stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(effect)
+                .occurredAt(occurredAt)
+                .note("Already in a later stock count: recorded on a phone while offline, before that count")
+                .createdBy(reference(actingUserId))
+                .build());
     }
 
     /**
@@ -681,6 +796,120 @@ public class StockManagementService {
             String enteredUnit,
             BigDecimal enteredQuantity,
             BigDecimal enteredUnitPrice) {
+    }
+
+    /** How long after a write its author can still void it (D8). The toast offers it for less. */
+    static final Duration VOID_WINDOW = Duration.ofMinutes(2);
+
+    /**
+     * Voids a stock write: removes it as if it had never been made (decision D8, B2's Undo).
+     *
+     * <p>Only the person who recorded it, within {@link #VOID_WINDOW}, and only while it is still
+     * the latest thing recorded for the product - the conditions under which "as if never made"
+     * can be exact. Everything it changed comes back: the product's figure and (for a stock-in) its
+     * cost price, the supplier's balances and pack, and for a stock-out the lots it drew from.
+     * Anything else is refused with a sentence saying why and what to do instead - a count.
+     *
+     * <p>The ledger is otherwise append-only (V1); this is its one deliberate exception, so every
+     * void is logged with who, what and how much.
+     */
+    @Transactional
+    public StockMutationResponse voidWrite(UUID productId, UUID movementId, UUID actingUserId) {
+        Product product = lockProductOrThrow(productId);
+        UUID tenantId = requireTenantId();
+        StockMovement movement = stockMovementRepository
+                .findById(movementId)
+                .filter(found -> found.getProduct().getId().equals(productId))
+                .orElseThrow(() -> new StockWriteNotUndoableException("That stock change was not found."));
+
+        // Undoing a write takes the authority the write itself took - a stock-out's void is a
+        // STOCK_OUT action - checked against the user's role as it is now, not as the access token
+        // remembers it, so a permission removed in the meantime is respected.
+        String authority = switch (movement.getMovementType()) {
+            case IN -> "STOCK_IN";
+            case OUT -> "STOCK_OUT";
+            case ADJUSTMENT -> "MANAGE_INVENTORY";
+        };
+        stockWritePermissionGuard.require(actingUserId, authority);
+
+        StockWriteUndoStore.Snapshot snapshot = stockWriteUndoStore
+                .find(tenantId, movementId)
+                .orElseThrow(() -> new StockWriteNotUndoableException(
+                        "This can't be undone. Record a count to correct the figure."));
+        if (!snapshot.createdBy().equals(actingUserId)) {
+            throw new StockWriteNotUndoableException("Only the person who recorded this can undo it.");
+        }
+        if (snapshot.createdAt().isBefore(OffsetDateTime.now().minus(VOID_WINDOW))) {
+            throw new StockWriteNotUndoableException(
+                    "It's too late to undo this. Record a count to correct the figure.");
+        }
+        if (snapshot.notUndoableReason() != null) {
+            throw new StockWriteNotUndoableException(snapshot.notUndoableReason());
+        }
+        boolean latest = stockMovementRepository
+                .findFirstByProductIdOrderByCreatedAtDescIdDesc(productId)
+                .map(found -> found.getId().equals(movementId))
+                .orElse(false);
+        if (!latest) {
+            throw new StockWriteNotUndoableException(
+                    "Something else has been recorded for this product since, so this can't be undone. Record a count"
+                            + " to correct the figure.");
+        }
+
+        switch (movement.getMovementType()) {
+            case IN -> voidStockIn(product, movement, snapshot, tenantId);
+            case OUT -> voidStockOut(product, movement, tenantId);
+            case ADJUSTMENT -> product.setQuantityOnHand(product.getQuantityOnHand() - movement.getQuantity());
+        }
+        stockMovementRepository.delete(movement);
+        stockMovementRepository.flush();
+
+        log.info(
+                "Stock write voided: movement={} type={} quantity={} product={} client={} by={}",
+                movementId, movement.getMovementType(), movement.getQuantity(), productId, tenantId, actingUserId);
+        return StockMutationResponse.of(product, null);
+    }
+
+    private void voidStockIn(Product product, StockMovement movement, StockWriteUndoStore.Snapshot snapshot, UUID tenantId) {
+        if (stockMovementAllocationRepository.sumQuantityByInMovementId(movement.getId()) > 0) {
+            throw new StockWriteNotUndoableException(
+                    "Some of this delivery has already gone out, so it can't be undone. Record a count to correct the"
+                            + " figure.");
+        }
+        product.setQuantityOnHand(product.getQuantityOnHand() - movement.getQuantity());
+        product.setCostPrice(snapshot.priorCostPrice());
+        CompanyVendor vendor = movement.getCompanyVendor();
+        if (vendor != null) {
+            productVendorRepository
+                    .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), vendor.getId())
+                    .ifPresent(line -> {
+                        line.setQuantityOnHandFromVendor(line.getQuantityOnHandFromVendor() - movement.getQuantity());
+                        line.setTotalQuantityReceived(line.getTotalQuantityReceived() - movement.getQuantity());
+                    });
+        }
+        if (snapshot.packId() != null) {
+            productVendorPackRepository.findById(snapshot.packId()).ifPresent(pack -> {
+                pack.setLastCostPrice(snapshot.priorPackLastCostPrice());
+                pack.setVendorSku(snapshot.priorPackVendorSku());
+            });
+        }
+    }
+
+    private void voidStockOut(Product product, StockMovement movement, UUID tenantId) {
+        List<StockMovementAllocation> draws =
+                stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(movement.getId());
+        for (StockMovementAllocation draw : draws) {
+            CompanyVendor lotVendor = draw.getInMovement().getCompanyVendor();
+            if (lotVendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), lotVendor.getId())
+                        .ifPresent(line -> line.setQuantityOnHandFromVendor(
+                                line.getQuantityOnHandFromVendor() + draw.getQuantity()));
+            }
+        }
+        stockMovementAllocationRepository.deleteAll(draws);
+        stockMovementAllocationRepository.flush();
+        product.setQuantityOnHand(product.getQuantityOnHand() + movement.getQuantity());
     }
 
     /**

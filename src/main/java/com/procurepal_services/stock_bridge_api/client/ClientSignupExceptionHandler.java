@@ -4,6 +4,7 @@ import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -33,6 +34,20 @@ public class ClientSignupExceptionHandler {
      * constraint is the real source of truth here; this just keeps the
      * response a clean 409 instead of a raw 500.
      */
+    /**
+     * A field the form should have caught (an older app, or a direct call): the reason, in the
+     * words the form would use, rather than Spring's bare "Bad Request" with nothing to show.
+     */
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiError> handleInvalid(MethodArgumentNotValidException ex) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .map(error -> error.getDefaultMessage())
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(" "));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(new ApiError(message.isBlank() ? "Check the details and try again." : message));
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)

@@ -134,6 +134,9 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         // Attributed to the uploader rather than to nobody - the acting user is threaded from
         // the controller for exactly this, the same way V19 did it for product creation.
         assertThat(opening.createdByUserId()).isNotNull();
+        // And named, so the history reads "who", not an id. No first or last name was given at
+        // signup, so it is the username.
+        assertThat(opening.createdByName()).isEqualTo(admin.user().username());
         // An opening balance happened when it was counted, which is now - a backdated receipt
         // is a delivery, and deliveries are what bulk stock-in records.
         assertThat(opening.occurredAt()).isNotNull();

@@ -10,6 +10,9 @@ public interface RoleRepository extends JpaRepository<Role, UUID> {
 
     Optional<Role> findByName(String name);
 
+    /** A system role by name, never a tenant's custom role that happens to share it. */
+    Optional<Role> findFirstByNameAndClientIdIsNull(String name);
+
     /** Every system role, plus this tenant's own custom roles - see Role's javadoc. */
     List<Role> findByClientIdIsNullOrClientId(UUID clientId);
 
