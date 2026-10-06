@@ -76,8 +76,12 @@ public interface OrderPaymentApplication {
     void applyPaymentSuccess(UUID anchorOrderId, PaymentSuccess success);
 
     /**
-     * The attempt did not result in money: declined, abandoned, expired, reversed,
-     * underpaid, or swept up as a stale checkout past its 24-hour grace period.
+     * The attempt did not result in money: declined, reversed or underpaid. Tells the
+     * buyer, once per attempt.
+     *
+     * <p>NOT for a buyer who simply walked away from the payment page (they know they
+     * did not pay), and NOT for the abandoned-checkout sweep - see
+     * {@link #expireUnpaidCheckout}.
      *
      * <p>The order does NOT become CANCELLED merely because one attempt failed -
      * a buyer may retry payment on the same PENDING_PAYMENT order. {@code reason}
@@ -90,6 +94,17 @@ public interface OrderPaymentApplication {
      *     ever initialized).
      */
     void applyPaymentFailure(UUID anchorOrderId, String paymentReference, String reason);
+
+    /**
+     * The checkout went unpaid past its grace period: cancel every still-unpaid order
+     * in the anchor's group, silently. The buyer was shown the deadline up front, so
+     * this sends no email and no bell notification.
+     *
+     * <p>Must actually leave the orders CANCELLED. The sweep that calls this selects
+     * by {@code status = PENDING_PAYMENT}, so an implementation that left them payable
+     * would be handed the same orders again on every run.
+     */
+    void expireUnpaidCheckout(UUID anchorOrderId, String reason);
 
     /**
      * Everything the payment module needs to open a Monnify checkout, without giving

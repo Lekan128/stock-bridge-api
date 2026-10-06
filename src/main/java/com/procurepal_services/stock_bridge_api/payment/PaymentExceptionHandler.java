@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.payment;
 
+import com.procurepal_services.stock_bridge_api.email.verification.EmailNotVerifiedException;
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.auth.ValidationErrors;
 import org.springframework.http.HttpStatus;
@@ -29,6 +30,12 @@ public class PaymentExceptionHandler {
     @ExceptionHandler(PaymentNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(PaymentNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    /** 403: the order is theirs and payable, but the buyer has not confirmed their email. */
+    @ExceptionHandler(EmailNotVerifiedException.class)
+    public ResponseEntity<ApiError> handleEmailNotVerified(EmailNotVerifiedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
     }
 
     /** 409: the order is real and theirs, but its state forbids a new checkout. */

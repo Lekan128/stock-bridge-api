@@ -105,6 +105,12 @@ class MonnifyPaymentOrderLoopIntegrationTest {
     @Autowired
     private MonnifySignatureVerifier signatureVerifier;
 
+    @Autowired
+    private PaymentReconciliationService reconciliationService;
+
+    @Autowired
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+
     private FakeMonnifyClient monnify;
     private TenantLoginResponse buyer;
     private UUID buyerClientId;
@@ -174,6 +180,61 @@ class MonnifyPaymentOrderLoopIntegrationTest {
         Order order = orderRepository.findById(orderId).orElseThrow();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING_PAYMENT);
         assertThat(order.getPaymentStatus()).isEqualTo(PaymentStatus.PENDING);
+    }
+
+    /**
+     * Regression: the abandoned-checkout sweep used to call applyPaymentFailure, which
+     * emails the buyer and leaves the order PENDING_PAYMENT - so every run re-selected
+     * the same order and emailed again, every five minutes, forever. It must cancel
+     * the order, tell nobody, and find nothing to do on the next run.
+     */
+    @Test
+    void theAbandonedCheckoutSweepCancelsAStaleOrderOnceAndNotifiesNobody() {
+        UUID orderId = newOrderFor(newCatalogProduct());
+        // Past the 24h grace. created_at is updatable=false on the entity, hence SQL.
+        jdbc.update("UPDATE orders SET created_at = now() - interval '25 hours' WHERE id = ?", orderId);
+
+        reconciliationService.cancelAbandonedCheckouts();
+
+        Order order = orderRepository.findById(orderId).orElseThrow();
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(order.getCancelledAt()).isNotNull();
+        assertThat(order.getCancellationReason()).contains("no payment received within 24 hours");
+
+        // Second run: the order is no longer PENDING_PAYMENT, so nothing happens to it.
+        reconciliationService.cancelAbandonedCheckouts();
+
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM order_status_events WHERE order_id = ? AND to_status = 'CANCELLED'",
+                        Integer.class,
+                        orderId))
+                .isEqualTo(1);
+        // No bell entry of any kind - and the email is sent from the same call sites
+        // as the bell, so none was sent either.
+        assertThat(jdbc.queryForObject(
+                        "SELECT count(*) FROM notifications WHERE order_id = ?", Integer.class, orderId))
+                .isZero();
+    }
+
+    /** A pending order inside its grace period is left alone, and the API tells the buyer the deadline. */
+    @Test
+    void anUnpaidOrderInsideItsGracePeriodIsLeftAloneAndCarriesItsDeadline() {
+        UUID orderId = newOrderFor(newCatalogProduct());
+
+        reconciliationService.cancelAbandonedCheckouts();
+
+        Order order = orderRepository.findById(orderId).orElseThrow();
+        assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING_PAYMENT);
+
+        ResponseEntity<tools.jackson.databind.JsonNode> detail = restTemplate.exchange(
+                "/api/orders/" + orderId,
+                HttpMethod.GET,
+                new HttpEntity<>(authHeaders()),
+                tools.jackson.databind.JsonNode.class);
+        assertThat(detail.getStatusCode()).isEqualTo(HttpStatus.OK);
+        java.time.OffsetDateTime dueBy = java.time.OffsetDateTime.parse(detail.getBody().get("paymentDueBy").asText());
+        // Within a second rather than equal: the JSON round trip may drop sub-millisecond precision.
+        assertThat(java.time.Duration.between(order.getCreatedAt(), dueBy).toSeconds()).isBetween(86_399L, 86_400L);
     }
 
     // ------------------------------------------------------------------------

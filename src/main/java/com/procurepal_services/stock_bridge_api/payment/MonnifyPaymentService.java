@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.payment;
 
+import com.procurepal_services.stock_bridge_api.email.verification.VerifiedEmailGuard;
 import com.procurepal_services.stock_bridge_api.entity.Order;
 import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
 import com.procurepal_services.stock_bridge_api.entity.Payment;
@@ -42,6 +43,7 @@ public class MonnifyPaymentService {
     private final OrderRepository orderRepository;
     private final PaymentApplicationService paymentApplicationService;
     private final OrderPaymentApplication orderPaymentApplication;
+    private final VerifiedEmailGuard verifiedEmailGuard;
 
     // ------------------------------------------------------------------------
     // Initialize
@@ -82,7 +84,7 @@ public class MonnifyPaymentService {
      * alternative failure, which is a live checkout URL we have no record of.
      */
     @Transactional
-    public InitializePaymentResponse initialize(UUID orderId, UUID callerClientId) {
+    public InitializePaymentResponse initialize(UUID orderId, UUID callerClientId, UUID callerUserId) {
         if (!monnifyClient.isConfigured()) {
             log.warn("Checkout attempted for order {} while Monnify is unconfigured", orderId);
             throw new MonnifyNotConfiguredException();
@@ -97,6 +99,8 @@ public class MonnifyPaymentService {
                 .orElseThrow(PaymentNotFoundException::new);
 
         assertPayable(order);
+        // After ownership, so a stranger probing order ids still gets the same 404.
+        verifiedEmailGuard.requireVerified(callerUserId);
 
         OrderPaymentContext context = orderPaymentApplication.loadPaymentContext(orderId);
 

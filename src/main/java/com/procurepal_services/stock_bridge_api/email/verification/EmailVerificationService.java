@@ -398,6 +398,37 @@ public class EmailVerificationService {
         return ResendVerificationResponse.sent(address);
     }
 
+    /**
+     * Mails a confirmation link to a user's NEW address straight after they change it, so
+     * the person who just typed it does not have to go looking for a "resend" button.
+     *
+     * <p>Spends the same per-user budget as {@link #resend}, which is what keeps a profile
+     * save from becoming an unbounded "mail any address" primitive. Unlike resend it never
+     * throws: an exhausted budget, no address or no base URL just means nothing is sent and
+     * the profile page's resend prompt is still there. A save must never fail because of
+     * email history.
+     *
+     * @return true if a link was sent
+     */
+    @Transactional
+    public boolean sendAfterAddressChange(User user) {
+        if (user.isEmailVerified() || resolveAddress(user) == null) {
+            return false;
+        }
+        EmailVerificationRateLimiter.Verdict verdict = rateLimiter.tryAcquire(user.getId());
+        if (!verdict.allowed()) {
+            log.info("Not auto-sending a confirmation link after an address change for user {}: budget spent.",
+                    user.getId());
+            return false;
+        }
+        VerificationLink link = issueLink(user);
+        if (link == null) {
+            return false;
+        }
+        emailNotificationService.verifyEmailAddress(user, link);
+        return true;
+    }
+
     // ========================================================================
     // SHARED
     // ========================================================================

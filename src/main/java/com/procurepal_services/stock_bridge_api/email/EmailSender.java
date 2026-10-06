@@ -158,6 +158,19 @@ public class EmailSender {
             log.info("Email not configured - would have sent \"{}\" to {}", message.subject(), message.to());
             return false;
         }
+        // RFC 2606/6761 reserved TLDs can never have an inbox. The demo seed and the test
+        // fixtures use them (admin@demo.example), and a dev server holding a real provider
+        // key would otherwise hand the provider mail that can only fail - which is how a
+        // local reconciliation loop once filled the Resend log with thousands of rejects.
+        List<String> deliverable = message.to().stream().filter(address -> !isReservedDomain(address)).toList();
+        if (deliverable.isEmpty()) {
+            log.debug("Not sending \"{}\": every recipient is on a reserved test domain {}",
+                    message.subject(), message.to());
+            return false;
+        }
+        if (deliverable.size() < message.to().size()) {
+            message = message.withRecipients(deliverable);
+        }
         if (message.kind() == EmailKind.PROMOTIONAL) {
             return sendPromotional(message);
         }
@@ -250,6 +263,12 @@ public class EmailSender {
      * not parse it and will render no button at all - which looks identical to having
      * shipped no header.
      */
+    static boolean isReservedDomain(String address) {
+        String lower = address == null ? "" : address.toLowerCase(java.util.Locale.ROOT);
+        return lower.endsWith(".example") || lower.endsWith(".test")
+                || lower.endsWith(".invalid") || lower.endsWith(".localhost");
+    }
+
     static String listUnsubscribeValue(String unsubscribeUrl) {
         return "<" + unsubscribeUrl + ">";
     }

@@ -25,6 +25,14 @@ spring:
 # phone's mobile data - and roughly a tenth of that gzipped. Every other JSON answer benefits too.
 # Small responses are left alone: under ~2 KB, compressing costs more than it saves.
 server:
+  # Behind Render's proxy, getRemoteAddr() is the proxy, not the visitor - which silently turned
+  # every per-IP rate limit (signup, password reset, setup requests, vendor applications) into ONE
+  # limit shared by every visitor. "native" installs Tomcat's RemoteIpValve: it reads
+  # X-Forwarded-For from the RIGHT, skipping trusted internal hops (10/8, 172.16/12, 192.168/16,
+  # 100.64/10, loopback), and takes the first address it does not trust. Render appends to the
+  # header rather than replacing it, so a client-supplied entry sits to the LEFT and is never
+  # chosen - the spoof-resistant reading. Harmless with no proxy (local dev): no header, no change.
+  forward-headers-strategy: native
   compression:
     enabled: true
     mime-types: application/json
@@ -263,6 +271,13 @@ app:
     ip-limit: ${PASSWORD_RESET_IP_LIMIT:10}
     window: ${PASSWORD_RESET_WINDOW:1h}
     max-accounts: ${PASSWORD_RESET_MAX_ACCOUNTS:5}
+  # Public signup. Every signup emails the submitted address (welcome + confirm link), so this is
+  # what stops signup being used to flood a stranger's inbox - see SignupProperties.
+  signup:
+    email-limit: ${SIGNUP_EMAIL_LIMIT:3}
+    email-window: ${SIGNUP_EMAIL_WINDOW:24h}
+    ip-limit: ${SIGNUP_IP_LIMIT:10}
+    ip-window: ${SIGNUP_IP_WINDOW:1h}
   # The public "apply to sell on ProcurePaddy" form. Both keys are OPTIONAL and
   # both have working defaults in VendorWaitlistProperties, which is where each is
   # justified at length - same arrangement as app.email.verification above, and for

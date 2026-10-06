@@ -41,7 +41,7 @@ public class PaymentController {
     public InitializePaymentResponse initialize(
             @Valid @RequestBody InitializePaymentRequest request,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return monnifyPaymentService.initialize(request.orderId(), principal.getClientId());
+        return monnifyPaymentService.initialize(request.orderId(), principal.getClientId(), principal.getUserId());
     }
 
     /**

@@ -385,6 +385,8 @@ class MonnifyPaymentIntegrationTest {
 
         assertThat(payment(checkout.paymentReference()).getStatus()).isEqualTo(PaymentProviderStatus.ABANDONED);
         assertThat(orderPaymentApplication.successesFor(checkout.paymentReference())).isEmpty();
+        // Walking away is not news to the buyer - no "payment did not go through" email.
+        assertThat(orderPaymentApplication.failuresFor(checkout.paymentReference())).isEmpty();
 
         Order order = orderRepository.findById(fixture.orderId()).orElseThrow();
         assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING_PAYMENT);

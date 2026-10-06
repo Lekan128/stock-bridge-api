@@ -95,8 +95,10 @@ public class ResendWebhookService {
                 handleBounce(svixId, type, data, rawBody);
             } else if ("email.complained".equals(type)) {
                 handleComplaint(svixId, type, data, rawBody);
+            } else if ("email.failed".equals(type)) {
+                handleFailed(svixId, type, data, rawBody);
             } else {
-                // Only the two events above should be subscribed in the dashboard;
+                // Only the three events above should be subscribed in the dashboard;
                 // anything else is acknowledged so Svix stops retrying it.
                 log.debug("Ignoring a Resend '{}' event - this endpoint only acts on bounces and complaints.", type);
             }
@@ -152,6 +154,25 @@ public class ResendWebhookService {
                 "Complaint: applied to " + recipients.size() + " address(es), " + optedOut
                         + " user row(s) opted out of promotional email", rawBody);
         log.info("Applied a Resend complaint to {} address(es)", recipients.size());
+    }
+
+    /**
+     * Resend refused to send at all - before any receiving server was involved. Recorded and
+     * logged loudly, and deliberately NOT turned into a suppression: the documented reasons
+     * are overwhelmingly OURS (reached_daily_quota, a revoked API key, an unverified sending
+     * domain), and suppressing the recipient for our own quota running out would silence a
+     * perfectly good customer forever. A dead recipient shows up as a bounce instead, which
+     * IS suppressed. Error level because every one of these means mail is not going out.
+     */
+    private void handleFailed(String svixId, String type, JsonNode data, String rawBody) {
+        String reason = text(data == null ? null : data.get("failed"), "reason");
+        List<String> recipients = recipients(data);
+        log.error("Resend could not send \"{}\" to {} recipient(s): {}. Nothing was suppressed - check the "
+                        + "Resend dashboard (quota, API key, domain verification).",
+                text(data, "subject"), recipients.size(), reason == null ? "no reason given" : reason);
+        record(svixId, type, reason, true, true,
+                "Send failed (" + (reason == null ? "no reason given" : reason) + "): recorded, nothing suppressed",
+                rawBody);
     }
 
     /** {@code data.to} is an array in every documented payload; a bare string is tolerated anyway. */

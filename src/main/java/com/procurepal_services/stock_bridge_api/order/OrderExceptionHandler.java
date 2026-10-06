@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.email.verification.EmailNotVerifiedException;
 import com.procurepal_services.stock_bridge_api.address.DeliveryAddressNotFoundException;
 import com.procurepal_services.stock_bridge_api.address.InvalidDeliveryAddressException;
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
@@ -22,6 +23,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  */
 @RestControllerAdvice(assignableTypes = {OrderController.class, CheckoutController.class})
 public class OrderExceptionHandler {
+
+    @ExceptionHandler(EmailNotVerifiedException.class)
+    public ResponseEntity<ApiError> handleEmailNotVerified(EmailNotVerifiedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
+    }
 
     @ExceptionHandler(OrderNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(OrderNotFoundException ex) {

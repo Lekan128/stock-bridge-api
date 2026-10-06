@@ -203,6 +203,21 @@ public class EmailRecipients {
         return addresses;
     }
 
+    /**
+     * Whoever sells the goods on this order and therefore has to act on it. For ProcurePal's
+     * own goods that is {@link #forOperator()} (its contact plus the configured ops alias);
+     * for a vendor's goods it is the vendor's own contact - ProcurePal cannot even open a
+     * vendor's order (the fulfilment queue is seller-scoped), so mailing ProcurePal about it
+     * reached the one reader who could do nothing, and never the one who had to.
+     */
+    public List<String> forSeller(Order order) {
+        UUID sellerId = order.getSellerClientId();
+        boolean platformOwner = sellerId == null || clientRepository.findById(sellerId)
+                .map(Client::isPlatformOwner)
+                .orElse(false);
+        return platformOwner ? forOperator() : forClient(sellerId);
+    }
+
     /** A company's registered contact - the address ProcurePal has for the business itself. */
     public List<String> forClient(UUID clientId) {
         if (clientId == null) {

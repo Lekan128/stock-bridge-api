@@ -50,7 +50,11 @@ public record CheckoutQuoteResponse(
          * created. A single-seller basket has exactly one, so the frontend can render
          * the grouped layout unconditionally rather than branching on a count.
          */
-        List<SellerGroup> sellerGroups) {
+        List<SellerGroup> sellerGroups,
+        // True when the acting user has not confirmed their email. Also present as the
+        // first entry in blockers; this flag is what lets checkout offer a "resend the
+        // link" button instead of just a sentence.
+        boolean emailVerificationRequired) {
 
     /** A cart line that has stopped being purchasable since it was added, and why. */
     public record UnavailableLine(java.util.UUID productId, String productName, String reason) {
