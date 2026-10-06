@@ -57,6 +57,9 @@ public record StockMovementResponse(
         BigDecimal unitPriceAtTime,
         String note,
         UUID createdByUserId,
+        // Who recorded it, as a person reads it: "Amaka Obi", or the username when no name was
+        // given. "Know who recorded what" is the promise, so the history shows a name, not an id.
+        String createdByName,
         UUID companyVendorId,
         String companyVendorName,
         String packagingUnit,
@@ -86,6 +89,7 @@ public record StockMovementResponse(
                 movement.getUnitPriceAtTime(),
                 movement.getNote(),
                 movement.getCreatedBy() == null ? null : movement.getCreatedBy().getId(),
+                displayName(movement.getCreatedBy()),
                 movement.getCompanyVendor() == null ? null : movement.getCompanyVendor().getId(),
                 movement.getCompanyVendor() == null ? null : movement.getCompanyVendor().getName(),
                 movement.getPackagingUnit(),
@@ -99,6 +103,17 @@ public record StockMovementResponse(
     }
 
     /** Null, not zero, when the movement recorded no price - see the class doc. */
+    /** One query per distinct user at most (Hibernate's first-level cache), like companyVendorName. */
+    private static String displayName(com.procurepal_services.stock_bridge_api.entity.User user) {
+        if (user == null) {
+            return null;
+        }
+        String first = user.getFirstName() == null ? "" : user.getFirstName().trim();
+        String last = user.getLastName() == null ? "" : user.getLastName().trim();
+        String full = (first + " " + last).trim();
+        return full.isEmpty() ? user.getUsername() : full;
+    }
+
     private static BigDecimal lineValue(StockMovement movement) {
         BigDecimal unitPrice = movement.getUnitPriceAtTime();
         return unitPrice == null ? null : unitPrice.multiply(BigDecimal.valueOf(movement.getQuantity()));

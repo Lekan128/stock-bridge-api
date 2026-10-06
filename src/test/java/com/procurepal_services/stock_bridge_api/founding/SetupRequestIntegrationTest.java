@@ -127,6 +127,19 @@ class SetupRequestIntegrationTest {
         return restTemplate.getForObject("/api/public/founding-offer", FoundingOfferStatus.class);
     }
 
+    @Test
+    void everyMarketingPageCanBeTheSourceButNotJustAnyString() {
+        ResponseEntity<String> fromGuide = restTemplate.postForEntity("/api/public/setup-requests",
+                Map.of("businessName", "Guide Reader", "whatsapp", number, "source", "for-pharmacies"), String.class);
+        assertThat(fromGuide.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(jdbc.queryForObject("SELECT source FROM setup_requests WHERE whatsapp = ?", String.class,
+                WhatsAppNumbers.normalise(number).orElseThrow())).isEqualTo("for-pharmacies");
+
+        ResponseEntity<String> odd = restTemplate.postForEntity("/api/public/setup-requests",
+                Map.of("businessName", "Odd", "whatsapp", "0806" + number.substring(4), "source", "<script>"), String.class);
+        assertThat(odd.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     private ResponseEntity<SetupRequestResponse> post(String businessName, String whatsapp, String website) {
         Map<String, Object> body = new java.util.HashMap<>(Map.of("businessName", businessName, "whatsapp", whatsapp));
         if (website != null) {

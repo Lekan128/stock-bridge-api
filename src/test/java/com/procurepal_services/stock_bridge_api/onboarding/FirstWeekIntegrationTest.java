@@ -204,7 +204,7 @@ class FirstWeekIntegrationTest {
 
     private TenantLoginResponse signup() {
         return restTemplate.postForObject("/api/clients/signup",
-                new ClientSignupRequest("List Shop " + unique, null, null, PASSWORD, null, local, null), TenantLoginResponse.class);
+                new ClientSignupRequest("List Shop " + unique, null, "owner-" + unique + "@example.com", PASSWORD, null, local, null), TenantLoginResponse.class);
     }
 
     private UUID clientId(TenantLoginResponse owner) {

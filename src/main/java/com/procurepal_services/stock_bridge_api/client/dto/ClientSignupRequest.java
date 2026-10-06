@@ -8,26 +8,27 @@ import java.util.UUID;
 /**
  * Self-service signup.
  *
- * <p>Since the landing page's step 4 (LANDING_PAGE_PLAN.md §4) a shop signs up with a business
- * name, its WhatsApp number and a password: an email is optional, and the owner then logs in with
- * the phone number. One of the two is required, checked in ClientSignupService because it spans two
- * fields. The older shape (email, confirmed password) still works unchanged.
+ * <p>A shop signs up with a business name, an email, its WhatsApp number and a password. The email
+ * is required (the owners' decision of 2026-10-06: it is how Procurepaddy writes to the company) and
+ * is the owner's username; the WhatsApp number is how the setup team reaches them, and the owner can
+ * log in with it too, typed any way (AuthService). The older shape (no phone, a confirmed password)
+ * still works unchanged.
  */
 public record ClientSignupRequest(
-        @NotBlank String name,
+        @NotBlank(message = "Enter your business name.") String name,
         // Optional. Blank means generate one from the name (with -2, -3... if that is taken).
         String clientIdentifier,
-        // Optional since step 4. When present it is the owner's username, as before.
-        @Email String adminEmail,
+        // Required: the owner's username, and where Procurepaddy writes to the company.
+        @NotBlank(message = "Enter your email address.") @Email(message = "Enter a valid email address.") String adminEmail,
         // Length-only for now; tighten later (mixed case/digits/symbols) once
         // there's a product decision on password policy.
-        @NotBlank @Size(min = 8) String password,
+        @NotBlank(message = "Enter a password.") @Size(min = 8, message = "Use at least 8 characters for the password.") String password,
         // Optional since step 4 (the form shows the password instead of asking twice). When
         // present it must match.
         String confirmPassword,
-        // The shop's WhatsApp number. Required when there is no email, and then it must be a
-        // Nigerian mobile number: it becomes the owner's username, in +234 form.
-        @Size(max = 50) String phone,
+        // The shop's WhatsApp number. Optional here (older callers send none; the sign-up form
+        // requires it). A Nigerian mobile number is stored in +234 form and logs the owner in too.
+        @Size(max = 50, message = "That phone number is too long.") String phone,
         // The landing page's setup request this signup follows, from "Create your password"
         // (?setup=). Optional.
         UUID setupRequestId) {

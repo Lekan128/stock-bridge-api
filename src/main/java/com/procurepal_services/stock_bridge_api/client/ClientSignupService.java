@@ -58,18 +58,12 @@ public class ClientSignupService {
             throw new PasswordMismatchException();
         }
 
-        // The owner logs in with the email when there is one (as always), otherwise with the
-        // WhatsApp number in +234 form. Login accepts the number however it is typed.
+        // The email is the owner's username, as it always was. The WhatsApp number, when it is a
+        // Nigerian mobile, is kept in +234 form so the owner can log in with it too, typed any way.
         String email = normalize(request.adminEmail());
         String typedPhone = normalize(request.phone());
         String whatsapp = typedPhone == null ? null : WhatsAppNumbers.normalise(typedPhone).orElse(null);
-        if (email == null && typedPhone == null) {
-            throw new SignupContactException("Enter your WhatsApp number or an email address.");
-        }
-        if (email == null && whatsapp == null) {
-            throw new SignupContactException("Enter a Nigerian mobile number, like 0803 123 4567.");
-        }
-        String username = email != null ? email : whatsapp;
+        String username = email;
 
         // A Company ID the shop chose must be free; one we generate never collides.
         String slug = normalize(request.clientIdentifier()) != null

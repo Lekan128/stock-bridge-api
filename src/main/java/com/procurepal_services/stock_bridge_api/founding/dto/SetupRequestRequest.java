@@ -14,6 +14,8 @@ import jakarta.validation.constraints.Size;
 public record SetupRequestRequest(
         @NotBlank(message = "Enter your business name.") @Size(max = 120, message = "Keep the business name under 120 characters.") String businessName,
         @NotBlank(message = "Enter your WhatsApp number.") @Size(max = 24) String whatsapp,
-        @Pattern(regexp = "landing|founding|pricing", message = "Unknown source.") String source,
+        // The page it came from: landing, founding, pricing, for-pharmacies, guide... (the queue
+        // shows it). Any short lowercase name, since every marketing page has a form.
+        @Pattern(regexp = "[a-z][a-z0-9-]{0,29}", message = "Unknown source.") String source,
         @Size(max = 200) String website) {
 }
