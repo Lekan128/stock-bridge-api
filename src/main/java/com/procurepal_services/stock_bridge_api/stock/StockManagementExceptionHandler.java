@@ -28,6 +28,11 @@ public class StockManagementExceptionHandler {
      * gives for answering 409 rather than 400 on its own state conflict. Body carries the real
      * numbers alongside the message - MULTI_VENDOR_INVENTORY_DESIGN.md section 8.
      */
+    @ExceptionHandler(StockWriteNotUndoableException.class)
+    public ResponseEntity<ApiError> handleNotUndoable(StockWriteNotUndoableException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(InsufficientStockException.class)
     public ResponseEntity<InsufficientStockErrorResponse> handleInsufficientStock(InsufficientStockException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
@@ -59,5 +64,21 @@ public class StockManagementExceptionHandler {
     @ExceptionHandler(FutureOccurredAtException.class)
     public ResponseEntity<ApiError> handleFutureOccurredAt(FutureOccurredAtException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(InvalidIdempotencyKeyException.class)
+    public ResponseEntity<ApiError> handleInvalidIdempotencyKey(InvalidIdempotencyKeyException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    /** 422: the request is well-formed, but the key it carries already names a different one. */
+    @ExceptionHandler(IdempotencyKeyReusedException.class)
+    public ResponseEntity<ApiError> handleIdempotencyKeyReused(IdempotencyKeyReusedException ex) {
+        return ResponseEntity.unprocessableContent().body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(IdempotencyKeyInProgressException.class)
+    public ResponseEntity<ApiError> handleIdempotencyKeyInProgress(IdempotencyKeyInProgressException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
 }

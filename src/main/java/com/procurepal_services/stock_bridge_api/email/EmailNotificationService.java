@@ -5,6 +5,7 @@ import com.procurepal_services.stock_bridge_api.email.verification.VerificationL
 import com.procurepal_services.stock_bridge_api.email.template.OrderEmails;
 import com.procurepal_services.stock_bridge_api.email.template.ProductEmails;
 import com.procurepal_services.stock_bridge_api.email.template.SettlementEmails;
+import com.procurepal_services.stock_bridge_api.email.template.SetupEmails;
 import com.procurepal_services.stock_bridge_api.email.template.VendorEmails;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Order;
@@ -14,6 +15,7 @@ import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.entity.VendorWaitlistApplication;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.OrderItemRepository;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -359,6 +361,21 @@ public class EmailNotificationService {
 
     private static String expiresInOf(VerificationLink link) {
         return link == null ? null : link.expiresIn();
+    }
+
+    /** To the support inbox: a shop booked a setup; reply on WhatsApp now (LANDING_PAGE_PLAN.md rule 5). */
+    public void setupRequested(
+            String businessName, String whatsapp, String source, boolean founding,
+            LocalDate setupWeekStarts, OffsetDateTime requestedAt, String replyUrl) {
+        dispatcher.dispatchQuietly(() -> SetupEmails.setupRequested(
+                recipients.forSetupRequests(), businessName, whatsapp, source, founding,
+                setupWeekStarts, requestedAt, replyUrl, baseUrl()));
+    }
+
+    /** To the support inbox: a shop sent its product list from the app (step 5). */
+    public void productListReceived(String businessName, String companyId, String whatsapp, int files) {
+        dispatcher.dispatchQuietly(() -> SetupEmails.listReceived(
+                recipients.forSetupRequests(), businessName, companyId, whatsapp, files, baseUrl()));
     }
 
     private String baseUrl() {

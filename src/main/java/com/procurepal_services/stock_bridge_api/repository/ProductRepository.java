@@ -15,6 +15,13 @@ import org.springframework.data.repository.query.Param;
 
 public interface ProductRepository extends TenantScopedRepository<Product, UUID>, JpaSpecificationExecutor<Product> {
 
+    /**
+     * Products for the sync feed (A3), with the company category each row names fetched in the
+     * same query. Order is the caller's: the feed sorts by id or by change order itself.
+     */
+    @Query("SELECT p FROM Product p LEFT JOIN FETCH p.companyCategory WHERE p.clientId = :clientId AND p.id IN :ids")
+    List<Product> findForSync(@Param("clientId") UUID clientId, @Param("ids") Collection<UUID> ids);
+
     Optional<Product> findByClientIdAndSku(UUID clientId, String sku);
 
     /**
@@ -35,6 +42,22 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
     @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true "
             + "AND p.lowStockThreshold IS NOT NULL AND p.quantityOnHand <= p.lowStockThreshold")
     long countLowStockByClientId(@Param("clientId") UUID clientId);
+
+    /** quantityOnHand <= 0, active only - independent of whether a low-stock threshold is set. */
+    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true "
+            + "AND p.quantityOnHand <= 0")
+    long countOutOfStockByClientId(@Param("clientId") UUID clientId);
+
+    /**
+     * The union this and the two queries above partition into three for {@code AnalyticsService}'s
+     * "well stocked" figure (active count minus this): out of stock OR (has a threshold and at or
+     * below it). Written as one query, not `countLowStockByClientId + countOutOfStockByClientId`,
+     * because a product at zero with a threshold set satisfies both and a sum would double-count it.
+     */
+    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true "
+            + "AND (p.quantityOnHand <= 0 "
+            + "OR (p.lowStockThreshold IS NOT NULL AND p.quantityOnHand <= p.lowStockThreshold))")
+    long countNeedsAttentionByClientId(@Param("clientId") UUID clientId);
 
     /**
      * Row-locks the product for the duration of the caller's transaction, so

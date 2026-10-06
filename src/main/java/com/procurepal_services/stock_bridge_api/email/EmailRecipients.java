@@ -146,6 +146,14 @@ public class EmailRecipients {
     }
 
     /**
+     * The inbox that hears about Procurepaddy setup requests: the same support inbox, which is
+     * where a shop's product list arrives too. Never empty, for {@link #forVendorWaitlist()}'s reason.
+     */
+    public List<String> forSetupRequests() {
+        return List.of(emailProperties.vendorWaitlistAddress());
+    }
+
+    /**
      * Every platform operator - the {@code super_admins} table, in full.
      *
      * <h2>Why this one DOES list a table, when the class doc says it never does</h2>

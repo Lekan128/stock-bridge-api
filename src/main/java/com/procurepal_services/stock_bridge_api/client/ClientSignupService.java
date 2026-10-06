@@ -9,6 +9,8 @@ import com.procurepal_services.stock_bridge_api.email.verification.VerificationL
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.Role;
 import com.procurepal_services.stock_bridge_api.entity.User;
+import com.procurepal_services.stock_bridge_api.founding.SetupRequestService;
+import com.procurepal_services.stock_bridge_api.founding.WhatsAppNumbers;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
@@ -47,14 +49,26 @@ public class ClientSignupService {
     private final AuthService authService;
     private final EmailNotificationService emailNotificationService;
     private final EmailVerificationService emailVerificationService;
+    private final SetupRequestService setupRequestService;
 
     @Transactional
     public TenantLoginResponse signup(ClientSignupRequest request) {
-        if (!request.password().equals(request.confirmPassword())) {
+        // Optional since the landing page's step 4: the form shows the password instead.
+        if (request.confirmPassword() != null && !request.password().equals(request.confirmPassword())) {
             throw new PasswordMismatchException();
         }
 
-        String slug = clientProvisioning.requireAvailableSlug(request.clientIdentifier(), request.name());
+        // The email is the owner's username, as it always was. The WhatsApp number, when it is a
+        // Nigerian mobile, is kept in +234 form so the owner can log in with it too, typed any way.
+        String email = normalize(request.adminEmail());
+        String typedPhone = normalize(request.phone());
+        String whatsapp = typedPhone == null ? null : WhatsAppNumbers.normalise(typedPhone).orElse(null);
+        String username = email;
+
+        // A Company ID the shop chose must be free; one we generate never collides.
+        String slug = normalize(request.clientIdentifier()) != null
+                ? clientProvisioning.requireAvailableSlug(request.clientIdentifier(), request.name())
+                : clientProvisioning.generateAvailableSlug(request.name());
 
         Role ownerRole = roleRepository.findByName(TenantRoles.OWNER)
                 .orElseThrow(() -> new IllegalStateException("OWNER role not seeded - run the Flyway migrations"));
@@ -62,8 +76,8 @@ public class ClientSignupService {
         Client client = clientRepository.save(Client.builder()
                 .name(request.name())
                 .slug(slug)
-                .adminContactEmail(request.adminEmail())
-                .phone(normalize(request.phone()))
+                .adminContactEmail(email)
+                .phone(whatsapp != null ? whatsapp : typedPhone)
                 // Not settable at signup on purpose: a self-service tenant cannot
                 // declare itself the marketplace operator, and it cannot grant
                 // itself credit terms. Both default appropriately (false / PREPAID).
@@ -87,7 +101,7 @@ public class ClientSignupService {
             clientProvisioning.createDefaultBranch();
 
             ownerUser = userRepository.save(User.builder()
-                    .username(request.adminEmail())
+                    .username(username)
                     .passwordHash(passwordEncoder.encode(request.password()))
                     .role(ownerRole)
                     .active(true)
@@ -107,7 +121,8 @@ public class ClientSignupService {
                     // reason - nothing created through the tenant-facing API is ever
                     // the account holder.
                     .root(true)
-                    .email(request.adminEmail())
+                    .email(email)
+                    .phone(whatsapp)
                     .build());
         } finally {
             TenantContext.clear();
@@ -134,6 +149,11 @@ public class ClientSignupService {
         // AccountEmails.welcome for why that matters more than it looks like it
         // should. A null link (no plausible address, or no configured base URL)
         // renders the welcome exactly as it was before this flow existed.
+        // The landing page's setup request, if this shop made one: the queue then shows the account.
+        // Flushed first: the link is plain SQL with a foreign key to the client JPA has not written yet.
+        clientRepository.flush();
+        setupRequestService.linkToClient(request.setupRequestId(), whatsapp, client.getId());
+
         VerificationLink verificationLink = emailVerificationService.issueLink(ownerUser);
         emailNotificationService.welcomeNewClient(client, ownerUser, verificationLink);
 

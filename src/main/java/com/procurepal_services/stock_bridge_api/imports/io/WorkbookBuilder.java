@@ -363,7 +363,7 @@ public final class WorkbookBuilder implements AutoCloseable {
         anchor.setRow2(2 + text.length() / 40);
         Comment comment = drawing.createCellComment(anchor);
         comment.setString(creationHelper.createRichTextString(text));
-        comment.setAuthor("Procure Paddy");
+        comment.setAuthor("Procurepaddy");
         headerCell.setCellComment(comment);
     }
 

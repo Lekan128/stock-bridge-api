@@ -348,12 +348,13 @@ public class ProductVendorService {
                     .build());
         }
 
-        applyReceiptToPack(vendor, vendorSku, costPrice, packagingUnit, packagingSize, saveAsSupplierDefault);
+        PackChange packChange =
+                applyReceiptToPack(vendor, vendorSku, costPrice, packagingUnit, packagingSize, saveAsSupplierDefault);
 
         vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor() + quantityReceivedBaseUnits);
         vendor.setTotalQuantityReceived(vendor.getTotalQuantityReceived() + quantityReceivedBaseUnits);
 
-        return new ReceiptResult(productVendorRepository.saveAndFlush(vendor), vendorIsNewToProduct);
+        return new ReceiptResult(productVendorRepository.saveAndFlush(vendor), vendorIsNewToProduct, packChange);
     }
 
     /**
@@ -369,7 +370,7 @@ public class ProductVendorService {
      * has none yet, because a receipt with no pack information must never silently displace a
      * real pack someone already configured.
      */
-    private void applyReceiptToPack(
+    private PackChange applyReceiptToPack(
             ProductVendor vendor,
             String vendorSku,
             BigDecimal costPrice,
@@ -382,6 +383,7 @@ public class ProductVendorService {
                         vendor.getId(), packagingUnit, packagingSize);
 
         ProductVendorPack pack;
+        boolean packIsNew = existing.isEmpty();
         if (existing.isPresent()) {
             pack = existing.get();
         } else if (packagingUnit == null || saveAsSupplierDefault) {
@@ -395,9 +397,12 @@ public class ProductVendorService {
             // "never mutates stored configuration without an explicit opt-in" applied to a pack
             // that does not exist yet, rather than one that does - nothing is created, and the
             // price this delivery paid survives only on the StockMovement snapshot itself.
-            return;
+            return null;
         }
 
+        // What this receipt is about to overwrite, so a void (V39) can put it back exactly.
+        BigDecimal priorLastCostPrice = pack.getLastCostPrice();
+        String priorVendorSku = pack.getVendorSku();
         if (vendorSku != null) {
             pack.setVendorSku(vendorSku);
         }
@@ -415,7 +420,8 @@ public class ProductVendorService {
             });
             pack.setDefault(true);
         }
-        productVendorPackRepository.saveAndFlush(pack);
+        ProductVendorPack saved = productVendorPackRepository.saveAndFlush(pack);
+        return new PackChange(saved.getId(), packIsNew, claimsDefault, priorLastCostPrice, priorVendorSku);
     }
 
     /** Decrements the cached display rollup when a stock-out draws from this vendor's lots. */
@@ -576,6 +582,18 @@ public class ProductVendorService {
     }
 
     /** The (possibly newly-created) vendor line, and whether it was new to this product. */
-    public record ReceiptResult(ProductVendor vendor, boolean vendorIsNewToProduct) {
+    /**
+     * @param packChange what the receipt did to the supplier's pack, or null when it touched none
+     *     (a one-off pack the person chose not to save) - read by a void (V39, D8).
+     */
+    public record ReceiptResult(ProductVendor vendor, boolean vendorIsNewToProduct, PackChange packChange) {
+    }
+
+    /**
+     * One receipt's effect on a supplier pack: which pack, whether it was created or made the
+     * default just now, and the price and SKU it carried before.
+     */
+    public record PackChange(
+            UUID packId, boolean created, boolean madeDefault, BigDecimal priorLastCostPrice, String priorVendorSku) {
     }
 }

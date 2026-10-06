@@ -101,8 +101,12 @@ public class ProductController {
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Boolean active,
             @RequestParam(required = false) UUID categoryId,
+            // The Inventory page's stock-level filter chips — independent of `active`, see
+            // `StockStatus`'s javadoc. Never touches `/products/low-stock`, which keeps its own,
+            // slightly different, already-established definition.
+            @RequestParam(required = false) StockStatus stockStatus,
             @PageableDefault(size = 20) Pageable pageable) {
-        return productManagementService.list(search, active, categoryId, pageable);
+        return productManagementService.list(search, active, categoryId, stockStatus, pageable);
     }
 
     /**
