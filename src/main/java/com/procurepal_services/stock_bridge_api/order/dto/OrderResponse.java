@@ -74,6 +74,7 @@ public record OrderResponse(
         OffsetDateTime deliveredAt,
         OffsetDateTime receivedAt,
         OffsetDateTime cancelledAt,
+        OffsetDateTime paymentDueBy,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt) {
 
@@ -84,7 +85,8 @@ public record OrderResponse(
             OrderCustomerResponse customer,
             String placedByUsername,
             OrderSellerResponse seller,
-            List<SiblingOrderResponse> siblingOrders) {
+            List<SiblingOrderResponse> siblingOrders,
+            OffsetDateTime paymentDueBy) {
         boolean fullyReceived = !items.isEmpty() && items.stream().allMatch(item -> item.outstandingQuantity() == 0);
         return new OrderResponse(
                 order.getId(),
@@ -121,6 +123,7 @@ public record OrderResponse(
                 order.getDeliveredAt(),
                 order.getReceivedAt(),
                 order.getCancelledAt(),
+                paymentDueBy,
                 order.getCreatedAt(),
                 order.getUpdatedAt());
     }

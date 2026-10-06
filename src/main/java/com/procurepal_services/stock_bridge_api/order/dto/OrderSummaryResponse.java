@@ -40,10 +40,15 @@ public record OrderSummaryResponse(
         /** Rows sharing this value came out of one checkout. */
         UUID checkoutGroupId,
         OffsetDateTime placedAt,
+        OffsetDateTime paymentDueBy,
         OffsetDateTime createdAt) {
 
     public static OrderSummaryResponse of(
-            Order order, int itemCount, OrderCustomerResponse customer, OrderSellerResponse seller) {
+            Order order,
+            int itemCount,
+            OrderCustomerResponse customer,
+            OrderSellerResponse seller,
+            OffsetDateTime paymentDueBy) {
         return new OrderSummaryResponse(
                 order.getId(),
                 order.getOrderNumber(),
@@ -61,6 +66,7 @@ public record OrderSummaryResponse(
                 seller,
                 order.getCheckoutGroupId(),
                 order.getPlacedAt(),
+                paymentDueBy,
                 order.getCreatedAt());
     }
 }

@@ -127,6 +127,17 @@ public class RecordingOrderPaymentApplication implements OrderPaymentApplication
     }
 
     @Override
+    @Transactional
+    public void expireUnpaidCheckout(UUID orderId, String reason) {
+        Order order = orderRepository.findById(orderId).orElseThrow();
+        if (order.getStatus() == OrderStatus.PENDING_PAYMENT) {
+            order.setStatus(OrderStatus.CANCELLED);
+            order.setCancellationReason(reason);
+            orderRepository.save(order);
+        }
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public OrderPaymentContext loadPaymentContext(UUID orderId) {
         Order order = orderRepository.findById(orderId).orElseThrow();

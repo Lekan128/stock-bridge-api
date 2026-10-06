@@ -136,6 +136,25 @@ class ResendWebhookIntegrationTest {
         assertThat(processedCountFor(id)).isEqualTo(1);
     }
 
+    /**
+     * email.failed is Resend refusing to send at all, and its reasons (reached_daily_quota, a
+     * revoked key, an unverified domain) are OURS. Recorded for the audit trail, never turned into
+     * a suppression - running out of quota must not silence a good customer forever.
+     */
+    @Test
+    void aFailedSendIsRecordedButNeverSuppressesTheRecipient() {
+        String address = signupVerified("Resend Quota Co");
+        String id = svixId();
+
+        ResponseEntity<String> response = postSigned(id,
+                event("email.failed", address, ",\"failed\":{\"reason\":\"reached_daily_quota\"}"));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(isSuppressed(address)).isFalse();
+        assertThat(verifiedFlagsFor(address)).containsExactly(true);
+        assertThat(processedCountFor(id)).isEqualTo(1);
+    }
+
     @Test
     void anEventTypeItDoesNotActOnIsAcknowledged() {
         String address = signupVerified("Resend Delivered Co");

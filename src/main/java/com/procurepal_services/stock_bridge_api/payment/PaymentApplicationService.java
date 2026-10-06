@@ -225,6 +225,13 @@ public class PaymentApplicationService {
                 payment.getPaymentReference(), payment.getStatus(), status.paymentStatus(),
                 order.getOrderNumber(), source);
 
+        if (payment.getStatus() == PaymentProviderStatus.ABANDONED) {
+            // The buyer closed the payment page (or let it expire). They know they did
+            // not pay, so there is nothing to tell them; the order page already shows
+            // the pay-by deadline. Only a genuine decline or reversal is news.
+            return PaymentApplicationOutcome.APPLIED_FAILED;
+        }
+
         // The ORDER is not cancelled here - only this attempt failed, and the buyer
         // may retry on the same PENDING_PAYMENT order. What the order module does
         // with that is its decision; the reason string carries what it needs.

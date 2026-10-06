@@ -56,10 +56,76 @@ class EmailTemplateTest {
         return orderItem;
     }
 
+    private static EmailMessage receipt(Order order, List<OrderItem> items) {
+        return OrderEmails.checkoutConfirmedForBuyer(
+                TO, List.of(new OrderEmails.SellerPart(order, items, "ProcurePal")), BASE_URL);
+    }
+
+    /**
+     * One checkout from three sellers is ONE buyer email with a section per seller - not three
+     * receipts plus three payment emails. And for a card checkout it doubles as the payment
+     * confirmation, so there is no separate "payment received" for the same moment.
+     */
+    @Test
+    void aSplitPaidCheckoutIsOneReceiptWithASectionPerSeller() {
+        Order first = order();
+        first.setPaymentMethod(PaymentMethod.MONNIFY);
+        first.setPaymentStatus(PaymentStatus.PAID);
+        Order second = order();
+        second.setId(UUID.fromString("22222222-2222-2222-2222-222222222222"));
+        second.setOrderNumber("PP-2026-000124");
+        second.setPaymentMethod(PaymentMethod.MONNIFY);
+        second.setPaymentStatus(PaymentStatus.PAID);
+
+        EmailMessage message = OrderEmails.checkoutConfirmedForBuyer(TO, List.of(
+                new OrderEmails.SellerPart(first, List.of(item("Rice 50kg", 2, "6000.00", "12000.00")), "ProcurePal"),
+                new OrderEmails.SellerPart(second, List.of(item("Beans 25kg", 1, "12000.00", "12000.00")), "Mama Tee")),
+                BASE_URL);
+
+        assertThat(message.subject()).isEqualTo("Your 2 orders are confirmed");
+        assertThat(message.htmlBody())
+                .contains("we have your payment of NGN 25,000.00")
+                .contains("PP-2026-000123 from ProcurePal")
+                .contains("PP-2026-000124 from Mama Tee")
+                .contains("Rice 50kg").contains("Beans 25kg")
+                .contains("Total paid")
+                .contains(BASE_URL + "/app/orders\"");
+    }
+
+    /** The seller's one email for a card order already says it is paid - no second payment email. */
+    @Test
+    void aSellersNewOrderEmailSaysWhetherItIsPaid() {
+        Order paid = order();
+        paid.setPaymentMethod(PaymentMethod.MONNIFY);
+        paid.setPaymentStatus(PaymentStatus.PAID);
+
+        assertThat(OrderEmails.newOrderForSeller(TO, paid, List.of(), "Demo Retail", BASE_URL).subject())
+                .isEqualTo("New order PP-2026-000123 from Demo Retail (paid)");
+        assertThat(OrderEmails.newOrderForSeller(TO, order(), List.of(), "Demo Retail", BASE_URL).htmlBody())
+                .contains("pay on delivery: collect NGN 12,500.00 at the door");
+    }
+
+    @Test
+    void aBuyerCancellationTellsTheSellerNotToShip() {
+        EmailMessage message = OrderEmails.orderCancelledByBuyerForSeller(
+                TO, order(), "Demo Retail", "Ordered by mistake", BASE_URL);
+
+        assertThat(message.subject()).isEqualTo("Order PP-2026-000123 was cancelled by the customer");
+        assertThat(message.htmlBody()).contains("Do not prepare or dispatch it").contains("Ordered by mistake")
+                .contains(BASE_URL + "/app/marketplace/orders/");
+    }
+
+    @Test
+    void anEmailChangeNoticeNamesTheNewAddressAndSaysWhatToDoIfItWasntYou() {
+        EmailMessage message = AccountEmails.emailAddressChanged(TO, "lead", "Demo Retail Co", "new@demo.test");
+
+        assertThat(message.kind()).isEqualTo(EmailKind.SECURITY);
+        assertThat(message.htmlBody()).contains("new@demo.test").contains("If this wasn&#39;t you");
+    }
+
     @Test
     void buyerReceiptCarriesTheOrderItsItemsAndItsDeliveryAddress() {
-        EmailMessage message = OrderEmails.orderPlacedForBuyer(
-                TO, order(), List.of(item("Rice 50kg", 2, "6000.00", "12000.00")), BASE_URL);
+        EmailMessage message = receipt(order(), List.of(item("Rice 50kg", 2, "6000.00", "12000.00")));
 
         assertThat(message.subject()).isEqualTo("Order PP-2026-000123 confirmed");
         assertThat(message.htmlBody())
@@ -77,7 +143,7 @@ class EmailTemplateTest {
      */
     @Test
     void rendersAmountsAsAnIsoCodeAndGroupedDigits() {
-        EmailMessage message = OrderEmails.orderPlacedForBuyer(TO, order(), List.of(), BASE_URL);
+        EmailMessage message = receipt(order(), List.of());
 
         assertThat(message.htmlBody()).contains("NGN 12,500.00").doesNotContain("₦");
     }
@@ -85,8 +151,7 @@ class EmailTemplateTest {
     /** A product name is user-supplied and reaches a client that will happily render markup. */
     @Test
     void escapesUserSuppliedTextInsteadOfEmittingItAsMarkup() {
-        EmailMessage message = OrderEmails.orderPlacedForBuyer(
-                TO, order(), List.of(item("<img src=x onerror=alert(1)>", 1, "10.00", "10.00")), BASE_URL);
+        EmailMessage message = receipt(order(), List.of(item("<img src=x onerror=alert(1)>", 1, "10.00", "10.00")));
 
         assertThat(message.htmlBody())
                 .doesNotContain("<img src=x")
@@ -95,7 +160,7 @@ class EmailTemplateTest {
 
     @Test
     void escapesACompanyNameInTheOperatorsCopy() {
-        EmailMessage message = OrderEmails.newOrderForOperator(
+        EmailMessage message = OrderEmails.newOrderForSeller(
                 TO, order(), List.of(), "<script>alert(1)</script> Foods Ltd", BASE_URL);
 
         assertThat(message.htmlBody()).doesNotContain("<script>").contains("&lt;script&gt;");
@@ -109,16 +174,16 @@ class EmailTemplateTest {
     void linksEachAudienceToItsOwnRoute() {
         Order order = order();
 
-        assertThat(OrderEmails.orderPlacedForBuyer(TO, order, List.of(), BASE_URL).htmlBody())
+        assertThat(receipt(order, List.of()).htmlBody())
                 .contains(BASE_URL + "/app/orders/" + order.getId());
-        assertThat(OrderEmails.newOrderForOperator(TO, order, List.of(), "Demo Retail", BASE_URL).htmlBody())
+        assertThat(OrderEmails.newOrderForSeller(TO, order, List.of(), "Demo Retail", BASE_URL).htmlBody())
                 .contains(BASE_URL + "/app/marketplace/orders/" + order.getId());
     }
 
     /** A blank app-base-url is the unconfigured case; a button linking to a bare path would 404. */
     @Test
     void omitsTheCallToActionWhenNoAppBaseUrlIsConfigured() {
-        EmailMessage message = OrderEmails.orderPlacedForBuyer(TO, order(), List.of(), "");
+        EmailMessage message = OrderEmails.checkoutConfirmedForBuyer(TO, List.of(new OrderEmails.SellerPart(order(), List.of(), "ProcurePal")), "");
 
         assertThat(message.htmlBody()).doesNotContain("<a href");
         assertThat(message.htmlBody()).contains("PP-2026-000123");
@@ -159,14 +224,14 @@ class EmailTemplateTest {
     @Test
     void failedPaymentEmailSaysTheOrderIsStillPayable() {
         EmailMessage message = OrderEmails.paymentFailedForBuyer(
-                TO, order(), "The card was declined.", BASE_URL);
+                TO, List.of(order()), "The card was declined.", BASE_URL);
 
         assertThat(message.htmlBody()).contains("The card was declined.").contains("still waiting");
     }
 
     @Test
     void failedPaymentEmailStillExplainsItselfWithNoReasonGiven() {
-        EmailMessage message = OrderEmails.paymentFailedForBuyer(TO, order(), null, BASE_URL);
+        EmailMessage message = OrderEmails.paymentFailedForBuyer(TO, List.of(order()), null, BASE_URL);
 
         assertThat(message.htmlBody()).contains("did not complete");
     }
@@ -229,12 +294,14 @@ class EmailTemplateTest {
     @Test
     void everyTemplateProducesAPlainTextAlternative() {
         List<EmailMessage> messages = List.of(
-                OrderEmails.orderPlacedForBuyer(TO, order(), List.of(), BASE_URL),
-                OrderEmails.newOrderForOperator(TO, order(), List.of(), "Demo Retail", BASE_URL),
+                receipt(order(), List.of()),
+                OrderEmails.newOrderForSeller(TO, order(), List.of(), "Demo Retail", BASE_URL),
                 OrderEmails.orderStatusChangedForBuyer(TO, order(), OrderStatus.CONFIRMED, null, BASE_URL),
-                OrderEmails.paymentReceivedForBuyer(TO, order(), BASE_URL),
-                OrderEmails.paymentReceivedForOperator(TO, order(), "Demo Retail", BASE_URL),
-                OrderEmails.paymentFailedForBuyer(TO, order(), null, BASE_URL),
+                OrderEmails.paymentReceivedForBuyer(TO, List.of(order()), BASE_URL),
+                OrderEmails.paymentReceivedForSeller(TO, order(), "Demo Retail", BASE_URL),
+                OrderEmails.paymentFailedForBuyer(TO, List.of(order()), null, BASE_URL),
+                OrderEmails.orderCancelledByBuyerForSeller(TO, order(), "Demo Retail", null, BASE_URL),
+                AccountEmails.emailAddressChanged(TO, "lead", "Demo Retail Co", "new@demo.test"),
                 AccountEmails.welcome(TO, "Demo Retail Co", "owner@demo.test", BASE_URL),
                 AccountEmails.userInvited(TO, "Demo Retail Co", "lead", "MANAGER", BASE_URL),
                 AccountEmails.passwordChanged(TO, "lead", "Demo Retail Co"),
@@ -260,7 +327,7 @@ class EmailTemplateTest {
     @Test
     void accountMailCarriesTheWorkspaceBrandAndOrderMailKeepsTheMarketplaceOne() {
         EmailMessage account = AccountEmails.welcome(TO, "Demo Retail Co", "owner@demo.test", BASE_URL);
-        EmailMessage order = OrderEmails.orderPlacedForBuyer(TO, order(), List.of(), BASE_URL);
+        EmailMessage order = receipt(order(), List.of());
 
         assertThat(account.htmlBody()).contains(">Procure Paddy</span>").doesNotContain(">ProcurePal</span>");
         assertThat(account.htmlBody()).contains("has a Procure Paddy account");

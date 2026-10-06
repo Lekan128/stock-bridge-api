@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.client;
 
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,7 +18,10 @@ public class ClientSignupController {
     private final ClientSignupService clientSignupService;
 
     @PostMapping("/signup")
-    public TenantLoginResponse signup(@Valid @RequestBody ClientSignupRequest request) {
-        return clientSignupService.signup(request);
+    public TenantLoginResponse signup(
+            @Valid @RequestBody ClientSignupRequest request, HttpServletRequest httpRequest) {
+        // getRemoteAddr is the real client once server.forward-headers-strategy is native - see
+        // application.yml for why that is safe behind Render's proxy.
+        return clientSignupService.signup(request, httpRequest.getRemoteAddr());
     }
 }

@@ -63,6 +63,11 @@ app:
   # SetupRequestRateLimiterTest covers the limit itself.
   founding:
     submit-limit: ${FOUNDING_SUBMIT_LIMIT:500}
+  # Same reason for signup: locally every signup (and every integration test's) is localhost, and
+  # the suite signs up hundreds of companies. The per-ADDRESS limit stays at its real value -
+  # tests use a fresh address each time - and SignupRateLimitIntegrationTest pins both limits.
+  signup:
+    ip-limit: ${SIGNUP_IP_LIMIT:100000}
   # No app.platform-owner default here on purpose. Locally the platform owner
   # already comes from db/seed/V9001, complete with a demo catalog the bootstrap
   # runner does not create - two mechanisms racing to insert the same tenant

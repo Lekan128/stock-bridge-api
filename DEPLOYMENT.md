@@ -402,7 +402,8 @@ staging key then cannot send as production. Set it as `RESEND_API_KEY`.
 ### 3. Bounce and complaint webhook
 
 Resend → **Webhooks** → add `<API origin>/api/webhooks/resend` for each environment, subscribed
-to **`email.bounced`** and **`email.complained`** only. Copy its signing secret (`whsec_…`) into
+to **`email.bounced`**, **`email.complained`** and **`email.failed`** only (`email.failed` is
+logged at ERROR and never suppresses anyone - its reasons, like `reached_daily_quota`, are ours). Copy its signing secret (`whsec_…`) into
 `RESEND_WEBHOOK_SECRET`. Without it every delivery is refused with 401 and bounces never reach
 `email_suppressions` - sending still works, but a rising bounce rate goes unnoticed. Rows land in
 `ses_notification_events` with `message_type = 'resend'`.
