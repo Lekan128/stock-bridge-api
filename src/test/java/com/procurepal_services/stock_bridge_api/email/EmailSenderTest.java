@@ -24,6 +24,10 @@ import software.amazon.awssdk.services.sesv2.model.SesV2Exception;
  * Plain Mockito, no Spring context - the same shape as S3ImageServiceTest, and for
  * the same reason: EmailSender's contract is that an email problem never becomes an
  * exception, so every case here asserts on the return value and none expects a throw.
+ *
+ * <p>Runs through the real {@link SesEmailTransport} over a mocked SES client, so it
+ * covers EmailSender's provider-independent policy and the SES request shape at
+ * once. The Resend request shape is ResendEmailTransportTest's.
  */
 class EmailSenderTest {
 
@@ -257,7 +261,7 @@ class EmailSenderTest {
      */
     @Test
     void promotionalMailIsDroppedWhenUnsubscribeIsNotConfigured() {
-        EmailSender emailSender = new EmailSender(CONFIGURED, sesV2Client, UNSUBSCRIBE_UNCONFIGURED);
+        EmailSender emailSender = sender(CONFIGURED, UNSUBSCRIBE_UNCONFIGURED);
         EmailMessage promotional = new EmailMessage(
                 List.of("buyer@example.com"), "New catalogue", "<p>Offers</p>", "Offers", EmailKind.PROMOTIONAL);
 
@@ -268,7 +272,7 @@ class EmailSenderTest {
     /** ...while everything else still sends on exactly the same deploy. */
     @Test
     void transactionalMailIsUnaffectedWhenUnsubscribeIsNotConfigured() {
-        EmailSender emailSender = new EmailSender(CONFIGURED, sesV2Client, UNSUBSCRIBE_UNCONFIGURED);
+        EmailSender emailSender = sender(CONFIGURED, UNSUBSCRIBE_UNCONFIGURED);
 
         assertThat(emailSender.send(MESSAGE)).isTrue();
         verify(sesV2Client).sendEmail(any(SendEmailRequest.class));
@@ -294,7 +298,11 @@ class EmailSenderTest {
     }
 
     private EmailSender sender(EmailProperties properties) {
-        return new EmailSender(properties, sesV2Client, UNSUBSCRIBE);
+        return sender(properties, UNSUBSCRIBE);
+    }
+
+    private EmailSender sender(EmailProperties properties, UnsubscribeTokenService unsubscribe) {
+        return new EmailSender(properties, new SesEmailTransport(sesV2Client, properties), unsubscribe);
     }
 
     private SendEmailRequest captureSingleRequest() {

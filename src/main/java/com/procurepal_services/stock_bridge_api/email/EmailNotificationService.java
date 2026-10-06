@@ -158,6 +158,21 @@ public class EmailNotificationService {
                 recipients.forUser(user), user.getUsername(), clientNameOf(user.getClientId())));
     }
 
+    /**
+     * Self-service reset links, to the exact address that asked - not to
+     * {@code recipients.forUser}, which might pick a different column of the same
+     * user. The link proves control of THIS inbox, so it must go to this inbox.
+     */
+    public void passwordReset(String address, List<AccountEmails.ResetLink> links, String expiresIn) {
+        dispatcher.dispatchQuietly(() -> AccountEmails.passwordReset(List.of(address), links, expiresIn));
+    }
+
+    /** To the inbox that just used a reset link, so a takeover cannot happen silently. */
+    public void passwordChangedBySelf(String address, User user) {
+        dispatcher.dispatchQuietly(() -> AccountEmails.passwordChangedBySelf(
+                List.of(address), user.getUsername(), clientNameOf(user.getClientId())));
+    }
+
     /** To a tenant's admin contact when ProcurePal suspends or restores the account. */
     public void clientStatusChanged(Client client) {
         dispatcher.dispatchQuietly(() -> AccountEmails.accountStatusChanged(

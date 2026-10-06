@@ -45,6 +45,12 @@ public class SecurityConfig {
     private static final String[] PERMIT_ALL_PATHS = {
         "/api/auth/login",
         "/api/auth/refresh",
+        // Self-service password reset: the caller has no working password by
+        // definition. Request reveals nothing and is rate-limited; check and complete
+        // are protected by the single-use emailed token. See PasswordResetService.
+        "/api/auth/password-reset/request",
+        "/api/auth/password-reset/check",
+        "/api/auth/password-reset/complete",
         "/api/clients/signup",
         // The public "apply to sell on ProcurePaddy" form. Unauthenticated by
         // necessity: an applicant has no account and, if we reject them, never
@@ -145,6 +151,10 @@ public class SecurityConfig {
         // signature before acting on anything in the payload, and must handle
         // SubscriptionConfirmation as well as Notification.
         "/api/webhooks/ses/notifications",
+        // Resend delivering the same bounce and complaint events, signed by Svix.
+        // ResendWebhookService verifies that signature (and its timestamp) before
+        // acting on anything, and refuses everything when no secret is set.
+        "/api/webhooks/resend",
         // ====================================================================
         // springdoc-openapi: browsable API docs, not a tenant/superadmin resource.
         "/v3/api-docs",

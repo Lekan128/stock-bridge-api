@@ -203,6 +203,22 @@
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
 			</plugin>
+			<!--
+				The test suite runs on the `local` profile, which imports this repo's .env - and a
+				developer's .env can hold a real RESEND_API_KEY. Tests sign up companies with made-up
+				addresses, so without this every run would hand real mail to the provider and the
+				bounces would count against the sending domain. A system property outranks the .env
+				import, so email is off for every test that does not explicitly turn it back on.
+			-->
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-surefire-plugin</artifactId>
+				<configuration>
+					<systemPropertyVariables>
+						<app.email.enabled>false</app.email.enabled>
+					</systemPropertyVariables>
+				</configuration>
+			</plugin>
 		</plugins>
 	</build>
 
