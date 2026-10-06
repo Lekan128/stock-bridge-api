@@ -52,6 +52,16 @@ public final class EmailLayout {
      * standard (ugly) trick for exactly this.
      */
     public static String page(String heading, String preheader, String bodyHtml) {
+        return page("ProcurePal", heading, preheader, bodyHtml);
+    }
+
+    /**
+     * The same shell under another product name. ProcurePal is the marketplace and
+     * its order mail keeps that name; account mail belongs to the Procure Paddy
+     * workspace (the 2026-08-14 rebrand) and passes it here, so the header and the
+     * footer agree with the body instead of naming a different product.
+     */
+    public static String page(String brand, String heading, String preheader, String bodyHtml) {
         return """
                 <!doctype html>
                 <html lang="en">
@@ -66,7 +76,7 @@ public final class EmailLayout {
                     <tr><td align="center">
                       <table role="presentation" width="100%%" cellpadding="0" cellspacing="0" style="max-width:560px; background:#ffffff; border:1px solid %s; border-radius:12px; overflow:hidden; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
                         <tr><td style="background:%s; padding:20px 28px;">
-                          <span style="color:#ffffff; font-size:18px; font-weight:700; letter-spacing:-0.2px;">ProcurePal</span>
+                          <span style="color:#ffffff; font-size:18px; font-weight:700; letter-spacing:-0.2px;">%s</span>
                         </td></tr>
                         <tr><td style="padding:28px;">
                           <h1 style="margin:0 0 16px; font-size:20px; line-height:1.3; color:%s; font-weight:650;">%s</h1>
@@ -74,7 +84,7 @@ public final class EmailLayout {
                         </td></tr>
                         <tr><td style="padding:18px 28px; border-top:1px solid %s; background:#fafafa;">
                           <p style="margin:0; font-size:12px; line-height:1.6; color:%s;">
-                            You are receiving this because your company has a ProcurePal account.
+                            You are receiving this because your company has a %s account.
                             This is an automated message - replies to it are not monitored unless a
                             reply-to address is configured.
                           </p>
@@ -86,8 +96,8 @@ public final class EmailLayout {
                 </html>
                 """
                 .formatted(
-                        escape(heading), CANVAS, escape(preheader), CANVAS, BORDER, BRAND,
-                        TEXT, escape(heading), bodyHtml, BORDER, MUTED);
+                        escape(heading), CANVAS, escape(preheader), CANVAS, BORDER, BRAND, escape(brand),
+                        TEXT, escape(heading), bodyHtml, BORDER, MUTED, escape(brand));
     }
 
     public static String paragraph(String text) {

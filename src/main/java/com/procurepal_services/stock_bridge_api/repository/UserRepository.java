@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.repository;
 
 import com.procurepal_services.stock_bridge_api.entity.User;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.Query;
@@ -86,4 +87,20 @@ public interface UserRepository extends TenantScopedRepository<User, UUID> {
                     + "AND (lower(email) = :address OR lower(username) = :address)",
             nativeQuery = true)
     long countPromotionalOptOutsMatchingEmailAddress(@Param("address") String address);
+
+    /**
+     * Who a password-reset request for this address is about: every ACTIVE user, in an
+     * ACTIVE company, whose email or username is the address - across all tenants,
+     * because usernames are unique per company only and one inbox can hold logins at
+     * several. Native for the same reason as the counts above (the tenant filter must
+     * not narrow it). Most recently active first, capped by the caller, so a shared
+     * office inbox cannot turn one request into an email with dozens of links.
+     */
+    @Query(
+            value = "SELECT u.id FROM users u JOIN clients c ON c.id = u.client_id "
+                    + "WHERE u.is_active = TRUE AND c.is_active = TRUE "
+                    + "AND (lower(u.email) = :address OR lower(u.username) = :address) "
+                    + "ORDER BY u.updated_at DESC LIMIT :limit",
+            nativeQuery = true)
+    List<UUID> findActiveUserIdsMatchingEmailAddress(@Param("address") String address, @Param("limit") int limit);
 }

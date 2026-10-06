@@ -190,7 +190,7 @@ class EmailTemplateTest {
     void passwordResetAlertTellsTheUserToRaiseItAndCarriesNoCredential() {
         EmailMessage message = AccountEmails.passwordChanged(TO, "warehouse-lead", "Demo Retail Co");
 
-        assertThat(message.subject()).isEqualTo("Your ProcurePal password was changed");
+        assertThat(message.subject()).isEqualTo("Your Procure Paddy password was changed");
         assertThat(message.htmlBody()).contains("contact your administrator immediately");
         assertThat(message.htmlBody()).contains("not included in this email");
     }
@@ -199,7 +199,7 @@ class EmailTemplateTest {
     void welcomeEmailNamesTheCompanyAndTheLoginUsername() {
         EmailMessage message = AccountEmails.welcome(TO, "Demo Retail Co", "owner@demo.test", BASE_URL);
 
-        assertThat(message.subject()).isEqualTo("Welcome to ProcurePal");
+        assertThat(message.subject()).isEqualTo("Welcome to Procure Paddy");
         assertThat(message.htmlBody()).contains("Demo Retail Co").contains("owner@demo.test");
         assertThat(message.htmlBody()).contains(BASE_URL + "/login");
     }
@@ -212,8 +212,8 @@ class EmailTemplateTest {
     void suspensionEmailExplainsTheLockoutAndThatDataIsIntact() {
         EmailMessage message = AccountEmails.accountStatusChanged(TO, "Demo Retail Co", false, BASE_URL);
 
-        assertThat(message.subject()).isEqualTo("Your ProcurePal account has been suspended");
-        assertThat(message.htmlBody()).contains("Nobody at your company can sign in");
+        assertThat(message.subject()).isEqualTo("Your Procure Paddy account has been suspended");
+        assertThat(message.htmlBody()).contains("Nobody at your company can log in");
         assertThat(message.htmlBody()).contains("has not been deleted");
     }
 
@@ -221,7 +221,7 @@ class EmailTemplateTest {
     void reactivationEmailSaysTheAccountWorksAgain() {
         EmailMessage message = AccountEmails.accountStatusChanged(TO, "Demo Retail Co", true, BASE_URL);
 
-        assertThat(message.subject()).isEqualTo("Your ProcurePal account has been reactivated");
+        assertThat(message.subject()).isEqualTo("Your Procure Paddy account has been reactivated");
         assertThat(message.htmlBody()).contains("reactivated");
     }
 
@@ -238,12 +238,70 @@ class EmailTemplateTest {
                 AccountEmails.welcome(TO, "Demo Retail Co", "owner@demo.test", BASE_URL),
                 AccountEmails.userInvited(TO, "Demo Retail Co", "lead", "MANAGER", BASE_URL),
                 AccountEmails.passwordChanged(TO, "lead", "Demo Retail Co"),
-                AccountEmails.accountStatusChanged(TO, "Demo Retail Co", false, BASE_URL));
+                AccountEmails.accountStatusChanged(TO, "Demo Retail Co", false, BASE_URL),
+                AccountEmails.passwordReset(TO, List.of(RESET_LINK), "1 hour"),
+                AccountEmails.passwordChangedBySelf(TO, "owner@demo.test", "Demo Retail Co"));
 
         assertThat(messages).allSatisfy(message -> {
             assertThat(message.subject()).isNotBlank();
             assertThat(message.htmlBody()).isNotBlank();
             assertThat(message.textBody()).isNotBlank();
         });
+    }
+
+    // ------------------------------------------------------------------------
+    // Brand and password reset (PASSWORD_RESET_PLAN.md).
+    // ------------------------------------------------------------------------
+
+    private static final AccountEmails.ResetLink RESET_LINK = new AccountEmails.ResetLink(
+            "Mama Tee Stores", "mama-tee-stores", "ada@mamatee.test", BASE_URL + "/reset-password?token=abc");
+
+    /** Account mail is the Procure Paddy workspace; order mail stays the ProcurePal marketplace. */
+    @Test
+    void accountMailCarriesTheWorkspaceBrandAndOrderMailKeepsTheMarketplaceOne() {
+        EmailMessage account = AccountEmails.welcome(TO, "Demo Retail Co", "owner@demo.test", BASE_URL);
+        EmailMessage order = OrderEmails.orderPlacedForBuyer(TO, order(), List.of(), BASE_URL);
+
+        assertThat(account.htmlBody()).contains(">Procure Paddy</span>").doesNotContain(">ProcurePal</span>");
+        assertThat(account.htmlBody()).contains("has a Procure Paddy account");
+        assertThat(order.htmlBody()).contains(">ProcurePal</span>");
+    }
+
+    @Test
+    void resetEmailForOneAccountNamesItsCompanyIdAndLogin() {
+        EmailMessage message = AccountEmails.passwordReset(TO, List.of(RESET_LINK), "1 hour");
+
+        assertThat(message.subject()).isEqualTo("Reset your Procure Paddy password");
+        assertThat(message.kind()).isEqualTo(EmailKind.SECURITY);
+        assertThat(message.htmlBody())
+                .contains("Mama Tee Stores").contains("mama-tee-stores").contains("ada@mamatee.test")
+                .contains(">Reset password</a>")
+                .contains("works once and expires in 1 hour")
+                .contains("Your password stays the same");
+        assertThat(message.textBody()).contains(BASE_URL + "/reset-password?token=abc");
+    }
+
+    /** One inbox can be the login at several companies; each gets its own labelled button. */
+    @Test
+    void resetEmailForSeveralAccountsLabelsEachButton() {
+        AccountEmails.ResetLink second = new AccountEmails.ResetLink(
+                "Ada Provisions", "ada-provisions", "ada@mamatee.test", BASE_URL + "/reset-password?token=def");
+
+        EmailMessage message = AccountEmails.passwordReset(TO, List.of(RESET_LINK, second), "1 hour");
+
+        assertThat(message.htmlBody())
+                .contains(">Reset password for Mama Tee Stores</a>")
+                .contains(">Reset password for Ada Provisions</a>")
+                .contains("token=abc").contains("token=def");
+    }
+
+    @Test
+    void selfServiceChangeAlertDoesNotBlameAnAdministrator() {
+        EmailMessage message = AccountEmails.passwordChangedBySelf(TO, "ada@mamatee.test", "Mama Tee Stores");
+
+        assertThat(message.subject()).isEqualTo("Your Procure Paddy password was changed");
+        assertThat(message.kind()).isEqualTo(EmailKind.SECURITY);
+        assertThat(message.htmlBody()).contains("reset link").contains("If this wasn")
+                .doesNotContain("administrator");
     }
 }

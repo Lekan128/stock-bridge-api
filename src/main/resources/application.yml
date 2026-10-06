@@ -75,6 +75,27 @@ app:
     # database restored into staging would otherwise email real customers about
     # orders being replayed.
     enabled: ${EMAIL_ENABLED:true}
+    # Which provider carries the mail: resend (the default) or ses. Everything
+    # else in app.email - from-address, the unsubscribe and verification
+    # behaviour, the suppression list - is shared; only the wire call and the
+    # bounce webhook differ. SES is shelved while its production access is
+    # pending and stays one variable away. An unknown value fails startup (no
+    # EmailTransport bean) rather than silently picking one.
+    provider: ${EMAIL_PROVIDER:resend}
+    # Resend (resend.com). Read only when provider is resend.
+    resend:
+      # A "Sending access" API key restricted to THIS environment's domain
+      # (mail.procurepaddy.com in prod, staging.procurepaddy.com in staging), so
+      # a leaked staging key cannot send as production. No default, ever - this
+      # file applies to prod. Blank = email unavailable (logged and dropped).
+      api-key: ${RESEND_API_KEY:}
+      # The signing secret (whsec_...) of the webhook registered in the Resend
+      # dashboard for POST /api/webhooks/resend, subscribed to email.bounced and
+      # email.complained. Blank refuses every delivery, so bounces never reach
+      # the suppression list - send still works.
+      webhook-secret: ${RESEND_WEBHOOK_SECRET:}
+      connect-timeout: ${RESEND_CONNECT_TIMEOUT:5s}
+      read-timeout: ${RESEND_READ_TIMEOUT:15s}
     # Optional. Blank means "use app.aws.region": the usual setup runs SES and
     # S3 in one region. Set it when the verified sending identity lives
     # somewhere else, or when the bucket's region has no SES endpoint.
@@ -232,6 +253,16 @@ app:
       # and SNS gives up on us after 15 seconds regardless.
       connect-timeout: ${SES_SNS_CONNECT_TIMEOUT:5s}
       read-timeout: ${SES_SNS_READ_TIMEOUT:10s}
+  # Self-service password reset by email (PASSWORD_RESET_PLAN.md). Every key is
+  # optional with a working default in PasswordResetProperties: links live 1 hour,
+  # 3 requests per email and 10 per client address per hour, at most 5 accounts
+  # listed in one email.
+  password-reset:
+    token-ttl: ${PASSWORD_RESET_TOKEN_TTL:1h}
+    email-limit: ${PASSWORD_RESET_EMAIL_LIMIT:3}
+    ip-limit: ${PASSWORD_RESET_IP_LIMIT:10}
+    window: ${PASSWORD_RESET_WINDOW:1h}
+    max-accounts: ${PASSWORD_RESET_MAX_ACCOUNTS:5}
   # The public "apply to sell on ProcurePaddy" form. Both keys are OPTIONAL and
   # both have working defaults in VendorWaitlistProperties, which is where each is
   # justified at length - same arrangement as app.email.verification above, and for

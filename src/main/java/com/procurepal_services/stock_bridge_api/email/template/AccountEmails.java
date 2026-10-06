@@ -48,6 +48,9 @@ import java.util.List;
  */
 public final class AccountEmails {
 
+    /** The workspace's name since the 2026-08-14 rebrand; the marketplace keeps "ProcurePal". */
+    static final String BRAND = "Procure Paddy";
+
     private AccountEmails() {
     }
 
@@ -98,7 +101,7 @@ public final class AccountEmails {
             String appBaseUrl,
             String verificationUrl,
             String expiresIn) {
-        String body = paragraphHtml("Welcome to ProcurePal, " + bold(escape(companyName)) + ".")
+        String body = paragraphHtml("Welcome to Procure Paddy, " + bold(escape(companyName)) + ".")
                 + paragraph("Your company account is ready. You are its account holder, which means you can "
                         + "invite colleagues, set their roles, and manage everything the account can do.")
                 + detailTable(List.of(
@@ -108,16 +111,17 @@ public final class AccountEmails {
                 + paragraph("From here you can add your products and stock, or start buying from the "
                         + "ProcurePal marketplace - anything you order lands in your inventory as incoming "
                         + "stock, and becomes usable stock once you confirm you have received it.")
-                + button("Sign in to ProcurePal", signInUrl(appBaseUrl));
+                + button("Log in to Procure Paddy", signInUrl(appBaseUrl));
 
-        String text = "Welcome to ProcurePal, " + companyName + ".\n\n"
+        String text = "Welcome to Procure Paddy, " + companyName + ".\n\n"
                 + "Your company account is ready and you are its account holder.\n\n"
                 + "Company: " + companyName + "\nYour username: " + loginUsername + "\n"
                 + verificationBlockText(verificationUrl, expiresIn)
                 + textLink(signInUrl(appBaseUrl));
 
-        return new EmailMessage(to, "Welcome to ProcurePal",
-                page("Welcome to ProcurePal", "Your company account for " + companyName + " is ready.", body),
+        return new EmailMessage(to, "Welcome to Procure Paddy",
+                page(BRAND, "Welcome to Procure Paddy",
+                        "Your company account for " + companyName + " is ready.", body),
                 text, EmailKind.VERIFICATION);
     }
 
@@ -157,17 +161,18 @@ public final class AccountEmails {
             String verificationUrl,
             String expiresIn) {
         String body = paragraphHtml("An administrator at " + bold(escape(companyName))
-                        + " has created a ProcurePal account for you.")
+                        + " has created a Procure Paddy account for you.")
                 + detailTable(List.of(
                         new Detail("Company", companyName),
                         new Detail("Username", username),
                         new Detail("Role", EmailLayout.humanise(roleName))))
                 + callout("Your password is not in this email. The administrator who created your account "
-                        + "will give it to you directly - change it from your profile once you have signed in.")
+                        + "will give it to you directly - change it from your profile once you have logged in.")
                 + verificationBlockHtml(verificationUrl, expiresIn)
-                + button("Sign in to ProcurePal", signInUrl(appBaseUrl));
+                + button("Log in to Procure Paddy", signInUrl(appBaseUrl));
 
-        String text = "An administrator at " + companyName + " has created a ProcurePal account for you.\n\n"
+        String text = "An administrator at " + companyName
+                + " has created a Procure Paddy account for you.\n\n"
                 + "Company: " + companyName + "\nUsername: " + username
                 + "\nRole: " + EmailLayout.humanise(roleName) + "\n\n"
                 + "Your password is not in this email - the administrator who created your account will "
@@ -175,8 +180,8 @@ public final class AccountEmails {
                 + verificationBlockText(verificationUrl, expiresIn)
                 + textLink(signInUrl(appBaseUrl));
 
-        return new EmailMessage(to, "Your ProcurePal account is ready",
-                page("Your ProcurePal account is ready",
+        return new EmailMessage(to, "Your Procure Paddy account is ready",
+                page(BRAND, "Your Procure Paddy account is ready",
                         "An administrator at " + companyName + " created an account for you.", body),
                 text, EmailKind.VERIFICATION);
     }
@@ -193,25 +198,26 @@ public final class AccountEmails {
      * a compromised user gets is withheld from the users most likely to need it.
      */
     public static EmailMessage passwordChanged(List<String> to, String username, String companyName) {
-        String body = paragraph("The password for your ProcurePal account was just changed by an "
+        String body = paragraph("The password for your Procure Paddy account was just changed by an "
                         + "administrator at " + companyName + ".")
                 + detailTable(List.of(new Detail("Username", username), new Detail("Company", companyName)))
                 + callout("If you were not expecting this, contact your administrator immediately - somebody "
-                        + "else can currently sign in as you.")
+                        + "else can currently log in as you.")
                 + paragraph("For security, the new password is not included in this email.");
 
-        String text = "The password for your ProcurePal account (" + username + ") was just changed by an "
+        String text = "The password for your Procure Paddy account (" + username + ") was just changed by an "
                 + "administrator at " + companyName + ".\n\n"
                 + "If you were not expecting this, contact your administrator immediately.\n\n"
                 + "For security, the new password is not included in this email.\n";
 
-        return new EmailMessage(to, "Your ProcurePal password was changed",
-                page("Your password was changed", "An administrator reset the password on your account.", body),
+        return new EmailMessage(to, "Your Procure Paddy password was changed",
+                page(BRAND, "Your password was changed",
+                        "An administrator reset the password on your account.", body),
                 text, EmailKind.SECURITY);
     }
 
     /**
-     * To a tenant's admin contact when ProcurePal suspends or restores their
+     * To a tenant's admin contact when Procure Paddy suspends or restores their
      * account. Suspension is the more important of the two by a distance: a
      * suspended company's users are refused at login with no explanation the app can
      * give them, so this email is the only place the reason can come from.
@@ -219,33 +225,33 @@ public final class AccountEmails {
     public static EmailMessage accountStatusChanged(
             List<String> to, String companyName, boolean active, String appBaseUrl) {
         String heading = active
-                ? "Your ProcurePal account has been reactivated"
-                : "Your ProcurePal account has been suspended";
+                ? "Your Procure Paddy account has been reactivated"
+                : "Your Procure Paddy account has been suspended";
         String body;
         String text;
 
         if (active) {
-            body = paragraphHtml("The ProcurePal account for " + bold(escape(companyName))
+            body = paragraphHtml("The Procure Paddy account for " + bold(escape(companyName))
                             + " has been reactivated.")
-                    + paragraph("You and your colleagues can sign in again, and everything in your account "
+                    + paragraph("You and your colleagues can log in again, and everything in your account "
                             + "is exactly as you left it.")
-                    + button("Sign in to ProcurePal", signInUrl(appBaseUrl));
-            text = "The ProcurePal account for " + companyName + " has been reactivated. You and your "
-                    + "colleagues can sign in again.\n" + textLink(signInUrl(appBaseUrl));
+                    + button("Log in to Procure Paddy", signInUrl(appBaseUrl));
+            text = "The Procure Paddy account for " + companyName + " has been reactivated. You and your "
+                    + "colleagues can log in again.\n" + textLink(signInUrl(appBaseUrl));
         } else {
-            body = paragraphHtml("The ProcurePal account for " + bold(escape(companyName))
+            body = paragraphHtml("The Procure Paddy account for " + bold(escape(companyName))
                             + " has been suspended.")
-                    + callout("Nobody at your company can sign in while the account is suspended. Your data "
+                    + callout("Nobody at your company can log in while the account is suspended. Your data "
                             + "has not been deleted and will be exactly as you left it if the account is "
                             + "reactivated.")
                     + paragraph("If you believe this is a mistake, reply to this message or contact "
-                            + "ProcurePal support.");
-            text = "The ProcurePal account for " + companyName + " has been suspended.\n\n"
-                    + "Nobody at your company can sign in while the account is suspended. Your data has not "
-                    + "been deleted.\n\nIf you believe this is a mistake, contact ProcurePal support.\n";
+                            + "Procure Paddy support.");
+            text = "The Procure Paddy account for " + companyName + " has been suspended.\n\n"
+                    + "Nobody at your company can log in while the account is suspended. Your data has not "
+                    + "been deleted.\n\nIf you believe this is a mistake, contact Procure Paddy support.\n";
         }
 
-        return new EmailMessage(to, heading, page(heading, heading, body), text);
+        return new EmailMessage(to, heading, page(BRAND, heading, heading, body), text);
     }
 
     /**
@@ -253,7 +259,7 @@ public final class AccountEmails {
      * verification} sends when somebody asks for the link again.
      *
      * <p>It exists separately from the two above because the reader's situation is
-     * different: they already know what ProcurePal is and already have an account,
+     * different: they already know what Procure Paddy is and already have an account,
      * so a welcome would be noise. What they need is one link and an unambiguous
      * statement of WHICH address it confirms - a resend is very often triggered
      * because the first one went somewhere wrong, so naming the address is how the
@@ -271,7 +277,7 @@ public final class AccountEmails {
      */
     public static EmailMessage verifyEmailAddress(
             List<String> to, String companyName, String emailAddress, String verificationUrl, String expiresIn) {
-        String body = paragraph("Confirm this email address so ProcurePal can send you order receipts, "
+        String body = paragraph("Confirm this email address so Procure Paddy can send you order receipts, "
                         + "delivery updates and payment confirmations.")
                 + detailTable(List.of(
                         new Detail("Company", companyName),
@@ -282,7 +288,7 @@ public final class AccountEmails {
                 + paragraph("If you did not ask for this, you can ignore it. Nothing changes unless the "
                         + "link is used.");
 
-        String text = "Confirm this email address so ProcurePal can send you order receipts, delivery "
+        String text = "Confirm this email address so Procure Paddy can send you order receipts, delivery "
                 + "updates and payment confirmations.\n\n"
                 + "Company: " + companyName + "\nEmail address: " + emailAddress + "\n"
                 + verificationBlockText(verificationUrl, expiresIn)
@@ -291,10 +297,82 @@ public final class AccountEmails {
                 + "If you did not ask for this, you can ignore it. Nothing changes unless the link is "
                 + "used.\n";
 
-        return new EmailMessage(to, "Confirm your ProcurePal email address",
-                page("Confirm your email address",
-                        "One click confirms " + emailAddress + " so ProcurePal can email you.", body),
+        return new EmailMessage(to, "Confirm your Procure Paddy email address",
+                page(BRAND, "Confirm your email address",
+                        "One click confirms " + emailAddress + " so Procure Paddy can email you.", body),
                 text, EmailKind.VERIFICATION);
+    }
+
+    /**
+     * One account an emailed reset link is for. A list, because usernames are unique
+     * per company only and one inbox can be the login at several.
+     */
+    public record ResetLink(String companyName, String clientIdentifier, String login, String url) {
+    }
+
+    /**
+     * Self-service password reset (PASSWORD_RESET_PLAN.md): one block per account
+     * using this address, each with its own single-use link. SECURITY, so it reaches
+     * an address that was never confirmed - using the link is itself the proof.
+     *
+     * <p>It names the Company ID on purpose. People who forget the password usually
+     * forget the Company ID too, and login needs both.
+     */
+    public static EmailMessage passwordReset(List<String> to, List<ResetLink> links, String expiresIn) {
+        boolean several = links.size() > 1;
+        String lifetime = "It works once" + expiryClause(expiresIn) + ".";
+        StringBuilder body = new StringBuilder(paragraph(several
+                ? "Someone asked to reset the password for the accounts below. If it was you, use the button "
+                        + "for the account you want. Each link works once" + expiryClause(expiresIn) + "."
+                : "Someone asked to reset the password for the account below. If it was you, use the button. "
+                        + lifetime));
+        StringBuilder text = new StringBuilder(several
+                ? "Someone asked to reset the password for the accounts below. If it was you, open the link "
+                        + "for the account you want. Each link works once" + expiryClause(expiresIn) + ".\n"
+                : "Someone asked to reset the password for the account below. If it was you, open the link. "
+                        + lifetime + "\n");
+        for (ResetLink link : links) {
+            body.append(detailTable(List.of(
+                            new Detail("Company", link.companyName()),
+                            new Detail("Company ID", link.clientIdentifier()),
+                            new Detail("Log in with", link.login()))))
+                    .append(button(several ? "Reset password for " + link.companyName() : "Reset password",
+                            link.url()));
+            text.append("\nCompany: ").append(link.companyName())
+                    .append("\nCompany ID: ").append(link.clientIdentifier())
+                    .append("\nLog in with: ").append(link.login())
+                    .append("\n").append(link.url()).append("\n");
+        }
+        body.append(paragraph("If you didn't ask for this, you can ignore this email. Your password stays "
+                + "the same."));
+        text.append("\nIf you didn't ask for this, you can ignore this email. Your password stays the same.\n");
+
+        return new EmailMessage(to, "Reset your Procure Paddy password",
+                page(BRAND, "Reset your password",
+                        "Use the link in this email to set a new password.", body.toString()),
+                text.toString(), EmailKind.SECURITY);
+    }
+
+    /**
+     * After a self-service reset. The admin-reset alert above blames an administrator,
+     * which would be false here; this one says the account holder did it, and tells
+     * them what to do if they did not.
+     */
+    public static EmailMessage passwordChangedBySelf(List<String> to, String login, String companyName) {
+        String body = paragraph("The password for your Procure Paddy account was just changed using a reset "
+                        + "link sent to this email address. Any other devices have been logged out.")
+                + detailTable(List.of(new Detail("Log in with", login), new Detail("Company", companyName)))
+                + callout("If this wasn't you, reply to this email straight away. Someone who can read this "
+                        + "inbox has changed your password.");
+
+        String text = "The password for your Procure Paddy account (" + login + " at " + companyName
+                + ") was just changed using a reset link sent to this email address. Any other devices have "
+                + "been logged out.\n\n"
+                + "If this wasn't you, reply to this email straight away.\n";
+
+        return new EmailMessage(to, "Your Procure Paddy password was changed",
+                page(BRAND, "Your password was changed", "Your password was just reset from this inbox.", body),
+                text, EmailKind.SECURITY);
     }
 
     /**

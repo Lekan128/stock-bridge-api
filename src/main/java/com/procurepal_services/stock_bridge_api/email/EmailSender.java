@@ -7,32 +7,25 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
-import software.amazon.awssdk.services.sesv2.SesV2Client;
-import software.amazon.awssdk.services.sesv2.model.Body;
-import software.amazon.awssdk.services.sesv2.model.Content;
-import software.amazon.awssdk.services.sesv2.model.Destination;
-import software.amazon.awssdk.services.sesv2.model.EmailContent;
-import software.amazon.awssdk.services.sesv2.model.Message;
-import software.amazon.awssdk.services.sesv2.model.MessageHeader;
-import software.amazon.awssdk.services.sesv2.model.SendEmailRequest;
-import software.amazon.awssdk.services.sesv2.model.SendEmailResponse;
 
 /**
- * The SES call, and the promise that it never becomes somebody else's problem.
+ * The mail-provider call, and the promise that it never becomes somebody else's problem.
+ * Which provider carries the message - Resend or SES - is an {@link EmailTransport}
+ * chosen by {@code app.email.provider}; everything on this class holds for both.
  * Modelled on {@link com.procurepal_services.stock_bridge_api.storage.S3ImageService}:
- * every failure mode - unconfigured, no recipients, SES itself refusing - is
+ * every failure mode - unconfigured, no recipients, the provider itself refusing - is
  * absorbed here and reported as a {@code false} return plus a log line.
  *
  * <h2>Why nothing may propagate</h2>
  * An email is a courtesy attached to something that already happened. The order is
- * placed, the payment is applied, the user exists. Letting a throttled SES call or
+ * placed, the payment is applied, the user exists. Letting a throttled provider call or
  * an expired sending identity turn a successful checkout into a 500 - or worse,
  * roll it back - would trade a real business outcome for a notification, which is
  * exactly backwards. The corollary is that a caller gets no useful signal from the
  * return value and none of them check it; it exists for tests and for the log.
  *
  * <h2>Unconfigured logs the message instead of sending it</h2>
- * Locally and in the test suite there is no SES account, and the useful behaviour
+ * Locally and in the test suite there is no mail-provider account, and the useful behaviour
  * there is to see that the right mail would have gone to the right people. The body
  * is deliberately not logged - order emails contain a customer's delivery address
  * and phone number, and that does not belong in an application log.
@@ -41,7 +34,7 @@ import software.amazon.awssdk.services.sesv2.model.SendEmailResponse;
  * This is the one place the shape of a send depends on {@link EmailKind}, and the
  * reason is RFC 8058. A promotional message must carry a {@code List-Unsubscribe}
  * header, and that header contains a token bound to <em>one</em> address (see
- * {@link UnsubscribeTokenService}). A single SES {@code SendEmail} call produces a
+ * {@link UnsubscribeTokenService}). A single provider send call produces a
  * single MIME message with a single set of headers, so three recipients on one
  * promotional send could only ever carry one recipient's token - and whichever two
  * of them pressed Unsubscribe would silently unsubscribe the third. Not a rare
@@ -90,9 +83,9 @@ import software.amazon.awssdk.services.sesv2.model.SendEmailResponse;
 public class EmailSender {
 
     /** RFC 8058 / RFC 2369. Both are required; either alone does nothing. */
-    private static final String LIST_UNSUBSCRIBE_HEADER = "List-Unsubscribe";
+    static final String LIST_UNSUBSCRIBE_HEADER = "List-Unsubscribe";
 
-    private static final String LIST_UNSUBSCRIBE_POST_HEADER = "List-Unsubscribe-Post";
+    static final String LIST_UNSUBSCRIBE_POST_HEADER = "List-Unsubscribe-Post";
 
     /**
      * The literal RFC 8058 requires, byte for byte. It is what tells Gmail and Yahoo
@@ -101,18 +94,23 @@ public class EmailSender {
      * best render a link the reader has to follow and confirm, and Gmail's inbox-level
      * "Unsubscribe" affordance does not show up.
      */
-    private static final String ONE_CLICK = "List-Unsubscribe=One-Click";
+    static final String ONE_CLICK = "List-Unsubscribe=One-Click";
 
     private final EmailProperties emailProperties;
-    private final SesV2Client sesV2Client;
+    private final EmailTransport transport;
     private final UnsubscribeTokenService unsubscribeTokenService;
 
     @PostConstruct
     void logConfigurationStatus() {
         if (!emailProperties.isConfigured()) {
             log.warn("Email is not configured (app.email.enabled must be true and app.email.from-address "
-                    + "must be set to an SES-verified identity) - outgoing mail will be logged and dropped "
-                    + "instead of sent.");
+                    + "must be set to an address on a domain verified with the mail provider) - outgoing mail "
+                    + "will be logged and dropped instead of sent.");
+        } else if (!transport.isConfigured()) {
+            log.warn("Email provider '{}' is not configured (for resend, set app.email.resend.api-key) - "
+                    + "outgoing mail will be logged and dropped instead of sent.", transport.name());
+        } else {
+            log.info("Email will be sent through '{}' from {}", transport.name(), emailProperties.fromAddress());
         }
         if (!unsubscribeTokenService.canIssueLinks()) {
             // Separate line and separate condition from the one above: a deploy can
@@ -128,13 +126,13 @@ public class EmailSender {
     }
 
     public boolean isConfigured() {
-        return emailProperties.isConfigured();
+        return emailProperties.isConfigured() && transport.isConfigured();
     }
 
     /**
      * The thread boundary. {@link EmailDispatcher} calls this rather than
-     * {@link #send} so the SES round trip happens on the email executor instead of
-     * on the request thread that just committed - a slow SES response would
+     * {@link #send} so the provider round trip happens on the email executor instead
+     * of on the request thread that just committed - a slow provider response would
      * otherwise be latency the buyer waits through, after their order is already
      * safely persisted and there is nothing left to tell them.
      *
@@ -148,8 +146,8 @@ public class EmailSender {
     }
 
     /**
-     * @return true only when SES accepted the message - and for PROMOTIONAL mail,
-     *     only when SES accepted <em>every</em> one of its per-recipient sends. See
+     * @return true only when the provider accepted the message - and for PROMOTIONAL
+     *     mail, only when it accepted <em>every</em> one of its per-recipient sends. See
      *     the class doc: nobody depends on this, it exists for tests and the log.
      */
     public boolean send(EmailMessage message) {
@@ -163,8 +161,8 @@ public class EmailSender {
         if (message.kind() == EmailKind.PROMOTIONAL) {
             return sendPromotional(message);
         }
-        // Every other kind keeps the original path exactly: one SES call, every
-        // recipient in one Destination, and no List-Unsubscribe header anywhere near
+        // Every other kind keeps the original path exactly: one provider call, every
+        // recipient on one message, and no List-Unsubscribe header anywhere near
         // it. Putting one on an order receipt would invite a customer to unsubscribe
         // from the confirmation of goods they just paid for - a button that either
         // does nothing (dishonest) or breaks their account (worse). The header is
@@ -174,7 +172,7 @@ public class EmailSender {
     }
 
     /**
-     * One SES call per recipient, each carrying that recipient's own unsubscribe
+     * One provider call per recipient, each carrying that recipient's own unsubscribe
      * link. See the class doc for why the fan-out lives here rather than in the
      * caller that will eventually produce campaigns.
      */
@@ -211,83 +209,30 @@ public class EmailSender {
     }
 
     /**
-     * The single SES round trip. Shared by both paths deliberately, so there is one
-     * try/catch, one log line format, and no second place where an SES exception
-     * could learn to escape - see the class doc on why nothing may propagate.
+     * The single provider round trip. Shared by both paths deliberately, so there is
+     * one try/catch, one log line format, and no second place where a provider
+     * exception could learn to escape - see the class doc on why nothing may
+     * propagate.
      */
     private boolean sendOne(EmailMessage message, String unsubscribeUrl) {
         try {
-            SendEmailResponse response = sesV2Client.sendEmail(buildRequest(message, unsubscribeUrl));
-            log.debug("Sent email \"{}\" to {} (SES message id {})",
-                    message.subject(), message.to(), response.messageId());
+            String messageId = transport.send(message, unsubscribeUrl);
+            log.debug("Sent email \"{}\" to {} ({} message id {})",
+                    message.subject(), message.to(), transport.name(), messageId);
             return true;
         } catch (Exception e) {
             // Warn, not error: a failed notification is not an incident, and paging
             // on it would train people to ignore the page. Bounces and complaints -
             // the failures that actually matter - are not visible here at all and
-            // are what the SES configuration set exists to capture.
-            log.warn("Failed to send email \"{}\" to {}: {}", message.subject(), message.to(), e.getMessage());
+            // arrive later through the provider's webhook.
+            log.warn("Failed to send email \"{}\" to {} via {}: {}",
+                    message.subject(), message.to(), transport.name(), e.getMessage());
             return false;
         }
     }
 
     /**
-     * @param unsubscribeUrl this recipient's one-click unsubscribe URL, or null for
-     *     every kind of mail that must not carry one. Null is the overwhelmingly
-     *     common case and leaves the request byte-identical to what this method
-     *     built before RFC 8058 support existed, which is the property that keeps
-     *     order receipts out of the blast radius of this change.
-     */
-    private SendEmailRequest buildRequest(EmailMessage message, String unsubscribeUrl) {
-        Message.Builder simple = Message.builder()
-                .subject(utf8(message.subject()))
-                .body(buildBody(message));
-        if (unsubscribeUrl != null) {
-            simple.headers(unsubscribeHeaders(unsubscribeUrl));
-        }
-
-        SendEmailRequest.Builder request = SendEmailRequest.builder()
-                .fromEmailAddress(emailProperties.formattedFrom())
-                .destination(Destination.builder().toAddresses(message.to()).build())
-                .content(EmailContent.builder().simple(simple.build()).build());
-
-        // Both are optional refinements, and an unset one must not become the
-        // string "null" in a header - see EmailProperties.isConfigured().
-        if (notBlank(emailProperties.replyToAddress())) {
-            request.replyToAddresses(emailProperties.replyToAddress().trim());
-        }
-        if (notBlank(emailProperties.configurationSet())) {
-            request.configurationSetName(emailProperties.configurationSet().trim());
-        }
-        return request.build();
-    }
-
-    /**
-     * The two RFC 8058 headers, as an SES v2 {@code Message.headers} list.
-     *
-     * <h2>Why Message.headers() and not a raw MIME message</h2>
-     * SES v2 offers two shapes of {@code EmailContent}. A {@code simple} message is
-     * the subject and bodies as structured fields and SES assembles the MIME itself;
-     * a {@code raw} message is a block of bytes the caller has assembled, headers
-     * and multipart boundaries and transfer encodings included. Custom headers were
-     * historically only possible with the second, which is why so much advice on the
-     * internet says to build MIME by hand.
-     *
-     * <p>That advice is out of date for this SDK. {@code Message.headers} exists in
-     * software.amazon.awssdk:sesv2 2.47.4 (the version the AWS BOM in pom.xml pins),
-     * takes a list of name/value pairs, and is explicitly the supported way to add
-     * List-Unsubscribe. It was checked against the actual API rather than assumed.
-     *
-     * <p>Switching to raw would have been the wrong trade even if it were the only
-     * option. It means this class becomes responsible for MIME: multipart/alternative
-     * boundaries between the HTML and text parts, quoted-printable or base64 encoding
-     * for the non-ASCII that {@link #utf8} exists to protect, RFC 2047 encoding of a
-     * subject line containing a customer's name, and correct line folding - every one
-     * of which is a way to produce a message that renders as source code in somebody's
-     * client. It would also have applied to <em>all</em> mail or forced two divergent
-     * assembly paths, so a bug in the promotional path could surface on order
-     * receipts. Using the structured field keeps the existing simple-message code
-     * exactly as it was and adds two strings to it.
+     * The List-Unsubscribe value: the one https URL, in angle brackets.
      *
      * <h2>Why there is no mailto: alternative</h2>
      * RFC 8058 permits a {@code mailto:} entry alongside the https one and RFC 2369
@@ -305,37 +250,8 @@ public class EmailSender {
      * not parse it and will render no button at all - which looks identical to having
      * shipped no header.
      */
-    private static List<MessageHeader> unsubscribeHeaders(String unsubscribeUrl) {
-        return List.of(
-                MessageHeader.builder()
-                        .name(LIST_UNSUBSCRIBE_HEADER)
-                        .value("<" + unsubscribeUrl + ">")
-                        .build(),
-                MessageHeader.builder()
-                        .name(LIST_UNSUBSCRIBE_POST_HEADER)
-                        .value(ONE_CLICK)
-                        .build());
-    }
-
-    private static Body buildBody(EmailMessage message) {
-        Body.Builder body = Body.builder();
-        if (notBlank(message.htmlBody())) {
-            body.html(utf8(message.htmlBody()));
-        }
-        if (notBlank(message.textBody())) {
-            body.text(utf8(message.textBody()));
-        }
-        return body.build();
-    }
-
-    /**
-     * Naira amounts, Nigerian addresses and customer names all routinely carry
-     * characters outside US-ASCII, and SES defaults to 7-bit when no charset is
-     * given - which turns a currency symbol into a question mark rather than
-     * failing loudly.
-     */
-    private static Content utf8(String data) {
-        return Content.builder().charset("UTF-8").data(data).build();
+    static String listUnsubscribeValue(String unsubscribeUrl) {
+        return "<" + unsubscribeUrl + ">";
     }
 
     private static boolean notBlank(String value) {
