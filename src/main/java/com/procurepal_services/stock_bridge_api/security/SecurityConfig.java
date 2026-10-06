@@ -45,6 +45,12 @@ public class SecurityConfig {
     private static final String[] PERMIT_ALL_PATHS = {
         "/api/auth/login",
         "/api/auth/refresh",
+        // Self-service password reset: the caller has no working password by
+        // definition. Request reveals nothing and is rate-limited; check and complete
+        // are protected by the single-use emailed token. See PasswordResetService.
+        "/api/auth/password-reset/request",
+        "/api/auth/password-reset/check",
+        "/api/auth/password-reset/complete",
         "/api/clients/signup",
         // The public "apply to sell on ProcurePaddy" form. Unauthenticated by
         // necessity: an applicant has no account and, if we reject them, never

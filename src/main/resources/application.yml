@@ -253,6 +253,16 @@ app:
       # and SNS gives up on us after 15 seconds regardless.
       connect-timeout: ${SES_SNS_CONNECT_TIMEOUT:5s}
       read-timeout: ${SES_SNS_READ_TIMEOUT:10s}
+  # Self-service password reset by email (PASSWORD_RESET_PLAN.md). Every key is
+  # optional with a working default in PasswordResetProperties: links live 1 hour,
+  # 3 requests per email and 10 per client address per hour, at most 5 accounts
+  # listed in one email.
+  password-reset:
+    token-ttl: ${PASSWORD_RESET_TOKEN_TTL:1h}
+    email-limit: ${PASSWORD_RESET_EMAIL_LIMIT:3}
+    ip-limit: ${PASSWORD_RESET_IP_LIMIT:10}
+    window: ${PASSWORD_RESET_WINDOW:1h}
+    max-accounts: ${PASSWORD_RESET_MAX_ACCOUNTS:5}
   # The public "apply to sell on ProcurePaddy" form. Both keys are OPTIONAL and
   # both have working defaults in VendorWaitlistProperties, which is where each is
   # justified at length - same arrangement as app.email.verification above, and for

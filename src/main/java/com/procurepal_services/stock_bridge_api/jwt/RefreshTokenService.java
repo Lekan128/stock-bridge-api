@@ -148,6 +148,19 @@ public class RefreshTokenService {
         });
     }
 
+    /**
+     * Ends every session the subject has, on every device. For a password reset: whoever
+     * knew the old password may be signed in somewhere, and the reset is exactly the
+     * moment they must stop being. Access tokens already issued live out their short
+     * expiry; only refresh is cut off here.
+     *
+     * @return how many sessions were ended
+     */
+    @Transactional
+    public int revokeAll(SubjectType subjectType, UUID subjectId) {
+        return refreshTokenRepository.revokeAllForSubject(subjectType, subjectId, OffsetDateTime.now());
+    }
+
     private RefreshToken save(SubjectType subjectType, UUID subjectId, String rawToken) {
         RefreshToken token = RefreshToken.builder()
                 .subjectType(subjectType)

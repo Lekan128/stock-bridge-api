@@ -60,7 +60,7 @@ class EmailVerificationTemplateTest {
         EmailMessage message =
                 AccountEmails.verifyEmailAddress(TO, "Demo Retail Co", "owner@demo.test", VERIFY_URL, TTL);
 
-        assertThat(message.subject()).isEqualTo("Confirm your ProcurePal email address");
+        assertThat(message.subject()).isEqualTo("Confirm your Procure Paddy email address");
         assertThat(message.htmlBody())
                 .contains(VERIFY_URL)
                 .contains("Confirm your email address")
