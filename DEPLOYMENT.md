@@ -370,7 +370,48 @@ Leaving `AWS_ROLE_ARN` blank is still supported and falls back to using the acce
 directly — but then the key needs the S3 policy on it, and it is a long-lived credential that can
 write to your bucket. Use it only if a role genuinely isn't available.
 
-## One-time setup - SES (transactional email)
+## One-time setup - Resend (transactional email, current provider)
+
+`EMAIL_PROVIDER` defaults to `resend`. SES (next section) is shelved while its production access
+is pending; switching back is `EMAIL_PROVIDER=ses` and nothing else.
+
+### 1. One verified domain per environment
+
+In Resend → **Domains**, add a separate domain for each environment and publish the DNS records
+Resend shows (an MX + SPF TXT on a `send.` bounce subdomain, a DKIM TXT at
+`resend._domainkey.<domain>`). Use the region closest to your users.
+
+| | Production | Staging |
+|---|---|---|
+| Resend domain | `mail.procurepaddy.com` | `staging.procurepaddy.com` |
+| `EMAIL_FROM_ADDRESS` | `no-reply@mail.procurepaddy.com` | `no-reply@staging.procurepaddy.com` |
+| `EMAIL_FROM_NAME` | `Procure Paddy` | `Procure Paddy (Staging)` |
+| `EMAIL_REPLY_TO_ADDRESS` | `support@procurepaddy.com` | `support@procurepaddy.com` |
+
+Sending from subdomains, not the root, keeps the root domain's reputation - the one Google
+Workspace mail from `support@` and the founders lives on - out of reach of anything the app does,
+and keeps staging's reputation from ever touching production's. Add a DMARC record
+(`_dmarc.procurepaddy.com`, start at `p=none` with a `rua=` reporting address) if one does not
+exist; Gmail and Yahoo require it for anyone sending in volume.
+
+### 2. One API key per environment
+
+Resend → **API Keys** → *Sending access*, restricted to that environment's domain. A leaked
+staging key then cannot send as production. Set it as `RESEND_API_KEY`.
+
+### 3. Bounce and complaint webhook
+
+Resend → **Webhooks** → add `<API origin>/api/webhooks/resend` for each environment, subscribed
+to **`email.bounced`** and **`email.complained`** only. Copy its signing secret (`whsec_…`) into
+`RESEND_WEBHOOK_SECRET`. Without it every delivery is refused with 401 and bounces never reach
+`email_suppressions` - sending still works, but a rising bounce rate goes unnoticed. Rows land in
+`ses_notification_events` with `message_type = 'resend'`.
+
+### Staging against a copy of production data
+
+Set `EMAIL_ENABLED=false` there, exactly as before - the provider changes nothing about why.
+
+## One-time setup - SES (transactional email, shelved)
 
 Email reuses the same IAM **user** as S3 - there is still exactly one long-lived access key in the
 system - but it assumes its **own role**. Three things have to be true.

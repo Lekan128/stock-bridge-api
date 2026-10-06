@@ -145,6 +145,10 @@ public class SecurityConfig {
         // signature before acting on anything in the payload, and must handle
         // SubscriptionConfirmation as well as Notification.
         "/api/webhooks/ses/notifications",
+        // Resend delivering the same bounce and complaint events, signed by Svix.
+        // ResendWebhookService verifies that signature (and its timestamp) before
+        // acting on anything, and refuses everything when no secret is set.
+        "/api/webhooks/resend",
         // ====================================================================
         // springdoc-openapi: browsable API docs, not a tenant/superadmin resource.
         "/v3/api-docs",
