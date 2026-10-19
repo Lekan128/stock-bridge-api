@@ -16,6 +16,8 @@ import java.util.List;
  * @param canTurnOnSelling whether this person may turn it on (the owner).
  * @param blocking whether the file waits for an answer. A PRICE_MEANING question always blocks; a
  *     KEEP_SELLING_PRICES one only for the person who can turn selling on - anyone else is told.
+ * @param sellingAvailable whether the company could turn selling on at all - false before launch
+ *     for a company outside the pilot, so nothing tells them to ask for a switch that isn't there.
  */
 public record PriceQuestionView(
         String kind,
@@ -24,5 +26,6 @@ public record PriceQuestionView(
         List<String> options,
         boolean sellingOn,
         boolean canTurnOnSelling,
-        boolean blocking) {
+        boolean blocking,
+        boolean sellingAvailable) {
 }

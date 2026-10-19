@@ -131,7 +131,12 @@ public class SellingSettingsService {
             ChangedByKind kind,
             String username,
             String reason) {
-        if (!sellingPolicy.canChooseToSellStock(client)) {
+        // Support's switch is how a company joins the pilot, so it asks only whether the company
+        // could sell at all; everyone else waits for the launch, or for support (Phase 7).
+        boolean allowed = source == SettingChangeSource.SUPPORT
+                ? sellingPolicy.couldSellStock(client)
+                : sellingPolicy.canChooseToSellStock(client);
+        if (!allowed) {
             throw new SellingNotAvailableException();
         }
         if (client.isSellsStock() == sellsStock) {

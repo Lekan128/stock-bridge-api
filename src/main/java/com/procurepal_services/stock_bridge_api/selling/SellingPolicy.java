@@ -35,6 +35,17 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class SellingPolicy {
 
+    /**
+     * {@code pilot} until selling is launched (SELLING_PRICE_PLAN.md Phase 7), then {@code open}.
+     * In pilot, only ProcurePal and the companies support has enrolled - by turning selling on for
+     * them - are offered selling or can turn it on themselves; everyone else sees what they saw before.
+     * Defaults to pilot, so a deploy that forgets the setting does not launch the feature by accident.
+     */
+    @org.springframework.beans.factory.annotation.Value("${app.selling.rollout:pilot}")
+    private String rollout;
+
+    private final com.procurepal_services.stock_bridge_api.repository.ClientSettingChangeRepository changeRepository;
+
     private final SellerDirectory sellerDirectory;
 
     /**
@@ -64,7 +75,35 @@ public class SellingPolicy {
      * 6): a vendor's every product already has a required price and its own marketplace sales.
      */
     public boolean canChooseToSellStock(Client client) {
+        if (!couldSellStock(client)) {
+            return false;
+        }
+        if (isOpen() || client.isSellsStock() || client.isPlatformOwner()) {
+            return true;
+        }
+        // In the pilot: a company support has turned selling on for once stays in it, so an owner who
+        // turns it off can turn it back on (the Undo on that toast must not fail).
+        return changeRepository.existsByClientIdAndSettingAndNewValue(
+                client.getId(), com.procurepal_services.stock_bridge_api.entity.ClientSettingChange.SELLS_STOCK, "true");
+    }
+
+    /** {@link #canChooseToSellStock(Client)} for a tenant id. */
+    @Transactional(readOnly = true)
+    public boolean canChooseToSellStock(UUID tenantId) {
+        return canChooseToSellStock(ownerOf(tenantId));
+    }
+
+    /**
+     * Whether this company could sell from its stock at all, launched or not - what support's switch
+     * asks. Companies only (plan decision 6).
+     */
+    public boolean couldSellStock(Client client) {
         return client != null && !client.isVendor();
+    }
+
+    /** Whether selling has been launched to every company (Phase 7), rather than piloted. */
+    public boolean isOpen() {
+        return "open".equalsIgnoreCase(rollout == null ? "" : rollout.trim());
     }
 
     /** {@link #showsSellingPrice(Client)} for a tenant id; false for no tenant or an unknown one. */
@@ -99,7 +138,8 @@ public class SellingPolicy {
     @Transactional(readOnly = true)
     public boolean asksWhatPriceMeans(UUID tenantId) {
         Client client = ownerOf(tenantId);
-        return canChooseToSellStock(client) && !requiresSellingPrice(client);
+        // Asked whether or not selling is launched: misreading a cost as a price is wrong either way.
+        return couldSellStock(client) && !requiresSellingPrice(client);
     }
 
     private Client ownerOf(UUID tenantId) {

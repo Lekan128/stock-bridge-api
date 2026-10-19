@@ -12,4 +12,6 @@ public interface ClientSettingChangeRepository extends JpaRepository<ClientSetti
     Optional<ClientSettingChange> findFirstByClientIdAndSettingOrderByChangedAtDesc(UUID clientId, String setting);
 
     List<ClientSettingChange> findAllByClientIdAndSettingOrderByChangedAtDesc(UUID clientId, String setting);
+
+    boolean existsByClientIdAndSettingAndNewValue(UUID clientId, String setting, String newValue);
 }

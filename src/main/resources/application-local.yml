@@ -36,6 +36,10 @@ spring:
     import: optional:file:.env[.properties]
 
 app:
+  # Local development and the test suites see the launched feature (Phase 7); deploys stay
+  # pilot unless SELLING_ROLLOUT=open.
+  selling:
+    rollout: ${SELLING_ROLLOUT:open}
   jwt:
     # Dev-only placeholder, >=32 bytes (HS256 minimum). Never used outside local/docker.
     secret: ${JWT_SECRET:local-dev-only-jwt-signing-secret-do-not-use-in-prod}

@@ -670,7 +670,8 @@ public class ImportSessionService {
         }
         UUID tenantId = TenantContext.get();
         boolean sellingOn = sellingPolicy.showsSellingPrice(tenantId);
-        boolean canTurnOn = sellingOn || callerMay("MANAGE_COMPANY_PROFILE");
+        boolean sellingAvailable = sellingOn || sellingPolicy.canChooseToSellStock(tenantId);
+        boolean canTurnOn = sellingOn || (sellingAvailable && callerMay("MANAGE_COMPANY_PROFILE"));
         Map<String, String> mapping = session.getColumnMapping() == null ? Map.of() : session.getColumnMapping();
         List<String> options = new ArrayList<>();
         if (PriceColumnQuestion.PRICE_MEANING.equals(kind) && !mapping.containsValue(ImportFields.COST_PRICE)) {
@@ -688,7 +689,7 @@ public class ImportSessionService {
             }
         }
         boolean blocking = PriceColumnQuestion.PRICE_MEANING.equals(kind) || canTurnOn;
-        return new PriceQuestionView(kind, header, samples, List.copyOf(options), sellingOn, canTurnOn, blocking);
+        return new PriceQuestionView(kind, header, samples, List.copyOf(options), sellingOn, canTurnOn, blocking, sellingAvailable);
     }
 
     private static boolean callerMay(String authority) {

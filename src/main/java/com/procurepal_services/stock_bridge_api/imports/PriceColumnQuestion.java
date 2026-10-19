@@ -68,7 +68,8 @@ public class PriceColumnQuestion {
                 return new Raised(PRICE_MEANING, header);
             }
         }
-        if (!sellingPolicy.showsSellingPrice(tenantId)) {
+        // Offered only where selling can be turned on - before launch, a pilot company (Phase 7).
+        if (!sellingPolicy.showsSellingPrice(tenantId) && sellingPolicy.canChooseToSellStock(tenantId)) {
             for (String header : headers) {
                 if (header != null && SELLING.contains(header) && !columnMapping.containsKey(header)) {
                     return new Raised(KEEP_SELLING_PRICES, header);
