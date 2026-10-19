@@ -185,7 +185,10 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "AND (CAST(:companyVendorId AS uuid) IS NULL OR company_vendor_id = CAST(:companyVendorId AS uuid)) "
                     + "AND (CAST(:movementType AS text) IS NULL OR movement_type = CAST(:movementType AS text)) "
                     + "AND (CAST(:from AS timestamptz) IS NULL OR occurred_at >= CAST(:from AS timestamptz)) "
-                    + "AND (CAST(:to AS timestamptz) IS NULL OR occurred_at <= CAST(:to AS timestamptz))",
+                    + "AND (CAST(:to AS timestamptz) IS NULL OR occurred_at <= CAST(:to AS timestamptz)) "
+                    // V46: why it went out - the same two narrowings as StockMovementSpecifications.forTenant.
+                    + "AND (CAST(:outReason AS text) IS NULL OR out_reason = CAST(:outReason AS text)) "
+                    + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL))",
             nativeQuery = true)
     List<Object[]> summarise(
             @Param("clientId") UUID clientId,
@@ -193,7 +196,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("companyVendorId") UUID companyVendorId,
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("outReason") String outReason,
+            @Param("noReason") boolean noReason);
 
     /**
      * <h2>V28: these five reporting queries bracket occurred_at, not created_at</h2>

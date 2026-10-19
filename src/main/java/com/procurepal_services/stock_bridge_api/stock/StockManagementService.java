@@ -1070,10 +1070,24 @@ public class StockManagementService {
             UUID productId,
             UUID companyVendorId,
             Pageable pageable) {
+        return allMovements(from, to, movementType, productId, companyVendorId, null, false, pageable);
+    }
+
+    /** {@code outReason}/{@code noReason}: see {@code StockMovementSpecifications.forTenant}. */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> allMovements(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            Pageable pageable) {
         return stockMovementRepository
                 .findAll(
                         StockMovementSpecifications.forTenant(
-                                requireTenantId(), productId, companyVendorId, from, to, movementType),
+                                requireTenantId(), productId, companyVendorId, from, to, movementType, outReason, noReason),
                         pageable)
                 .map(StockMovementResponse::from);
     }
@@ -1093,13 +1107,28 @@ public class StockManagementService {
             MovementType movementType,
             UUID productId,
             UUID companyVendorId) {
+        return movementSummary(from, to, movementType, productId, companyVendorId, null, false);
+    }
+
+    /** The same filters as {@link #allMovements}, reason included - or the footer contradicts the rows. */
+    @Transactional(readOnly = true)
+    public StockMovementSummaryResponse movementSummary(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason) {
         List<Object[]> rows = stockMovementRepository.summarise(
                 requireTenantId(),
                 productId,
                 companyVendorId,
                 movementType == null ? null : movementType.name(),
                 from,
-                to);
+                to,
+                outReason == null ? null : outReason.name(),
+                noReason);
         // A conditional aggregate with no GROUP BY always returns exactly one row, zeroes
         // included, so an empty list here would mean the query stopped being an aggregate.
         // Answered as an all-zero summary rather than an exception: a report footer is not
