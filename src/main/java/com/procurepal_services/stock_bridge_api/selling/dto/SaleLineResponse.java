@@ -13,6 +13,7 @@ import java.util.UUID;
  *     was typed when that was another unit ("3 cartons").
  * @param saleAmount what it went for; absent while it has no price.
  * @param costAmount what the stock it used had cost; absent when unknown (see {@code costBasis}).
+ * @param unitOfMeasure the product's stock unit code ("PIECE", "KG") - what {@code quantity} counts.
  */
 public record SaleLineResponse(
         UUID movementId,
@@ -30,5 +31,6 @@ public record SaleLineResponse(
         OffsetDateTime cancelledAt,
         String cancelledByName,
         boolean priceAdded,
-        OffsetDateTime occurredAt) {
+        OffsetDateTime occurredAt,
+        String unitOfMeasure) {
 }

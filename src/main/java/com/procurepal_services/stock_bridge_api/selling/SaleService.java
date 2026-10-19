@@ -243,7 +243,8 @@ public class SaleService {
                     cancellation == null ? null : cancellation.getCreatedAt(),
                     cancellation == null ? null : nameOf(cancellation.getCreatedBy()),
                     priceFix != null,
-                    line.getOccurredAt()));
+                    line.getOccurredAt(),
+                    line.getProduct().getUnitOfMeasure()));
         }
         StockMovement first = lines.get(0);
         return new SaleResponse(
