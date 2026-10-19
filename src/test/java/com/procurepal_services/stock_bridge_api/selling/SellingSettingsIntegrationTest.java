@@ -12,13 +12,16 @@ import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.ClientSettingChange;
 import com.procurepal_services.stock_bridge_api.entity.ClientType;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
+import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.SettingChangeSource;
+import com.procurepal_services.stock_bridge_api.entity.StockUse;
 import com.procurepal_services.stock_bridge_api.entity.SuperAdmin;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.ClientSettingChangeRepository;
 import com.procurepal_services.stock_bridge_api.repository.NotificationRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.SuperAdminRepository;
 import com.procurepal_services.stock_bridge_api.selling.dto.SellingSettingsResponse;
 import com.procurepal_services.stock_bridge_api.selling.dto.SupportSellingSettingsRequest;
@@ -26,6 +29,8 @@ import com.procurepal_services.stock_bridge_api.selling.dto.UpdateSellingSetting
 import com.procurepal_services.stock_bridge_api.superadmin.dto.SuperAdminClientDetail;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -72,6 +77,9 @@ class SellingSettingsIntegrationTest {
 
     @Autowired
     private SellingSettingsService sellingSettingsService;
+
+    @Autowired
+    private ProductRepository productRepository;
 
     @Test
     void aNewCompanyStartsOffAndTheOwnerCanTurnItOn() {
@@ -190,7 +198,92 @@ class SellingSettingsIntegrationTest {
         assertThat(createProduct(owner, "NONE-" + UUID.randomUUID().toString().substring(0, 6), null).unitPrice()).isNull();
     }
 
+    @Test
+    void theFirstWeekAnswerIsKeptEvenWhenItChangesNothingElse() {
+        TenantLoginResponse owner = signup("Selling Answer Co");
+        UUID clientId = clientIdOf(owner);
+
+        SellingSettingsResponse answered = put(owner,
+                new UpdateSellingSettingsRequest(false, SettingChangeSource.FIRST_WEEK, StockUse.USE), SellingSettingsResponse.class)
+                .getBody();
+
+        assertThat(answered.stockUse()).isEqualTo(StockUse.USE);
+        assertThat(answered.sellsStock()).isFalse();
+        // Nothing switched, so nothing is logged as a change.
+        assertThat(changeRepository.findAllByClientIdAndSettingOrderByChangedAtDesc(clientId, ClientSettingChange.SELLS_STOCK)).isEmpty();
+        assertThat(get(owner).stockUse()).isEqualTo(StockUse.USE);
+    }
+
+    @Test
+    void oldPricesCanBeReviewedAdoptedOrPutOffAndNothingIsLost() {
+        TenantLoginResponse owner = signup("Legacy Review Co");
+        UUID clientId = clientIdOf(owner);
+        UUID rice = legacyPricedProduct(clientId, "Rice", "900.00");
+        UUID beans = legacyPricedProduct(clientId, "Beans", "1200.00");
+
+        assertThat(get(owner).legacyPriceCount()).isEqualTo(2);
+        assertThat(restTemplate.exchange("/api/company/selling/legacy-prices", HttpMethod.GET, new HttpEntity<>(auth(owner)), String.class)
+                .getBody()).contains("Beans", "Rice");
+
+        // Not while selling is off: the price would be set where nobody can see it.
+        ResponseEntity<String> refused = postJson(owner, "/api/company/selling/legacy-prices/adopt", Map.of("productIds", List.of(rice)), String.class);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+
+        put(owner, new UpdateSellingSettingsRequest(true, null), SellingSettingsResponse.class);
+        SellingSettingsResponse afterOne = postJson(owner, "/api/company/selling/legacy-prices/adopt",
+                Map.of("productIds", List.of(rice)), SellingSettingsResponse.class).getBody();
+        assertThat(afterOne.legacyPriceCount()).isEqualTo(1);
+        ProductResponse adopted = restTemplate.exchange("/api/products/" + rice, HttpMethod.GET, new HttpEntity<>(auth(owner)), ProductResponse.class).getBody();
+        assertThat(adopted.unitPrice()).isEqualByComparingTo("900.00");
+        assertThat(restTemplate.exchange("/api/products/" + rice + "/price-changes", HttpMethod.GET, new HttpEntity<>(auth(owner)), String.class)
+                .getBody()).contains("LEGACY_REVIEW");
+
+        SellingSettingsResponse putOff = postJson(owner, "/api/company/selling/legacy-prices/dismiss", Map.of(), SellingSettingsResponse.class).getBody();
+        assertThat(putOff.legacyPricesDismissed()).isTrue();
+        assertThat(putOff.legacyPriceCount()).isEqualTo(1);
+
+        SellingSettingsResponse afterAll = postJson(owner, "/api/company/selling/legacy-prices/adopt", Map.of("all", true), SellingSettingsResponse.class).getBody();
+        assertThat(afterAll.legacyPriceCount()).isZero();
+        assertThat(restTemplate.exchange("/api/products/" + beans, HttpMethod.GET, new HttpEntity<>(auth(owner)), ProductResponse.class)
+                .getBody().unitPrice()).isEqualByComparingTo("1200.00");
+    }
+
+    @Test
+    void theProductListFiltersOnHavingASellingPrice() {
+        TenantLoginResponse owner = signup("Price Filter Co");
+        put(owner, new UpdateSellingSettingsRequest(true, null), SellingSettingsResponse.class);
+        createProduct(owner, "PRICED-" + UUID.randomUUID().toString().substring(0, 6), new BigDecimal("500.00"));
+        createProduct(owner, "BARE-" + UUID.randomUUID().toString().substring(0, 6), null);
+
+        assertThat(restTemplate.exchange("/api/products?hasSellingPrice=true", HttpMethod.GET, new HttpEntity<>(auth(owner)), String.class)
+                .getBody()).contains("PRICED-").doesNotContain("BARE-");
+        assertThat(restTemplate.exchange("/api/products?hasSellingPrice=false", HttpMethod.GET, new HttpEntity<>(auth(owner)), String.class)
+                .getBody()).contains("BARE-").doesNotContain("PRICED-");
+    }
+
     // ------------------------------------------------------------------------------ helpers ----
+
+    private UUID legacyPricedProduct(UUID clientId, String name, String legacyPrice) {
+        TenantContext.set(clientId);
+        try {
+            return productRepository.save(Product.builder()
+                            .name(name + " " + UUID.randomUUID().toString().substring(0, 6))
+                            .sku("LEG-" + UUID.randomUUID().toString().substring(0, 8))
+                            .legacyUnitPrice(new BigDecimal(legacyPrice))
+                            .quantityOnHand(0)
+                            .active(true)
+                            .build())
+                    .getId();
+        } finally {
+            TenantContext.clear();
+        }
+    }
+
+    private <T> ResponseEntity<T> postJson(TenantLoginResponse owner, String path, Object body, Class<T> type) {
+        HttpHeaders headers = auth(owner);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return restTemplate.exchange(path, HttpMethod.POST, new HttpEntity<>(body, headers), type);
+    }
 
     private SellingSettingsResponse get(TenantLoginResponse owner) {
         return restTemplate.exchange("/api/company/selling", HttpMethod.GET, new HttpEntity<>(auth(owner)), SellingSettingsResponse.class)

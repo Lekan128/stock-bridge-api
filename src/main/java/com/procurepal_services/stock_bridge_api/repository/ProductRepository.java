@@ -150,4 +150,14 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
      * that filter would be a page of the wrong things.
      */
     List<Product> findAllByClientIdAndActiveTrueOrderByNameAsc(UUID clientId);
+
+    /**
+     * Active products whose only price is an old one V44 set aside - the "check your old prices"
+     * review (SELLING_PRICE_PLAN.md section 4.6.3). A product given a selling price since is no
+     * longer in it: its old price stays in legacy_unit_price, but there is nothing left to decide.
+     */
+    long countByClientIdAndLegacyUnitPriceIsNotNullAndUnitPriceIsNullAndActiveTrue(UUID clientId);
+
+    org.springframework.data.domain.Page<Product> findAllByClientIdAndLegacyUnitPriceIsNotNullAndUnitPriceIsNullAndActiveTrue(
+            UUID clientId, org.springframework.data.domain.Pageable pageable);
 }

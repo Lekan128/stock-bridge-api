@@ -4,20 +4,32 @@ import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.ClientSettingChange;
 import com.procurepal_services.stock_bridge_api.entity.ClientSettingChange.ChangedByKind;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
+import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductPriceChange;
 import com.procurepal_services.stock_bridge_api.entity.SettingChangeSource;
+import com.procurepal_services.stock_bridge_api.entity.StockUse;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.notification.NotificationService;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.ClientSettingChangeRepository;
+import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.SuperAdminRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
+import com.procurepal_services.stock_bridge_api.selling.dto.AdoptLegacyPricesRequest;
+import com.procurepal_services.stock_bridge_api.selling.dto.LegacyPriceRow;
 import com.procurepal_services.stock_bridge_api.selling.dto.SellingSettingsResponse;
 import com.procurepal_services.stock_bridge_api.superadmin.ClientNotFoundException;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,6 +55,8 @@ public class SellingSettingsService {
     private final SuperAdminRepository superAdminRepository;
     private final NotificationService notificationService;
     private final SellingPolicy sellingPolicy;
+    private final ProductRepository productRepository;
+    private final SellingPriceService sellingPriceService;
 
     @Transactional(readOnly = true)
     public SellingSettingsResponse get() {
@@ -56,10 +70,27 @@ public class SellingSettingsService {
      */
     @Transactional
     public SellingSettingsResponse update(boolean sellsStock, SettingChangeSource source, UUID actingUserId) {
+        return update(sellsStock, source, null, actingUserId);
+    }
+
+    /**
+     * As above, with the first-week answer when this change IS that answer (V49). The answer is
+     * kept whether or not it changes the switch - "We use it" changes nothing else, and still must
+     * not be asked again.
+     */
+    @Transactional
+    public SellingSettingsResponse update(boolean sellsStock, SettingChangeSource source, StockUse stockUse, UUID actingUserId) {
         if (source == SettingChangeSource.SUPPORT) {
             throw new InvalidSettingSourceException();
         }
         Client client = currentClient();
+        if (stockUse != null) {
+            if (!sellingPolicy.canChooseToSellStock(client)) {
+                throw new SellingNotAvailableException();
+            }
+            client.setStockUse(stockUse);
+            clientRepository.save(client);
+        }
         User actor = userRepository.findById(actingUserId).orElse(null);
         apply(client, sellsStock, source == null ? SettingChangeSource.OWNER : source, actingUserId,
                 ChangedByKind.TENANT_USER, actor == null ? "unknown" : actor.getUsername(), null);
@@ -134,7 +165,74 @@ public class SellingSettingsService {
                 sellingPolicy.canChooseToSellStock(client),
                 last == null ? null : last.getChangedAt(),
                 last == null ? null : changedByName(last),
-                last == null ? null : last.getSource());
+                last == null ? null : last.getSource(),
+                client.getStockUse(),
+                productRepository.countByClientIdAndLegacyUnitPriceIsNotNullAndUnitPriceIsNullAndActiveTrue(client.getId()),
+                client.getLegacyPricesDismissedAt() != null);
+    }
+
+    // ---------------------------------------------------------------- old prices (section 4.6.3)
+
+    /** The products waiting in the old-price review, by name. */
+    @Transactional(readOnly = true)
+    public Page<LegacyPriceRow> legacyPrices(Pageable pageable) {
+        Client client = currentClient();
+        Pageable byName = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), Sort.by("name").and(Sort.by("id")));
+        return productRepository
+                .findAllByClientIdAndLegacyUnitPriceIsNotNullAndUnitPriceIsNullAndActiveTrue(client.getId(), byName)
+                .map(LegacyPriceRow::from);
+    }
+
+    /**
+     * Adopts old prices as selling prices - each one per stock unit, as V44 kept it, and each logged
+     * as a price change (LEGACY_REVIEW). Only for a company that shows selling prices: adopting into a
+     * field nobody can see would be a silent change. Products priced since are left alone.
+     *
+     * @return how many were adopted.
+     */
+    @Transactional
+    public int adoptLegacyPrices(AdoptLegacyPricesRequest request, UUID actingUserId) {
+        Client client = currentClient();
+        if (!sellingPolicy.showsSellingPrice(client)) {
+            throw new SellingNotAvailableException("Turn on selling first, then choose which old prices to use.");
+        }
+        List<Product> chosen;
+        if (Boolean.TRUE.equals(request.all())) {
+            chosen = new ArrayList<>();
+            // Pages, not one unbounded read: a large catalogue's review must not load it all at once.
+            Page<Product> page;
+            int number = 0;
+            do {
+                page = productRepository.findAllByClientIdAndLegacyUnitPriceIsNotNullAndUnitPriceIsNullAndActiveTrue(
+                        client.getId(), PageRequest.of(number++, 500, Sort.by("id")));
+                chosen.addAll(page.getContent());
+            } while (page.hasNext());
+        } else {
+            List<UUID> ids = request.productIds() == null ? List.of() : request.productIds();
+            chosen = ids.stream()
+                    .map(id -> productRepository.findByIdAndClientId(id, client.getId()).orElse(null))
+                    .filter(product -> product != null && product.getLegacyUnitPrice() != null && product.getUnitPrice() == null)
+                    .toList();
+        }
+        for (Product product : chosen) {
+            SellingPriceService.Snapshot before = SellingPriceService.Snapshot.of(product);
+            sellingPriceService.apply(product, product.getLegacyUnitPrice(), null);
+            sellingPriceService.recordIfChanged(product, before, ProductPriceChange.Source.LEGACY_REVIEW, actingUserId);
+        }
+        productRepository.saveAll(chosen);
+        log.info("Adopted {} old prices as selling prices for client={} by {}", chosen.size(), client.getId(), actingUserId);
+        return chosen.size();
+    }
+
+    /** "Not now" to the old-price review. The prices stay in legacy_unit_price; only the offer stops. */
+    @Transactional
+    public SellingSettingsResponse dismissLegacyPrices() {
+        Client client = currentClient();
+        if (client.getLegacyPricesDismissedAt() == null) {
+            client.setLegacyPricesDismissedAt(OffsetDateTime.now());
+            clientRepository.save(client);
+        }
+        return responseFor(client);
     }
 
     private String changedByName(ClientSettingChange change) {

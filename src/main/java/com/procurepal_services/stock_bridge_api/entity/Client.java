@@ -152,6 +152,18 @@ public class Client {
     private boolean sellsStock;
 
     /**
+     * The answer to the first-week question "What happens to your stock?" (V49): USE, SELL or BOTH,
+     * null until answered. Kept so it is asked once on any phone. See {@code SellingSettingsService}.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "stock_use", length = 10)
+    private StockUse stockUse;
+
+    /** When the owner said "not now" to reviewing the old prices V44 set aside (V49); nothing is deleted. */
+    @Column(name = "legacy_prices_dismissed_at")
+    private OffsetDateTime legacyPricesDismissedAt;
+
+    /**
      * The business's registered address - a vendor's, in practice, since a buying
      * company's addresses live in delivery_addresses.
      *

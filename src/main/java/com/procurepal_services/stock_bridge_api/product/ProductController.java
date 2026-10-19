@@ -105,8 +105,10 @@ public class ProductController {
             // `StockStatus`'s javadoc. Never touches `/products/low-stock`, which keeps its own,
             // slightly different, already-established definition.
             @RequestParam(required = false) StockStatus stockStatus,
+            // "Has a price" / "No selling price" (SELLING_PRICE_PLAN.md section 6.5).
+            @RequestParam(required = false) Boolean hasSellingPrice,
             @PageableDefault(size = 20) Pageable pageable) {
-        return productManagementService.list(search, active, categoryId, stockStatus, pageable);
+        return productManagementService.list(search, active, categoryId, stockStatus, hasSellingPrice, pageable);
     }
 
     /**

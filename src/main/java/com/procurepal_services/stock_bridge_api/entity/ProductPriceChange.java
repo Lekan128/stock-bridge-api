@@ -38,7 +38,9 @@ public class ProductPriceChange {
         /** A product sheet's update row. */
         IMPORT,
         /** Undoing a sheet put the old price back. */
-        IMPORT_UNDO
+        IMPORT_UNDO,
+        /** An old price (V44's legacy_unit_price) adopted as the selling price (V49). */
+        LEGACY_REVIEW
     }
 
     @Id

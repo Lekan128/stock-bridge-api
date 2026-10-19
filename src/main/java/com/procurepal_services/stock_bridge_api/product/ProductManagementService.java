@@ -130,9 +130,16 @@ public class ProductManagementService {
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(
             String search, Boolean active, UUID categoryId, StockStatus stockStatus, Pageable pageable) {
+        return list(search, active, categoryId, stockStatus, null, pageable);
+    }
+
+    /** {@code hasSellingPrice}: see {@code ProductSpecifications.forTenant}. */
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> list(
+            String search, Boolean active, UUID categoryId, StockStatus stockStatus, Boolean hasSellingPrice, Pageable pageable) {
         UUID tenantId = requireTenantId();
         Page<Product> page = productRepository.findAll(
-                ProductSpecifications.forTenant(tenantId, search, active, categoryId, stockStatus), pageable);
+                ProductSpecifications.forTenant(tenantId, search, active, categoryId, stockStatus, hasSellingPrice), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
         Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
         // Task 3.1's "and 10 coming", in one query for the page rather than one per row - the
