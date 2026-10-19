@@ -40,7 +40,7 @@ public class SaleController {
     /**
      * The person's own sales over a range - quick mode's "Your sales today: 14 · ₦86,500", the figure
      * a cashier checks against their own drawer. Their own lines only, so it needs no analytics
-     * permission; no cost or profit in it is shown at the counter (the UI's rule, plan principle 11).
+     * permission - and no cost or profit is in it, so none can reach the counter (plan principle 11).
      */
     @GetMapping("/mine/summary")
     @PreAuthorize("hasAuthority('STOCK_OUT')")
@@ -50,7 +50,7 @@ public class SaleController {
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return salesReportService.totals(
                 principal.getClientId(), from, to,
-                new SalesReportService.Filters(null, principal.getUserId(), false, false, false));
+                new SalesReportService.Filters(null, principal.getUserId(), false, false, false)).withoutCost();
     }
 
     @GetMapping("/{saleId}")

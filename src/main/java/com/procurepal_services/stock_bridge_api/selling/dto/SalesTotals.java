@@ -29,4 +29,13 @@ public record SalesTotals(
         long cancelledLineCount,
         long belowUsualPriceLineCount,
         long belowCostLineCount) {
+
+    /**
+     * The same figures with everything about cost taken out - for a person's own till total, which
+     * staff without analytics see at the counter. What the stock cost is the owner's business.
+     */
+    public SalesTotals withoutCost() {
+        return new SalesTotals(saleCount, lineCount, salesAmount, null, null, null, null,
+                unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0);
+    }
 }

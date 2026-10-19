@@ -158,6 +158,9 @@ class SalesReportIntegrationTest {
                 .getBody();
         assertThat(mine.saleCount()).isEqualTo(2);
         assertThat(mine.salesAmount()).isEqualByComparingTo("400.00");
+        // Nothing about cost leaves for the counter, even through the API.
+        String raw = restTemplate.exchange("/api/sales/mine/summary", HttpMethod.GET, new HttpEntity<>(auth(cashier)), String.class).getBody();
+        assertThat(raw).doesNotContain("costAmount", "grossProfit", "margin", "profitKnownSalesAmount");
 
         // ...and the full report stays an owner's.
         assertThat(restTemplate.exchange("/api/analytics/sales", HttpMethod.GET, new HttpEntity<>(auth(cashier)), String.class)
