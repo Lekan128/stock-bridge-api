@@ -5,6 +5,7 @@ import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
+import com.procurepal_services.stock_bridge_api.selling.SellingPolicy;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationService;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
@@ -80,6 +81,8 @@ public class ProductManagementService {
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
     private final SellerDirectory sellerDirectory;
+    /** Every question about what a selling price means here - SELLING_PRICE_PLAN.md section 4.1. */
+    private final SellingPolicy sellingPolicy;
     private final ProductModerationService productModerationService;
     /**
      * V19: the buyer-side product<->vendor join - see {@code ProductVendor}. Used here only to
@@ -264,17 +267,18 @@ public class ProductManagementService {
             sku = request.sku();
         }
 
-        // One lookup answers two questions: initialStatusFor below (existing) and isSeller
-        // here (new) - see the class javadoc on "this is also a SELLER's catalogue editor".
+        // One lookup answers three questions: initialStatusFor below (moderation), and the two
+        // selling-price questions here - see the class javadoc on "this is also a SELLER's
+        // catalogue editor" and SellingPolicy for why those two are asked separately.
         Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
-        boolean isSeller = owner != null && owner.canSell();
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
 
         // A seller's product IS a listing - the selling price is the entire reason a buyer
-        // would look at it - so it may never be created without one. An ordinary buying
-        // company has no selling price at all; request.unitPrice() is simply discarded for
-        // one below rather than rejected, since there is nothing meaningful for the field to
-        // mean on a company's own private stock even if a stale client still sends it.
-        if (isSeller && request.unitPrice() == null) {
+        // would look at it - so it may never be created without one. A tenant with no
+        // selling price at all has request.unitPrice() simply discarded below rather than
+        // rejected, since there is nothing meaningful for the field to mean on stock it only
+        // uses, even if a stale client still sends it.
+        if (sellingPolicy.requiresSellingPrice(owner) && request.unitPrice() == null) {
             throw new UnitPriceRequiredException();
         }
 
@@ -291,7 +295,7 @@ public class ProductManagementService {
                 .sku(sku)
                 .barcode(assertBarcodeAvailable(tenantId, request.barcode(), null))
                 .description(request.description())
-                .unitPrice(isSeller ? request.unitPrice() : null)
+                .unitPrice(keepsSellingPrice ? request.unitPrice() : null)
                 .lowStockThreshold(request.lowStockThreshold())
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
@@ -378,7 +382,8 @@ public class ProductManagementService {
         // already scoped the row to the caller), but naming it this way says what the
         // question actually is: does the OWNER of this row sell.
         Client owner = sellerDirectory.findSellerOfRecord(product.getClientId()).orElse(null);
-        boolean isSeller = owner != null && owner.canSell();
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
+        boolean requiresSellingPrice = sellingPolicy.requiresSellingPrice(owner);
 
         // Snapshot the identity fields BEFORE any mutation, so the moderation check at
         // the bottom compares what the listing was against what it became. Captured
@@ -418,10 +423,9 @@ public class ProductManagementService {
                     : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
         }
         if (request.unitPrice() != null) {
-            // A non-seller has no selling-price surface at all - see create() - so a
-            // stale client still sending one here is silently ignored rather than
-            // applied or rejected.
-            if (isSeller) {
+            // A tenant with no selling-price surface at all - see create() - has a stale
+            // client still sending one here silently ignored rather than applied or rejected.
+            if (keepsSellingPrice) {
                 product.setUnitPrice(request.unitPrice());
             }
         }
@@ -429,7 +433,7 @@ public class ProductManagementService {
         // request just cleared/omitted it and none was there before, or it never had one
         // to begin with. Checked against the RESULTING value, immediately after the only
         // block that can change it, rather than deferred to the bottom of the method.
-        if (isSeller && product.getUnitPrice() == null) {
+        if (requiresSellingPrice && product.getUnitPrice() == null) {
             throw new UnitPriceRequiredException();
         }
         if (request.lowStockThreshold() != null) {
@@ -566,9 +570,8 @@ public class ProductManagementService {
         // The seller flag is resolved here rather than inside ProductExcelService for the reason
         // generateTemplate states, and for the same reason the two files must agree on it: the
         // export IS the template once it has your products in it.
-        Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
         return productExcelService.exportProducts(
-                products, preferredVendorSnapshotsFor(tenantId, products), owner != null && owner.canSell());
+                products, preferredVendorSnapshotsFor(tenantId, products), sellingPolicy.showsSellingPrice(tenantId));
     }
 
     /**
@@ -616,8 +619,7 @@ public class ProductManagementService {
     @Transactional(readOnly = true)
     public byte[] generateTemplate() {
         UUID tenantId = requireTenantId();
-        Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
-        boolean isSeller = owner != null && owner.canSell();
+        boolean showsSellingPrice = sellingPolicy.showsSellingPrice(tenantId);
         // V20: the template is per-tenant in a second way now. The tenant's own supplier names go
         // into the vendor_name dropdown (BULK_IMPORT_DESIGN.md section 5.2) - a user who picks
         // "Dangote Nigeria Plc" off a list never generates an unresolved-vendor row for it, which
@@ -633,7 +635,7 @@ public class ProductManagementService {
                 .map(com.procurepal_services.stock_bridge_api.entity.CompanyCategory::getName)
                 .toList();
         return productExcelService.generateTemplate(new ProductTemplateContext(
-                isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames));
+                showsSellingPrice, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames));
     }
 
     private void applyImage(Product product, MultipartFile image, List<String> warnings) {
