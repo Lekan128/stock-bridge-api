@@ -140,6 +140,18 @@ public class Client {
     private PaymentTerms paymentTerms = PaymentTerms.PREPAID;
 
     /**
+     * The company sells some of its stock over the counter (V45, SELLING_PRICE_PLAN.md section
+     * 4.2): selling prices, Record a sale and the Sales report are shown to it.
+     *
+     * <p>It decides what the screens show and NEVER which stock writes are accepted - a sale queued
+     * on a phone while offline must still land after the owner turns this off. Read it through
+     * {@code SellingPolicy}; change it only through {@code SellingSettingsService}, which logs who
+     * changed it and from where.
+     */
+    @Column(name = "sells_stock", nullable = false)
+    private boolean sellsStock;
+
+    /**
      * The business's registered address - a vendor's, in practice, since a buying
      * company's addresses live in delivery_addresses.
      *

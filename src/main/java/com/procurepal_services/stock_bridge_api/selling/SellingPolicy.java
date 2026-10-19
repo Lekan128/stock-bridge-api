@@ -25,11 +25,11 @@ import org.springframework.transaction.annotation.Transactional;
  * vendor workspace guard, checkout. Those are about who may sell on the marketplace, not about what
  * a price on a product means, and they do not move here.
  *
- * <h2>Phase 0: the same answers as before</h2>
- * Until the company switch exists ({@code clients.sells_stock}, plan Phase 1) every question below
- * answers exactly what the call sites computed before they were moved here, so this class changes
- * no behaviour on its own. That is the point of landing it first: Phase 1 then changes one method,
- * not fifteen call sites.
+ * <h2>The company switch</h2>
+ * {@link Client#isSellsStock()} (V45) is what makes a company's selling price optional-but-present:
+ * it {@link #showsSellingPrice shows} one without {@link #requiresSellingPrice requiring} one. It
+ * changes what the screens show and never which stock writes are accepted - nothing in the stock
+ * ledger asks this class anything.
  */
 @Component
 @RequiredArgsConstructor
@@ -42,7 +42,7 @@ public class SellingPolicy {
      * the column on the sheets and the export, and a value kept rather than discarded when sent.
      */
     public boolean showsSellingPrice(Client client) {
-        return client != null && client.canSell();
+        return client != null && (client.canSell() || client.isSellsStock());
     }
 
     /**
@@ -54,9 +54,17 @@ public class SellingPolicy {
         return client != null && client.canSell();
     }
 
-    /** Whether this tenant records counter sales from its stock (Record a sale). Nobody yet - Phase 1. */
+    /** Whether this tenant records counter sales from its stock - Record a sale, the Sales report. */
     public boolean recordsSales(Client client) {
-        return false;
+        return client != null && client.isSellsStock();
+    }
+
+    /**
+     * Whether this tenant may turn selling from stock on at all. Companies only in v1 (plan decision
+     * 6): a vendor's every product already has a required price and its own marketplace sales.
+     */
+    public boolean canChooseToSellStock(Client client) {
+        return client != null && !client.isVendor();
     }
 
     /** {@link #showsSellingPrice(Client)} for a tenant id; false for no tenant or an unknown one. */

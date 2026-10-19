@@ -4,6 +4,10 @@ import com.procurepal_services.stock_bridge_api.analytics.AnalyticsService;
 import com.procurepal_services.stock_bridge_api.analytics.dto.AnalyticsSummaryResponse;
 import com.procurepal_services.stock_bridge_api.analytics.dto.MovementsOverTimePoint;
 import com.procurepal_services.stock_bridge_api.analytics.dto.TopProductEntry;
+import com.procurepal_services.stock_bridge_api.security.SuperAdminPrincipal;
+import com.procurepal_services.stock_bridge_api.selling.SellingSettingsService;
+import com.procurepal_services.stock_bridge_api.selling.dto.SellingSettingsResponse;
+import com.procurepal_services.stock_bridge_api.selling.dto.SupportSellingSettingsRequest;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.CatalogResetPreview;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.CatalogResetRequest;
 import com.procurepal_services.stock_bridge_api.superadmin.dto.SuperAdminClientDetail;
@@ -19,6 +23,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -47,13 +52,27 @@ public class SuperAdminClientController {
     private final SuperAdminClientService superAdminClientService;
     private final AnalyticsService analyticsService;
     private final ClientCatalogResetService clientCatalogResetService;
+    private final SellingSettingsService sellingSettingsService;
 
     @GetMapping
     public Page<SuperAdminClientSummary> list(
             @RequestParam(required = false) String search,
             @RequestParam(required = false) Boolean active,
+            @RequestParam(required = false) Boolean sellsStock,
             @PageableDefault(size = 20) Pageable pageable) {
-        return superAdminClientService.list(search, active, pageable);
+        return superAdminClientService.list(search, active, sellsStock, pageable);
+    }
+
+    /**
+     * Support turning a company's selling from stock on or off for them (SELLING_PRICE_PLAN.md
+     * section 5.5). A reason is required and the owner is told, in the app, who did it and why.
+     */
+    @PutMapping("/{id}/selling")
+    public SellingSettingsResponse updateSelling(
+            @PathVariable UUID id,
+            @Valid @RequestBody SupportSellingSettingsRequest request,
+            @AuthenticationPrincipal SuperAdminPrincipal principal) {
+        return sellingSettingsService.updateBySupport(id, request.sellsStock(), request.reason(), principal.getSuperAdminId());
     }
 
     @GetMapping("/{id}")

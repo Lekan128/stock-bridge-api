@@ -16,5 +16,6 @@ public record SuperAdminClientSummary(
         String adminEmail,
         long userCount,
         long productCount,
-        OffsetDateTime createdAt) {
+        OffsetDateTime createdAt,
+        boolean sellsStock) {
 }
