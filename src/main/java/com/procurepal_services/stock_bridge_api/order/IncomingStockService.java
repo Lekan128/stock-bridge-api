@@ -369,10 +369,12 @@ public class IncomingStockService {
                 .name(item.getProductName())
                 .sku(buyerSku)
                 .description(catalogProduct == null ? null : catalogProduct.getDescription())
-                // Priced at what they paid: it is their cost, and it is the only price
-                // the system can honestly assert about their copy of the item. They are
-                // free to reprice it for their own selling.
-                .unitPrice(item.getUnitPrice())
+                // What they paid is their COST, and it goes there. unitPrice is left unset: it
+                // is the SELLING price (SellingPolicy), and copying the purchase price into it
+                // presented a cost as a selling price - a product that "sells" for exactly what
+                // it cost, at zero profit, the moment the company records sales
+                // (SELLING_PRICE_PLAN.md section 1, problem 1). A company that sells this item
+                // gives it its own price.
                 .costPrice(item.getUnitPrice())
                 .quantityOnHand(0)
                 .incomingQuantity(0)
