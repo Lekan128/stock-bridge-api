@@ -300,6 +300,14 @@ public class StockMovement extends TenantAwareEntity {
     @Column(name = "cost_basis", length = 12, updatable = false)
     private CostBasis costBasis;
 
+    /**
+     * The product's usual selling price per stock unit when this sale line was recorded (V48) -
+     * what "sold below the usual price" is judged against, so a later price change neither flags
+     * nor hides an earlier sale. Sale lines only.
+     */
+    @Column(name = "usual_price_at_time", precision = 14, scale = 2, updatable = false)
+    private BigDecimal usualPriceAtTime;
+
     /** Set on the ADJUSTMENT that cancels a sale line: the line it cancels (V46, plan section 4.3a). */
     @Column(name = "reverses_movement_id", updatable = false)
     private UUID reversesMovementId;

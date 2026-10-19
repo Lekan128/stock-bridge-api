@@ -447,6 +447,7 @@ public class StockManagementService {
                 // A sale sent without an id is a sale of its own; one sent with it joins its basket.
                 .saleId(sale ? (request.saleId() != null ? request.saleId() : UUID.randomUUID()) : null)
                 .saleAmount(sale ? SaleFacts.saleAmount(request) : null)
+                .usualPriceAtTime(sale ? product.getUnitPrice() : null)
                 .costAmount(cost.amount())
                 .costBasis(cost.basis())
                 .build());

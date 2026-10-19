@@ -8,7 +8,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = {SellingSettingsController.class, SaleController.class, ProductPriceHistoryController.class})
+@RestControllerAdvice(assignableTypes = {SellingSettingsController.class, SaleController.class, ProductPriceHistoryController.class, SalesReportController.class})
 public class SellingExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -53,5 +53,11 @@ public class SellingExceptionHandler {
     @ExceptionHandler(com.procurepal_services.stock_bridge_api.product.ProductNotFoundException.class)
     public ResponseEntity<ApiError> handleProductNotFound(com.procurepal_services.stock_bridge_api.product.ProductNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    /** A bad groupBy or a range that ends before it starts. */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<ApiError> handleBadArgument(IllegalArgumentException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 }

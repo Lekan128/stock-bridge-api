@@ -1,6 +1,8 @@
 package com.procurepal_services.stock_bridge_api.analytics.dto;
 
+import com.procurepal_services.stock_bridge_api.selling.dto.SalesTotals;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 
 /**
  * totalInValue/totalOutValue only sum movements that recorded a price - see
@@ -24,5 +26,14 @@ public record AnalyticsSummaryResponse(
         long lowStockProductCount,
         long activeProductCount,
         long outOfStockProductCount,
-        long wellStockedProductCount) {
+        long wellStockedProductCount,
+        // SELLING_PRICE_PLAN.md section 6.10 - the dashboard's "Sales today" figure, read off the
+        // sale lines (SalesReportService), with the same figures for the comparison period: the
+        // same range a week earlier when it is a week or shorter ("up 8% on last Monday" - Monday's
+        // trade is not Saturday's), otherwise the range of the same length just before it. All
+        // zero for a company that has never recorded a sale.
+        SalesTotals sales,
+        SalesTotals previousSales,
+        OffsetDateTime previousFrom,
+        OffsetDateTime previousTo) {
 }
