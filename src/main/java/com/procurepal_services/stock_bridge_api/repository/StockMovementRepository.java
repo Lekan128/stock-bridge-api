@@ -149,7 +149,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      *
      * <p>Returns a one-element list holding {@code [inValue(numeric), outValue(numeric), inQuantity(bigint),
      * outQuantity(bigint), inCount(bigint), outCount(bigint), unpricedInCount(bigint),
-     * unpricedOutCount(bigint), adjustmentCount(bigint)]}. One pass over the filtered set with
+     * unpricedOutCount(bigint), adjustmentCount(bigint), otherOutCost(numeric), otherOutCount(bigint)]}. One pass over the filtered set with
      * nine conditional aggregates, rather than nine round trips or - worse - paging the whole
      * range into the application to add it up there.
      *
@@ -178,7 +178,11 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COUNT(*) FILTER (WHERE movement_type = 'OUT') AS out_count, "
                     + "COUNT(*) FILTER (WHERE movement_type = 'IN' AND unit_price_at_time IS NULL) AS unpriced_in, "
                     + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND unit_price_at_time IS NULL) AS unpriced_out, "
-                    + "COUNT(*) FILTER (WHERE movement_type = 'ADJUSTMENT') AS adjustment_count "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'ADJUSTMENT') AS adjustment_count, "
+                    // SELLING_PRICE_PLAN.md 6.9: every stock-out that is not a sale - used, spoilt, sent
+                    // away - at what the stock cost (V45 snapshots cost on every stock-out).
+                    + "COALESCE(SUM(cost_amount) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL), 0) AS other_out_cost, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL) AS other_out_count "
                     + "FROM stock_movements "
                     + "WHERE client_id = :clientId "
                     + "AND (CAST(:productId AS uuid) IS NULL OR product_id = CAST(:productId AS uuid)) "

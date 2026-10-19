@@ -52,8 +52,17 @@ public class SalesReportService {
     private final NamedParameterJdbcTemplate jdbc;
 
     /** Optional narrowing of the lines a report covers. Nulls and falses mean "no filter". */
-    public record Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly) {
+    /**
+     * @param unpricedOnly lines with no price - "8 have no price" and its Fix these.
+     * @param noCostOnly priced lines whose cost is unknown - "3 have no cost".
+     */
+    public record Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly,
+            boolean unpricedOnly, boolean noCostOnly) {
         public static final Filters NONE = new Filters(null, null, false, false, false);
+
+        public Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly) {
+            this(productId, userId, belowUsualPrice, belowCost, cancelledOnly, false, false);
+        }
     }
 
     @Transactional(readOnly = true)
@@ -153,6 +162,12 @@ public class SalesReportService {
         if (filters.cancelledOnly()) {
             narrowed.append(" AND cancelled");
         }
+        if (filters.unpricedOnly()) {
+            narrowed.append(" AND amount IS NULL AND NOT cancelled");
+        }
+        if (filters.noCostOnly()) {
+            narrowed.append(" AND amount IS NOT NULL AND cost IS NULL AND NOT cancelled");
+        }
         return """
                 WITH all_lines AS (
                     SELECT o.id, o.sale_id, o.product_id, o.created_by, o.occurred_at, o.quantity,
@@ -192,11 +207,16 @@ public class SalesReportService {
     private static String groupQuery(String grouping, Filters filters) {
         String cte = linesCte(filters);
         return switch (grouping) {
+            // Who recorded it and what was in it - the list a shopkeeper reads at closing time.
             case "sale" -> cte + """
-                    SELECT sale_id::text AS key, NULL AS label, NULL AS unit, MIN(occurred_at) AS occurred_at,
+                    SELECT l.sale_id::text AS key,
+                           MAX(COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), u.username)) AS label,
+                           NULL AS unit, MIN(l.occurred_at) AS occurred_at,
+                           STRING_AGG(DISTINCT p.name, ', ') AS detail,
                     """ + AGGREGATES + """
 
-                    FROM lines GROUP BY sale_id ORDER BY MIN(occurred_at) DESC, sale_id""";
+                    FROM lines l LEFT JOIN users u ON u.id = l.created_by JOIN products p ON p.id = l.product_id
+                    GROUP BY l.sale_id ORDER BY MIN(l.occurred_at) DESC, l.sale_id""";
             case "product" -> cte + """
                     SELECT l.product_id::text AS key, p.name AS label, p.unit_of_measure AS unit, NULL::timestamptz AS occurred_at,
                     """ + AGGREGATES + """
@@ -259,7 +279,8 @@ public class SalesReportService {
                 "product".equals(grouping) ? rs.getLong("quantity") : null,
                 rs.getString("unit"),
                 occurred == null ? null : occurred.toInstant().atOffset(ZoneOffset.UTC),
-                totals(rs));
+                totals(rs),
+                "sale".equals(grouping) ? rs.getString("detail") : null);
     }
 
     private static SalesTotals totals(ResultSet rs) throws SQLException {

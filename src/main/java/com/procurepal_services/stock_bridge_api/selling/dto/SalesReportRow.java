@@ -11,6 +11,7 @@ import java.time.OffsetDateTime;
  * @param quantity for product rows only: how much went, in {@code unitOfMeasure} - adding kilograms
  *     to litres across products would mean nothing.
  * @param occurredAt for sale rows only: when the sale happened.
+ * @param detail for sale rows only: the products in it, by name ("Rice, Soap").
  */
 public record SalesReportRow(
         String key,
@@ -18,5 +19,6 @@ public record SalesReportRow(
         Long quantity,
         String unitOfMeasure,
         OffsetDateTime occurredAt,
-        SalesTotals totals) {
+        SalesTotals totals,
+        String detail) {
 }

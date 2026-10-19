@@ -124,6 +124,54 @@ class SalesReportIntegrationTest {
     }
 
     @Test
+    void aSaleRowSaysWhoRecordedItAndWhatWasInItAndTheGapsCanBeListed() {
+        Shop shop = seededShop();
+
+        SalesReportRow mixed = report(shop, "sale").rows().stream()
+                .filter(row -> row.totals().lineCount() == 2).findFirst().orElseThrow();
+        assertThat(mixed.detail()).isEqualTo("Rice, Soap");
+        assertThat(mixed.label()).isNotBlank();
+
+        // "Profit leaves out 2 sales: 1 has no price and 1 has no cost" - each half listable.
+        assertThat(report(shop, "sale", "&unpriced=true").totals().lineCount()).isEqualTo(1);
+        SalesReportResponse noCost = report(shop, "sale", "&noCost=true");
+        assertThat(noCost.totals().lineCount()).isEqualTo(1);
+        assertThat(noCost.totals().salesAmount()).isEqualByComparingTo("300.00");
+    }
+
+    @Test
+    void theExportCarriesTheSameRowsAndFooterAsTheReport() throws Exception {
+        Shop shop = seededShop();
+        ResponseEntity<byte[]> response = restTemplate.exchange(
+                "/api/analytics/sales/export?groupBy=product&" + range(), HttpMethod.GET, new HttpEntity<>(auth(shop)), byte[].class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        try (var workbook = new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(response.getBody()))) {
+            var sheet = workbook.getSheet("Sales");
+            int salesColumn = 2;
+            assertThat(sheet.getRow(0).getCell(salesColumn).getStringCellValue()).isEqualTo("Sales (₦)");
+            var total = sheet.getRow(report(shop, "product").rows().size() + 1);
+            assertThat(total.getCell(0).getStringCellValue()).isEqualTo("Total");
+            assertThat(total.getCell(salesColumn).getNumericCellValue()).isEqualTo(900.0);
+            assertThat(total.getCell(salesColumn + 2).getNumericCellValue()).isEqualTo(240.0);
+        }
+    }
+
+    @Test
+    void theMovementsSummarySplitsStockOutIntoSalesAndOtherStockOutAtCost() {
+        Shop shop = seededShop();
+        Map<String, Object> used = new HashMap<>(Map.of("quantity", 1, "reason", OutReason.USED.name()));
+        post(shop, "/api/products/" + idOf(shop, "Soap") + "/stock/stock-out", used, StockMutationResponse.class);
+
+        Map<?, ?> summary = restTemplate.exchange("/api/stock/movements/summary?" + range(), HttpMethod.GET,
+                new HttpEntity<>(auth(shop)), Map.class).getBody();
+        assertThat(new BigDecimal(String.valueOf(summary.get("salesAmount")))).isEqualByComparingTo("900.00");
+        assertThat(((Number) summary.get("unpricedSaleCount")).longValue()).isEqualTo(1);
+        // One bar of soap used, at the 60 it cost.
+        assertThat(new BigDecimal(String.valueOf(summary.get("otherOutCost")))).isEqualByComparingTo("60.00");
+        assertThat(((Number) summary.get("otherOutCount")).longValue()).isEqualTo(1);
+    }
+
+    @Test
     void theLeakFiltersNarrowToTheirLines() {
         Shop shop = seededShop();
 

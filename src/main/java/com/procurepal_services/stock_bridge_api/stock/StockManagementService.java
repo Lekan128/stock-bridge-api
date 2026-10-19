@@ -112,6 +112,8 @@ public class StockManagementService {
     /** What a write changed that a void (D8) can't read back off the movement - see V39. */
     private final StockWriteUndoStore stockWriteUndoStore;
     private final ProductVendorPackRepository productVendorPackRepository;
+    private final com.procurepal_services.stock_bridge_api.selling.SellingPolicy sellingPolicy;
+    private final com.procurepal_services.stock_bridge_api.selling.SalesReportService salesReportService;
 
     /**
      * Records a delivery. Weighted-average cost is recalculated unconditionally (guarding the
@@ -1134,9 +1136,20 @@ public class StockManagementService {
         // Answered as an all-zero summary rather than an exception: a report footer is not
         // worth a 500, and every branch below would read zero anyway.
         if (rows.isEmpty()) {
-            return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0);
+            return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
+                    null, null, BigDecimal.ZERO, 0);
         }
         Object[] row = rows.getFirst();
+        // Sales, from the Sales report's own query so the two pages cannot disagree - only where
+        // the rows here include sales at all and the report can answer for the same lines.
+        boolean salesApply = from != null && to != null && companyVendorId == null && !noReason
+                && (movementType == null || movementType == MovementType.OUT)
+                && (outReason == null || outReason == OutReason.SALE)
+                && sellingPolicy.showsSellingPrice(requireTenantId());
+        com.procurepal_services.stock_bridge_api.selling.dto.SalesTotals sales = salesApply
+                ? salesReportService.totals(requireTenantId(), from, to,
+                        new com.procurepal_services.stock_bridge_api.selling.SalesReportService.Filters(productId, null, false, false, false))
+                : null;
         return new StockMovementSummaryResponse(
                 (BigDecimal) row[0],
                 (BigDecimal) row[1],
@@ -1146,7 +1159,11 @@ public class StockManagementService {
                 ((Number) row[5]).longValue(),
                 ((Number) row[6]).longValue(),
                 ((Number) row[7]).longValue(),
-                ((Number) row[8]).longValue());
+                ((Number) row[8]).longValue(),
+                sales == null ? null : sales.salesAmount(),
+                sales == null ? null : sales.unpricedLineCount(),
+                outReason == OutReason.SALE ? BigDecimal.ZERO : ((BigDecimal) row[9]).setScale(2, java.math.RoundingMode.HALF_UP),
+                outReason == OutReason.SALE ? 0 : ((Number) row[10]).longValue());
     }
 
     /**

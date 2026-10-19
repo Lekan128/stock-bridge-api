@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class SalesReportController {
 
     private final SalesReportService salesReportService;
+    private final SalesExportService salesExportService;
 
     /**
      * @param groupBy {@code sale} (default - today's sales as a list), {@code product}, {@code day},
@@ -38,10 +39,36 @@ public class SalesReportController {
             @RequestParam(defaultValue = "false") boolean belowUsualPrice,
             @RequestParam(defaultValue = "false") boolean belowCost,
             @RequestParam(defaultValue = "false") boolean cancelled,
+            @RequestParam(defaultValue = "false") boolean unpriced,
+            @RequestParam(defaultValue = "false") boolean noCost,
             @RequestParam(required = false) Integer limit) {
         return salesReportService.report(
                 requireTenantId(), from, to, groupBy,
-                new SalesReportService.Filters(productId, userId, belowUsualPrice, belowCost, cancelled), limit);
+                new SalesReportService.Filters(productId, userId, belowUsualPrice, belowCost, cancelled, unpriced, noCost), limit);
+    }
+
+    /** The same report as a spreadsheet - same rows, same footer (plan section 6.11). */
+    @GetMapping("/api/analytics/sales/export")
+    public org.springframework.http.ResponseEntity<byte[]> export(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            @RequestParam(required = false) String groupBy,
+            @RequestParam(required = false) UUID productId,
+            @RequestParam(required = false) UUID userId,
+            @RequestParam(defaultValue = "false") boolean belowUsualPrice,
+            @RequestParam(defaultValue = "false") boolean belowCost,
+            @RequestParam(defaultValue = "false") boolean cancelled,
+            @RequestParam(defaultValue = "false") boolean unpriced,
+            @RequestParam(defaultValue = "false") boolean noCost) {
+        byte[] bytes = salesExportService.export(salesReportService.report(
+                requireTenantId(), from, to, groupBy,
+                new SalesReportService.Filters(productId, userId, belowUsualPrice, belowCost, cancelled, unpriced, noCost),
+                SalesReportService.MAX_ROWS));
+        return org.springframework.http.ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"sales.xlsx\"")
+                .body(bytes);
     }
 
     @GetMapping("/api/analytics/stock-worth")
