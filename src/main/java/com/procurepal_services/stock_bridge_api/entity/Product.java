@@ -92,6 +92,21 @@ public class Product extends TenantAwareEntity {
     private BigDecimal legacyUnitPrice;
 
     /**
+     * The selling price exactly as typed, when it was typed per a unit other than the stock unit -
+     * "5,000" with {@link #unitPriceEnteredUnit} "CARTON" (V47, SELLING_PRICE_PLAN.md section 4.5).
+     * {@link #unitPrice} stays the per-stock-unit figure checkout multiplies; this is what a sale in
+     * cartons pre-fills from, so it charges 5,000 and not 24 x 208.33. Both null when the price was
+     * typed per stock unit. Display and pre-fill only - never a balance, cost or checkout total.
+     * Set only through {@code SellingPriceService}, which keeps the three in step.
+     */
+    @Column(name = "unit_price_entered", precision = 14, scale = 2)
+    private BigDecimal unitPriceEntered;
+
+    /** The unit code {@link #unitPriceEntered} is per; null with it. */
+    @Column(name = "unit_price_entered_unit", length = 32)
+    private String unitPriceEnteredUnit;
+
+    /**
      * What this stock costs us, as money <b>per ONE {@link #unitOfMeasure}</b> - per kg for a
      * product counted in kg, never per bag. UNIT_UX_CONTRACT.md section 3.2 pins that basis, and
      * anything rendering this figure must state it (non-negotiable 2).

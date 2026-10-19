@@ -95,7 +95,29 @@ public record CreateProductRequest(
         @Valid InitialVendor initialVendor,
         UUID categoryId,
         /** The barcode on the box (task 3.3). Optional, and unique per company where given. */
-        @Size(max = 64) String barcode) {
+        @Size(max = 64) String barcode,
+        /**
+         * Which of the product's units {@code unitPrice} is per (V47) - "CARTON" for "5,000 a carton".
+         * Absent is the stock unit, which is what every caller before it meant.
+         */
+        String unitPriceUnit) {
+
+    /** The shape before the price unit (V47) - a price per stock unit. */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, null);
+    }
 
     /** The shape before the barcode (task 3.3). */
     public CreateProductRequest(

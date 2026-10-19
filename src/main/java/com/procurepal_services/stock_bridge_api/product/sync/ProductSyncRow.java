@@ -32,5 +32,9 @@ public record ProductSyncRow(
         Integer lowStockThreshold,
         boolean active,
         boolean isLowStock,
-        StockStatus stockStatus) {
+        StockStatus stockStatus,
+        // V47: the selling price as typed and its unit, so a phone selling offline pre-fills
+        // "5,000 a carton" rather than 24 x 208.33. Absent when typed per stock unit.
+        BigDecimal unitPriceEntered,
+        String unitPriceEnteredUnit) {
 }

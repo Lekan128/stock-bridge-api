@@ -8,6 +8,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -299,4 +300,12 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
 
     /** The most recent write on a product - a void (D8) is only exact while its write is still this. */
     Optional<StockMovement> findFirstByProductIdOrderByCreatedAtDescIdDesc(UUID productId);
+
+    /**
+     * Every row of one sale - its lines, and any cancellation or price fix of them (V46) - oldest
+     * first. Tenant-scoped in the query itself, not by the session filter, so it is right from any
+     * caller. Served by idx_stock_movements_sale_id.
+     */
+    @EntityGraph(attributePaths = {"product", "createdBy"})
+    List<StockMovement> findAllByClientIdAndSaleIdOrderByCreatedAtAscIdAsc(UUID clientId, UUID saleId);
 }

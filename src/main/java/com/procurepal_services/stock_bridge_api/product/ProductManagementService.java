@@ -3,9 +3,11 @@ package com.procurepal_services.stock_bridge_api.product;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductPriceChange;
 import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.selling.SellingPolicy;
+import com.procurepal_services.stock_bridge_api.selling.SellingPriceService;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationService;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
@@ -83,6 +85,8 @@ public class ProductManagementService {
     private final SellerDirectory sellerDirectory;
     /** Every question about what a selling price means here - SELLING_PRICE_PLAN.md section 4.1. */
     private final SellingPolicy sellingPolicy;
+    /** The one writer of a product's selling price, and its change log (section 4.5). */
+    private final SellingPriceService sellingPriceService;
     private final ProductModerationService productModerationService;
     /**
      * V19: the buyer-side product<->vendor join - see {@code ProductVendor}. Used here only to
@@ -295,7 +299,6 @@ public class ProductManagementService {
                 .sku(sku)
                 .barcode(assertBarcodeAvailable(tenantId, request.barcode(), null))
                 .description(request.description())
-                .unitPrice(keepsSellingPrice ? request.unitPrice() : null)
                 .lowStockThreshold(request.lowStockThreshold())
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
@@ -311,6 +314,10 @@ public class ProductManagementService {
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
                 .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
+        // After the units are set: a price typed per carton is converted by this product's own pack.
+        if (keepsSellingPrice) {
+            sellingPriceService.apply(product, request.unitPrice(), request.unitPriceUnit());
+        }
 
         List<String> warnings = new ArrayList<>();
         if (hasContent(image)) {
@@ -422,20 +429,7 @@ public class ProductManagementService {
                     ? null
                     : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
         }
-        if (request.unitPrice() != null) {
-            // A tenant with no selling-price surface at all - see create() - has a stale
-            // client still sending one here silently ignored rather than applied or rejected.
-            if (keepsSellingPrice) {
-                product.setUnitPrice(request.unitPrice());
-            }
-        }
-        // A seller's product may never be LEFT without a price by this patch: either the
-        // request just cleared/omitted it and none was there before, or it never had one
-        // to begin with. Checked against the RESULTING value, immediately after the only
-        // block that can change it, rather than deferred to the bottom of the method.
-        if (requiresSellingPrice && product.getUnitPrice() == null) {
-            throw new UnitPriceRequiredException();
-        }
+        SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
         if (request.lowStockThreshold() != null) {
             product.setLowStockThreshold(request.lowStockThreshold());
         }
@@ -467,6 +461,28 @@ public class ProductManagementService {
         if (request.packagingSize() != null) {
             product.setPackagingSize(request.packagingSize());
         }
+        // The selling price, after the units: a price typed per carton converts by the pack as it
+        // now stands, and a pack that changed size re-derives the per-piece price from what was
+        // typed (SellingPriceService.reconcile). A tenant with no selling price at all has a stale
+        // client still sending one silently ignored rather than applied or rejected.
+        if (keepsSellingPrice) {
+            if (Boolean.TRUE.equals(request.clearUnitPrice()) && !requiresSellingPrice) {
+                sellingPriceService.apply(product, null, null);
+            } else if (request.unitPrice() != null) {
+                sellingPriceService.apply(product, request.unitPrice(), request.unitPriceUnit());
+            } else {
+                sellingPriceService.reconcile(product);
+            }
+        }
+        // A seller's product may never be LEFT without a price by this patch: either the
+        // request just cleared/omitted it and none was there before, or it never had one
+        // to begin with. Checked against the RESULTING value, immediately after the only
+        // block that can change it, rather than deferred to the bottom of the method.
+        if (requiresSellingPrice && product.getUnitPrice() == null) {
+            throw new UnitPriceRequiredException();
+        }
+        sellingPriceService.recordIfChanged(
+                product, priceBefore, ProductPriceChange.Source.FORM, principal == null ? null : principal.getUserId());
         if (Boolean.TRUE.equals(request.clearCategory())) {
             product.setCompanyCategory(null);
         } else if (request.categoryId() != null) {

@@ -1703,7 +1703,8 @@ public class StockInRowHandler implements ImportRowHandler {
             if (movement.getMovementType() != MovementType.IN) {
                 continue;
             }
-            if (stockMovementAllocationRepository.sumQuantityByInMovementId(movement.getId()) > 0) {
+            // Ever drawn on, not "drawn on now": a cancelled sale nets to zero (V46).
+            if (stockMovementAllocationRepository.existsByInMovementId(movement.getId())) {
                 Product product = movement.getProduct();
                 blockers.add(new UndoOutcome.Blocker(
                         excelRowByProductId.getOrDefault(product.getId(), 0),

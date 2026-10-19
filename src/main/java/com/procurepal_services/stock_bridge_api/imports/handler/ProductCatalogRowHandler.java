@@ -12,6 +12,7 @@ import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportMode;
 import com.procurepal_services.stock_bridge_api.entity.ImportSession;
+import com.procurepal_services.stock_bridge_api.entity.ProductPriceChange;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
@@ -34,6 +35,7 @@ import com.procurepal_services.stock_bridge_api.imports.ValueMappings;
 import com.procurepal_services.stock_bridge_api.imports.ValueResolution;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
 import com.procurepal_services.stock_bridge_api.selling.SellingPolicy;
+import com.procurepal_services.stock_bridge_api.selling.SellingPriceService;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
@@ -136,6 +138,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private final SellerDirectory sellerDirectory;
     /** Every question about what a selling price means here - SELLING_PRICE_PLAN.md section 4.1. */
     private final SellingPolicy sellingPolicy;
+    private final SellingPriceService sellingPriceService;
     private final VendorDirectory vendorDirectory;
     private final ProductSkuSettingsService productSkuSettingsService;
     private final SkuGenerationService skuGenerationService;
@@ -156,6 +159,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
 
     /** Where {@link #snapshotBeforeUpdate} keeps the category a product had, for undo. */
     private static final String BEFORE_CATEGORY_ID = "_category_id";
+    /** The typed selling price and its unit (V47) - in the undo snapshot so undo puts them back too. */
+    private static final String BEFORE_PRICE_ENTERED = "_unit_price_entered";
+    private static final String BEFORE_PRICE_ENTERED_UNIT = "_unit_price_entered_unit";
 
     @Override
     public ImportKind kind() {
@@ -1478,6 +1484,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         before.put(ImportFields.DESCRIPTION, product.getDescription());
         before.put(ImportFields.BARCODE, product.getBarcode());
         before.put(ImportFields.UNIT_PRICE, product.getUnitPrice() == null ? null : product.getUnitPrice().toPlainString());
+        before.put(BEFORE_PRICE_ENTERED, product.getUnitPriceEntered() == null ? null : product.getUnitPriceEntered().toPlainString());
+        before.put(BEFORE_PRICE_ENTERED_UNIT, product.getUnitPriceEnteredUnit());
         before.put(ImportFields.LOW_STOCK_ALERT_AT, product.getLowStockThreshold());
         before.put(ImportFields.STOCK_UNIT, product.getUnitOfMeasure());
         before.put(ImportFields.PACK, product.getPackagingUnit());
@@ -1513,7 +1521,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             product.setBarcode(state.text(ImportFields.BARCODE));
         }
         if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
-            product.setUnitPrice(decimalOf(state, ImportFields.UNIT_PRICE));
+            // Through the one writer, so the typed price and the change log stay in step (V47).
+            SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
+            sellingPriceService.apply(product, decimalOf(state, ImportFields.UNIT_PRICE), null);
+            sellingPriceService.recordIfChanged(product, priceBefore, ProductPriceChange.Source.IMPORT, ctx.actingUserId());
         }
         Integer alertAt = stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
         if (alertAt != null) {
@@ -1752,7 +1763,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         for (StockMovement movement : batchMovements) {
             if (movement.getMovementType() == MovementType.IN
-                    && stockMovementAllocationRepository.sumQuantityByInMovementId(movement.getId()) > 0) {
+                    // Ever drawn on, not "drawn on now": a cancelled sale nets to zero (V46).
+                    && stockMovementAllocationRepository.existsByInMovementId(movement.getId())) {
                 blockers.add(new UndoOutcome.Blocker(0, movement.getProduct().getName(), "Already sold from",
                         movement.getProduct().getId().toString()));
             }
@@ -1856,7 +1868,12 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             if (snapshot.containsKey(ImportFields.BARCODE)) {
                 product.setBarcode(asString(snapshot.get(ImportFields.BARCODE)));
             }
+            SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
             product.setUnitPrice(asDecimal(snapshot.get(ImportFields.UNIT_PRICE)));
+            // A snapshot from before V47 has no typed price; the product had none then either.
+            product.setUnitPriceEntered(asDecimal(snapshot.get(BEFORE_PRICE_ENTERED)));
+            product.setUnitPriceEnteredUnit(asString(snapshot.get(BEFORE_PRICE_ENTERED_UNIT)));
+            sellingPriceService.recordIfChanged(product, priceBefore, ProductPriceChange.Source.IMPORT_UNDO, null);
             product.setLowStockThreshold(asInteger(snapshot.get(ImportFields.LOW_STOCK_ALERT_AT)));
             product.setUnitOfMeasure(asString(snapshot.get(ImportFields.STOCK_UNIT)));
             product.setPackagingUnit(asString(snapshot.get(ImportFields.PACK)));

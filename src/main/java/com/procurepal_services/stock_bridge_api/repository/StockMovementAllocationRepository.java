@@ -44,6 +44,16 @@ public interface StockMovementAllocationRepository extends JpaRepository<StockMo
     int sumQuantityByInMovementId(@Param("inMovementId") UUID inMovementId);
 
     /**
+     * Whether anything has EVER drawn on this delivery - the question to ask before deleting it.
+     *
+     * <p>Not the same as the sum above being positive. Since V46 a cancelled sale hands its stock
+     * back with a negative allocation, so a delivery drawn on and handed back sums to zero while
+     * allocation rows still point at it - and deleting it then fails on their foreign key. Asking
+     * whether any row exists answers "may this be removed" truthfully in both cases.
+     */
+    boolean existsByInMovementId(UUID inMovementId);
+
+    /**
      * {@link #sumQuantityByInMovementId} for a whole set of lots at once - one grouped query
      * instead of one per row. Added for {@code GET /api/products/{id}/lots}
      * (UNIT_UX_CONTRACT.md section 4), which computes a remaining balance for every delivery a

@@ -266,6 +266,48 @@ public class StockMovement extends TenantAwareEntity {
     @Column(name = "entered_unit_price", precision = 14, scale = 2, updatable = false)
     private BigDecimal enteredUnitPrice;
 
+    /**
+     * Why this stock-out happened (V46) - OUT rows only; null is "No reason given". See {@link
+     * OutReason}.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "out_reason", length = 24, updatable = false)
+    private OutReason outReason;
+
+    /**
+     * Groups the rows of one sale (V46): its lines, and any cancellation or price fix of them.
+     * Made on the phone when the sale starts, so an offline sale is one sale before it arrives.
+     */
+    @Column(name = "sale_id", updatable = false)
+    private UUID saleId;
+
+    /**
+     * What a sale line went for, exactly as charged (V46). Revenue is the sum of this, never
+     * {@code quantity × unitPriceAtTime}, which goes through a per-stock-unit price rounded to kobo.
+     * Negated on a cancellation; the price alone on a price fix.
+     */
+    @Column(name = "sale_amount", precision = 14, scale = 2, updatable = false)
+    private BigDecimal saleAmount;
+
+    /**
+     * What the stock this stock-out used had cost, snapshotted from its FIFO draws when it happened
+     * (V46); see {@link #costBasis}. Null when no cost could be known. Negated on a cancellation.
+     */
+    @Column(name = "cost_amount", precision = 14, scale = 2, updatable = false)
+    private BigDecimal costAmount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "cost_basis", length = 12, updatable = false)
+    private CostBasis costBasis;
+
+    /** Set on the ADJUSTMENT that cancels a sale line: the line it cancels (V46, plan section 4.3a). */
+    @Column(name = "reverses_movement_id", updatable = false)
+    private UUID reversesMovementId;
+
+    /** Set on the zero-quantity ADJUSTMENT that adds the price to a sale saved without one (V46). */
+    @Column(name = "corrects_movement_id", updatable = false)
+    private UUID correctsMovementId;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

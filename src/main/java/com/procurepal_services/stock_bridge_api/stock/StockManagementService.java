@@ -3,6 +3,7 @@ package com.procurepal_services.stock_bridge_api.stock;
 import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
+import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import com.procurepal_services.stock_bridge_api.entity.StockMovementAllocation;
@@ -394,8 +395,8 @@ public class StockManagementService {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
 
-        ResolvedEntry entry =
-                resolveEntry(product, BigDecimal.valueOf(request.quantity()), request.unitPrice(), request.unit(), null, null);
+        ResolvedEntry entry = resolveEntry(
+                product, BigDecimal.valueOf(request.quantity()), SaleFacts.enteredPrice(request), request.unit(), null, null);
         int quantityBaseUnits = entry.baseQuantity();
         OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
         // A sale from before a later stock count, arriving late from an offline phone: the count
@@ -417,6 +418,16 @@ public class StockManagementService {
                 : resolveManualAllocations(
                         lockedLotsOldestFirst, request.allocations(), quantityBaseUnits, unitSymbol(product));
 
+        // V46: what the stock this used had cost, read off the lots BEFORE they are drawn - each
+        // delivery's own price (FIFO), the product's average where a delivery has none. And, for a
+        // sale, what it went for, exactly as charged. See SaleFacts for every rule.
+        SaleFacts.Cost cost = SaleFacts.costOf(
+                draws.stream().map(draw -> new SaleFacts.Draw(draw.lot(), draw.quantity())).toList(),
+                quantityBaseUnits,
+                product.getCostPrice());
+        OutReason reason = SaleFacts.reasonOf(request);
+        boolean sale = reason == OutReason.SALE;
+
         if (!absorbed) {
             product.setQuantityOnHand(product.getQuantityOnHand() - quantityBaseUnits);
         }
@@ -432,6 +443,12 @@ public class StockManagementService {
                 .enteredUnit(entry.enteredUnit())
                 .enteredQuantity(entry.enteredQuantity())
                 .enteredUnitPrice(entry.enteredUnitPrice())
+                .outReason(reason)
+                // A sale sent without an id is a sale of its own; one sent with it joins its basket.
+                .saleId(sale ? (request.saleId() != null ? request.saleId() : UUID.randomUUID()) : null)
+                .saleAmount(sale ? SaleFacts.saleAmount(request) : null)
+                .costAmount(cost.amount())
+                .costBasis(cost.basis())
                 .build());
 
         List<StockMutationResponse.AllocationBreakdown> breakdown = new ArrayList<>();
@@ -871,7 +888,7 @@ public class StockManagementService {
     }
 
     private void voidStockIn(Product product, StockMovement movement, StockWriteUndoStore.Snapshot snapshot, UUID tenantId) {
-        if (stockMovementAllocationRepository.sumQuantityByInMovementId(movement.getId()) > 0) {
+        if (stockMovementAllocationRepository.existsByInMovementId(movement.getId())) {
             throw new StockWriteNotUndoableException(
                     "Some of this delivery has already gone out, so it can't be undone. Record a count to correct the"
                             + " figure.");
@@ -910,6 +927,89 @@ public class StockManagementService {
         stockMovementAllocationRepository.deleteAll(draws);
         stockMovementAllocationRepository.flush();
         product.setQuantityOnHand(product.getQuantityOnHand() + movement.getQuantity());
+    }
+
+    /**
+     * Cancels one sale line (V46, SELLING_PRICE_PLAN.md section 4.3a) by writing its opposite - the
+     * original row is never touched. The caller has already decided the line is a sale line, not yet
+     * cancelled, and that this person may cancel it ({@code SaleService}).
+     *
+     * <p>What comes back, exactly as {@link #voidStockOut} gives it back, but by adding rows rather
+     * than deleting them:
+     * <ul>
+     *   <li>the shelf figure, by an ADJUSTMENT of +quantity that {@code reverses} the line;</li>
+     *   <li>each delivery it drew on, by an allocation of MINUS what it drew - so a lot's remaining
+     *       balance (its quantity minus the sum of its allocations) is exactly what it was, and FIFO
+     *       draws on it again in its proper place;</li>
+     *   <li>each supplier's on-hand tally.</li>
+     * </ul>
+     * The cancellation carries the line's sale id and its sale and cost amounts negated, so every
+     * report that sums them nets the line out with no special case.
+     *
+     * <p>Dated now, not at the sale: the stock comes back when it is cancelled, and a count taken in
+     * between must not be second-guessed. Reports put the netted line on the day of the SALE; that is
+     * a report's decision, not the ledger's.
+     */
+    @Transactional
+    public StockMovement cancelSaleLine(StockMovement line, UUID actingUserId) {
+        Product product = lockProductOrThrow(line.getProduct().getId());
+        UUID tenantId = requireTenantId();
+        List<StockMovementAllocation> draws =
+                stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(line.getId());
+
+        product.setQuantityOnHand(product.getQuantityOnHand() + line.getQuantity());
+        StockMovement cancellation = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(line.getQuantity())
+                .note("Sale cancelled")
+                .createdBy(reference(actingUserId))
+                .saleId(line.getSaleId())
+                .saleAmount(line.getSaleAmount() == null ? null : line.getSaleAmount().negate())
+                .costAmount(line.getCostAmount() == null ? null : line.getCostAmount().negate())
+                .costBasis(line.getCostBasis())
+                .reversesMovementId(line.getId())
+                .build());
+
+        for (StockMovementAllocation draw : draws) {
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(cancellation)
+                    .inMovement(draw.getInMovement())
+                    .quantity(-draw.getQuantity())
+                    .build());
+            CompanyVendor lotVendor = draw.getInMovement().getCompanyVendor();
+            if (lotVendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), lotVendor.getId())
+                        .ifPresent(vendorLine -> vendorLine.setQuantityOnHandFromVendor(
+                                vendorLine.getQuantityOnHandFromVendor() + draw.getQuantity()));
+            }
+        }
+        log.info("Sale line cancelled: line={} sale={} product={} client={} by={}",
+                line.getId(), line.getSaleId(), product.getId(), tenantId, actingUserId);
+        return cancellation;
+    }
+
+    /**
+     * Adds the price to a sale line saved without one (V46, plan decision 7): a zero-quantity
+     * ADJUSTMENT carrying only the sale amount, pointing at the line it prices. No stock moves and
+     * the original is never touched; the line's cost is already on the line itself.
+     */
+    @Transactional
+    public StockMovement addSalePrice(StockMovement line, BigDecimal saleAmount, UUID actingUserId) {
+        Product product = productRepository
+                .findByIdAndClientId(line.getProduct().getId(), requireTenantId())
+                .orElseThrow(ProductNotFoundException::new);
+        return stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(0)
+                .note("Price added")
+                .createdBy(reference(actingUserId))
+                .saleId(line.getSaleId())
+                .saleAmount(saleAmount)
+                .correctsMovementId(line.getId())
+                .build());
     }
 
     /**
