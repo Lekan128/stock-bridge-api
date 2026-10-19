@@ -179,6 +179,14 @@ public class ImportController {
         return importSessionService.patchMapping(id, request.columnMapping());
     }
 
+    /** The sheet's price question answered: {@code {"answer": "COST" | "SELLING" | "IGNORE"}}. */
+    @PostMapping("/{id}/price-question")
+    public ImportSessionResponse answerPriceQuestion(
+            @PathVariable UUID id, @RequestBody Map<String, String> body,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return importSessionService.answerPriceQuestion(id, body == null ? null : body.get("answer"), principal.getUserId());
+    }
+
     /** Body is the bare {@code {column, from, to}} - not wrapped, per contract section 3. */
     @PatchMapping("/{id}/value-mappings")
     public ImportSessionResponse resolveValue(

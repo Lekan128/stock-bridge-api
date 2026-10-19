@@ -594,7 +594,29 @@ public class ProductManagementService {
         // generateTemplate states, and for the same reason the two files must agree on it: the
         // export IS the template once it has your products in it.
         return productExcelService.exportProducts(
-                products, preferredVendorSnapshotsFor(tenantId, products), sellingPolicy.showsSellingPrice(tenantId));
+                products, preferredVendorSnapshotsFor(tenantId, products), sellingPolicy.showsSellingPrice(tenantId),
+                sellingPolicy.sheetSellingPricePerPack(tenantId));
+    }
+
+    /**
+     * "Add prices in a sheet" (SELLING_PRICE_PLAN.md section 6.8): the active products with no selling
+     * price yet - or every active product, with {@code all} - as a short sheet to fill in and upload
+     * back. Day one with 400 products is the case it is for. A company that does not record sales
+     * has no selling price to add: 409, via {@code SellingNotAvailableException}.
+     */
+    @Transactional(readOnly = true)
+    public byte[] exportPrices(boolean all) {
+        UUID tenantId = requireTenantId();
+        if (!sellingPolicy.sheetSellingPricePerPack(tenantId)) {
+            throw new com.procurepal_services.stock_bridge_api.selling.SellingNotAvailableException();
+        }
+        List<Product> products = productRepository
+                .findAll(ProductSpecifications.forTenant(tenantId, null, true),
+                        org.springframework.data.domain.Sort.by("name"))
+                .stream()
+                .filter(product -> all || product.getUnitPrice() == null)
+                .toList();
+        return productExcelService.exportPrices(products, preferredVendorSnapshotsFor(tenantId, products));
     }
 
     /**
@@ -658,7 +680,8 @@ public class ProductManagementService {
                 .map(com.procurepal_services.stock_bridge_api.entity.CompanyCategory::getName)
                 .toList();
         return productExcelService.generateTemplate(new ProductTemplateContext(
-                showsSellingPrice, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames));
+                showsSellingPrice, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames,
+                sellingPolicy.sheetSellingPricePerPack(tenantId)));
     }
 
     private void applyImage(Product product, MultipartFile image, List<String> warnings) {

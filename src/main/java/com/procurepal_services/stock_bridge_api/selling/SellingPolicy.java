@@ -79,6 +79,29 @@ public class SellingPolicy {
         return requiresSellingPrice(ownerOf(tenantId));
     }
 
+    /**
+     * Whether a product sheet's selling price is read per pack, like the cost beside it ("what you
+     * sell ONE bag for"), and stored per stock unit with the typed figure kept (plan section 6.8).
+     * Companies only: a marketplace seller's sheet has always carried its price per stock unit, and
+     * changing what an old file's numbers mean would silently multiply every listing by its pack.
+     */
+    @Transactional(readOnly = true)
+    public boolean sheetSellingPricePerPack(UUID tenantId) {
+        Client client = ownerOf(tenantId);
+        return showsSellingPrice(client) && !requiresSellingPrice(client);
+    }
+
+    /**
+     * Whether a bare "Price" column on this tenant's product sheet has to be asked about rather than
+     * mapped (plan section 6.8): a company's price could be what it pays or what it sells for. A
+     * marketplace seller's "Price" is its selling price, as it always was.
+     */
+    @Transactional(readOnly = true)
+    public boolean asksWhatPriceMeans(UUID tenantId) {
+        Client client = ownerOf(tenantId);
+        return canChooseToSellStock(client) && !requiresSellingPrice(client);
+    }
+
     private Client ownerOf(UUID tenantId) {
         return sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
     }

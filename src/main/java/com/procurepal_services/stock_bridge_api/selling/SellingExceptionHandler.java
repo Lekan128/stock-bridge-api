@@ -8,7 +8,8 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-@RestControllerAdvice(assignableTypes = {SellingSettingsController.class, SaleController.class, ProductPriceHistoryController.class, SalesReportController.class})
+@RestControllerAdvice(assignableTypes = {SellingSettingsController.class, SaleController.class, ProductPriceHistoryController.class, SalesReportController.class,
+        com.procurepal_services.stock_bridge_api.product.ProductController.class})
 public class SellingExceptionHandler {
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

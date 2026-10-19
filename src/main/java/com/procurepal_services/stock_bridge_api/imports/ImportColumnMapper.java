@@ -158,7 +158,7 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.DESCRIPTION, "notes", "desc", "details", "remarks");
         put(aliases, ImportFields.BARCODE, "bar_code", "ean", "upc", "gtin", "scan_code", "product_barcode");
         put(aliases, ImportFields.CATEGORY, "categories", "product_category", "group", "product_group");
-        put(aliases, ImportFields.UNIT_PRICE, "selling_price", "price", "sale_price", "sales_price", "list_price", "rrp");
+        put(aliases, ImportFields.UNIT_PRICE, "selling_price_for_one", "selling_price", "price", "sale_price", "sales_price", "list_price", "rrp");
         put(aliases, ImportFields.COST_PRICE, "price_you_pay_for_one", "price_you_pay", "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");
         // Each of the four renamed columns leads with the spelling OUR OWN template used before
         // UNIT_UX_CONTRACT.md section 9.4 - "quantity_on_hand" (section 5.1), then section 9.4's

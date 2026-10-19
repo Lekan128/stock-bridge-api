@@ -21,6 +21,7 @@ import com.procurepal_services.stock_bridge_api.imports.dto.ImportDeliveryDetail
 import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.repository.CompanyVendorRepository;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.PriceQuestionView;
 import com.procurepal_services.stock_bridge_api.imports.dto.ImportSessionSummaryResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.UndoBlockedResponse;
 import com.procurepal_services.stock_bridge_api.imports.dto.ValueMappingRequest;
@@ -120,6 +121,10 @@ public class ImportSessionService {
     private final List<ImportRowHandler> handlers;
     private final CompanyVendorRepository companyVendorRepository;
     private final ExpectedDeliveryService expectedDeliveryService;
+    private final PriceColumnQuestion priceColumnQuestion;
+    private final com.procurepal_services.stock_bridge_api.repository.StockMovementRepository stockMovementRepository;
+    private final com.procurepal_services.stock_bridge_api.selling.SellingPolicy sellingPolicy;
+    private final com.procurepal_services.stock_bridge_api.selling.SellingSettingsService sellingSettingsService;
 
     private Map<ImportKind, ImportRowHandler> handlersByKind;
 
@@ -279,14 +284,23 @@ public class ImportSessionService {
 
         ImportRowHandler handler = handlerFor(kind);
         ImportColumnMapper.Mapping mapping = columnMapper.autoMap(table, kind, handler.fields());
-        List<SheetRow> dataRows = withoutExampleRows(table, mapping.columnMapping());
+        // A company's bare "Price" column is asked about, not guessed (SELLING_PRICE_PLAN.md 6.8).
+        Map<String, String> columnMapping = new LinkedHashMap<>(mapping.columnMapping());
+        List<String> unmappedHeaders = new ArrayList<>(mapping.unmappedHeaders());
+        PriceColumnQuestion.Raised question = kind == ImportKind.PRODUCT_CATALOG
+                ? priceColumnQuestion.raise(TenantContext.get(),
+                        table.headers().stream().map(HeaderNames::normalize).toList(), columnMapping, unmappedHeaders)
+                : null;
+        List<SheetRow> dataRows = withoutExampleRows(table, columnMapping);
 
         ImportSession session = importSessionRepository.save(ImportSession.builder()
                 .kind(kind)
                 .mode(effectiveMode)
                 .status(ImportStatus.PARSING)
                 .originalFilename(filename)
-                .columnMapping(new LinkedHashMap<>(mapping.columnMapping()))
+                .columnMapping(new LinkedHashMap<>(columnMapping))
+                .priceQuestionKind(question == null ? null : question.kind())
+                .priceQuestionHeader(question == null ? null : question.header())
                 .valueMappings(new LinkedHashMap<>())
                 .rowDefaults(kind == ImportKind.STOCK_IN ? rowDefaultsOf(delivery) : null)
                 .expectedDeliveryId(expectedDeliveryId)
@@ -315,7 +329,7 @@ public class ImportSessionService {
         importSessionRowRepository.flush();
 
         revalidate(session, rows, mapping.requiredFieldsMissing());
-        return toResponse(session, mapping.unmappedHeaders(), mapping.requiredFieldsMissing());
+        return toResponse(session, unmappedHeaders, mapping.requiredFieldsMissing());
     }
 
     /**
@@ -603,6 +617,84 @@ public class ImportSessionService {
         List<String> missing = columnMapper.missingRequiredFields(cleaned, handlerFor(session.getKind()).fields());
         revalidate(session, rows, missing);
         return toResponse(session, null, missing);
+    }
+
+    /**
+     * Answers the sheet's price question (SELLING_PRICE_PLAN.md section 6.8): the column is what they
+     * pay ({@code COST}), what they sell for ({@code SELLING}), or left out ({@code IGNORE}). Keeping
+     * selling prices while the company does not record sales turns selling on - the owner's choice,
+     * made here in context - so it needs MANAGE_COMPANY_PROFILE. Then the file is read again.
+     */
+    @Transactional
+    public ImportSessionResponse answerPriceQuestion(UUID sessionId, String answer, UUID actingUserId) {
+        ImportSession session = requireEditable(sessionId);
+        String header = session.getPriceQuestionHeader();
+        if (session.getPriceQuestionKind() == null || header == null) {
+            return toResponse(session, null, null);
+        }
+        PriceQuestionView view = priceQuestionOf(session);
+        if (answer == null || !view.options().contains(answer)) {
+            throw new ImportExceptions.NotCommittable(
+                    "That answer doesn't fit this sheet any more. Reload the page and choose again.");
+        }
+        Map<String, String> mapping = new LinkedHashMap<>(session.getColumnMapping() == null ? Map.of() : session.getColumnMapping());
+        switch (answer) {
+            case "COST" -> mapping.put(header, ImportFields.COST_PRICE);
+            case "SELLING" -> {
+                if (!sellingPolicy.showsSellingPrice(TenantContext.get())) {
+                    sellingSettingsService.update(true, com.procurepal_services.stock_bridge_api.entity.SettingChangeSource.IN_CONTEXT, actingUserId);
+                }
+                mapping.put(header, ImportFields.UNIT_PRICE);
+            }
+            default -> mapping.remove(header);
+        }
+        session.setPriceQuestionKind(null);
+        session.setPriceQuestionHeader(null);
+        session.setColumnMapping(mapping);
+
+        List<ImportSessionRow> rows = allRows(session);
+        rows.forEach(row -> row.setNormalized(new LinkedHashMap<>()));
+        importSessionRowRepository.saveAll(rows);
+        importSessionRowRepository.flush();
+        List<String> missing = columnMapper.missingRequiredFields(mapping, handlerFor(session.getKind()).fields());
+        revalidate(session, rows, missing);
+        return toResponse(session, null, missing);
+    }
+
+    /** The open price question as the review screen needs it, or null. */
+    private PriceQuestionView priceQuestionOf(ImportSession session) {
+        String kind = session.getPriceQuestionKind();
+        String header = session.getPriceQuestionHeader();
+        if (kind == null || header == null || !session.isUncommitted()) {
+            return null;
+        }
+        UUID tenantId = TenantContext.get();
+        boolean sellingOn = sellingPolicy.showsSellingPrice(tenantId);
+        boolean canTurnOn = sellingOn || callerMay("MANAGE_COMPANY_PROFILE");
+        Map<String, String> mapping = session.getColumnMapping() == null ? Map.of() : session.getColumnMapping();
+        List<String> options = new ArrayList<>();
+        if (PriceColumnQuestion.PRICE_MEANING.equals(kind) && !mapping.containsValue(ImportFields.COST_PRICE)) {
+            options.add("COST");
+        }
+        if (canTurnOn && !mapping.containsValue(ImportFields.UNIT_PRICE)) {
+            options.add("SELLING");
+        }
+        options.add("IGNORE");
+        List<String> samples = new ArrayList<>();
+        for (ImportSessionRow row : importSessionRowRepository.findAllBySessionIdOrderByExcelRowAsc(session.getId(), Pageable.ofSize(20))) {
+            Object value = row.getRaw() == null ? null : row.getRaw().get(header);
+            if (value != null && !String.valueOf(value).isBlank() && samples.size() < 3) {
+                samples.add(String.valueOf(value).trim());
+            }
+        }
+        boolean blocking = PriceColumnQuestion.PRICE_MEANING.equals(kind) || canTurnOn;
+        return new PriceQuestionView(kind, header, samples, List.copyOf(options), sellingOn, canTurnOn, blocking);
+    }
+
+    private static boolean callerMay(String authority) {
+        org.springframework.security.core.Authentication auth =
+                org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
+        return auth != null && auth.getAuthorities().stream().anyMatch(granted -> authority.equals(granted.getAuthority()));
     }
 
     /**
@@ -912,7 +1004,10 @@ public class ImportSessionService {
         // unanswered value questions, because the frontend gates Continue on errorCount and an
         // unresolved supplier has a defined fallback ("imported without a supplier") that the
         // grid has already stated out loud.
-        session.setStatus(errors == 0 && missing.isEmpty() ? ImportStatus.READY : ImportStatus.NEEDS_REVIEW);
+        // An unanswered "is Price what you pay or what you sell for?" holds the file back too: either
+        // guess would quietly misread every price in it (SELLING_PRICE_PLAN.md section 6.8).
+        boolean priceUnanswered = PriceColumnQuestion.PRICE_MEANING.equals(session.getPriceQuestionKind());
+        session.setStatus(errors == 0 && missing.isEmpty() && !priceUnanswered ? ImportStatus.READY : ImportStatus.NEEDS_REVIEW);
         importSessionRepository.saveAndFlush(session);
     }
 
@@ -1223,7 +1318,68 @@ public class ImportSessionService {
                 undone ? "You have already undone this import." : null,
                 "/api/imports/" + session.getId() + "/report",
                 targetUrlFor(session),
-                session.getKind());
+                session.getKind(),
+                session.getKind() == ImportKind.STOCK_IN && session.getStatus() == ImportStatus.COMMITTED && !undone
+                        ? pricesToCheck(session)
+                        : List.of());
+    }
+
+    /**
+     * "Check your prices" (SELLING_PRICE_PLAN.md section 6.7): products this delivery now costs at
+     * least as much as they sell for. A stock-in records what arrived and never touches a selling
+     * price; it only says so, and links to the product. Companies that sell only.
+     */
+    private List<ImportResultResponse.PriceToCheck> pricesToCheck(ImportSession session) {
+        UUID tenantId = TenantContext.get();
+        if (!sellingPolicy.sheetSellingPricePerPack(tenantId)) {
+            return List.of();
+        }
+        Map<UUID, com.procurepal_services.stock_bridge_api.entity.StockMovement> latest = new LinkedHashMap<>();
+        for (var movement : stockMovementRepository.findAllByClientIdAndImportBatchIdOrderByOccurredAtAsc(tenantId, session.getId())) {
+            if (movement.getMovementType() == com.procurepal_services.stock_bridge_api.entity.MovementType.IN
+                    && movement.getUnitPriceAtTime() != null) {
+                latest.put(movement.getProduct().getId(), movement);
+            }
+        }
+        List<ImportResultResponse.PriceToCheck> out = new ArrayList<>();
+        for (var movement : latest.values()) {
+            var product = movement.getProduct();
+            if (product.getUnitPrice() == null || movement.getUnitPriceAtTime().compareTo(product.getUnitPrice()) < 0) {
+                continue;
+            }
+            var options = com.procurepal_services.stock_bridge_api.product.unit.UnitOptions.forProduct(product);
+            var option = com.procurepal_services.stock_bridge_api.product.unit.UnitOptions.defaultOption(options)
+                    .or(() -> com.procurepal_services.stock_bridge_api.product.unit.UnitOptions.stockUnitOption(options))
+                    .orElse(null);
+            java.math.BigDecimal factor = option == null ? java.math.BigDecimal.ONE : option.factorToStockUnit();
+            boolean typedPerThis = option != null && product.getUnitPriceEntered() != null
+                    && option.code().equals(product.getUnitPriceEnteredUnit());
+            java.math.BigDecimal selling = typedPerThis
+                    ? product.getUnitPriceEntered()
+                    : product.getUnitPrice().multiply(factor).setScale(2, java.math.RoundingMode.HALF_UP);
+            // What was typed on the delivery when it was per this same unit ("5,200 a carton"),
+            // rather than 216.67 x 24 = 5,200.08.
+            java.math.BigDecimal cost = option != null && movement.getEnteredUnitPrice() != null
+                    && option.code().equals(movement.getEnteredUnit())
+                    ? movement.getEnteredUnitPrice()
+                    : movement.getUnitPriceAtTime().multiply(factor).setScale(2, java.math.RoundingMode.HALF_UP);
+            out.add(new ImportResultResponse.PriceToCheck(product.getId(), product.getName(), cost, selling, perText(option)));
+        }
+        return out;
+    }
+
+    /** "a carton", "per kg" - how a price is said; the product sheet's own wording. */
+    private static String perText(com.procurepal_services.stock_bridge_api.product.unit.UnitOption option) {
+        if (option == null) {
+            return "each";
+        }
+        if (option.isPack()) {
+            String label = option.label();
+            int of = label.indexOf(" of ");
+            String container = (of > 0 ? label.substring(0, of) : label).toLowerCase(java.util.Locale.ROOT);
+            return (container.matches("^[aeiou].*") ? "an " : "a ") + container;
+        }
+        return "per " + (option.label() == null || option.label().isBlank() ? "unit" : option.label());
     }
 
     /**
@@ -1606,7 +1762,8 @@ public class ImportSessionService {
                 session.getCreatedAt(),
                 session.getExpiresAt(),
                 session.getCommittedAt(),
-                deliveryOf(session));
+                deliveryOf(session),
+                priceQuestionOf(session));
     }
 
     /**

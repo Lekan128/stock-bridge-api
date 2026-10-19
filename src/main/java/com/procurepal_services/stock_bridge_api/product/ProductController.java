@@ -65,6 +65,13 @@ public class ProductController {
         return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
     }
 
+    /** "Add prices in a sheet" - products with no selling price (or {@code all=true}: every active one). */
+    @GetMapping("/export/prices")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ResponseEntity<byte[]> exportPrices(@RequestParam(defaultValue = "false") boolean all) {
+        return xlsxResponse(productManagementService.exportPrices(all), "selling-prices.xlsx");
+    }
+
     /**
      * MANAGE_PRODUCTS, not VIEW_PRODUCTS: unlike the company profile's read side, this is
      * generation CONFIGURATION - relevant to whoever might change it or the create-product form,
