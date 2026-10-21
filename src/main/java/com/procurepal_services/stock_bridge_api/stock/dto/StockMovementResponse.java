@@ -1,6 +1,8 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
+import com.procurepal_services.stock_bridge_api.entity.CostBasis;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
+import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -70,7 +72,16 @@ public record StockMovementResponse(
         /** {@code quantity * unitPriceAtTime}, or null when no price was recorded. See the class doc. */
         BigDecimal lineValue,
         OffsetDateTime occurredAt,
-        OffsetDateTime createdAt) {
+        OffsetDateTime createdAt,
+        // V46 (SELLING_PRICE_PLAN.md section 4.3) - all absent on a row that is not about a sale or a
+        // reason, since the API leaves out null fields.
+        OutReason outReason,
+        UUID saleId,
+        BigDecimal saleAmount,
+        BigDecimal costAmount,
+        CostBasis costBasis,
+        UUID reversesMovementId,
+        UUID correctsMovementId) {
 
     public static StockMovementResponse from(StockMovement movement) {
         return new StockMovementResponse(
@@ -99,7 +110,14 @@ public record StockMovementResponse(
                 movement.getEnteredUnitPrice(),
                 lineValue(movement),
                 movement.getOccurredAt(),
-                movement.getCreatedAt());
+                movement.getCreatedAt(),
+                movement.getOutReason(),
+                movement.getSaleId(),
+                movement.getSaleAmount(),
+                movement.getCostAmount(),
+                movement.getCostBasis(),
+                movement.getReversesMovementId(),
+                movement.getCorrectsMovementId());
     }
 
     /** Null, not zero, when the movement recorded no price - see the class doc. */

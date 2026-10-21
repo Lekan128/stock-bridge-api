@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
+import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import jakarta.persistence.criteria.JoinType;
 import jakarta.persistence.criteria.Path;
@@ -59,6 +60,23 @@ final class StockMovementSpecifications {
             OffsetDateTime from,
             OffsetDateTime to,
             MovementType movementType) {
+        return forTenant(clientId, productId, companyVendorId, from, to, movementType, null, false);
+    }
+
+    /**
+     * The same, narrowed by why a stock-out happened (V46): {@code outReason} keeps the stock-outs
+     * with that reason; {@code noReason} keeps the stock-outs where none was given. Mirrored exactly
+     * by {@code StockMovementRepository.summarise}, so the report's footer never disagrees with it.
+     */
+    static Specification<StockMovement> forTenant(
+            UUID clientId,
+            UUID productId,
+            UUID companyVendorId,
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            OutReason outReason,
+            boolean noReason) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             predicates.add(cb.equal(root.get("clientId"), clientId));
@@ -83,6 +101,13 @@ final class StockMovementSpecifications {
             }
             if (movementType != null) {
                 predicates.add(cb.equal(root.get("movementType"), movementType));
+            }
+            if (outReason != null) {
+                predicates.add(cb.equal(root.get("outReason"), outReason));
+            }
+            if (noReason) {
+                predicates.add(cb.equal(root.get("movementType"), MovementType.OUT));
+                predicates.add(cb.isNull(root.get("outReason")));
             }
 
             return cb.and(predicates.toArray(new Predicate[0]));

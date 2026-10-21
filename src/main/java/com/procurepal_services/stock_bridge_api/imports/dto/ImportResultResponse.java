@@ -44,5 +44,15 @@ public record ImportResultResponse(
         String undoBlockedReason,
         String reportUrl,
         String targetUrl,
-        ImportKind kind) {
+        ImportKind kind,
+        List<PriceToCheck> pricesToCheck) {
+
+    /**
+     * A product this delivery now costs at least as much as it sells for (SELLING_PRICE_PLAN.md
+     * section 6.7): "You now pay ₦5,200 a carton and sell at ₦5,000." Both figures per the product's
+     * pack when it has one.
+     */
+    public record PriceToCheck(java.util.UUID productId, String productName, java.math.BigDecimal costEach,
+            java.math.BigDecimal sellingEach, String per) {
+    }
 }

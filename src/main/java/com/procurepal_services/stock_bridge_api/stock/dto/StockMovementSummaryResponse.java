@@ -44,5 +44,16 @@ public record StockMovementSummaryResponse(
         long unpricedInCount,
         /** OUT movements in range with no price on file. */
         long unpricedOutCount,
-        long adjustmentCount) {
+        long adjustmentCount,
+        /**
+         * What sales in range went for, as the Sales report counts it (cancelled lines out, prices
+         * added later in) - SELLING_PRICE_PLAN.md 6.9's "₦412,000 sales". Absent when it does not
+         * apply: selling off, a supplier filter, a non-sale reason, or no date range.
+         */
+        BigDecimal salesAmount,
+        /** Sale lines in range still without a price ("2 sales have no price"); absent with salesAmount. */
+        Long unpricedSaleCount,
+        /** Every other stock-out in range, at what the stock cost: "₦18,300 other stock out". */
+        BigDecimal otherOutCost,
+        long otherOutCount) {
 }

@@ -154,7 +154,9 @@ public class ProductSyncService {
                         product.getLowStockThreshold(),
                         product.isActive(),
                         StockStatus.isLowStock(product.getQuantityOnHand(), product.getLowStockThreshold()),
-                        StockStatus.of(product.getQuantityOnHand(), product.getLowStockThreshold())))
+                        StockStatus.of(product.getQuantityOnHand(), product.getLowStockThreshold()),
+                        product.getUnitPriceEntered(),
+                        product.getUnitPriceEnteredUnit()))
                 .toList();
     }
 

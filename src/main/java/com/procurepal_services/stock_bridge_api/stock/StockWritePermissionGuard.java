@@ -33,9 +33,15 @@ public class StockWritePermissionGuard {
 
     @Transactional(readOnly = true)
     public void require(UUID userId, String authority) {
-        User user = userId == null ? null : userRepository.findById(userId).orElse(null);
-        if (user == null || !user.isActive() || !PermissionCodes.of(user).contains(authority)) {
+        if (!has(userId, authority)) {
             throw new AccessDeniedException(REFUSED);
         }
+    }
+
+    /** Whether the user, as their role stands now, holds {@code authority} - the same read as {@link #require}. */
+    @Transactional(readOnly = true)
+    public boolean has(UUID userId, String authority) {
+        User user = userId == null ? null : userRepository.findById(userId).orElse(null);
+        return user != null && user.isActive() && PermissionCodes.of(user).contains(authority);
     }
 }

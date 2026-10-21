@@ -359,6 +359,10 @@ class MarketplaceOrderIntegrationTest {
         assertThat(buyerProduct.getQuantityOnHand()).isZero();
         assertThat(buyerProduct.isMarketplaceListed()).isFalse();
         assertThat(buyerProduct.getSourceProductId()).isEqualTo(catalogProduct.getId());
+        // What they paid is the buyer's cost, never their selling price (SELLING_PRICE_PLAN.md
+        // section 4.6.1): copying it there made the item look like it sells at zero profit.
+        assertThat(buyerProduct.getCostPrice()).isEqualByComparingTo(catalogProduct.getUnitPrice());
+        assertThat(buyerProduct.getUnitPrice()).isNull();
         assertThat(stockMovementsFor(buyer)).isZero();
 
         // ProcurePal fulfils it.

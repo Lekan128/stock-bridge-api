@@ -8,8 +8,11 @@ import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
+import com.procurepal_services.stock_bridge_api.selling.SalesReportService;
+import com.procurepal_services.stock_bridge_api.selling.dto.SalesTotals;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -33,6 +36,7 @@ public class AnalyticsService {
 
     private final StockMovementRepository stockMovementRepository;
     private final ProductRepository productRepository;
+    private final SalesReportService salesReportService;
 
     @Transactional(readOnly = true)
     public AnalyticsSummaryResponse summary(OffsetDateTime from, OffsetDateTime to) {
@@ -62,6 +66,13 @@ public class AnalyticsService {
         long wellStockedProductCount =
                 activeProductCount - productRepository.countNeedsAttentionByClientId(clientId);
 
+        Duration length = Duration.between(range[0], range[1]);
+        Duration back = length.compareTo(Duration.ofDays(7)) <= 0 ? Duration.ofDays(7) : length;
+        OffsetDateTime previousFrom = range[0].minus(back);
+        OffsetDateTime previousTo = range[1].minus(back);
+        SalesTotals sales = salesReportService.totals(clientId, range[0], range[1], SalesReportService.Filters.NONE);
+        SalesTotals previousSales = salesReportService.totals(clientId, previousFrom, previousTo, SalesReportService.Filters.NONE);
+
         return new AnalyticsSummaryResponse(
                 totalInValue,
                 totalOutValue,
@@ -70,7 +81,11 @@ public class AnalyticsService {
                 lowStockProductCount,
                 activeProductCount,
                 outOfStockProductCount,
-                wellStockedProductCount);
+                wellStockedProductCount,
+                sales,
+                previousSales,
+                previousFrom,
+                previousTo);
     }
 
     @Transactional(readOnly = true)

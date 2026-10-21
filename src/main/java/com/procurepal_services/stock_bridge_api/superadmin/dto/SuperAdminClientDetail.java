@@ -55,5 +55,8 @@ public record SuperAdminClientDetail(
         // also how an ops screen knows this row is ProcurePal itself and can offer
         // the platform-owner user management that no other tenant gets.
         boolean platformOwner,
-        PaymentTerms paymentTerms) {
+        PaymentTerms paymentTerms,
+        // The selling switch (V45). Support can change it on the company's behalf - see
+        // PUT /api/superadmin/clients/{id}/selling.
+        boolean sellsStock) {
 }

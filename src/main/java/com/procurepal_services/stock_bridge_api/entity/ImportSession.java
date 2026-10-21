@@ -182,6 +182,19 @@ public class ImportSession extends TenantAwareEntity {
     @Column(name = "expected_delivery_id")
     private UUID expectedDeliveryId;
 
+    /**
+     * The question this product sheet raises about a price column, when it raises one (V50,
+     * SELLING_PRICE_PLAN.md section 6.8): {@code PRICE_MEANING} for a bare "Price" column a company
+     * has to say the meaning of, {@code KEEP_SELLING_PRICES} for selling prices on a sheet from a
+     * company that does not record sales. Null when there is none, or once it is answered.
+     */
+    @Column(name = "price_question_kind", length = 30)
+    private String priceQuestionKind;
+
+    /** The (normalized) header {@link #priceQuestionKind} is about. */
+    @Column(name = "price_question_header", length = 255)
+    private String priceQuestionHeader;
+
     /** Total rows parsed from the file, example rows and skipped rows included. Cached - see the class javadoc. */
     @Column(name = "row_count", nullable = false)
     private int rowCount;

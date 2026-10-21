@@ -8,6 +8,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -148,7 +149,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      *
      * <p>Returns a one-element list holding {@code [inValue(numeric), outValue(numeric), inQuantity(bigint),
      * outQuantity(bigint), inCount(bigint), outCount(bigint), unpricedInCount(bigint),
-     * unpricedOutCount(bigint), adjustmentCount(bigint)]}. One pass over the filtered set with
+     * unpricedOutCount(bigint), adjustmentCount(bigint), otherOutCost(numeric), otherOutCount(bigint)]}. One pass over the filtered set with
      * nine conditional aggregates, rather than nine round trips or - worse - paging the whole
      * range into the application to add it up there.
      *
@@ -177,14 +178,21 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COUNT(*) FILTER (WHERE movement_type = 'OUT') AS out_count, "
                     + "COUNT(*) FILTER (WHERE movement_type = 'IN' AND unit_price_at_time IS NULL) AS unpriced_in, "
                     + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND unit_price_at_time IS NULL) AS unpriced_out, "
-                    + "COUNT(*) FILTER (WHERE movement_type = 'ADJUSTMENT') AS adjustment_count "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'ADJUSTMENT') AS adjustment_count, "
+                    // SELLING_PRICE_PLAN.md 6.9: every stock-out that is not a sale - used, spoilt, sent
+                    // away - at what the stock cost (V45 snapshots cost on every stock-out).
+                    + "COALESCE(SUM(cost_amount) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL), 0) AS other_out_cost, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL) AS other_out_count "
                     + "FROM stock_movements "
                     + "WHERE client_id = :clientId "
                     + "AND (CAST(:productId AS uuid) IS NULL OR product_id = CAST(:productId AS uuid)) "
                     + "AND (CAST(:companyVendorId AS uuid) IS NULL OR company_vendor_id = CAST(:companyVendorId AS uuid)) "
                     + "AND (CAST(:movementType AS text) IS NULL OR movement_type = CAST(:movementType AS text)) "
                     + "AND (CAST(:from AS timestamptz) IS NULL OR occurred_at >= CAST(:from AS timestamptz)) "
-                    + "AND (CAST(:to AS timestamptz) IS NULL OR occurred_at <= CAST(:to AS timestamptz))",
+                    + "AND (CAST(:to AS timestamptz) IS NULL OR occurred_at <= CAST(:to AS timestamptz)) "
+                    // V46: why it went out - the same two narrowings as StockMovementSpecifications.forTenant.
+                    + "AND (CAST(:outReason AS text) IS NULL OR out_reason = CAST(:outReason AS text)) "
+                    + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL))",
             nativeQuery = true)
     List<Object[]> summarise(
             @Param("clientId") UUID clientId,
@@ -192,7 +200,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("companyVendorId") UUID companyVendorId,
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("outReason") String outReason,
+            @Param("noReason") boolean noReason);
 
     /**
      * <h2>V28: these five reporting queries bracket occurred_at, not created_at</h2>
@@ -299,4 +309,12 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
 
     /** The most recent write on a product - a void (D8) is only exact while its write is still this. */
     Optional<StockMovement> findFirstByProductIdOrderByCreatedAtDescIdDesc(UUID productId);
+
+    /**
+     * Every row of one sale - its lines, and any cancellation or price fix of them (V46) - oldest
+     * first. Tenant-scoped in the query itself, not by the session filter, so it is right from any
+     * caller. Served by idx_stock_movements_sale_id.
+     */
+    @EntityGraph(attributePaths = {"product", "createdBy"})
+    List<StockMovement> findAllByClientIdAndSaleIdOrderByCreatedAtAscIdAsc(UUID clientId, UUID saleId);
 }
