@@ -65,6 +65,13 @@ public class ProductController {
         return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
     }
 
+    /** "Add prices in a sheet" - products with no selling price (or {@code all=true}: every active one). */
+    @GetMapping("/export/prices")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ResponseEntity<byte[]> exportPrices(@RequestParam(defaultValue = "false") boolean all) {
+        return xlsxResponse(productManagementService.exportPrices(all), "selling-prices.xlsx");
+    }
+
     /**
      * MANAGE_PRODUCTS, not VIEW_PRODUCTS: unlike the company profile's read side, this is
      * generation CONFIGURATION - relevant to whoever might change it or the create-product form,
@@ -105,8 +112,10 @@ public class ProductController {
             // `StockStatus`'s javadoc. Never touches `/products/low-stock`, which keeps its own,
             // slightly different, already-established definition.
             @RequestParam(required = false) StockStatus stockStatus,
+            // "Has a price" / "No selling price" (SELLING_PRICE_PLAN.md section 6.5).
+            @RequestParam(required = false) Boolean hasSellingPrice,
             @PageableDefault(size = 20) Pageable pageable) {
-        return productManagementService.list(search, active, categoryId, stockStatus, pageable);
+        return productManagementService.list(search, active, categoryId, stockStatus, hasSellingPrice, pageable);
     }
 
     /**

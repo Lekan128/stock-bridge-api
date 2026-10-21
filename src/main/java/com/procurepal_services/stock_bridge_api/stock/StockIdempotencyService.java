@@ -147,18 +147,33 @@ public class StockIdempotencyService {
      */
     private static final List<String> TIMING_FIELDS = List.of("occurredAt", "recordedOffline", "countedAt");
 
-    private String hash(String operation, UUID productId, Object request) {
-        JsonNode body = jsonMapper.valueToTree(request);
-        if (body instanceof ObjectNode object) {
-            object.remove(TIMING_FIELDS);
-        }
-        String material = operation + '|' + productId + '|' + jsonMapper.writeValueAsString(body);
+    String hash(String operation, UUID productId, Object request) {
+        String material = hashMaterial(operation, productId, request);
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(material.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException e) {
             throw new IllegalStateException("SHA-256 is required by every JVM", e);
         }
+    }
+
+    /**
+     * The exact text {@link #hash} digests: operation, product and the request as JSON, timing
+     * fields removed.
+     *
+     * <p>Package-private for {@code StockIdempotencyHashPinTest}, which pins it. A write queued on a
+     * phone before a deploy is retried AFTER it with the same key, so anything that changes this
+     * text for an unchanged request - a new field serialised as null, a renamed property - turns
+     * that retry into a "key reused" refusal for a write the server already holds. Null fields are
+     * left out (the mapper's non_null inclusion), which is what lets a request record gain new
+     * optional fields without disturbing the hash of a request that does not use them.
+     */
+    String hashMaterial(String operation, UUID productId, Object request) {
+        JsonNode body = jsonMapper.valueToTree(request);
+        if (body instanceof ObjectNode object) {
+            object.remove(TIMING_FIELDS);
+        }
+        return operation + '|' + productId + '|' + jsonMapper.writeValueAsString(body);
     }
 
     /** Daily, and harmless to run on several instances at once - it only deletes expired rows. */

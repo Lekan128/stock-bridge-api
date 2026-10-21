@@ -140,6 +140,30 @@ public class Client {
     private PaymentTerms paymentTerms = PaymentTerms.PREPAID;
 
     /**
+     * The company sells some of its stock over the counter (V45, SELLING_PRICE_PLAN.md section
+     * 4.2): selling prices, Record a sale and the Sales report are shown to it.
+     *
+     * <p>It decides what the screens show and NEVER which stock writes are accepted - a sale queued
+     * on a phone while offline must still land after the owner turns this off. Read it through
+     * {@code SellingPolicy}; change it only through {@code SellingSettingsService}, which logs who
+     * changed it and from where.
+     */
+    @Column(name = "sells_stock", nullable = false)
+    private boolean sellsStock;
+
+    /**
+     * The answer to the first-week question "What happens to your stock?" (V49): USE, SELL or BOTH,
+     * null until answered. Kept so it is asked once on any phone. See {@code SellingSettingsService}.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "stock_use", length = 10)
+    private StockUse stockUse;
+
+    /** When the owner said "not now" to reviewing the old prices V44 set aside (V49); nothing is deleted. */
+    @Column(name = "legacy_prices_dismissed_at")
+    private OffsetDateTime legacyPricesDismissedAt;
+
+    /**
      * The business's registered address - a vendor's, in practice, since a buying
      * company's addresses live in delivery_addresses.
      *

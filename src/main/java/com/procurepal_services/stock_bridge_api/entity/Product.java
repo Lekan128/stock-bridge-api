@@ -82,6 +82,31 @@ public class Product extends TenantAwareEntity {
     private BigDecimal unitPrice;
 
     /**
+     * A buying company's {@link #unitPrice} from before it could have a selling price, moved here
+     * by V44: the purchase price a marketplace receipt used to copy in, or a pre-V17 "unit price"
+     * nobody can say was cost or selling. Kept so the owner can review them and adopt the real
+     * selling prices (SELLING_PRICE_PLAN.md section 4.6.3). <b>Never read as a selling price</b> -
+     * that is the whole reason it is not in {@link #unitPrice} any more.
+     */
+    @Column(name = "legacy_unit_price", precision = 14, scale = 2)
+    private BigDecimal legacyUnitPrice;
+
+    /**
+     * The selling price exactly as typed, when it was typed per a unit other than the stock unit -
+     * "5,000" with {@link #unitPriceEnteredUnit} "CARTON" (V47, SELLING_PRICE_PLAN.md section 4.5).
+     * {@link #unitPrice} stays the per-stock-unit figure checkout multiplies; this is what a sale in
+     * cartons pre-fills from, so it charges 5,000 and not 24 x 208.33. Both null when the price was
+     * typed per stock unit. Display and pre-fill only - never a balance, cost or checkout total.
+     * Set only through {@code SellingPriceService}, which keeps the three in step.
+     */
+    @Column(name = "unit_price_entered", precision = 14, scale = 2)
+    private BigDecimal unitPriceEntered;
+
+    /** The unit code {@link #unitPriceEntered} is per; null with it. */
+    @Column(name = "unit_price_entered_unit", length = 32)
+    private String unitPriceEnteredUnit;
+
+    /**
      * What this stock costs us, as money <b>per ONE {@link #unitOfMeasure}</b> - per kg for a
      * product counted in kg, never per bag. UNIT_UX_CONTRACT.md section 3.2 pins that basis, and
      * anything rendering this figure must state it (non-negotiable 2).

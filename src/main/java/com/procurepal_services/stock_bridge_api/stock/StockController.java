@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
+import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import com.procurepal_services.stock_bridge_api.stock.dto.AllocationResponse;
 import com.procurepal_services.stock_bridge_api.stock.dto.CostBasisAnomalyResponse;
@@ -215,8 +216,12 @@ public class StockController {
             @RequestParam(required = false) MovementType movementType,
             @RequestParam(required = false) UUID productId,
             @RequestParam(required = false) UUID companyVendorId,
+            // V46: narrow to stock-outs with this reason, or (noReason) to those with none given.
+            @RequestParam(required = false) OutReason outReason,
+            @RequestParam(defaultValue = "false") boolean noReason,
             @PageableDefault(size = 20, sort = "occurredAt", direction = Sort.Direction.DESC) Pageable pageable) {
-        return stockManagementService.allMovements(from, to, movementType, productId, companyVendorId, pageable);
+        return stockManagementService.allMovements(
+                from, to, movementType, productId, companyVendorId, outReason, noReason, pageable);
     }
 
     /**
@@ -232,8 +237,11 @@ public class StockController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
             @RequestParam(required = false) MovementType movementType,
             @RequestParam(required = false) UUID productId,
-            @RequestParam(required = false) UUID companyVendorId) {
-        return stockManagementService.movementSummary(from, to, movementType, productId, companyVendorId);
+            @RequestParam(required = false) UUID companyVendorId,
+            @RequestParam(required = false) OutReason outReason,
+            @RequestParam(defaultValue = "false") boolean noReason) {
+        return stockManagementService.movementSummary(
+                from, to, movementType, productId, companyVendorId, outReason, noReason);
     }
 
     /**

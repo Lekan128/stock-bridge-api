@@ -14,6 +14,10 @@ final class ClientSpecifications {
     }
 
     static Specification<Client> search(String search, Boolean active) {
+        return search(search, active, null);
+    }
+
+    static Specification<Client> search(String search, Boolean active, Boolean sellsStock) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
 
@@ -25,6 +29,10 @@ final class ClientSpecifications {
 
             if (active != null) {
                 predicates.add(cb.equal(root.get("active"), active));
+            }
+
+            if (sellsStock != null) {
+                predicates.add(cb.equal(root.get("sellsStock"), sellsStock));
             }
 
             return cb.and(predicates.toArray(new Predicate[0]));

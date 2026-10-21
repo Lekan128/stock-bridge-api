@@ -37,7 +37,14 @@ public class SuperAdminClientService {
 
     @Transactional(readOnly = true)
     public Page<SuperAdminClientSummary> list(String search, Boolean active, Pageable pageable) {
-        return clientRepository.findAll(ClientSpecifications.search(search, active), pageable).map(this::toSummary);
+        return list(search, active, null, pageable);
+    }
+
+    /** {@code sellsStock} narrows to companies with selling from stock on (true) or off (false). */
+    @Transactional(readOnly = true)
+    public Page<SuperAdminClientSummary> list(String search, Boolean active, Boolean sellsStock, Pageable pageable) {
+        return clientRepository.findAll(ClientSpecifications.search(search, active, sellsStock), pageable)
+                .map(this::toSummary);
     }
 
     @Transactional(readOnly = true)
@@ -144,7 +151,8 @@ public class SuperAdminClientService {
                 client.getAdminContactEmail(),
                 userCount,
                 productCount,
-                client.getCreatedAt());
+                client.getCreatedAt(),
+                client.isSellsStock());
     }
 
     /**
@@ -176,7 +184,8 @@ public class SuperAdminClientService {
                 quickGlance.lowStockProductCount(),
                 client.getPhone(),
                 client.isPlatformOwner(),
-                client.getPaymentTerms());
+                client.getPaymentTerms(),
+                client.isSellsStock());
     }
 
     private Client findOrThrow(UUID id) {

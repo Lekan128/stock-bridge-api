@@ -10,12 +10,21 @@ import java.util.UUID;
  * 8/10 exists to answer. {@code inMovementId} itself is not repeated here - it is already the
  * path parameter the caller supplied.
  */
-public record AllocationResponse(UUID outMovementId, int quantity, OffsetDateTime createdAt) {
+public record AllocationResponse(
+        UUID outMovementId,
+        int quantity,
+        OffsetDateTime createdAt,
+        // V46: true on the row that handed stock BACK to this delivery when a sale was cancelled.
+        // Its quantity is negative and outMovementId is the cancellation, not a stock-out.
+        boolean returnedByCancellation) {
 
     public static AllocationResponse from(StockMovementAllocation allocation) {
         return new AllocationResponse(
                 // .getId() on a lazy association never triggers a DB fetch - Hibernate already
                 // knows the FK value, same reasoning StockMovementResponse.from documents.
-                allocation.getOutMovement().getId(), allocation.getQuantity(), allocation.getCreatedAt());
+                allocation.getOutMovement().getId(),
+                allocation.getQuantity(),
+                allocation.getCreatedAt(),
+                allocation.getQuantity() < 0);
     }
 }

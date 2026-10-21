@@ -102,7 +102,12 @@ public record ProductResponse(
         boolean hasMultiplePacks,
         // The company's own category (V32), or null when uncategorised.
         UUID categoryId,
-        String categoryName) {
+        String categoryName,
+        // V47: the selling price exactly as typed and the unit it is per ("5,000" per "CARTON"),
+        // when that was not the stock unit. A sale in that unit pre-fills from it; unitPrice above
+        // stays the per-stock-unit figure. Absent when the price was typed per stock unit.
+        BigDecimal unitPriceEntered,
+        String unitPriceEnteredUnit) {
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -163,7 +168,9 @@ public record ProductResponse(
                 warnings,
                 hasMultiplePacks,
                 product.getCompanyCategory() == null ? null : product.getCompanyCategory().getId(),
-                product.getCompanyCategory() == null ? null : product.getCompanyCategory().getName());
+                product.getCompanyCategory() == null ? null : product.getCompanyCategory().getName(),
+                product.getUnitPriceEntered(),
+                product.getUnitPriceEnteredUnit());
     }
 
     /**
@@ -176,6 +183,6 @@ public record ProductResponse(
                 id, name, sku, barcode, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
-                warnings, hasMultiplePacks, categoryId, categoryName);
+                warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit);
     }
 }

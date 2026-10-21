@@ -80,7 +80,33 @@ public record UpdateProductRequest(
         UUID categoryId,
         Boolean clearCategory,
         /** The barcode on the box (task 3.3). Absent leaves it alone; blank clears it. */
-        @Size(max = 64) String barcode) {
+        @Size(max = 64) String barcode,
+        /** Which of the product's units {@code unitPrice} is per (V47); absent is the stock unit. */
+        String unitPriceUnit,
+        /**
+         * True takes the selling price off (V47) - a company that no longer sells this product. A
+         * marketplace seller's price can never be taken off; the request is refused for them.
+         */
+        Boolean clearUnitPrice) {
+
+    /** The shape before the price unit (V47) - a price per stock unit, never cleared. */
+    public UpdateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            Boolean active,
+            Boolean removeImage,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            UUID categoryId,
+            Boolean clearCategory,
+            String barcode) {
+        this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure,
+                packagingUnit, packagingSize, categoryId, clearCategory, barcode, null, null);
+    }
 
     /** The shape before the barcode (task 3.3) - leaves it as it is. */
     public UpdateProductRequest(

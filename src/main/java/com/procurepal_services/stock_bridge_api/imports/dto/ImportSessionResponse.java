@@ -29,6 +29,8 @@ import java.util.UUID;
  *     and a header omitted entirely would be a column the user cannot re-point.
  * @param requiredFieldsMissing field keys, resolved to labels by the frontend before display -
  *     never printed raw, per contract section 8.7.
+ * @param priceQuestion the open question about a price column (SELLING_PRICE_PLAN.md section 6.8);
+ *     null (absent on the wire) when there is none.
  */
 public record ImportSessionResponse(
         UUID id,
@@ -51,5 +53,6 @@ public record ImportSessionResponse(
         OffsetDateTime createdAt,
         OffsetDateTime expiresAt,
         OffsetDateTime committedAt,
-        ImportDeliveryDetails delivery) {
+        ImportDeliveryDetails delivery,
+        PriceQuestionView priceQuestion) {
 }

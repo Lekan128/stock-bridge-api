@@ -38,6 +38,16 @@ final class ProductSpecifications {
      */
     static Specification<Product> forTenant(
             UUID clientId, String search, Boolean active, UUID categoryId, StockStatus stockStatus) {
+        return forTenant(clientId, search, active, categoryId, stockStatus, null);
+    }
+
+    /**
+     * @param hasSellingPrice true keeps products with a selling price, false those without, null
+     *     both - the Inventory list's "Has a price · No selling price" census
+     *     (SELLING_PRICE_PLAN.md section 6.5).
+     */
+    static Specification<Product> forTenant(
+            UUID clientId, String search, Boolean active, UUID categoryId, StockStatus stockStatus, Boolean hasSellingPrice) {
         return (root, query, cb) -> {
             if (query != null && Product.class.equals(query.getResultType())) {
                 root.fetch("companyCategory", jakarta.persistence.criteria.JoinType.LEFT);
@@ -61,6 +71,10 @@ final class ProductSpecifications {
 
             if (stockStatus != null) {
                 predicates.add(stockStatusPredicate(stockStatus, root, cb));
+            }
+
+            if (hasSellingPrice != null) {
+                predicates.add(hasSellingPrice ? cb.isNotNull(root.get("unitPrice")) : cb.isNull(root.get("unitPrice")));
             }
 
             return cb.and(predicates.toArray(new Predicate[0]));

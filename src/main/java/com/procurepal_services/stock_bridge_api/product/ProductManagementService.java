@@ -3,8 +3,11 @@ package com.procurepal_services.stock_bridge_api.product;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.ProductPriceChange;
 import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
+import com.procurepal_services.stock_bridge_api.selling.SellingPolicy;
+import com.procurepal_services.stock_bridge_api.selling.SellingPriceService;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationService;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
@@ -80,6 +83,10 @@ public class ProductManagementService {
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
     private final SellerDirectory sellerDirectory;
+    /** Every question about what a selling price means here - SELLING_PRICE_PLAN.md section 4.1. */
+    private final SellingPolicy sellingPolicy;
+    /** The one writer of a product's selling price, and its change log (section 4.5). */
+    private final SellingPriceService sellingPriceService;
     private final ProductModerationService productModerationService;
     /**
      * V19: the buyer-side product<->vendor join - see {@code ProductVendor}. Used here only to
@@ -123,9 +130,16 @@ public class ProductManagementService {
     @Transactional(readOnly = true)
     public Page<ProductResponse> list(
             String search, Boolean active, UUID categoryId, StockStatus stockStatus, Pageable pageable) {
+        return list(search, active, categoryId, stockStatus, null, pageable);
+    }
+
+    /** {@code hasSellingPrice}: see {@code ProductSpecifications.forTenant}. */
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> list(
+            String search, Boolean active, UUID categoryId, StockStatus stockStatus, Boolean hasSellingPrice, Pageable pageable) {
         UUID tenantId = requireTenantId();
         Page<Product> page = productRepository.findAll(
-                ProductSpecifications.forTenant(tenantId, search, active, categoryId, stockStatus), pageable);
+                ProductSpecifications.forTenant(tenantId, search, active, categoryId, stockStatus, hasSellingPrice), pageable);
         Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
         Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
         // Task 3.1's "and 10 coming", in one query for the page rather than one per row - the
@@ -264,17 +278,18 @@ public class ProductManagementService {
             sku = request.sku();
         }
 
-        // One lookup answers two questions: initialStatusFor below (existing) and isSeller
-        // here (new) - see the class javadoc on "this is also a SELLER's catalogue editor".
+        // One lookup answers three questions: initialStatusFor below (moderation), and the two
+        // selling-price questions here - see the class javadoc on "this is also a SELLER's
+        // catalogue editor" and SellingPolicy for why those two are asked separately.
         Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
-        boolean isSeller = owner != null && owner.canSell();
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
 
         // A seller's product IS a listing - the selling price is the entire reason a buyer
-        // would look at it - so it may never be created without one. An ordinary buying
-        // company has no selling price at all; request.unitPrice() is simply discarded for
-        // one below rather than rejected, since there is nothing meaningful for the field to
-        // mean on a company's own private stock even if a stale client still sends it.
-        if (isSeller && request.unitPrice() == null) {
+        // would look at it - so it may never be created without one. A tenant with no
+        // selling price at all has request.unitPrice() simply discarded below rather than
+        // rejected, since there is nothing meaningful for the field to mean on stock it only
+        // uses, even if a stale client still sends it.
+        if (sellingPolicy.requiresSellingPrice(owner) && request.unitPrice() == null) {
             throw new UnitPriceRequiredException();
         }
 
@@ -291,7 +306,6 @@ public class ProductManagementService {
                 .sku(sku)
                 .barcode(assertBarcodeAvailable(tenantId, request.barcode(), null))
                 .description(request.description())
-                .unitPrice(isSeller ? request.unitPrice() : null)
                 .lowStockThreshold(request.lowStockThreshold())
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
@@ -307,6 +321,10 @@ public class ProductManagementService {
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
                 .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
+        // After the units are set: a price typed per carton is converted by this product's own pack.
+        if (keepsSellingPrice) {
+            sellingPriceService.apply(product, request.unitPrice(), request.unitPriceUnit());
+        }
 
         List<String> warnings = new ArrayList<>();
         if (hasContent(image)) {
@@ -378,7 +396,8 @@ public class ProductManagementService {
         // already scoped the row to the caller), but naming it this way says what the
         // question actually is: does the OWNER of this row sell.
         Client owner = sellerDirectory.findSellerOfRecord(product.getClientId()).orElse(null);
-        boolean isSeller = owner != null && owner.canSell();
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
+        boolean requiresSellingPrice = sellingPolicy.requiresSellingPrice(owner);
 
         // Snapshot the identity fields BEFORE any mutation, so the moderation check at
         // the bottom compares what the listing was against what it became. Captured
@@ -417,21 +436,7 @@ public class ProductManagementService {
                     ? null
                     : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
         }
-        if (request.unitPrice() != null) {
-            // A non-seller has no selling-price surface at all - see create() - so a
-            // stale client still sending one here is silently ignored rather than
-            // applied or rejected.
-            if (isSeller) {
-                product.setUnitPrice(request.unitPrice());
-            }
-        }
-        // A seller's product may never be LEFT without a price by this patch: either the
-        // request just cleared/omitted it and none was there before, or it never had one
-        // to begin with. Checked against the RESULTING value, immediately after the only
-        // block that can change it, rather than deferred to the bottom of the method.
-        if (isSeller && product.getUnitPrice() == null) {
-            throw new UnitPriceRequiredException();
-        }
+        SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
         if (request.lowStockThreshold() != null) {
             product.setLowStockThreshold(request.lowStockThreshold());
         }
@@ -463,6 +468,28 @@ public class ProductManagementService {
         if (request.packagingSize() != null) {
             product.setPackagingSize(request.packagingSize());
         }
+        // The selling price, after the units: a price typed per carton converts by the pack as it
+        // now stands, and a pack that changed size re-derives the per-piece price from what was
+        // typed (SellingPriceService.reconcile). A tenant with no selling price at all has a stale
+        // client still sending one silently ignored rather than applied or rejected.
+        if (keepsSellingPrice) {
+            if (Boolean.TRUE.equals(request.clearUnitPrice()) && !requiresSellingPrice) {
+                sellingPriceService.apply(product, null, null);
+            } else if (request.unitPrice() != null) {
+                sellingPriceService.apply(product, request.unitPrice(), request.unitPriceUnit());
+            } else {
+                sellingPriceService.reconcile(product);
+            }
+        }
+        // A seller's product may never be LEFT without a price by this patch: either the
+        // request just cleared/omitted it and none was there before, or it never had one
+        // to begin with. Checked against the RESULTING value, immediately after the only
+        // block that can change it, rather than deferred to the bottom of the method.
+        if (requiresSellingPrice && product.getUnitPrice() == null) {
+            throw new UnitPriceRequiredException();
+        }
+        sellingPriceService.recordIfChanged(
+                product, priceBefore, ProductPriceChange.Source.FORM, principal == null ? null : principal.getUserId());
         if (Boolean.TRUE.equals(request.clearCategory())) {
             product.setCompanyCategory(null);
         } else if (request.categoryId() != null) {
@@ -566,9 +593,30 @@ public class ProductManagementService {
         // The seller flag is resolved here rather than inside ProductExcelService for the reason
         // generateTemplate states, and for the same reason the two files must agree on it: the
         // export IS the template once it has your products in it.
-        Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
         return productExcelService.exportProducts(
-                products, preferredVendorSnapshotsFor(tenantId, products), owner != null && owner.canSell());
+                products, preferredVendorSnapshotsFor(tenantId, products), sellingPolicy.showsSellingPrice(tenantId),
+                sellingPolicy.sheetSellingPricePerPack(tenantId));
+    }
+
+    /**
+     * "Add prices in a sheet" (SELLING_PRICE_PLAN.md section 6.8): the active products with no selling
+     * price yet - or every active product, with {@code all} - as a short sheet to fill in and upload
+     * back. Day one with 400 products is the case it is for. A company that does not record sales
+     * has no selling price to add: 409, via {@code SellingNotAvailableException}.
+     */
+    @Transactional(readOnly = true)
+    public byte[] exportPrices(boolean all) {
+        UUID tenantId = requireTenantId();
+        if (!sellingPolicy.sheetSellingPricePerPack(tenantId)) {
+            throw new com.procurepal_services.stock_bridge_api.selling.SellingNotAvailableException();
+        }
+        List<Product> products = productRepository
+                .findAll(ProductSpecifications.forTenant(tenantId, null, true),
+                        org.springframework.data.domain.Sort.by("name"))
+                .stream()
+                .filter(product -> all || product.getUnitPrice() == null)
+                .toList();
+        return productExcelService.exportPrices(products, preferredVendorSnapshotsFor(tenantId, products));
     }
 
     /**
@@ -616,8 +664,7 @@ public class ProductManagementService {
     @Transactional(readOnly = true)
     public byte[] generateTemplate() {
         UUID tenantId = requireTenantId();
-        Client owner = sellerDirectory.findSellerOfRecord(tenantId).orElse(null);
-        boolean isSeller = owner != null && owner.canSell();
+        boolean showsSellingPrice = sellingPolicy.showsSellingPrice(tenantId);
         // V20: the template is per-tenant in a second way now. The tenant's own supplier names go
         // into the vendor_name dropdown (BULK_IMPORT_DESIGN.md section 5.2) - a user who picks
         // "Dangote Nigeria Plc" off a list never generates an unresolved-vendor row for it, which
@@ -633,7 +680,8 @@ public class ProductManagementService {
                 .map(com.procurepal_services.stock_bridge_api.entity.CompanyCategory::getName)
                 .toList();
         return productExcelService.generateTemplate(new ProductTemplateContext(
-                isSeller, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames));
+                showsSellingPrice, vendorNames, productSkuSettingsService.isEnabled(tenantId), categoryNames,
+                sellingPolicy.sheetSellingPricePerPack(tenantId)));
     }
 
     private void applyImage(Product product, MultipartFile image, List<String> warnings) {

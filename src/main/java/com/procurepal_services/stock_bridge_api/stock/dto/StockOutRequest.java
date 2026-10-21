@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
+import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -66,7 +67,29 @@ public record StockOutRequest(
         // sends the moment it was entered, so the ledger dates it truthfully once it arrives.
         OffsetDateTime occurredAt,
         // A4: recorded offline and arriving late - see StockInRequest.recordedOffline.
-        Boolean recordedOffline) {
+        Boolean recordedOffline,
+        // V46 (SELLING_PRICE_PLAN.md section 4.3). Why it went out; null is "No reason given". A
+        // request carrying a price, a sale id or a line total is a SALE whatever it says here is
+        // absent - the rule that keeps an old client's priced stock-out meaning what it always did.
+        OutReason reason,
+        // The sale this line belongs to, made on the phone when the sale started so every line of an
+        // offline sale shares it. Absent on a sale: the server makes one for this line alone.
+        UUID saleId,
+        // What the customer paid for this whole line, when the seller typed a total ("the six for
+        // 10,800") rather than a price each. Stored exactly as the sale amount.
+        @DecimalMin(value = "0", inclusive = true) BigDecimal lineTotal) {
+
+    /** The shape before V46's reason, sale id and line total. */
+    public StockOutRequest(
+            Integer quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            List<Allocation> allocations,
+            OffsetDateTime occurredAt,
+            Boolean recordedOffline) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, null, null, null);
+    }
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note) {
@@ -75,7 +98,7 @@ public record StockOutRequest(
 
     /** The shape before {@code occurredAt} and {@code recordedOffline} (A4). */
     public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations) {
-        this(quantity, unitPrice, note, unit, allocations, null, null);
+        this(quantity, unitPrice, note, unit, allocations, null, null, null, null, null);
     }
 
     public boolean isRecordedOffline() {

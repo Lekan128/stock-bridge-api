@@ -46,7 +46,10 @@ public record CompanyResponse(
         boolean platformOwner,
         PaymentTerms paymentTerms,
         OffsetDateTime createdAt,
-        OffsetDateTime updatedAt) {
+        OffsetDateTime updatedAt,
+        // The selling switch (SELLING_PRICE_PLAN.md section 4.2). Here, and not in a JWT claim, so a
+        // change is seen on the next read rather than at the next token refresh.
+        boolean sellsStock) {
 
     public static CompanyResponse from(Client client) {
         return new CompanyResponse(
@@ -59,6 +62,7 @@ public record CompanyResponse(
                 client.isPlatformOwner(),
                 client.getPaymentTerms(),
                 client.getCreatedAt(),
-                client.getUpdatedAt());
+                client.getUpdatedAt(),
+                client.isSellsStock());
     }
 }

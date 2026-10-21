@@ -12,6 +12,7 @@ import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.ImportKind;
 import com.procurepal_services.stock_bridge_api.entity.ImportMode;
 import com.procurepal_services.stock_bridge_api.entity.ImportSession;
+import com.procurepal_services.stock_bridge_api.entity.ProductPriceChange;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.ProductVendor;
@@ -33,6 +34,8 @@ import com.procurepal_services.stock_bridge_api.imports.UnresolvedValue;
 import com.procurepal_services.stock_bridge_api.imports.ValueMappings;
 import com.procurepal_services.stock_bridge_api.imports.ValueResolution;
 import com.procurepal_services.stock_bridge_api.marketplace.SellerDirectory;
+import com.procurepal_services.stock_bridge_api.selling.SellingPolicy;
+import com.procurepal_services.stock_bridge_api.selling.SellingPriceService;
 import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductModerationRules;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
@@ -121,6 +124,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private static final String CACHE_PRODUCTS_BY_SKU = "catalog-products-by-sku";
     private static final String CACHE_MOVEMENT_EXISTS = "catalog-product-has-movements";
     private static final String CACHE_IS_SELLER = "catalog-tenant-is-seller";
+    private static final String CACHE_PRICE_PER_PACK = "catalog-selling-price-per-pack";
 
     /** The note on the ledger row an opening balance writes. Matches the pre-V20 wording exactly. */
     private static final String OPENING_BALANCE_NOTE = "Opening balance (imported)";
@@ -133,6 +137,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private final StockManagementService stockManagementService;
     private final ProductVendorService productVendorService;
     private final SellerDirectory sellerDirectory;
+    /** Every question about what a selling price means here - SELLING_PRICE_PLAN.md section 4.1. */
+    private final SellingPolicy sellingPolicy;
+    private final SellingPriceService sellingPriceService;
     private final VendorDirectory vendorDirectory;
     private final ProductSkuSettingsService productSkuSettingsService;
     private final SkuGenerationService skuGenerationService;
@@ -153,6 +160,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
 
     /** Where {@link #snapshotBeforeUpdate} keeps the category a product had, for undo. */
     private static final String BEFORE_CATEGORY_ID = "_category_id";
+    /** The typed selling price and its unit (V47) - in the undo snapshot so undo puts them back too. */
+    private static final String BEFORE_PRICE_ENTERED = "_unit_price_entered";
+    private static final String BEFORE_PRICE_ENTERED_UNIT = "_unit_price_entered_unit";
 
     @Override
     public ImportKind kind() {
@@ -191,7 +201,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     @Override
     public List<ImportFieldDescriptor> fields() {
         UUID tenantId = com.procurepal_services.stock_bridge_api.tenant.TenantContext.get();
-        boolean seller = isSeller(tenantId);
+        boolean showsSellingPrice = sellingPolicy.showsSellingPrice(tenantId);
+        boolean requiresSellingPrice = sellingPolicy.requiresSellingPrice(tenantId);
         // See validate()'s and commit()'s own uses of this - kept out of the field descriptor
         // itself would mean the grid still marked the column required and let a user type into
         // it, only to have the value silently discarded.
@@ -247,10 +258,16 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 "What you pay for ONE of whatever the opening stock counts - one keg if this row has a "
                         + "pack, one ml if it does not. On a new product with an opening stock, this becomes "
                         + "that stock's cost."));
-        if (seller) {
+        if (showsSellingPrice) {
+            // A company's selling price is read like the cost beside it - for ONE pack when the row
+            // has one (SELLING_PRICE_PLAN.md section 6.8). A marketplace seller's stays per stock
+            // unit, as every sheet it has ever downloaded says.
             fields.add(ImportFieldDescriptor.of(ImportFields.UNIT_PRICE, "Selling price",
-                    ImportFieldDescriptor.Type.MONEY, true,
-                    "Your marketplace selling price, for one stock unit - per ml, not per keg."));
+                    ImportFieldDescriptor.Type.MONEY, requiresSellingPrice,
+                    requiresSellingPrice
+                            ? "Your marketplace selling price, for one stock unit - per ml, not per keg."
+                            : "What you sell ONE for - one keg if this row has a pack, one ml if it does not. "
+                                    + "Optional; blank keeps the price a product already has."));
         }
         fields.add(new ImportFieldDescriptor(ImportFields.VENDOR_NAME, ImportCopy.Labels.SUPPLIER,
                 ImportFieldDescriptor.Type.REFERENCE, false, false, false,
@@ -268,7 +285,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     @Override
     public RowValidation validate(RowContext ctx) {
         RowValidation.Builder out = RowValidation.builder();
-        boolean seller = isSeller(ctx.tenantId());
+        boolean requiresSellingPrice = sellingPolicy.requiresSellingPrice(ctx.tenantId());
         boolean skuAutoGenerated = productSkuSettingsService.isEnabled(ctx.tenantId());
 
         String name = ctx.text(ImportFields.NAME);
@@ -331,14 +348,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         // is even looked at depends on whether this row creates or updates.
         boolean creating = byRef == null && resolveMode(ctx, out, existing, subject, looksLikeContinuation);
 
-        if (seller && creating && !looksLikeContinuation) {
-            BigDecimal unitPrice = RowValues.money(ctx, out, ImportFields.UNIT_PRICE, "Selling price", subject);
-            if (unitPrice == null && ctx.text(ImportFields.UNIT_PRICE) == null) {
+        BigDecimal sellingPrice;
+        if (requiresSellingPrice && creating && !looksLikeContinuation) {
+            sellingPrice = RowValues.money(ctx, out, ImportFields.UNIT_PRICE, "Selling price", subject);
+            if (sellingPrice == null && ctx.text(ImportFields.UNIT_PRICE) == null) {
                 out.error(ImportFields.UNIT_PRICE, "UNIT_PRICE_REQUIRED",
                         "Every product you list needs a selling price. What are you selling " + subject + " for?");
             }
         } else {
-            RowValues.money(ctx, out, ImportFields.UNIT_PRICE, "Selling price", subject);
+            sellingPrice = RowValues.money(ctx, out, ImportFields.UNIT_PRICE, "Selling price", subject);
         }
 
         BigDecimal costPrice = RowValues.money(ctx, out, ImportFields.COST_PRICE, "Cost price", subject);
@@ -400,6 +418,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 ImportCopy.Labels.LOW_STOCK_ALERT_AT, subject, countedIn, unitOfMeasure, false);
 
         validateVendorColumns(ctx, out, subject, costPrice, creating);
+        warnAboutSellingBelowCost(ctx, out, existing, sellingPrice, costPrice, countedIn,
+                name == null ? subject : ImportCopy.quote(name));
 
         if (!creating && existing != null) {
             applyUpdateRules(ctx, out, existing, subject, quantity, unitOfMeasure, costPrice, countedIn);
@@ -459,6 +479,36 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                     "%s looks very like %s (code %s), which you already have. Check it is not the same product."
                             .formatted(ImportCopy.quote(name), ImportCopy.quote(close.getName()), close.getSku()));
         }
+    }
+
+    /**
+     * A selling price below what the product costs: a WARNING, never an error, with both figures
+     * (SELLING_PRICE_PLAN.md section 6.8). Selling at a loss is sometimes the plan - clearing old
+     * stock - so the row still imports; what must not happen is a typo of ₦480 for ₦4,800 going in
+     * unseen. Compared per what the row counts (a carton beside a carton): the row's own cost when
+     * it gives one, else what the product already costs.
+     */
+    private void warnAboutSellingBelowCost(RowContext ctx, RowValidation.Builder out, Product existing,
+            BigDecimal sellingPrice, BigDecimal costPrice, UnitOption countedIn, String subject) {
+        if (sellingPrice == null || countedIn == null || !sellingPricePerPack(ctx.tenantId(), ctx.cache())) {
+            return;
+        }
+        BigDecimal costEach = costPrice != null
+                ? costPrice
+                : existing != null && existing.getCostPrice() != null
+                        ? existing.getCostPrice().multiply(countedIn.factorToStockUnit())
+                        : null;
+        if (costEach == null || sellingPrice.compareTo(costEach) >= 0) {
+            return;
+        }
+        String per = perWhat(countedIn);
+        out.warning(ImportFields.UNIT_PRICE, "BELOW_COST",
+                "%s would sell for %s %s - less than the %s %s you pay. Fine if you mean to; otherwise check the price."
+                        .formatted(subject, ImportCopy.money(sellingPrice), per, ImportCopy.money(costEach), per));
+    }
+
+    private boolean sellingPricePerPack(UUID tenantId, ImportBatchCache cache) {
+        return cache.get(CACHE_PRICE_PER_PACK, tenantId, sellingPolicy::sheetSellingPricePerPack);
     }
 
     /** An update row's price far from what the product has been costing. */
@@ -1423,14 +1473,16 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     }
 
     private Product createProduct(BatchContext ctx, ImportRowState state, UUID batchId) {
+        // One lookup, two questions: the price (SellingPolicy) and the moderation status below.
         Client owner = sellerDirectory.findSellerOfRecord(ctx.tenantId()).orElse(null);
-        boolean seller = owner != null && owner.canSell();
-        return productRepository.save(Product.builder()
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
+        boolean perPack = keepsSellingPrice && sellingPricePerPack(ctx.tenantId(), ctx.cache());
+        Product created = productRepository.save(Product.builder()
                 .name(state.text(ImportFields.NAME))
                 .sku(state.text(ImportFields.SKU))
                 .description(state.text(ImportFields.DESCRIPTION))
                 .barcode(state.text(ImportFields.BARCODE))
-                .unitPrice(seller ? decimalOf(state, ImportFields.UNIT_PRICE) : null)
+                .unitPrice(keepsSellingPrice && !perPack ? decimalOf(state, ImportFields.UNIT_PRICE) : null)
                 .costPrice(perStockUnitPriceOf(state, ImportFields.COST_PRICE))
                 // Zero, always. Contract section 8.1: no quantity reaches quantity_on_hand
                 // without a StockMovement, and the opening-balance stockIn below is the only
@@ -1450,6 +1502,17 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 .companyCategory(categoryFor(ctx, state))
                 .importBatchId(batchId)
                 .build());
+        if (perPack && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
+            // Per what the row counts, and kept as typed: "5,000 a carton" stays 5,000 a carton.
+            sellingPriceService.apply(created, decimalOf(state, ImportFields.UNIT_PRICE), sellingPriceUnitOf(state));
+        }
+        return created;
+    }
+
+    /** The unit a row's selling price is per: its pack's code when it counts packs, else null (the stock unit). */
+    private String sellingPriceUnitOf(ImportRowState state) {
+        UnitOption option = countedIn(state);
+        return option.isStockUnit() ? null : option.code();
     }
 
     /**
@@ -1473,6 +1536,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         before.put(ImportFields.DESCRIPTION, product.getDescription());
         before.put(ImportFields.BARCODE, product.getBarcode());
         before.put(ImportFields.UNIT_PRICE, product.getUnitPrice() == null ? null : product.getUnitPrice().toPlainString());
+        before.put(BEFORE_PRICE_ENTERED, product.getUnitPriceEntered() == null ? null : product.getUnitPriceEntered().toPlainString());
+        before.put(BEFORE_PRICE_ENTERED_UNIT, product.getUnitPriceEnteredUnit());
         before.put(ImportFields.LOW_STOCK_ALERT_AT, product.getLowStockThreshold());
         before.put(ImportFields.STOCK_UNIT, product.getUnitOfMeasure());
         before.put(ImportFields.PACK, product.getPackagingUnit());
@@ -1490,8 +1555,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
      * javadoc.
      */
     private void updateProduct(BatchContext ctx, ImportRowState state, Product product) {
-        Client owner = sellerDirectory.findSellerOfRecord(ctx.tenantId()).orElse(null);
-        boolean seller = owner != null && owner.canSell();
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(ctx.tenantId());
 
         String sku = state.text(ImportFields.SKU);
         if (state.text(ImportFields.REF) != null && sku != null && !sku.equalsIgnoreCase(product.getSku())
@@ -1508,9 +1572,6 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (state.text(ImportFields.BARCODE) != null) {
             product.setBarcode(state.text(ImportFields.BARCODE));
         }
-        if (seller && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
-            product.setUnitPrice(decimalOf(state, ImportFields.UNIT_PRICE));
-        }
         Integer alertAt = stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
         if (alertAt != null) {
             product.setLowStockThreshold(alertAt);
@@ -1524,6 +1585,17 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (packSizeOf(state) != null) {
             product.setPackagingSize(packSizeOf(state));
         }
+        // After the pack, so a price per carton is converted by the carton this row describes.
+        SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
+        if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
+            // Through the one writer, so the typed price and the change log stay in step (V47).
+            sellingPriceService.apply(product, decimalOf(state, ImportFields.UNIT_PRICE),
+                    sellingPricePerPack(ctx.tenantId(), ctx.cache()) ? sellingPriceUnitOf(state) : null);
+        } else {
+            // A pack that changed size re-derives the per-unit price from the typed one, as the form does.
+            sellingPriceService.reconcile(product);
+        }
+        sellingPriceService.recordIfChanged(product, priceBefore, ProductPriceChange.Source.IMPORT, ctx.actingUserId());
         CompanyCategory category = categoryFor(ctx, state);
         if (category != null) {
             product.setCompanyCategory(category);
@@ -1748,7 +1820,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         for (StockMovement movement : batchMovements) {
             if (movement.getMovementType() == MovementType.IN
-                    && stockMovementAllocationRepository.sumQuantityByInMovementId(movement.getId()) > 0) {
+                    // Ever drawn on, not "drawn on now": a cancelled sale nets to zero (V46).
+                    && stockMovementAllocationRepository.existsByInMovementId(movement.getId())) {
                 blockers.add(new UndoOutcome.Blocker(0, movement.getProduct().getName(), "Already sold from",
                         movement.getProduct().getId().toString()));
             }
@@ -1852,7 +1925,12 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             if (snapshot.containsKey(ImportFields.BARCODE)) {
                 product.setBarcode(asString(snapshot.get(ImportFields.BARCODE)));
             }
+            SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
             product.setUnitPrice(asDecimal(snapshot.get(ImportFields.UNIT_PRICE)));
+            // A snapshot from before V47 has no typed price; the product had none then either.
+            product.setUnitPriceEntered(asDecimal(snapshot.get(BEFORE_PRICE_ENTERED)));
+            product.setUnitPriceEnteredUnit(asString(snapshot.get(BEFORE_PRICE_ENTERED_UNIT)));
+            sellingPriceService.recordIfChanged(product, priceBefore, ProductPriceChange.Source.IMPORT_UNDO, null);
             product.setLowStockThreshold(asInteger(snapshot.get(ImportFields.LOW_STOCK_ALERT_AT)));
             product.setUnitOfMeasure(asString(snapshot.get(ImportFields.STOCK_UNIT)));
             product.setPackagingUnit(asString(snapshot.get(ImportFields.PACK)));
@@ -1892,13 +1970,6 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private boolean hasMovements(UUID tenantId, ImportBatchCache cache, UUID productId) {
         return Boolean.TRUE.equals(cache.get(CACHE_MOVEMENT_EXISTS, productId,
                 id -> stockMovementRepository.existsByProductIdAndClientId(id, tenantId)));
-    }
-
-    private boolean isSeller(UUID tenantId) {
-        if (tenantId == null) {
-            return false;
-        }
-        return sellerDirectory.findSellerOfRecord(tenantId).map(Client::canSell).orElse(false);
     }
 
     /** Whether the caller holds an authority, for the permission-gated inline-creation offers. */

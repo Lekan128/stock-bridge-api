@@ -13,5 +13,7 @@ public enum NotificationType {
     ORDER_STATUS_CHANGED,
     PAYMENT_RECEIVED,
     PAYMENT_FAILED,
-    ORDER_DELIVERED
+    ORDER_DELIVERED,
+    /** ProcurePal support changed one of the company's settings (V45) - the owner is told who and why. */
+    ACCOUNT_SETTING_CHANGED
 }
