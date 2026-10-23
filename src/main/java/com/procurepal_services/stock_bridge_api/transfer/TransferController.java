@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.transfer;
 
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
+import com.procurepal_services.stock_bridge_api.transfer.dto.FoundRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.ReceiptRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferResponse;
@@ -89,5 +90,14 @@ public class TransferController {
             @PathVariable UUID id,
             @Valid @RequestBody MissingCheck request) {
         return transferService.checkMissing(id, request.note(), principal.getUserId());
+    }
+
+    @PostMapping("/{id}/found")
+    @PreAuthorize("hasAuthority('STOCK_IN')")
+    public TransferResponse found(
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal,
+            @PathVariable UUID id,
+            @Valid @RequestBody FoundRequest request) {
+        return transferService.found(id, request, principal.getUserId());
     }
 }

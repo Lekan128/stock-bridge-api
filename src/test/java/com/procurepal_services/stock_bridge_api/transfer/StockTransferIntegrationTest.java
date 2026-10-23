@@ -16,6 +16,7 @@ import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.stock.dto.StockMutationResponse;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferResponse;
 import java.math.BigDecimal;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -31,6 +32,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -285,6 +287,120 @@ class StockTransferIntegrationTest {
         assertThat(figure(c.main(), c.product())).isEqualTo(6);
     }
 
+    // --------------------------------------------------------- suppliers, found, trace, counts, reports
+
+    /** D-B7: a move is not a sale - the supplier's tally stays; missing stock is gone, and found comes back. */
+    @Test
+    void supplierTalliesStayThroughAMoveFallForMissingAndComeBackWhenFound() {
+        Company c = company("Supplier Tally");
+        UUID supplier = supplier(c, "Ada Millers");
+        Map<String, Object> delivery = new HashMap<>();
+        delivery.put("quantity", 10);
+        delivery.put("unitPrice", "150");
+        delivery.put("companyVendorId", supplier.toString());
+        delivery.put("branchId", c.main().toString());
+        stock(c.owner(), c.product(), delivery);
+        TransferResponse sent = send(c.owner(), c, c.main(), c.oshodi(), 6);
+        assertThat(supplierTally(c)).as("sending moves nothing off the supplier's tally").isEqualTo(10);
+
+        receive(c.owner(), sent.id(), lineOf(c.product(), 4, 2, 0));
+        assertThat(supplierTally(c)).as("two missing are gone from the company").isEqualTo(8);
+
+        TransferResponse found = post(c.owner(), "/api/stock-transfers/" + sent.id() + "/found", Map.of(
+                "id", UUID.randomUUID().toString(), "productId", c.product().toString(), "quantity", 1,
+                "branchId", c.oshodi().toString()), TransferResponse.class).getBody();
+
+        assertThat(found.missing()).isEqualTo(1);
+        assertThat(found.lines().getFirst().quantityFound()).isEqualTo(1);
+        assertThat(supplierTally(c)).isEqualTo(9);
+        assertThat(figure(c.oshodi(), c.product())).isEqualTo(5);
+        assertThat(jdbc.queryForObject("""
+                SELECT unit_price_at_time FROM stock_movements
+                WHERE transfer_id = :t AND movement_type = 'TRANSFER_IN' AND note LIKE 'Found%'
+                """, new MapSqlParameterSource("t", sent.id()), BigDecimal.class))
+                .as("found at what it cost").isEqualByComparingTo("150");
+
+        ResponseEntity<String> tooMany = post(c.owner(), "/api/stock-transfers/" + sent.id() + "/found", Map.of(
+                "id", UUID.randomUUID().toString(), "productId", c.product().toString(), "quantity", 2,
+                "branchId", c.main().toString()), String.class);
+        assertThat(tooMany.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertLedgerMatchesFigures(c);
+    }
+
+    /** Section 4.3: FIFO at the receiving branch draws on the arrived lot, and the recall trace follows it. */
+    @Test
+    void aSaleAtTheReceivingBranchDrawsOnTheArrivedLotAndTheRecallTraceFollowsIt() {
+        Company c = company("Recall Trace");
+        stockIn(c, c.main(), 5, "100");
+        UUID lot = jdbc.queryForObject("SELECT id FROM stock_movements WHERE product_id = :p AND movement_type = 'IN'",
+                new MapSqlParameterSource("p", c.product()), UUID.class);
+        TransferResponse sent = send(c.owner(), c, c.main(), c.oshodi(), 5);
+        receiveAsSent(c.owner(), sent.id());
+
+        StockMutationResponse sale = post(c.owner(), "/api/products/" + c.product() + "/stock/stock-out",
+                Map.of("quantity", 2, "branchId", c.oshodi().toString()), StockMutationResponse.class).getBody();
+
+        assertThat(jdbc.queryForObject("SELECT cost_amount FROM stock_movements WHERE id = :id",
+                new MapSqlParameterSource("id", sale.movement().id()), BigDecimal.class))
+                .as("costed from the lot it arrived as").isEqualByComparingTo("200");
+        List<Map<String, Object>> trace = restTemplate.exchange("/api/stock-movements/" + lot + "/allocations", HttpMethod.GET,
+                new HttpEntity<>(auth(c.owner())), new ParameterizedTypeReference<List<Map<String, Object>>>() {}).getBody();
+        assertThat(trace).hasSize(2);
+        assertThat(trace.get(0)).containsEntry("outMovementType", "TRANSFER_OUT").containsEntry("quantity", 5);
+        assertThat(trace.get(1)).containsEntry("outMovementType", "OUT").containsEntry("quantity", 2)
+                .containsEntry("outMovementId", sale.movement().id().toString())
+                .containsEntry("branchId", c.oshodi().toString());
+        assertThat(trace.get(1).get("throughLotId")).isNotNull();
+    }
+
+    /** Section 4.3's netChangeAfter trap: a count taken before a transfer carries the transfer forward. */
+    @Test
+    void aCountTakenBeforeATransferCarriesItForwardAtBothEnds() {
+        Company c = company("Count Then Transfer");
+        Map<String, Object> early = new HashMap<>();
+        early.put("quantity", 10);
+        early.put("branchId", c.main().toString());
+        early.put("occurredAt", OffsetDateTime.now().minusHours(5).toString());
+        stock(c.owner(), c.product(), early);
+        TransferResponse sent = send(c.owner(), c, c.main(), c.oshodi(), 4);
+        receiveAsSent(c.owner(), sent.id());
+
+        count(c, c.main(), 9, OffsetDateTime.now().minusHours(2));
+        count(c, c.oshodi(), 1, OffsetDateTime.now().minusHours(2));
+
+        assertThat(figure(c.main(), c.product())).as("9 counted, then 4 sent").isEqualTo(5);
+        assertThat(figure(c.oshodi(), c.product())).as("1 counted, then 4 received").isEqualTo(5);
+        assertLedgerMatchesFigures(c);
+    }
+
+    /** Section 4.3: reports at company scope don't move; at a branch, moves are their own figures. */
+    @Test
+    void aCompletedTransferLeavesCompanyReportsWhereTheyWereAndShowsAsMovesAtABranch() {
+        Company c = company("Reports Unchanged");
+        stockIn(c, c.main(), 10, "100");
+        String range = "?from=" + OffsetDateTime.now().minusDays(1).toInstant() + "&to=" + OffsetDateTime.now().plusDays(1).toInstant();
+        Map<String, Object> summaryBefore = getMap(c, "/api/stock/movements/summary" + range);
+        Map<String, Object> analyticsBefore = getMap(c, "/api/analytics/summary" + range);
+
+        TransferResponse sent = send(c.owner(), c, c.main(), c.oshodi(), 4);
+        receiveAsSent(c.owner(), sent.id());
+
+        Map<String, Object> summaryAfter = getMap(c, "/api/stock/movements/summary" + range);
+        Map<String, Object> analyticsAfter = getMap(c, "/api/analytics/summary" + range);
+        for (String field : List.of("inValue", "outValue", "inQuantity", "outQuantity", "inMovementCount", "outMovementCount")) {
+            assertThat(summaryAfter.get(field)).as(field).isEqualTo(summaryBefore.get(field));
+        }
+        for (String field : List.of("totalInValue", "totalOutValue", "totalUnitsIn", "totalUnitsOut")) {
+            assertThat(analyticsAfter.get(field)).as(field).isEqualTo(analyticsBefore.get(field));
+        }
+        assertThat(summaryAfter.get("movedInQuantity")).isEqualTo(summaryAfter.get("movedOutQuantity"));
+        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).isEqualTo(10);
+
+        Map<String, Object> atOshodi = getMap(c, "/api/stock/movements/summary" + range + "&branchId=" + c.oshodi());
+        assertThat(atOshodi).containsEntry("movedInQuantity", 4).containsEntry("movedOutQuantity", 0)
+                .containsEntry("inQuantity", 0);
+    }
+
     // ---------------------------------------------------------------------- both ends, who may
 
     /** UX section 5.6: neighbouring depots - somebody who works at both records it arrived at once. */
@@ -366,21 +482,36 @@ class StockTransferIntegrationTest {
         assertLedgerMatchesFigures(c);
     }
 
-    /** Sends both ways at once lock products in the same order, so neither waits on the other forever. */
+    /**
+     * Section 9's deadlock test: multi-line transfers in opposite directions, and sales, on the same
+     * products, 50 at once. Every write locks products in id order, so none waits on another forever.
+     */
     @Test
-    void sendsBothWaysAtOnceWithTwoProductsDoNotDeadlock() throws Exception {
+    void transfersBothWaysAndSalesAtOnceDoNotDeadlock() throws Exception {
         Company c = company("Both Ways");
         UUID second = product(c.owner(), "Garri");
         for (UUID product : List.of(c.product(), second)) {
-            stock(c.owner(), product, Map.of("quantity", 20, "branchId", c.main().toString()));
-            stock(c.owner(), product, Map.of("quantity", 20, "branchId", c.oshodi().toString()));
+            stock(c.owner(), product, Map.of("quantity", 200, "branchId", c.main().toString()));
+            stock(c.owner(), product, Map.of("quantity", 200, "branchId", c.oshodi().toString()));
         }
-        ExecutorService pool = Executors.newFixedThreadPool(2);
+        ExecutorService pool = Executors.newFixedThreadPool(6);
         CountDownLatch start = new CountDownLatch(1);
+        int sends = 0;
         try {
             List<Future<ResponseEntity<String>>> results = new ArrayList<>();
-            for (int i = 0; i < 6; i++) {
-                boolean outward = i % 2 == 0;
+            for (int i = 0; i < 50; i++) {
+                int kind = i % 3;
+                if (kind == 2) {
+                    UUID product = i % 2 == 0 ? c.product() : second;
+                    results.add(pool.submit(() -> {
+                        start.await();
+                        return post(c.owner(), "/api/products/" + product + "/stock/stock-out",
+                                Map.of("quantity", 1, "branchId", c.main().toString()), String.class);
+                    }));
+                    continue;
+                }
+                sends++;
+                boolean outward = kind == 0;
                 List<UUID> order = outward ? List.of(c.product(), second) : List.of(second, c.product());
                 Map<String, Object> body = transferBody(outward ? c.main() : c.oshodi(), outward ? c.oshodi() : c.main(), order);
                 results.add(pool.submit(() -> {
@@ -390,13 +521,14 @@ class StockTransferIntegrationTest {
             }
             start.countDown();
             for (Future<ResponseEntity<String>> result : results) {
-                assertThat(result.get().getStatusCode()).as(result.get().getBody()).isEqualTo(HttpStatus.CREATED);
+                assertThat(result.get().getStatusCode().is2xxSuccessful()).as(result.get().getBody()).isTrue();
             }
         } finally {
             pool.shutdownNow();
         }
         assertThat(jdbc.queryForList("SELECT number FROM stock_transfers WHERE client_id = :c ORDER BY number",
-                new MapSqlParameterSource("c", c.clientId()), Integer.class)).containsExactly(1, 2, 3, 4, 5, 6);
+                new MapSqlParameterSource("c", c.clientId()), Integer.class))
+                .as("numbers handed out one at a time, none twice").hasSize(sends).doesNotHaveDuplicates();
         assertLedgerMatchesFigures(c);
     }
 
@@ -447,6 +579,38 @@ class StockTransferIntegrationTest {
                 """, new MapSqlParameterSource().addValue("p", c.product()).addValue("c", c.clientId()));
         assertThat(rows).allSatisfy(row -> assertThat(((Number) row.get("ledger")).intValue())
                 .as("ledger at %s", row.get("branch_id")).isEqualTo(((Number) row.get("figure")).intValue()));
+    }
+
+    private UUID supplier(Company c, String name) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("name", name + " " + UUID.randomUUID().toString().substring(0, 6));
+        body.put("contactPhone", "0803 000 0000");
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange("/api/company-vendors", HttpMethod.POST,
+                new HttpEntity<>(body, json(c.owner())), new ParameterizedTypeReference<>() {});
+        assertThat(response.getStatusCode().is2xxSuccessful()).as(String.valueOf(response.getBody())).isTrue();
+        return UUID.fromString(response.getBody().get("id").toString());
+    }
+
+    private int supplierTally(Company c) {
+        List<Map<String, Object>> lines = restTemplate.exchange("/api/products/" + c.product() + "/vendors", HttpMethod.GET,
+                new HttpEntity<>(auth(c.owner())), new ParameterizedTypeReference<List<Map<String, Object>>>() {}).getBody();
+        return ((Number) lines.getFirst().get("quantityOnHandFromVendor")).intValue();
+    }
+
+    private void count(Company c, UUID branch, int counted, OffsetDateTime at) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("countedQuantity", counted);
+        body.put("countedAt", at.toString());
+        body.put("branchId", branch.toString());
+        ResponseEntity<String> response = post(c.owner(), "/api/products/" + c.product() + "/stock/count", body, String.class);
+        assertThat(response.getStatusCode()).as(response.getBody()).isEqualTo(HttpStatus.OK);
+    }
+
+    private Map<String, Object> getMap(Company c, String path) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange(path, HttpMethod.GET,
+                new HttpEntity<>(auth(c.owner())), new ParameterizedTypeReference<>() {});
+        assertThat(response.getStatusCode()).as(String.valueOf(response.getBody())).isEqualTo(HttpStatus.OK);
+        return response.getBody();
     }
 
     private TransferResponse send(TenantLoginResponse who, Company c, UUID from, UUID to, int quantity) {

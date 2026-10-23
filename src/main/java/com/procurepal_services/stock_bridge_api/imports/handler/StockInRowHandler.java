@@ -1672,13 +1672,15 @@ public class StockInRowHandler implements ImportRowHandler {
      * and says the same number twice. Design 9.6 asks for prose; this is the sentence a person
      * would actually write for each case.
      */
-    private static String blockedMessage(int blocked, long deliveries) {
+    private static String blockedMessage(int blocked, long deliveries, boolean allSent) {
+        // V53: stock sent to another branch is as gone from this delivery as stock sold.
+        String what = allSent ? "sent to another branch" : "sold from";
         if (deliveries <= 1) {
-            return "This delivery has already been sold from, so this import can't be undone all at once.";
+            return "This delivery has already been " + what + ", so this import can't be undone all at once.";
         }
         // "all at once", not "as a batch" - see the note at the call site.
-        return "%d of these %s %s already been sold from, so this import can't be undone all at once."
-                .formatted(blocked, ImportCopy.deliveries(deliveries), blocked == 1 ? "has" : "have");
+        return "%d of these %s %s already been %s, so this import can't be undone all at once."
+                .formatted(blocked, ImportCopy.deliveries(deliveries), blocked == 1 ? "has" : "have", what);
     }
 
     // ------------------------------------------------------------------- undo
@@ -1712,10 +1714,14 @@ public class StockInRowHandler implements ImportRowHandler {
             // Ever drawn on, not "drawn on now": a cancelled sale nets to zero (V46).
             if (stockMovementAllocationRepository.existsByInMovementId(movement.getId())) {
                 Product product = movement.getProduct();
+                // V53: a delivery sent on to another branch can't be un-received either; the
+                // reason says which happened.
+                boolean sent = stockMovementAllocationRepository.existsByInMovementIdAndOutMovementMovementType(
+                        movement.getId(), MovementType.TRANSFER_OUT);
                 blockers.add(new UndoOutcome.Blocker(
                         excelRowByProductId.getOrDefault(product.getId(), 0),
                         product.getName(),
-                        "Already sold from",
+                        sent ? "Already sent to another branch" : "Already sold from",
                         product.getId().toString()));
             }
         }
@@ -1728,7 +1734,8 @@ public class StockInRowHandler implements ImportRowHandler {
                     // criterion. M3 hit the identical conflict and resolved it the same way in
                     // its mock, so the two now agree; if they had not, the copy the user reads
                     // would have changed the day the real backend was wired in.
-                    blockedMessage(blockers.size(), inMovements),
+                    blockedMessage(blockers.size(), inMovements,
+                            blockers.stream().allMatch(b -> b.reason().startsWith("Already sent"))),
                     blockers);
         }
 

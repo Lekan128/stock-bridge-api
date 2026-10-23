@@ -56,6 +56,10 @@ public class StockTransferLine {
     @Column(name = "quantity_damaged", nullable = false)
     private int quantityDamaged;
 
+    /** Reported missing, then found and put back on a shelf (V54). No longer missing. */
+    @Column(name = "quantity_found", nullable = false)
+    private int quantityFound;
+
     /** As typed, for the waybill: display only (V21's rule for entered_*). */
     @Column(name = "entered_unit", length = 32, updatable = false)
     private String enteredUnit;
@@ -67,9 +71,9 @@ public class StockTransferLine {
     @Column(name = "out_movement_id", nullable = false, updatable = false)
     private UUID outMovementId;
 
-    /** How much of this line has been received, or reported missing or damaged. */
+    /** How much of this line has been received, reported missing or damaged, or found again. */
     public int accounted() {
-        return quantityReceived + quantityMissing + quantityDamaged;
+        return quantityReceived + quantityMissing + quantityDamaged + quantityFound;
     }
 
     public int onTheWay() {

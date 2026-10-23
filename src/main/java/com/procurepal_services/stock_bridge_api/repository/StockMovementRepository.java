@@ -207,7 +207,12 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     // SELLING_PRICE_PLAN.md 6.9: every stock-out that is not a sale - used, spoilt, sent
                     // away - at what the stock cost (V45 snapshots cost on every stock-out).
                     + "COALESCE(SUM(cost_amount) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL), 0) AS other_out_cost, "
-                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL) AS other_out_count "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL) AS other_out_count, "
+                    // V53: stock moved between branches, never folded into stock in / stock out (section 4.3).
+                    + "COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'TRANSFER_IN'), 0) AS moved_in_quantity, "
+                    + "COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'TRANSFER_OUT'), 0) AS moved_out_quantity, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'TRANSFER_IN') AS moved_in_count, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'TRANSFER_OUT') AS moved_out_count "
                     + "FROM stock_movements "
                     + "WHERE client_id = :clientId "
                     + "AND (CAST(:productId AS uuid) IS NULL OR product_id = CAST(:productId AS uuid)) "
@@ -352,4 +357,8 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      */
     @EntityGraph(attributePaths = {"product", "createdBy"})
     List<StockMovement> findAllByClientIdAndSaleIdOrderByCreatedAtAscIdAsc(UUID clientId, UUID saleId);
+
+    /** The lots a waybill put on the receiving shelf from this source lot (V53): the recall trace's next step. */
+    List<StockMovement> findAllByClientIdAndTransferIdAndSourceLotIdAndMovementType(
+            UUID clientId, UUID transferId, UUID sourceLotId, MovementType movementType);
 }

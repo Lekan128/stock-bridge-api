@@ -22,6 +22,7 @@ import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
 import com.procurepal_services.stock_bridge_api.stock.StockWritePermissionGuard;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
+import com.procurepal_services.stock_bridge_api.transfer.dto.FoundRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.ReceiptRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferResponse;
@@ -104,7 +105,10 @@ public class TransferService {
         }
 
         // One send at a time per company: the next waybill number, and a code for a first-time sender.
-        jdbc.queryForList("SELECT id FROM clients WHERE id = :clientId FOR UPDATE",
+        // NO KEY UPDATE, not UPDATE: every stock write inserts rows referencing the company, which takes a
+        // key-share lock on it; FOR UPDATE would block those while this waits for their products - a
+        // deadlock (found by the section 9 test). Sends still queue on each other.
+        jdbc.queryForList("SELECT id FROM clients WHERE id = :clientId FOR NO KEY UPDATE",
                 new MapSqlParameterSource("clientId", clientId), UUID.class);
         Branch fromBranch = requireBranch(from, clientId);
         ensureCode(fromBranch, clientId);
@@ -332,6 +336,55 @@ public class TransferService {
         return respond(transfer);
     }
 
+    /**
+     * Some of the missing stock turned up (UX section 5.7, "Found in the van"): it goes on the shelf of
+     * the branch it was found at - either end - with the cost and supplier it left with, and stops
+     * counting as missing. Somebody who works at both branches records it, as they check missing stock.
+     */
+    @Transactional
+    public TransferResponse found(UUID transferId, FoundRequest request, UUID userId) {
+        UUID clientId = requireTenantId();
+        StockTransfer transfer = transferRepository.findForUpdate(transferId, clientId)
+                .orElseThrow(TransferNotFoundException::new);
+        if (receiptExists(request.id())) {
+            return respond(transfer);
+        }
+        if (!request.branchId().equals(transfer.getFromBranchId()) && !request.branchId().equals(transfer.getToBranchId())) {
+            throw new TransferRefusedException("Found stock goes back to one of the two branches on the waybill.");
+        }
+        if (!(branchAccessService.mayRecordAt(userId, transfer.getFromBranchId())
+                && branchAccessService.mayRecordAt(userId, transfer.getToBranchId()))) {
+            throw new TransferRefusedException("Someone who works at both branches records missing stock that turned up.");
+        }
+        permissions.require(userId, "STOCK_IN");
+        StockTransferLine line = lineFor(transfer, request.productId());
+        if (line == null) {
+            throw new TransferRefusedException("That product isn't on this waybill.");
+        }
+        int quantity = request.quantity();
+        if (quantity > line.getQuantityMissing()) {
+            throw new TransferRefusedException(line.getProduct().getName() + ": only " + line.getQuantityMissing()
+                    + " is missing on this waybill.");
+        }
+        Product product = productRepository.findByIdAndClientIdForUpdate(line.getProduct().getId(), clientId)
+                .orElseThrow(ProductNotFoundException::new);
+        OffsetDateTime at = request.occurredAt() != null ? request.occurredAt() : OffsetDateTime.now();
+        // Which pieces went missing isn't recorded; found stock is taken from the end of the line, so
+        // successive finds never take the same piece twice.
+        int offset = line.getQuantitySent() - line.getQuantityFound() - quantity;
+        stockManagementService.transferFound(product, request.branchId(),
+                stockManagementService.transferPieces(outMovementOf(line), offset, quantity), transfer.getId(), at,
+                "Found, missing from " + waybillOf(transfer), userId);
+        line.setQuantityMissing(line.getQuantityMissing() - quantity);
+        line.setQuantityFound(line.getQuantityFound() + quantity);
+        if (transfer.isAccountedFor()) {
+            transfer.setStatus(transfer.hasLosses() ? StockTransferStatus.RECEIVED_SHORT : StockTransferStatus.RECEIVED);
+        }
+        settle(transfer, at, null, request.id());
+        log.info("Transfer found stock: {} x{} of {} at {} by {}", transferId, quantity, product.getId(), request.branchId(), userId);
+        return respond(transfer);
+    }
+
     // ------------------------------------------------------------------------------------- read
 
     @Transactional(readOnly = true)
@@ -538,7 +591,7 @@ public class TransferService {
             lines.add(new TransferResponse.Line(
                     product.getId(), product.getName(), product.getSku(), product.getUnitOfMeasure(),
                     line.getQuantitySent(), line.getQuantityReceived(), line.getQuantityMissing(), line.getQuantityDamaged(),
-                    line.onTheWay(), line.getEnteredUnit(), line.getEnteredQuantity(), sentText(line, product)));
+                    line.getQuantityFound(), line.onTheWay(), line.getEnteredUnit(), line.getEnteredQuantity(), sentText(line, product)));
         }
         int missing = transfer.getMissingCheckedAt() != null ? 0
                 : transfer.getLines().stream().mapToInt(line -> line.getQuantityMissing() + line.getQuantityDamaged()).sum();

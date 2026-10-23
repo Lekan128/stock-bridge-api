@@ -55,5 +55,14 @@ public record StockMovementSummaryResponse(
         Long unpricedSaleCount,
         /** Every other stock-out in range, at what the stock cost: "₦18,300 other stock out". */
         BigDecimal otherOutCost,
-        long otherOutCount) {
+        long otherOutCount,
+        /**
+         * Stock moved here from another branch, and from here to another (V53, MULTI_BRANCH_BUILD_PLAN.md
+         * section 4.3): their own figures, never part of stock in / stock out. Across every branch the
+         * two are equal once everything has arrived - a move is neither a purchase nor a sale.
+         */
+        long movedInQuantity,
+        long movedOutQuantity,
+        long movedInCount,
+        long movedOutCount) {
 }

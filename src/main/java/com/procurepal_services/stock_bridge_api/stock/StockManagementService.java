@@ -1171,6 +1171,32 @@ public class StockManagementService {
     }
 
     /**
+     * Missing stock that turned up (V54, UX section 5.7): back on {@code branchId}'s shelf as lots with
+     * their delivery's cost and supplier, and - since {@link #transferLoss} took it off the supplier
+     * tallies - back on those too. The caller holds the lock.
+     */
+    @Transactional
+    public void transferFound(
+            Product product,
+            UUID branchId,
+            List<TransferPiece> pieces,
+            UUID transferId,
+            OffsetDateTime occurredAt,
+            String note,
+            UUID actingUserId) {
+        transferIn(product, branchId, pieces, transferId, occurredAt, note, actingUserId);
+        UUID tenantId = requireTenantId();
+        for (TransferPiece piece : pieces) {
+            CompanyVendor vendor = piece.lot() == null ? null : piece.lot().getCompanyVendor();
+            if (vendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), vendor.getId())
+                        .ifPresent(line -> productVendorService.recordAllocationDrawdown(line, -piece.quantity()));
+            }
+        }
+    }
+
+    /**
      * Takes back a TRANSFER_OUT whose waybill was cancelled before anything arrived: an ADJUSTMENT of
      * +quantity that reverses it, and negative allocations giving each lot back what it gave - exactly
      * how a sale line is cancelled ({@link #cancelSaleLine}), the ledger untouched.
@@ -1402,7 +1428,7 @@ public class StockManagementService {
         java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(tenantId);
         if (scope.isEmpty()) {
             return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
-                    null, null, BigDecimal.ZERO, 0);
+                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0);
         }
         List<Object[]> rows = stockMovementRepository.summarise(
                 tenantId,
@@ -1420,7 +1446,7 @@ public class StockManagementService {
         // worth a 500, and every branch below would read zero anyway.
         if (rows.isEmpty()) {
             return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
-                    null, null, BigDecimal.ZERO, 0);
+                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0);
         }
         Object[] row = rows.getFirst();
         // Sales, from the Sales report's own query so the two pages cannot disagree - only where
@@ -1446,7 +1472,11 @@ public class StockManagementService {
                 sales == null ? null : sales.salesAmount(),
                 sales == null ? null : sales.unpricedLineCount(),
                 outReason == OutReason.SALE ? BigDecimal.ZERO : ((BigDecimal) row[9]).setScale(2, java.math.RoundingMode.HALF_UP),
-                outReason == OutReason.SALE ? 0 : ((Number) row[10]).longValue());
+                outReason == OutReason.SALE ? 0 : ((Number) row[10]).longValue(),
+                ((Number) row[11]).longValue(),
+                ((Number) row[12]).longValue(),
+                ((Number) row[13]).longValue(),
+                ((Number) row[14]).longValue());
     }
 
     /**
@@ -1467,9 +1497,28 @@ public class StockManagementService {
                 .filter(movement -> movement.getMovementType() == MovementType.IN
                         || movement.getMovementType() == MovementType.TRANSFER_IN)
                 .orElseThrow(StockMovementNotFoundException::new);
-        return stockMovementAllocationRepository.findAllByInMovementIdOrderByCreatedAtAsc(inMovement.getId()).stream()
-                .map(AllocationResponse::from)
-                .toList();
+        List<AllocationResponse> trace = new ArrayList<>();
+        traceLot(inMovement, null, trace, 0);
+        return trace;
+    }
+
+    /**
+     * One lot's draws, and - for each draw that sent stock to another branch - the lot it became there,
+     * recursively (MULTI_BRANCH_BUILD_PLAN.md section 4.3). A lot is only ever sourced from an earlier
+     * one, so this ends; the depth cap is a guard, not a limit anyone meets.
+     */
+    private void traceLot(StockMovement lot, UUID throughLotId, List<AllocationResponse> trace, int depth) {
+        for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByInMovementIdOrderByCreatedAtAsc(lot.getId())) {
+            trace.add(AllocationResponse.from(draw, throughLotId));
+            StockMovement out = draw.getOutMovement();
+            if (out.getMovementType() != MovementType.TRANSFER_OUT || out.getTransferId() == null || depth >= 20) {
+                continue;
+            }
+            for (StockMovement arrived : stockMovementRepository.findAllByClientIdAndTransferIdAndSourceLotIdAndMovementType(
+                    lot.getClientId(), out.getTransferId(), lot.getId(), MovementType.TRANSFER_IN)) {
+                traceLot(arrived, arrived.getId(), trace, depth + 1);
+            }
+        }
     }
 
     /**

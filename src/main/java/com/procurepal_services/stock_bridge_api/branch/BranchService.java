@@ -94,7 +94,9 @@ public class BranchService {
         UUID clientId = requireTenantId();
         String name = requireName(request.name());
         // One add at a time per company, so two can't both find it single-branch and both switch it.
-        jdbc.queryForList("SELECT id FROM clients WHERE id = :clientId FOR UPDATE",
+        // NO KEY UPDATE, not UPDATE: stock writes take a key-share lock on the company row (their rows
+        // reference it) while holding a product; FOR UPDATE here would deadlock with them.
+        jdbc.queryForList("SELECT id FROM clients WHERE id = :clientId FOR NO KEY UPDATE",
                 new MapSqlParameterSource("clientId", clientId), UUID.class);
         if (!mayAddBranch(clientId)) {
             throw new BranchChangeRefusedException(

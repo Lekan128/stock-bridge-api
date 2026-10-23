@@ -49,6 +49,8 @@ public record TransferResponse(
             int quantityReceived,
             int quantityMissing,
             int quantityDamaged,
+            /** Reported missing, then found and put back on a shelf (V54). */
+            int quantityFound,
             int onTheWay,
             String enteredUnit,
             BigDecimal enteredQuantity,
