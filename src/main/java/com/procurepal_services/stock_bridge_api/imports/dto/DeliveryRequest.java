@@ -24,7 +24,15 @@ public record DeliveryRequest(
         @Size(max = 200) String invoiceNo,
         UUID vendorId,
         UUID expectedDeliveryId,
-        @NotEmpty @Valid List<Line> lines) {
+        @NotEmpty @Valid List<Line> lines,
+        // Multiple branches (V52): the branch it arrived at - see ImportSession.branchId.
+        UUID branchId) {
+
+    /** The shape before {@code branchId} (multiple branches, Phase 1). */
+    public DeliveryRequest(
+            String deliveryDate, String invoiceNo, UUID vendorId, UUID expectedDeliveryId, List<Line> lines) {
+        this(deliveryDate, invoiceNo, vendorId, expectedDeliveryId, lines, null);
+    }
 
     /**
      * @param unit the line's {@code unit} from {@link DeliveryLineResponse}.

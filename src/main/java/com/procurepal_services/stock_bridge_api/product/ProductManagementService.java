@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product;
 
+import com.procurepal_services.stock_bridge_api.selling.SellingPricePermission;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
@@ -77,6 +78,11 @@ public class ProductManagementService {
      * "stock that came in from a spreadsheet rather than a delivery" will match on.
      */
 
+    /** Where a new product's opening stock lands (V52). */
+    /** Who may set a selling price (V52). */
+    private final SellingPricePermission sellingPricePermission;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
     private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
@@ -156,6 +162,33 @@ public class ProductManagementService {
 
     @Transactional(readOnly = true)
     public ProductResponse get(UUID id) {
+        return get(id, null);
+    }
+
+    /** Low-stock levels per branch (V52), for branches this person sees, at a multi-branch company. */
+    @Transactional
+    public void setBranchThresholds(UUID id, List<ProductController.BranchThreshold> thresholds, UUID userId) {
+        UUID tenantId = requireTenantId();
+        Product product = findTenantProductOrThrow(id);
+        if (!branchStockService.isMultiBranch(tenantId)) {
+            throw new com.procurepal_services.stock_bridge_api.branch.BranchChangeRefusedException(
+                    "Your company has one branch: set the product's own low-stock level instead.");
+        }
+        List<UUID> visible = branchAccessService.viewBranchIds(userId);
+        for (ProductController.BranchThreshold threshold : thresholds) {
+            if (threshold.branchId() == null || !visible.contains(threshold.branchId())) {
+                throw new com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException();
+            }
+            branchStockService.setThreshold(tenantId, product.getId(), threshold.branchId(), threshold.lowStockThreshold());
+        }
+    }
+
+    /**
+     * The product page: {@link #get(UUID)} plus the product at each branch {@code userId} sees (V52,
+     * MULTI_BRANCH_UX_PLAN.md section 5.9), at a company with more than one.
+     */
+    @Transactional(readOnly = true)
+    public ProductResponse get(UUID id, UUID userId) {
         UUID tenantId = requireTenantId();
         Product product = findTenantProductOrThrow(id);
         String preferredVendorName = productVendorRepository
@@ -163,9 +196,17 @@ public class ProductManagementService {
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
         boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
-        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
+        ProductResponse response = ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
                 .withExpectedQuantity(
                         expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id));
+        if (userId == null) {
+            return response;
+        }
+        java.util.Map<UUID, Integer> threshold = new java.util.HashMap<>();
+        threshold.put(id, product.getLowStockThreshold());
+        java.util.Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
+                branchStockService.figures(tenantId, List.of(id), branchAccessService.viewBranchIds(userId), threshold);
+        return figures == null ? response : response.withBranchStock(figures.get(id));
     }
 
     /**
@@ -322,7 +363,9 @@ public class ProductManagementService {
                 .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
         // After the units are set: a price typed per carton is converted by this product's own pack.
-        if (keepsSellingPrice) {
+        // Without CHANGE_SELLING_PRICES (V52) the product is created without a price - "No price yet",
+        // which selling already allows - rather than refused: the rest of what was typed is still wanted.
+        if (keepsSellingPrice && sellingPricePermission.allows(actingUserId)) {
             sellingPriceService.apply(product, request.unitPrice(), request.unitPriceUnit());
         }
 
@@ -358,6 +401,10 @@ public class ProductManagementService {
             // exactly that purpose. Defaulting to false here would mean a pack typed on the
             // create-product screen vanished on save - a different broken promise, in the
             // opposite direction.
+            // Where the opening stock is (V52): named, or the person's only branch - and they must
+            // work there, as for any stock-in they record.
+            UUID openingBranchId = branchStockService.resolveForWrite(initialVendor.branchId(), actingUserId);
+            branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
             stockManagementService.stockIn(
                     product.getId(),
                     new StockInRequest(
@@ -369,7 +416,7 @@ public class ProductManagementService {
                             initialVendor.packagingUnit(),
                             initialVendor.packagingSize(),
                             null,
-                            true),
+                            true).withBranchId(openingBranchId),
                     actingUserId);
             preferredVendorName = productVendorRepository
                     .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, product.getId())
@@ -472,6 +519,14 @@ public class ProductManagementService {
         // now stands, and a pack that changed size re-derives the per-piece price from what was
         // typed (SellingPriceService.reconcile). A tenant with no selling price at all has a stale
         // client still sending one silently ignored rather than applied or rejected.
+        // A change of price - not the current one sent back with the rest of the form - needs
+        // CHANGE_SELLING_PRICES (V52, UX section 5.14). A pack resize re-deriving it is not one.
+        boolean changesPrice = Boolean.TRUE.equals(request.clearUnitPrice())
+                || (request.unitPrice() != null
+                        && !SellingPricePermission.isCurrent(product, request.unitPrice(), request.unitPriceUnit()));
+        if (keepsSellingPrice && changesPrice) {
+            sellingPricePermission.require(principal == null ? null : principal.getUserId());
+        }
         if (keepsSellingPrice) {
             if (Boolean.TRUE.equals(request.clearUnitPrice()) && !requiresSellingPrice) {
                 sellingPriceService.apply(product, null, null);

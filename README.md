@@ -120,6 +120,18 @@ docker compose up -d stock-bridge-postgres   # from the repo root
 ./mvnw test
 ```
 
+### Which run to use
+
+| Run | Command | When |
+|---|---|---|
+| The tests you are changing | `./mvnw test -Dtest='StockManagementIntegrationTest'` | While building |
+| **Full suite, fresh database** | `scripts/test-fresh-db.sh` | Before committing a piece of work. Builds a new database from the migrations, runs everything against it, drops it. A failure here is real. |
+| Concurrency and transactions | `DB_MAX_POOL_SIZE=2 scripts/test-fresh-db.sh -Dtest='...'` | After touching transactions, locks or anything that runs SQL on a request. A small pool makes a request that holds two connections fail every time instead of now and then. |
+| Full suite, everyday database | `./mvnw test -Dtest='!SignupRateLimitIntegrationTest' -Dsurefire.failIfNoSpecifiedTests=false` | Occasionally, before a release. That database is never emptied, so expect the known shared-data failures and slow sweeps; read them against the known list. |
+
+`SignupRateLimitIntegrationTest` is left out of full runs: its client obeys the server's `Retry-After`
+and sleeps for up to an hour. Run it on its own.
+
 ## API overview
 
 Base path `/api`, grouped by area:

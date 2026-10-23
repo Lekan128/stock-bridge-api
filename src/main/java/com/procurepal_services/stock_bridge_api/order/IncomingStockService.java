@@ -269,7 +269,10 @@ public class IncomingStockService {
                             packagingSize,
                             null,
                             saveAsSupplierDefault,
-                            item.getProductSku()),
+                            item.getProductSku())
+                            // At the branch the order was going to (V52); null on an order from before
+                            // branches, which the company's only branch then receives.
+                            .withBranchId(order.getBranchId()),
                     actingUserId);
 
             item.setReceivedQuantity(item.getReceivedQuantity() + quantity);

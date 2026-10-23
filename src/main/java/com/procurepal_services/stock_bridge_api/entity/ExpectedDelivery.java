@@ -89,6 +89,13 @@ public class ExpectedDelivery extends TenantAwareEntity {
     @Column(name = "created_by")
     private UUID createdBy;
 
+    /**
+     * The branch it is going to (V52) - whose "Needs you today" shows it. Receiving it is a stock-in,
+     * which names its own branch; this does not decide where the stock lands.
+     */
+    @Column(name = "branch_id", nullable = false)
+    private UUID branchId;
+
     @OneToMany(mappedBy = "expectedDelivery", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("createdAt ASC")
     @Builder.Default

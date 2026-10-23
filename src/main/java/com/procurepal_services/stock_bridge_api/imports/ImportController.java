@@ -113,6 +113,7 @@ public class ImportController {
             @RequestPart(value = "deliveryDate", required = false) String deliveryDate,
             @RequestPart(value = "invoiceNo", required = false) String invoiceNo,
             @RequestPart(value = "vendorId", required = false) String vendorId,
+            @RequestPart(value = "branchId", required = false) String branchId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         ImportKind importKind = parseKind(kind);
         ImportMode importMode = parseMode(mode);
@@ -124,7 +125,8 @@ public class ImportController {
                 ? importSessionService.deliveryDetails(deliveryDate, invoiceNo, vendorId)
                 : null;
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(importSessionService.create(file, importKind, importMode, principal.getUserId(), delivery));
+                .body(importSessionService.create(
+                        file, importKind, importMode, principal.getUserId(), delivery, parseBranchId(branchId)));
     }
 
     @GetMapping("/{id}")
@@ -325,7 +327,7 @@ public class ImportController {
                 : null;
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(importSessionService.createFromPaste(
-                        request.text(), importKind, importMode, principal.getUserId(), delivery));
+                        request.text(), importKind, importMode, principal.getUserId(), delivery, request.branchId()));
     }
 
     @GetMapping("/delivery-lines")
@@ -394,7 +396,7 @@ public class ImportController {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(importSessionService.createDelivery(
                         lines, deliveryTitle(delivery), principal.getUserId(), delivery,
-                        request.expectedDeliveryId()));
+                        request.expectedDeliveryId(), request.branchId()));
     }
 
     /**
@@ -489,5 +491,17 @@ public class ImportController {
                 .contentType(MediaType.parseMediaType(XLSX_MEDIA_TYPE))
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .body(bytes);
+    }
+
+    /** A multipart part is text; a malformed id is the same "not found" as a foreign one. */
+    private static UUID parseBranchId(String branchId) {
+        if (branchId == null || branchId.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(branchId.trim());
+        } catch (IllegalArgumentException e) {
+            throw new com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException();
+        }
     }
 }

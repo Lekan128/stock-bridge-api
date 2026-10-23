@@ -126,7 +126,11 @@ public class OrderService {
         }
 
         DeliveryAddress address = resolveAddress(request);
-        Branch branch = branchRepository.findByClientIdAndDefaultBranchTrue(clientId).orElse(null);
+        // Received at the branch the address belongs to (MULTI_BRANCH_UX_PLAN.md section 5.12), or the
+        // main branch for an address that belongs to none, or to a branch since closed.
+        Branch branch = address.getBranch() != null && address.getBranch().isActive()
+                ? address.getBranch()
+                : branchRepository.findByClientIdAndDefaultBranchTrue(clientId).orElse(null);
 
         // Pay-on-delivery skips PENDING_PAYMENT entirely: there is no payment to wait
         // for, so the order is real (and the buyer's incoming stock appears) the moment

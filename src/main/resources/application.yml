@@ -44,6 +44,10 @@ app:
     # selling on for are offered it. "open": every company - the launch. Defaults to pilot so a
     # deploy that forgets it launches nothing.
     rollout: ${SELLING_ROLLOUT:pilot}
+  branches:
+    # MULTI_BRANCH_BUILD_PLAN.md D-B12. "pilot": only companies support has enabled may add a second
+    # branch. "open": every company. Defaults to pilot, like selling.
+    rollout: ${MULTI_BRANCH_ROLLOUT:pilot}
   jwt:
     secret: ${JWT_SECRET}
     access-token-expiration-ms: ${JWT_ACCESS_TOKEN_EXPIRATION_MS:900000}

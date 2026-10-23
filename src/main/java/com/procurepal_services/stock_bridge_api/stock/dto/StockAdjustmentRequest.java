@@ -17,4 +17,9 @@ public record StockAdjustmentRequest(
     public StockAdjustmentRequest(Integer newQuantity, String note) {
         this(newQuantity, note, null);
     }
+
+    /** This adjustment, at {@code branch} - how a caller states the branch it has resolved. */
+    public StockAdjustmentRequest withBranchId(UUID branch) {
+        return new StockAdjustmentRequest(newQuantity, note, branch);
+    }
 }

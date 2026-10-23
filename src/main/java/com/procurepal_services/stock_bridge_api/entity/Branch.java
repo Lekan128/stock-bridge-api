@@ -20,11 +20,12 @@ import org.hibernate.annotations.UpdateTimestamp;
  * A company location. Tenant-scoped, so it inherits client_id from
  * TenantAwareEntity.
  *
- * Every client has exactly one 'Head Office' branch flagged default - created by
- * ClientSignupService for new signups and backfilled by V6__marketplace.sql for
- * clients that predate it. Stock is NOT scoped per branch in this pass
- * (products.quantity_on_hand stays client-wide); see the branches table comment
- * in the migration for what per-branch stock would actually require.
+ * Every client has exactly one branch flagged default - its main branch, 'Head Office'
+ * until renamed - created by ClientSignupService for new signups and backfilled by
+ * V6__marketplace.sql for clients that predate it. Since V51 stock is counted per
+ * branch underneath (branch_stock, stock_movements.branch_id); see BranchStockService
+ * for how a one-branch company's figures still read exactly as before, and BranchService
+ * for adding the second.
  *
  * The boolean is named defaultBranch rather than isDefault because `default` is
  * a Java keyword, and a property literally called "default" makes both Lombok's
@@ -51,6 +52,14 @@ public class Branch extends TenantAwareEntity {
 
     @Column(name = "is_active", nullable = false)
     private boolean active;
+
+    /** The branch's own number, for the waybill and the people sending stock there (V52). Optional. */
+    @Column(length = 50)
+    private String phone;
+
+    /** When it was closed (V52); null while open. Closing keeps every row that names the branch. */
+    @Column(name = "closed_at")
+    private OffsetDateTime closedAt;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

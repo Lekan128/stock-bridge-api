@@ -166,7 +166,10 @@ class ProductSyncIntegrationTest {
         UUID clientId = jdbc.queryForObject("SELECT client_id FROM products WHERE id = ?", UUID.class, rice);
 
         UUID delivery = jdbc.queryForObject(
-                "INSERT INTO expected_deliveries (client_id) VALUES (?) RETURNING id", UUID.class, clientId);
+                // Every expected delivery is going to a branch (V52); this company has one.
+                "INSERT INTO expected_deliveries (client_id, branch_id) "
+                        + "SELECT ?, id FROM branches WHERE client_id = ? AND is_default RETURNING id",
+                UUID.class, clientId, clientId);
         jdbc.update(
                 "INSERT INTO expected_delivery_lines (expected_delivery_id, product_id, unit, quantity) VALUES (?, ?, 'KG', 500)",
                 delivery, rice);

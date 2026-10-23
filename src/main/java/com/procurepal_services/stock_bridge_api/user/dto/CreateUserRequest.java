@@ -4,6 +4,7 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -27,5 +28,21 @@ public record CreateUserRequest(
         @Size(max = 100) String lastName,
         @Email @Size(max = 255) String email,
         @Size(max = 50) String phone,
-        @Size(max = 100) String jobTitle) {
+        @Size(max = 100) String jobTitle,
+        // Multiple branches (V52): where they work. Required at a company with more than one branch,
+        // unless their role works at every branch; absent at a one-branch company.
+        List<UUID> branchIds) {
+
+    /** The shape before {@code branchIds} (multiple branches, Phase 1). */
+    public CreateUserRequest(
+            String username,
+            String password,
+            UUID roleId,
+            String firstName,
+            String lastName,
+            String email,
+            String phone,
+            String jobTitle) {
+        this(username, password, roleId, firstName, lastName, email, phone, jobTitle, null);
+    }
 }

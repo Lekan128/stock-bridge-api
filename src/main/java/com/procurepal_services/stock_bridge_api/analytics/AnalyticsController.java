@@ -22,20 +22,30 @@ import org.springframework.web.bind.annotation.RestController;
 public class AnalyticsController {
 
     private final AnalyticsService analyticsService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
 
     @GetMapping("/summary")
     public AnalyticsSummaryResponse summary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to) {
-        return analyticsService.summary(from, to);
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            // V51: one branch, or (absent) every branch this person sees.
+            @RequestParam(required = false) java.util.UUID branchId,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return analyticsService.summaryForClient(principal.getClientId(), from, to,
+                branchAccessService.reportScope(principal.getUserId(), branchId));
     }
 
     @GetMapping("/movements-over-time")
     public List<MovementsOverTimePoint> movementsOverTime(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
-            @RequestParam(defaultValue = "day") String granularity) {
-        return analyticsService.movementsOverTime(from, to, granularity);
+            @RequestParam(defaultValue = "day") String granularity,
+            @RequestParam(required = false) java.util.UUID branchId,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return analyticsService.movementsOverTimeForClient(principal.getClientId(), from, to, granularity,
+                branchAccessService.reportScope(principal.getUserId(), branchId));
     }
 
     @GetMapping("/top-products")
@@ -44,8 +54,12 @@ public class AnalyticsController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
             @RequestParam(defaultValue = "quantity") String by,
             @RequestParam(defaultValue = "in") String direction,
-            @RequestParam(defaultValue = "10") int limit) {
-        return analyticsService.topProducts(from, to, by, direction, limit);
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(required = false) java.util.UUID branchId,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return analyticsService.topProductsForClient(principal.getClientId(), from, to, by, direction, limit,
+                branchAccessService.reportScope(principal.getUserId(), branchId));
     }
 
     @GetMapping("/low-stock-summary")

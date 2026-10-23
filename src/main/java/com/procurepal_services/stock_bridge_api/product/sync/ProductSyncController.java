@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.product.sync;
 
+import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
@@ -27,8 +29,9 @@ public class ProductSyncController {
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public ProductSnapshotPage snapshot(
             @RequestParam(required = false) UUID afterId,
-            @RequestParam(defaultValue = "" + ProductSyncService.DEFAULT_LIMIT) int limit) {
-        return productSyncService.snapshot(afterId, clamp(limit));
+            @RequestParam(defaultValue = "" + ProductSyncService.DEFAULT_LIMIT) int limit,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return productSyncService.snapshot(afterId, clamp(limit), principal.getUserId());
     }
 
     /** What changed since {@code cursor}. */
@@ -36,8 +39,9 @@ public class ProductSyncController {
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public ProductChangesPage changes(
             @RequestParam String cursor,
-            @RequestParam(defaultValue = "" + ProductSyncService.DEFAULT_LIMIT) int limit) {
-        return productSyncService.changes(cursor, clamp(limit));
+            @RequestParam(defaultValue = "" + ProductSyncService.DEFAULT_LIMIT) int limit,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return productSyncService.changes(cursor, clamp(limit), principal.getUserId());
     }
 
     @ExceptionHandler(InvalidSyncCursorException.class)

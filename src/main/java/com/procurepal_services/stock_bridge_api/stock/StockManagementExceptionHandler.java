@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
 import com.procurepal_services.stock_bridge_api.branch.BranchClosedException;
+import com.procurepal_services.stock_bridge_api.branch.BranchNotAllowedException;
 import com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException;
 import com.procurepal_services.stock_bridge_api.branch.BranchRequiredException;
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
@@ -35,6 +36,12 @@ public class StockManagementExceptionHandler {
     @ExceptionHandler(BranchRequiredException.class)
     public ResponseEntity<ApiError> handleBranchRequired(BranchRequiredException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    /** 403, like a permission taken away: the phone keeps the write as "needs you" with the reason. */
+    @ExceptionHandler(BranchNotAllowedException.class)
+    public ResponseEntity<ApiError> handleBranchNotAllowed(BranchNotAllowedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
     }
 
     @ExceptionHandler(StockMovementNotFoundException.class)

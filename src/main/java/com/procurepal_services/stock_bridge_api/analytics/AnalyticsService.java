@@ -37,6 +37,8 @@ public class AnalyticsService {
     private final StockMovementRepository stockMovementRepository;
     private final ProductRepository productRepository;
     private final SalesReportService salesReportService;
+    /** "Every branch" for a report that names none (V51). */
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
 
     @Transactional(readOnly = true)
     public AnalyticsSummaryResponse summary(OffsetDateTime from, OffsetDateTime to) {
@@ -54,12 +56,23 @@ public class AnalyticsService {
      */
     @Transactional(readOnly = true)
     public AnalyticsSummaryResponse summaryForClient(UUID clientId, OffsetDateTime from, OffsetDateTime to) {
-        OffsetDateTime[] range = resolveRange(from, to);
+        return summaryForClient(clientId, from, to, null);
+    }
 
-        BigDecimal totalInValue = stockMovementRepository.sumValue(clientId, MovementType.IN, range[0], range[1]);
-        BigDecimal totalOutValue = stockMovementRepository.sumValue(clientId, MovementType.OUT, range[0], range[1]);
-        long totalUnitsIn = stockMovementRepository.sumQuantity(clientId, MovementType.IN, range[0], range[1]);
-        long totalUnitsOut = stockMovementRepository.sumQuantity(clientId, MovementType.OUT, range[0], range[1]);
+    /**
+     * @param branchIds the branches the stock-in and stock-out figures cover (V51); null for every
+     *     branch. The product counts and sales stay the company's until the owner's view (Phase 3).
+     */
+    @Transactional(readOnly = true)
+    public AnalyticsSummaryResponse summaryForClient(
+            UUID clientId, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+        OffsetDateTime[] range = resolveRange(from, to);
+        java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(clientId);
+
+        BigDecimal totalInValue = stockMovementRepository.sumValue(clientId, MovementType.IN, range[0], range[1], scope);
+        BigDecimal totalOutValue = stockMovementRepository.sumValue(clientId, MovementType.OUT, range[0], range[1], scope);
+        long totalUnitsIn = stockMovementRepository.sumQuantity(clientId, MovementType.IN, range[0], range[1], scope);
+        long totalUnitsOut = stockMovementRepository.sumQuantity(clientId, MovementType.OUT, range[0], range[1], scope);
         long lowStockProductCount = productRepository.countLowStockByClientId(clientId);
         long activeProductCount = productRepository.countByClientIdAndActive(clientId, true);
         long outOfStockProductCount = productRepository.countOutOfStockByClientId(clientId);
@@ -96,10 +109,19 @@ public class AnalyticsService {
     @Transactional(readOnly = true)
     public List<MovementsOverTimePoint> movementsOverTimeForClient(
             UUID clientId, OffsetDateTime from, OffsetDateTime to, String granularityParam) {
+        return movementsOverTimeForClient(clientId, from, to, granularityParam, null);
+    }
+
+    /** @param branchIds the branches covered (V51); null for every branch. */
+    @Transactional(readOnly = true)
+    public List<MovementsOverTimePoint> movementsOverTimeForClient(
+            UUID clientId, OffsetDateTime from, OffsetDateTime to, String granularityParam,
+            java.util.Collection<UUID> branchIds) {
         String granularity = parseGranularity(granularityParam);
         OffsetDateTime[] range = resolveRange(from, to);
+        java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(clientId);
 
-        return stockMovementRepository.movementsOverTime(clientId, granularity, range[0], range[1]).stream()
+        return stockMovementRepository.movementsOverTime(clientId, granularity, range[0], range[1], scope).stream()
                 .map(this::toPoint)
                 .toList();
     }
@@ -113,14 +135,23 @@ public class AnalyticsService {
     @Transactional(readOnly = true)
     public List<TopProductEntry> topProductsForClient(
             UUID clientId, OffsetDateTime from, OffsetDateTime to, String byParam, String directionParam, int limit) {
+        return topProductsForClient(clientId, from, to, byParam, directionParam, limit, null);
+    }
+
+    /** @param branchIds the branches covered (V51); null for every branch. */
+    @Transactional(readOnly = true)
+    public List<TopProductEntry> topProductsForClient(
+            UUID clientId, OffsetDateTime from, OffsetDateTime to, String byParam, String directionParam, int limit,
+            java.util.Collection<UUID> branchIds) {
+        java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(clientId);
         boolean rankByValue = parseBy(byParam);
         MovementType direction = parseDirection(directionParam);
         OffsetDateTime[] range = resolveRange(from, to);
         int effectiveLimit = Math.max(1, Math.min(limit, 100));
 
         List<Object[]> rows = rankByValue
-                ? stockMovementRepository.topProductsByValue(clientId, direction.name(), range[0], range[1], effectiveLimit)
-                : stockMovementRepository.topProductsByQuantity(clientId, direction.name(), range[0], range[1], effectiveLimit);
+                ? stockMovementRepository.topProductsByValue(clientId, direction.name(), range[0], range[1], effectiveLimit, scope)
+                : stockMovementRepository.topProductsByQuantity(clientId, direction.name(), range[0], range[1], effectiveLimit, scope);
         return rows.stream().map(this::toTopProductEntry).toList();
     }
 

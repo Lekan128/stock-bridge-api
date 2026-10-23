@@ -142,4 +142,13 @@ final class StockMovementSpecifications {
                     cb.equal(root.get("movementType"), MovementType.IN));
         };
     }
+
+    /**
+     * Only movements at these branches (V51) - the branch filter, and the D-U3 rule that people see
+     * only the branches they may: a caller passes the branches the person sees, narrowed to one when
+     * they ask for one.
+     */
+    public static Specification<StockMovement> atBranches(java.util.Collection<UUID> branchIds) {
+        return (root, query, cb) -> root.get("branchId").in(branchIds);
+    }
 }

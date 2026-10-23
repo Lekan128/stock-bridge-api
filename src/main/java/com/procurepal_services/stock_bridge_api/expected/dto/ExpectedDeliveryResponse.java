@@ -30,7 +30,9 @@ public record ExpectedDeliveryResponse(
         int outstandingLines,
         BigDecimal total,
         boolean receivable,
-        OffsetDateTime createdAt) {
+        OffsetDateTime createdAt,
+        // Multiple branches (V52): where it is going.
+        UUID branchId) {
 
     /**
      * @param unit the {@code UnitOptions.key} it was ordered in, sent back unchanged when

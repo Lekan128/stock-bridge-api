@@ -3,7 +3,12 @@ package com.procurepal_services.stock_bridge_api.branch;
 import com.procurepal_services.stock_bridge_api.client.ClientProvisioning;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
+import com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,21 +46,37 @@ import org.springframework.stereotype.Service;
  * the table - a product created earlier in the same transaction (an opening balance) was flushed by
  * that query. Flushing here anyway would dirty-check the whole persistence context on every row of a
  * stock-sheet import, which grows with the sheet.
+ *
+ * <p>Transactional at class level for the reason {@link BranchAccessService} gives: outside a
+ * transaction this SQL would borrow a second connection beside the one the request already holds.
+ * Every caller that writes is already in a transaction, which these methods join.
  */
 @Slf4j
 @Service
+@org.springframework.transaction.annotation.Transactional
 @RequiredArgsConstructor
 public class BranchStockService {
 
     private final NamedParameterJdbcTemplate jdbc;
+    private final BranchAccessService branchAccessService;
+
+    /** {@link #resolveForWrite(UUID, UUID)} for a write with nobody's branches to fall back on. */
+    public UUID resolveForWrite(UUID requestedBranchId) {
+        return resolveForWrite(requestedBranchId, null);
+    }
 
     /**
      * The branch a write is recorded at (D-B10). A named branch must be this company's and open. No
-     * branch named: the company's only branch. Never the main branch by default when there are
-     * several - an old copy of the app that doesn't send one would otherwise record at the wrong
-     * branch with nobody seeing it. Phase 1 adds "the one branch this person works at".
+     * branch named: the company's only open branch, or else the one branch {@code userId} works at.
+     * Never the main branch by default when there are several - an old copy of the app that doesn't
+     * send one would otherwise record at the wrong branch with nobody seeing it.
+     *
+     * <p>This says where; whether this person may record there is {@link
+     * BranchAccessService#requireMayRecordAt}, checked by the endpoints that take a person's write.
+     * Writes the system makes for an order (a marketplace receipt, a seller's dispatch) name their
+     * branch and are not held to the person's branches.
      */
-    public UUID resolveForWrite(UUID requestedBranchId) {
+    public UUID resolveForWrite(UUID requestedBranchId, UUID userId) {
         UUID clientId = requireTenantId();
         if (requestedBranchId != null) {
             List<Boolean> active = jdbc.queryForList(
@@ -78,7 +99,19 @@ public class BranchStockService {
         if (open.isEmpty() && !hasAnyBranch(clientId)) {
             return createMissingDefaultBranch(clientId);
         }
+        if (userId != null) {
+            List<UUID> theirs = branchAccessService.writeBranchIds(userId);
+            if (theirs.size() == 1) {
+                return theirs.getFirst();
+            }
+        }
         throw new BranchRequiredException();
+    }
+
+    /** Every branch the company has had, closed ones included - "all branches" for a report. */
+    public List<UUID> allBranchIds(UUID clientId) {
+        return jdbc.queryForList("SELECT id FROM branches WHERE client_id = :clientId",
+                new MapSqlParameterSource("clientId", clientId), UUID.class);
     }
 
     /** See the class javadoc's two modes. */
@@ -128,6 +161,65 @@ public class BranchStockService {
                     DO UPDATE SET quantity_on_hand = :total
                     """, params);
         }
+    }
+
+    /**
+     * Each product's figure at each of {@code branchIds} (in that order), for a multi-branch company -
+     * null for a one-branch company, whose product figure is the only one. A branch holding none of a
+     * product reads 0; a branch with no level of its own uses the product's ({@code productThresholds}).
+     */
+    public Map<UUID, List<BranchFigure>> figures(
+            UUID clientId, Collection<UUID> productIds, List<UUID> branchIds, Map<UUID, Integer> productThresholds) {
+        if (productIds.isEmpty() || branchIds.isEmpty() || !isMultiBranch(clientId)) {
+            return null;
+        }
+        Map<UUID, Map<UUID, int[]>> found = new HashMap<>();
+        Map<UUID, Map<UUID, Integer>> thresholds = new HashMap<>();
+        jdbc.query("""
+                SELECT product_id, branch_id, quantity_on_hand, low_stock_threshold FROM branch_stock
+                WHERE client_id = :clientId AND product_id IN (:productIds) AND branch_id IN (:branchIds)
+                """, new MapSqlParameterSource()
+                        .addValue("clientId", clientId)
+                        .addValue("productIds", productIds)
+                        .addValue("branchIds", branchIds),
+                rs -> {
+                    UUID product = rs.getObject("product_id", UUID.class);
+                    UUID branch = rs.getObject("branch_id", UUID.class);
+                    found.computeIfAbsent(product, key -> new HashMap<>())
+                            .put(branch, new int[] {rs.getInt("quantity_on_hand")});
+                    Integer own = (Integer) rs.getObject("low_stock_threshold");
+                    if (own != null) {
+                        thresholds.computeIfAbsent(product, key -> new HashMap<>()).put(branch, own);
+                    }
+                });
+        Map<UUID, List<BranchFigure>> figures = new HashMap<>();
+        for (UUID product : productIds) {
+            List<BranchFigure> list = new ArrayList<>(branchIds.size());
+            for (UUID branch : branchIds) {
+                int[] quantity = found.getOrDefault(product, Map.of()).get(branch);
+                Integer threshold = thresholds.getOrDefault(product, Map.of())
+                        .getOrDefault(branch, productThresholds.get(product));
+                list.add(BranchFigure.of(branch, quantity == null ? 0 : quantity[0], threshold));
+            }
+            figures.put(product, list);
+        }
+        return figures;
+    }
+
+    /**
+     * Sets a product's low-stock level at a branch; null goes back to the product's own (UX section
+     * 5.9). A branch that holds none of the product gets a row at 0 to carry the level.
+     */
+    public void setThreshold(UUID clientId, UUID productId, UUID branchId, Integer threshold) {
+        jdbc.update("""
+                INSERT INTO branch_stock (client_id, branch_id, product_id, quantity_on_hand, low_stock_threshold)
+                VALUES (:clientId, :branchId, :productId, 0, :threshold)
+                ON CONFLICT (branch_id, product_id) DO UPDATE SET low_stock_threshold = :threshold
+                """, new MapSqlParameterSource()
+                        .addValue("clientId", clientId)
+                        .addValue("branchId", branchId)
+                        .addValue("productId", productId)
+                        .addValue("threshold", threshold));
     }
 
     private List<UUID> openBranchIds(UUID clientId) {

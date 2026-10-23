@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.expected;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.ExpectedDelivery;
 import com.procurepal_services.stock_bridge_api.entity.ExpectedDeliveryLine;
@@ -54,6 +55,8 @@ public class ExpectedDeliveryService {
     private final CompanyVendorRepository companyVendorRepository;
     private final ProductRepository productRepository;
     private final StockInTemplateService stockInTemplateService;
+    /** Which branch it is going to (V52): named, or the company's only one, or the person's only one. */
+    private final BranchStockService branchStockService;
 
     @Transactional
     public ExpectedDeliveryResponse create(ExpectedDeliveryRequest request, UUID actingUserId) {
@@ -76,6 +79,7 @@ public class ExpectedDeliveryService {
                 .note(blankToNull(request.note()))
                 .status(ExpectedDeliveryStatus.OPEN)
                 .createdBy(actingUserId)
+                .branchId(branchStockService.resolveForWrite(request.branchId(), actingUserId))
                 .build();
 
         for (ExpectedDeliveryRequest.Line line : request.lines()) {
@@ -297,7 +301,8 @@ public class ExpectedDeliveryService {
                 outstandingLines,
                 total.signum() == 0 ? null : total,
                 expected.getStatus() == ExpectedDeliveryStatus.OPEN && outstandingLines > 0,
-                expected.getCreatedAt());
+                expected.getCreatedAt(),
+                expected.getBranchId());
     }
 
     /** "Tony Stores, due 22 Sep" - or just the supplier, or just the date, or "Expected delivery". */

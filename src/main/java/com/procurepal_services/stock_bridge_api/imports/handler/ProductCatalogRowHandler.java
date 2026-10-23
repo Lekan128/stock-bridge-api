@@ -130,6 +130,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     /** The note on the ledger row an opening balance writes. Matches the pre-V20 wording exactly. */
     private static final String OPENING_BALANCE_NOTE = "Opening balance (imported)";
 
+    /** Whether this import's person may set selling prices (V52). */
+    private final com.procurepal_services.stock_bridge_api.selling.SellingPricePermission sellingPricePermission;
     private final ProductRepository productRepository;
     private final ProductVendorRepository productVendorRepository;
     private final com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository importSessionRowRepository;
@@ -1478,7 +1480,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private Product createProduct(BatchContext ctx, ImportRowState state, UUID batchId) {
         // One lookup, two questions: the price (SellingPolicy) and the moderation status below.
         Client owner = sellerDirectory.findSellerOfRecord(ctx.tenantId()).orElse(null);
-        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
+        // A sheet's selling prices need CHANGE_SELLING_PRICES (V52, UX section 5.14); without it the row
+        // still imports, without its price.
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner)
+                && sellingPricePermission.allows(ctx.actingUserId());
         boolean perPack = keepsSellingPrice && sellingPricePerPack(ctx.tenantId(), ctx.cache());
         Product created = productRepository.save(Product.builder()
                 .name(state.text(ImportFields.NAME))
@@ -1590,7 +1595,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         // After the pack, so a price per carton is converted by the carton this row describes.
         SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
-        if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
+        if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null
+                && sellingPricePermission.allows(ctx.actingUserId())) {
             // Through the one writer, so the typed price and the change log stay in step (V47).
             sellingPriceService.apply(product, decimalOf(state, ImportFields.UNIT_PRICE),
                     sellingPricePerPack(ctx.tenantId(), ctx.cache()) ? sellingPriceUnitOf(state) : null);
@@ -1780,7 +1786,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                         vendor == null ? null : vendor.getId(),
                         null,
                         null,
-                        OffsetDateTime.now()),
+                        OffsetDateTime.now())
+                        // Opening quantities land at the branch the sheet was uploaded for (V52).
+                        .withBranchId(ctx.session().getBranchId()),
                 ctx.actingUserId(),
                 batchId);
         return true;

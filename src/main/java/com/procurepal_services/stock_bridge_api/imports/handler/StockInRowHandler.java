@@ -1411,7 +1411,10 @@ public class StockInRowHandler implements ImportRowHandler {
                             // said" and "no" reading alike is a thing a reader should not have to
                             // go and confirm.
                             false,
-                            null),
+                            null)
+                            // The branch the sheet was uploaded for (V52); null on a session from
+                            // before branches, which the company's only branch then receives.
+                            .withBranchId(ctx.session().getBranchId()),
                     ctx.actingUserId(),
                     batchId);
             state.setOutcome(ImportFields.OUTCOME_CREATED);

@@ -202,7 +202,7 @@ public class StockManagementService {
             UUID productId, StockInRequest request, UUID actingUserId, UUID importBatchId) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
-        UUID branchId = branchStockService.resolveForWrite(request.branchId());
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
 
         ResolvedEntry entry = resolveEntry(
@@ -406,7 +406,7 @@ public class StockManagementService {
     public StockMutationResponse stockOut(UUID productId, StockOutRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
-        UUID branchId = branchStockService.resolveForWrite(request.branchId());
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
 
         ResolvedEntry entry = resolveEntry(
                 product, BigDecimal.valueOf(request.quantity()), SaleFacts.enteredPrice(request), request.unit(), null, null);
@@ -526,7 +526,7 @@ public class StockManagementService {
     @Transactional
     public StockMutationResponse count(UUID productId, StockCountRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
-        UUID branchId = branchStockService.resolveForWrite(request.branchId());
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         OffsetDateTime countedAt = resolveOccurredAt(request.countedAt());
         if (stockMovementRepository.existsCountAfter(productId, branchId, countedAt)) {
             return StockMutationResponse.of(product, null);
@@ -1050,7 +1050,7 @@ public class StockManagementService {
     @Transactional
     public StockMutationResponse adjust(UUID productId, StockAdjustmentRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
-        UUID branchId = branchStockService.resolveForWrite(request.branchId());
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         int delta = request.newQuantity() - branchStockService.quantityAt(product, branchId);
         if (delta == 0) {
             return StockMutationResponse.of(product, null);
@@ -1071,13 +1071,22 @@ public class StockManagementService {
 
     @Transactional(readOnly = true)
     public Page<StockMovementResponse> history(UUID productId, Pageable pageable) {
+        return history(productId, pageable, null);
+    }
+
+    /** @param branchIds only these branches' movements (V51); null for every branch. */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> history(UUID productId, Pageable pageable, java.util.Collection<UUID> branchIds) {
         UUID tenantId = requireTenantId();
         if (productRepository.findByIdAndClientId(productId, tenantId).isEmpty()) {
             throw new ProductNotFoundException();
         }
-        return stockMovementRepository
-                .findAll(StockMovementSpecifications.forTenant(tenantId, productId, null, null, null, null), pageable)
-                .map(StockMovementResponse::from);
+        org.springframework.data.jpa.domain.Specification<StockMovement> spec =
+                StockMovementSpecifications.forTenant(tenantId, productId, null, null, null, null);
+        if (branchIds != null) {
+            spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
+        }
+        return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
     }
 
     /**
@@ -1112,12 +1121,27 @@ public class StockManagementService {
             OutReason outReason,
             boolean noReason,
             Pageable pageable) {
-        return stockMovementRepository
-                .findAll(
-                        StockMovementSpecifications.forTenant(
-                                requireTenantId(), productId, companyVendorId, from, to, movementType, outReason, noReason),
-                        pageable)
-                .map(StockMovementResponse::from);
+        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, null, pageable);
+    }
+
+    /** @param branchIds only these branches' movements (V51); null for every branch. */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> allMovements(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            java.util.Collection<UUID> branchIds,
+            Pageable pageable) {
+        org.springframework.data.jpa.domain.Specification<StockMovement> spec = StockMovementSpecifications.forTenant(
+                requireTenantId(), productId, companyVendorId, from, to, movementType, outReason, noReason);
+        if (branchIds != null) {
+            spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
+        }
+        return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
     }
 
     /**
@@ -1148,15 +1172,36 @@ public class StockManagementService {
             UUID companyVendorId,
             OutReason outReason,
             boolean noReason) {
+        return movementSummary(from, to, movementType, productId, companyVendorId, outReason, noReason, null);
+    }
+
+    /** @param branchIds only these branches' movements (V51); null for every branch. */
+    @Transactional(readOnly = true)
+    public StockMovementSummaryResponse movementSummary(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            java.util.Collection<UUID> branchIds) {
+        UUID tenantId = requireTenantId();
+        java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(tenantId);
+        if (scope.isEmpty()) {
+            return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
+                    null, null, BigDecimal.ZERO, 0);
+        }
         List<Object[]> rows = stockMovementRepository.summarise(
-                requireTenantId(),
+                tenantId,
                 productId,
                 companyVendorId,
                 movementType == null ? null : movementType.name(),
                 from,
                 to,
                 outReason == null ? null : outReason.name(),
-                noReason);
+                noReason,
+                scope);
         // A conditional aggregate with no GROUP BY always returns exactly one row, zeroes
         // included, so an empty list here would mean the query stopped being an aggregate.
         // Answered as an all-zero summary rather than an exception: a report footer is not

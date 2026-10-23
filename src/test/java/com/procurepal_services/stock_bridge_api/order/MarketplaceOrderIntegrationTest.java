@@ -91,6 +91,9 @@ class MarketplaceOrderIntegrationTest {
     private static final String PASSWORD = "correct-horse-battery-staple";
 
     @Autowired
+    private com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+
+    @Autowired
     private TestRestTemplate restTemplate;
 
     @Autowired
@@ -1916,7 +1919,9 @@ class MarketplaceOrderIntegrationTest {
                 buyer.clientId(),
                 MovementType.IN,
                 OffsetDateTime.now().minusDays(1),
-                OffsetDateTime.now().plusDays(1));
+                OffsetDateTime.now().plusDays(1),
+                // Every branch the buyer has (V51): this counts the company's stock-ins.
+                branchStockService.allBranchIds(buyer.clientId()));
     }
 
     private CartResponse addToCart(Buyer buyer, Product product, int quantity) {

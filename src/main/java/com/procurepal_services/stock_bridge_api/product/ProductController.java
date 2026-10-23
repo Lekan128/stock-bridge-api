@@ -158,8 +158,27 @@ public class ProductController {
 
     @GetMapping("/{id}")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public ProductResponse get(@PathVariable UUID id) {
-        return productManagementService.get(id);
+    public ProductResponse get(
+            @PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return productManagementService.get(id, principal.getUserId());
+    }
+
+    /**
+     * A product's low-stock level at each branch (V52, MULTI_BRANCH_UX_PLAN.md section 5.9); null goes
+     * back to the product's own. A shared-record edit, so online only in the app.
+     */
+    @PutMapping("/{id}/branch-thresholds")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ProductResponse setBranchThresholds(
+            @PathVariable UUID id,
+            @RequestBody List<BranchThreshold> thresholds,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        productManagementService.setBranchThresholds(id, thresholds, principal.getUserId());
+        return productManagementService.get(id, principal.getUserId());
+    }
+
+    /** One branch's low-stock level for a product; {@code lowStockThreshold} null means the product's own. */
+    public record BranchThreshold(UUID branchId, @jakarta.validation.constraints.Min(0) Integer lowStockThreshold) {
     }
 
     /**

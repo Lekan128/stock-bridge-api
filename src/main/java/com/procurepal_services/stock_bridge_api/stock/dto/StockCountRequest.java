@@ -32,4 +32,9 @@ public record StockCountRequest(
     public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note) {
         this(countedQuantity, countedAt, note, null);
     }
+
+    /** This count, at {@code branch} - how a caller states the branch it has resolved. */
+    public StockCountRequest withBranchId(UUID branch) {
+        return new StockCountRequest(countedQuantity, countedAt, note, branch);
+    }
 }

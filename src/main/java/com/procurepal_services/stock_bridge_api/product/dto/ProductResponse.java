@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product.dto;
 
+import com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.product.StockStatus;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
@@ -107,7 +108,11 @@ public record ProductResponse(
         // when that was not the stock unit. A sale in that unit pre-fills from it; unitPrice above
         // stays the per-stock-unit figure. Absent when the price was typed per stock unit.
         BigDecimal unitPriceEntered,
-        String unitPriceEnteredUnit) {
+        String unitPriceEnteredUnit,
+        // Multiple branches (V52): the product page's "At other branches" (MULTI_BRANCH_UX_PLAN.md
+        // section 5.9) - each branch the person sees. quantityOnHand above stays the company's.
+        // Absent at a one-branch company and on every response but the product page.
+        List<BranchFigure> branchStock) {
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -170,7 +175,8 @@ public record ProductResponse(
                 product.getCompanyCategory() == null ? null : product.getCompanyCategory().getId(),
                 product.getCompanyCategory() == null ? null : product.getCompanyCategory().getName(),
                 product.getUnitPriceEntered(),
-                product.getUnitPriceEnteredUnit());
+                product.getUnitPriceEnteredUnit(),
+                null);
     }
 
     /**
@@ -183,6 +189,17 @@ public record ProductResponse(
                 id, name, sku, barcode, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
-                warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit);
+                warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
+                branchStock);
+    }
+
+    /** The same product with its figure at each branch the person sees (V52) - the product page only. */
+    public ProductResponse withBranchStock(List<BranchFigure> figures) {
+        return new ProductResponse(
+                id, name, sku, barcode, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
+                expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
+                packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
+                warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
+                figures);
     }
 }

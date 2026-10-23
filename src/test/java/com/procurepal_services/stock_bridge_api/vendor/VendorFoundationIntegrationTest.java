@@ -288,6 +288,9 @@ class VendorFoundationIntegrationTest {
 
         assertThat(codes)
                 .containsExactly(
+                        // V52 split selling prices out of MANAGE_PRODUCTS and gave it to every
+                        // role holding that, a vendor's included: a vendor sets its own prices.
+                        "CHANGE_SELLING_PRICES",
                         // A vendor's single user IS its account holder, and V7 exists so
                         // an account holder can fix their own details without a ticket.
                         "MANAGE_COMPANY_PROFILE",

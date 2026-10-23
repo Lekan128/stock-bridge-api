@@ -110,6 +110,9 @@ public class ImportSessionService {
             ImportStatus.PARSING, ImportStatus.NEEDS_REVIEW, ImportStatus.READY,
             ImportStatus.FAILED, ImportStatus.EXPIRED);
 
+    /** The branch an import is for (V52) - see {@link #branchForImport}. */
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final ImportSessionRepository importSessionRepository;
     private final ImportSessionRowRepository importSessionRowRepository;
     private final ProductVendorPackRepository productVendorPackRepository;
@@ -175,7 +178,15 @@ public class ImportSessionService {
     @Transactional
     public ImportSessionResponse create(
             MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
-        return createFromTable(read(file), filenameOf(file), kind, mode, actingUserId, delivery);
+        return create(file, kind, mode, actingUserId, delivery, null);
+    }
+
+    /** @param branchId the branch the sheet is for (V52) - see {@link #branchForImport}. */
+    @Transactional
+    public ImportSessionResponse create(
+            MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID branchId) {
+        return createFromTable(read(file), filenameOf(file), kind, mode, actingUserId, delivery, null, branchId);
     }
 
     /**
@@ -187,6 +198,14 @@ public class ImportSessionService {
     public ImportSessionResponse createDelivery(
             List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery,
             UUID expectedDeliveryId) {
+        return createDelivery(lines, title, actingUserId, delivery, expectedDeliveryId, null);
+    }
+
+    /** @param branchId the branch it arrived at (V52) - see {@link #branchForImport}. */
+    @Transactional
+    public ImportSessionResponse createDelivery(
+            List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID expectedDeliveryId, UUID branchId) {
         if (lines == null || lines.isEmpty()) {
             throw new ImportExceptions.BadFile("Add at least one thing that arrived.");
         }
@@ -227,7 +246,7 @@ public class ImportSessionService {
             rows.add(new SheetRow(line++, cells));
         }
         return createFromTable(new SheetTable(headers, indexes, rows), title, ImportKind.STOCK_IN,
-                ImportMode.CREATE_ONLY, actingUserId, delivery, expectedDeliveryId);
+                ImportMode.CREATE_ONLY, actingUserId, delivery, expectedDeliveryId, branchId);
     }
 
     /**
@@ -241,6 +260,14 @@ public class ImportSessionService {
     @Transactional
     public ImportSessionResponse createFromPaste(
             String text, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
+        return createFromPaste(text, kind, mode, actingUserId, delivery, null);
+    }
+
+    /** @param branchId the branch the rows are for (V52) - see {@link #branchForImport}. */
+    @Transactional
+    public ImportSessionResponse createFromPaste(
+            String text, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID branchId) {
         ImportRowHandler handler = handlerFor(kind);
         SheetTable table = PastedText.read(
                 text, cell -> columnMapper.recognisesHeader(cell, kind, handler.fields()));
@@ -248,7 +275,7 @@ public class ImportSessionService {
             throw new ImportExceptions.BadFile(
                     "We could not find any rows in that. Paste the lines themselves, one per row.");
         }
-        return createFromTable(table, pasteTitle(kind), kind, mode, actingUserId, delivery);
+        return createFromTable(table, pasteTitle(kind), kind, mode, actingUserId, delivery, null, branchId);
     }
 
     /** What the recent-imports list calls a paste, since there is no filename to show. */
@@ -266,15 +293,24 @@ public class ImportSessionService {
             UUID productId, String productName, String sku, String unit, BigDecimal quantity, BigDecimal price) {
     }
 
-    private ImportSessionResponse createFromTable(
-            SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
-            ImportDeliveryDetails delivery) {
-        return createFromTable(table, filename, kind, mode, actingUserId, delivery, null);
+    /**
+     * The branch an import's stock lands at (V52), decided when it is created so a commit never has to
+     * guess: the one named, or the person's only branch - and they must work there now. Null, decided at
+     * commit as the company's only branch, when none was named at a one-branch company.
+     */
+    private UUID branchForImport(UUID requested, UUID actingUserId) {
+        if (requested == null && !branchStockService.isMultiBranch(TenantContext.get())) {
+            return null;
+        }
+        UUID branchId = branchStockService.resolveForWrite(requested, actingUserId);
+        branchAccessService.requireMayRecordAt(actingUserId, branchId);
+        return branchId;
     }
 
     private ImportSessionResponse createFromTable(
             SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
-            ImportDeliveryDetails delivery, UUID expectedDeliveryId) {
+            ImportDeliveryDetails delivery, UUID expectedDeliveryId, UUID requestedBranchId) {
+        UUID branchId = branchForImport(requestedBranchId, actingUserId);
         // Mode is meaningless for STOCK_IN (contract section 1) - persisted as CREATE_ONLY and
         // ignored, rather than left null, so the CHECK constraint and every later read see a
         // legal value.
@@ -304,6 +340,7 @@ public class ImportSessionService {
                 .valueMappings(new LinkedHashMap<>())
                 .rowDefaults(kind == ImportKind.STOCK_IN ? rowDefaultsOf(delivery) : null)
                 .expectedDeliveryId(expectedDeliveryId)
+                .branchId(branchId)
                 .rowCount(dataRows.size())
                 .validCount(0)
                 .errorCount(0)

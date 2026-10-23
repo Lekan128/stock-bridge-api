@@ -212,7 +212,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "AND (CAST(:to AS timestamptz) IS NULL OR occurred_at <= CAST(:to AS timestamptz)) "
                     // V46: why it went out - the same two narrowings as StockMovementSpecifications.forTenant.
                     + "AND (CAST(:outReason AS text) IS NULL OR out_reason = CAST(:outReason AS text)) "
-                    + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL))",
+                    + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL)) "
+                    // V51: the branches the person sees, as the rows above it are (atBranches).
+                    + "AND branch_id IN (:branchIds)",
             nativeQuery = true)
     List<Object[]> summarise(
             @Param("clientId") UUID clientId,
@@ -222,7 +224,8 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
             @Param("outReason") String outReason,
-            @Param("noReason") boolean noReason);
+            @Param("noReason") boolean noReason,
+            @Param("branchIds") java.util.Collection<UUID> branchIds);
 
     /**
      * <h2>V28: these five reporting queries bracket occurred_at, not created_at</h2>
@@ -245,21 +248,23 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      */
     @Query("SELECT COALESCE(SUM(m.quantity * m.unitPriceAtTime), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType AND m.unitPriceAtTime IS NOT NULL "
-            + "AND m.occurredAt BETWEEN :from AND :to")
+            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds")
     BigDecimal sumValue(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("branchIds") java.util.Collection<UUID> branchIds);
 
     @Query("SELECT COALESCE(SUM(m.quantity), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType "
-            + "AND m.occurredAt BETWEEN :from AND :to")
+            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds")
     long sumQuantity(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("branchIds") java.util.Collection<UUID> branchIds);
 
     /**
      * Native (Postgres-specific date_trunc/to_char) rather than JPQL - portable
@@ -282,7 +287,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE 0 END), 0) AS in_quantity, "
                     + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS out_quantity "
                     + "FROM stock_movements "
-                    + "WHERE client_id = :clientId AND occurred_at BETWEEN :from AND :to "
+                    + "WHERE client_id = :clientId AND occurred_at BETWEEN :from AND :to AND branch_id IN (:branchIds) "
                     + "GROUP BY period "
                     + "ORDER BY period",
             nativeQuery = true)
@@ -290,7 +295,8 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("clientId") UUID clientId,
             @Param("granularity") String granularity,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("branchIds") java.util.Collection<UUID> branchIds);
 
     /** Each row: [productId(uuid), name(text), sku(text), totalValue(numeric), totalQuantity(bigint)]. */
     @Query(
@@ -299,6 +305,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(m.quantity), 0) AS total_quantity "
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
                     + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
+                    + "AND m.branch_id IN (:branchIds) "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_value DESC "
                     + "LIMIT :limit",
@@ -308,7 +315,8 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
-            @Param("limit") int limit);
+            @Param("limit") int limit,
+            @Param("branchIds") java.util.Collection<UUID> branchIds);
 
     @Query(
             value = "SELECT p.id, p.name, p.sku, "
@@ -316,6 +324,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(m.quantity), 0) AS total_quantity "
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
                     + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
+                    + "AND m.branch_id IN (:branchIds) "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_quantity DESC "
                     + "LIMIT :limit",
@@ -325,7 +334,8 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
-            @Param("limit") int limit);
+            @Param("limit") int limit,
+            @Param("branchIds") java.util.Collection<UUID> branchIds);
 
     /** The most recent write on a product - a void (D8) is only exact while its write is still this. */
     Optional<StockMovement> findFirstByProductIdOrderByCreatedAtDescIdDesc(UUID productId);

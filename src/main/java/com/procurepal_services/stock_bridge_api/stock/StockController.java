@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchAccessService;
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
@@ -58,6 +60,9 @@ public class StockController {
     private final StockWritePermissionGuard permissionGuard;
     /** Backs the one-off Phase 0 cost audit below - read-only, see that class. */
     private final CostBasisAuditService costBasisAuditService;
+    /** Where each write lands (V51) and whether this person may record there now (V52). */
+    private final BranchStockService branchStockService;
+    private final BranchAccessService branchAccessService;
 
     /**
      * The three writes below take an optional {@code Idempotency-Key}. Without one they behave
@@ -73,7 +78,8 @@ public class StockController {
         return idempotent(idempotencyKey, "STOCK_IN", productId, request,
                 () -> {
                     permissionGuard.require(principal.getUserId(), "STOCK_IN");
-                    return stockManagementService.stockIn(productId, request, principal.getUserId());
+                    UUID branchId = branchFor(request.branchId(), principal);
+                    return stockManagementService.stockIn(productId, request.withBranchId(branchId), principal.getUserId());
                 });
     }
 
@@ -87,7 +93,8 @@ public class StockController {
         return idempotent(idempotencyKey, "STOCK_OUT", productId, request,
                 () -> {
                     permissionGuard.require(principal.getUserId(), "STOCK_OUT");
-                    return stockManagementService.stockOut(productId, request, principal.getUserId());
+                    UUID branchId = branchFor(request.branchId(), principal);
+                    return stockManagementService.stockOut(productId, request.withBranchId(branchId), principal.getUserId());
                 });
     }
 
@@ -101,7 +108,8 @@ public class StockController {
         return idempotent(idempotencyKey, "ADJUSTMENT", productId, request,
                 () -> {
                     permissionGuard.require(principal.getUserId(), "MANAGE_INVENTORY");
-                    return stockManagementService.adjust(productId, request, principal.getUserId());
+                    UUID branchId = branchFor(request.branchId(), principal);
+                    return stockManagementService.adjust(productId, request.withBranchId(branchId), principal.getUserId());
                 });
     }
 
@@ -119,7 +127,8 @@ public class StockController {
         return idempotent(idempotencyKey, "COUNT", productId, request,
                 () -> {
                     permissionGuard.require(principal.getUserId(), "MANAGE_INVENTORY");
-                    return stockManagementService.count(productId, request, principal.getUserId());
+                    UUID branchId = branchFor(request.branchId(), principal);
+                    return stockManagementService.count(productId, request.withBranchId(branchId), principal.getUserId());
                 });
     }
 
@@ -136,6 +145,17 @@ public class StockController {
             @PathVariable UUID movementId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return ResponseEntity.ok(stockManagementService.voidWrite(productId, movementId, principal.getUserId()));
+    }
+
+    /**
+     * The branch a person's write lands at, and the check that they work there now (D-B9, D-B10).
+     * Inside the write, after the permission re-check, so an idempotent replay of a write already
+     * accepted keeps its stored answer even if their branches have changed since.
+     */
+    private UUID branchFor(UUID requested, AuthenticatedUserPrincipal principal) {
+        UUID branchId = branchStockService.resolveForWrite(requested, principal.getUserId());
+        branchAccessService.requireMayRecordAt(principal.getUserId(), branchId);
+        return branchId;
     }
 
     private ResponseEntity<StockMutationResponse> idempotent(
@@ -160,8 +180,15 @@ public class StockController {
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public Page<StockMovementResponse> history(
             @PathVariable UUID productId,
-            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable) {
-        return stockManagementService.history(productId, pageable);
+            // V51: one branch's history, or (absent) every branch this person sees.
+            @RequestParam(required = false) UUID branchId,
+            @PageableDefault(size = 20, sort = "createdAt", direction = Sort.Direction.DESC) Pageable pageable,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return stockManagementService.history(productId, pageable, branchScope(branchId, principal));
+    }
+
+    private List<UUID> branchScope(UUID requested, AuthenticatedUserPrincipal principal) {
+        return branchAccessService.reportScope(principal.getUserId(), requested);
     }
 
     /**
@@ -219,9 +246,13 @@ public class StockController {
             // V46: narrow to stock-outs with this reason, or (noReason) to those with none given.
             @RequestParam(required = false) OutReason outReason,
             @RequestParam(defaultValue = "false") boolean noReason,
-            @PageableDefault(size = 20, sort = "occurredAt", direction = Sort.Direction.DESC) Pageable pageable) {
+            // V51: one branch, or (absent) every branch this person sees.
+            @RequestParam(required = false) UUID branchId,
+            @PageableDefault(size = 20, sort = "occurredAt", direction = Sort.Direction.DESC) Pageable pageable,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return stockManagementService.allMovements(
-                from, to, movementType, productId, companyVendorId, outReason, noReason, pageable);
+                from, to, movementType, productId, companyVendorId, outReason, noReason,
+                branchScope(branchId, principal), pageable);
     }
 
     /**
@@ -239,9 +270,12 @@ public class StockController {
             @RequestParam(required = false) UUID productId,
             @RequestParam(required = false) UUID companyVendorId,
             @RequestParam(required = false) OutReason outReason,
-            @RequestParam(defaultValue = "false") boolean noReason) {
+            @RequestParam(defaultValue = "false") boolean noReason,
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return stockManagementService.movementSummary(
-                from, to, movementType, productId, companyVendorId, outReason, noReason);
+                from, to, movementType, productId, companyVendorId, outReason, noReason,
+                branchScope(branchId, principal));
     }
 
     /**

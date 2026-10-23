@@ -124,6 +124,12 @@ public record StockOutRequest(
         return Boolean.TRUE.equals(recordedOffline);
     }
 
+    /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
+    public StockOutRequest withBranchId(UUID branch) {
+        return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
+                saleId, lineTotal, branch);
+    }
+
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */
     public record Allocation(@NotNull UUID inMovementId, @NotNull @Positive Integer quantity) {
     }

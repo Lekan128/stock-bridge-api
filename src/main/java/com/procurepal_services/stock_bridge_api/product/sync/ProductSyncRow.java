@@ -2,6 +2,8 @@ package com.procurepal_services.stock_bridge_api.product.sync;
 
 import com.procurepal_services.stock_bridge_api.product.StockStatus;
 import java.math.BigDecimal;
+import com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -36,5 +38,9 @@ public record ProductSyncRow(
         // V47: the selling price as typed and its unit, so a phone selling offline pre-fills
         // "5,000 a carton" rather than 24 x 208.33. Absent when typed per stock unit.
         BigDecimal unitPriceEntered,
-        String unitPriceEnteredUnit) {
+        String unitPriceEnteredUnit,
+        // Multiple branches (V52): this product at each branch the person sees, so the phone can show
+        // any of them offline (MULTI_BRANCH_UX_PLAN.md section 4.3). quantityOnHand and stockStatus
+        // above stay the company's. Absent at a one-branch company.
+        List<BranchFigure> branchStock) {
 }

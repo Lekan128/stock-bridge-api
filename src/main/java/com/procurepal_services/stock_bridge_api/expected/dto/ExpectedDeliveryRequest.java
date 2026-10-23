@@ -21,7 +21,15 @@ public record ExpectedDeliveryRequest(
         String expectedDate,
         @Size(max = 200) String reference,
         @Size(max = 500) String note,
-        @NotEmpty(message = "Add at least one thing you are expecting.") @Valid List<Line> lines) {
+        @NotEmpty(message = "Add at least one thing you are expecting.") @Valid List<Line> lines,
+        // Multiple branches (V52): the branch it is going to. Absent means the company's only branch,
+        // or the one branch the person works at.
+        UUID branchId) {
+
+    /** The shape before {@code branchId} (multiple branches, Phase 1). */
+    public ExpectedDeliveryRequest(UUID vendorId, String expectedDate, String reference, String note, List<Line> lines) {
+        this(vendorId, expectedDate, reference, note, lines, null);
+    }
 
     public record Line(
             @NotNull UUID productId,

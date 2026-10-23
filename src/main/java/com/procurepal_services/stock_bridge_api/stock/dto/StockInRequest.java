@@ -162,6 +162,12 @@ public record StockInRequest(
         return Boolean.TRUE.equals(recordedOffline);
     }
 
+    /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
+    public StockInRequest withBranchId(UUID branch) {
+        return new StockInRequest(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize,
+                occurredAt, saveAsSupplierDefault, vendorSku, recordedOffline, branch);
+    }
+
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
     public StockInRequest(Integer quantity, BigDecimal unitPrice, String note) {
         this(decimal(quantity), unitPrice, note, null, null, null, null, null, null, null);

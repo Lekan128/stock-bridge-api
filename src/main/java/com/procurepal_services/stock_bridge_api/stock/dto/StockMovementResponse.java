@@ -81,7 +81,9 @@ public record StockMovementResponse(
         BigDecimal costAmount,
         CostBasis costBasis,
         UUID reversesMovementId,
-        UUID correctsMovementId) {
+        UUID correctsMovementId,
+        // Multiple branches (V51): where it happened.
+        UUID branchId) {
 
     public static StockMovementResponse from(StockMovement movement) {
         return new StockMovementResponse(
@@ -117,7 +119,8 @@ public record StockMovementResponse(
                 movement.getCostAmount(),
                 movement.getCostBasis(),
                 movement.getReversesMovementId(),
-                movement.getCorrectsMovementId());
+                movement.getCorrectsMovementId(),
+                movement.getBranchId());
     }
 
     /** Null, not zero, when the movement recorded no price - see the class doc. */
