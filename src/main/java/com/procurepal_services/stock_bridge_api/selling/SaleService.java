@@ -4,6 +4,7 @@ import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import com.procurepal_services.stock_bridge_api.entity.User;
+import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import com.procurepal_services.stock_bridge_api.selling.dto.AddSalePriceRequest;
 import com.procurepal_services.stock_bridge_api.selling.dto.SaleLineResponse;
@@ -54,6 +55,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class SaleService {
 
     private final StockMovementRepository stockMovementRepository;
+    private final ProductRepository productRepository;
     private final StockManagementService stockManagementService;
     private final StockWritePermissionGuard permissions;
 
@@ -100,6 +102,16 @@ public class SaleService {
                                 .orElseThrow(SaleNotFoundException::new))
                         .toList();
         Map<UUID, StockMovement> cancellations = fixesBy(rows, StockMovement::getReversesMovementId);
+        // Every product these lines touch is locked in one order, before any line is cancelled
+        // (MULTI_BRANCH_BUILD_PLAN.md D-B2). Locking in line order instead, two cancellations that
+        // share products could each hold one and wait for the other. The lines are still cancelled
+        // in the order they were sold, so the receipt reads the same.
+        UUID tenantId = requireTenantId();
+        wanted.stream()
+                .map(line -> line.getProduct().getId())
+                .distinct()
+                .sorted()
+                .forEach(productId -> productRepository.findByIdAndClientIdForUpdate(productId, tenantId));
         List<StockMovement> written = new ArrayList<>();
         for (StockMovement line : wanted) {
             if (cancellations.containsKey(line.getId())) {

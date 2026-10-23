@@ -1,5 +1,8 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchClosedException;
+import com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException;
+import com.procurepal_services.stock_bridge_api.branch.BranchRequiredException;
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.product.ProductNotFoundException;
 import com.procurepal_services.stock_bridge_api.stock.dto.InsufficientStockErrorResponse;
@@ -15,6 +18,23 @@ public class StockManagementExceptionHandler {
     @ExceptionHandler(ProductNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(ProductNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(BranchNotFoundException.class)
+    public ResponseEntity<ApiError> handleBranchNotFound(BranchNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    /** 409, like {@link InsufficientStockException}: the same write was fine before the branch closed. */
+    @ExceptionHandler(BranchClosedException.class)
+    public ResponseEntity<ApiError> handleBranchClosed(BranchClosedException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
+    /** 400: the request is missing the branch it needs (D-B10). The phone shows it as "needs you". */
+    @ExceptionHandler(BranchRequiredException.class)
+    public ResponseEntity<ApiError> handleBranchRequired(BranchRequiredException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 
     @ExceptionHandler(StockMovementNotFoundException.class)

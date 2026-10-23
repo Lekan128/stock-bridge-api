@@ -95,6 +95,19 @@ public class StockMovement extends TenantAwareEntity {
     private User createdBy;
 
     /**
+     * The branch this change happened at (V51, MULTI_BRANCH_BUILD_PLAN.md D-B3). Every movement has
+     * one; a company with one branch has them all there. Lots, FIFO, counts and undo are per branch
+     * by filtering on it. Set only by {@code StockManagementService} and the import undo, from
+     * {@code BranchStockService.resolveForWrite} or the movement being reversed, never defaulted
+     * by the database.
+     *
+     * <p>A raw UUID like {@link #importBatchId}, for the same reason: this row is read in bulk and
+     * wants no association hanging off it.
+     */
+    @Column(name = "branch_id", nullable = false, updatable = false)
+    private UUID branchId;
+
+    /**
      * Which supplier this delivery came from - IN movements only, added V19. Required by
      * {@code StockManagementService.stockIn} once the product already has any {@link
      * ProductVendor} row on file; a schema CHECK cannot express that (it would need a join).

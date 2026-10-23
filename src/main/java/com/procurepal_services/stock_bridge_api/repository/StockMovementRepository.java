@@ -16,19 +16,34 @@ import org.springframework.data.repository.query.Param;
 
 public interface StockMovementRepository extends TenantScopedRepository<StockMovement, UUID>, JpaSpecificationExecutor<StockMovement> {
 
-    /** Whether this product was counted after {@code after} (A4) - see {@code StockMovement.count}. */
-    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.count = true AND m.occurredAt > :after")
-    boolean existsCountAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
+    /**
+     * Whether this product's shelf at this branch was counted after {@code after} (A4) - see
+     * {@code StockMovement.count}. A count is of one branch's shelf (V51), so another branch's count
+     * says nothing about this one.
+     */
+    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId "
+            + "AND m.count = true AND m.occurredAt > :after")
+    boolean existsCountAfter(
+            @Param("productId") UUID productId, @Param("branchId") UUID branchId, @Param("after") OffsetDateTime after);
 
     /**
-     * The net effect on the shelf of everything recorded as happening after {@code after}: IN adds,
-     * OUT takes away, an ADJUSTMENT is already a signed difference. What a count taken at
-     * {@code after} has to be carried forward by to be today's figure.
+     * The net effect on this branch's shelf of everything recorded as happening there after
+     * {@code after}: IN adds, OUT takes away, an ADJUSTMENT is already a signed difference. What a
+     * count taken at {@code after} has to be carried forward by to be today's figure.
+     *
+     * <p>Every type is named, and anything else counts for nothing. This used to read "OUT takes away,
+     * everything else adds", which was right while there were three types and would have ADDED the
+     * transfers of Phase 2 (MULTI_BRANCH_BUILD_PLAN.md section 4.3): a new type must be given a sign
+     * here on purpose, never inherit one.
      */
-    @Query("SELECT COALESCE(SUM(CASE WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT "
-            + "THEN -m.quantity ELSE m.quantity END), 0) "
-            + "FROM StockMovement m WHERE m.product.id = :productId AND m.occurredAt > :after")
-    long netChangeAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
+    @Query("SELECT COALESCE(SUM(CASE "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT THEN -m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.ADJUSTMENT THEN m.quantity "
+            + "ELSE 0 END), 0) "
+            + "FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId AND m.occurredAt > :after")
+    long netChangeAfter(
+            @Param("productId") UUID productId, @Param("branchId") UUID branchId, @Param("after") OffsetDateTime after);
 
     /**
      * Whether this product has ever had a movement recorded. Backs the V19 rule that {@code
@@ -71,13 +86,18 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      * order among tied lots is whatever the plan happens to produce, which makes FIFO
      * non-deterministic between two reads of identical data - and "the order they were entered
      * in" is both stable and defensible to a user asking why one same-day lot went first.
-     * {@code idx_stock_movements_product_id_type_occurred_at} covers this query end to end.
+     *
+     * <h2>V51: one branch's lots</h2>
+     * A sale at Oshodi draws on what is on Oshodi's shelf, so only that branch's lots are candidates.
+     * {@code idx_stock_movements_lots} covers this query end to end.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT m FROM StockMovement m WHERE m.product.id = :productId AND m.clientId = :clientId "
+            + "AND m.branchId = :branchId "
             + "AND m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN "
             + "ORDER BY m.occurredAt ASC, m.createdAt ASC")
-    List<StockMovement> findInMovementsForUpdate(@Param("productId") UUID productId, @Param("clientId") UUID clientId);
+    List<StockMovement> findInMovementsForUpdate(
+            @Param("productId") UUID productId, @Param("clientId") UUID clientId, @Param("branchId") UUID branchId);
 
     /**
      * Everything one import's commit wrote to the ledger - BULK_IMPORT_DESIGN.md section 6.5's

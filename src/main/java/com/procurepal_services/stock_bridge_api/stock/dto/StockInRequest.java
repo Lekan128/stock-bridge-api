@@ -119,7 +119,28 @@ public record StockInRequest(
         // A4: this delivery was recorded on a phone while offline and is arriving late. Only such
         // a write is checked against stock counts taken since - see StockManagementService. Absent
         // and false both mean "recorded now", which is every caller before A4.
-        Boolean recordedOffline) {
+        Boolean recordedOffline,
+        // Multiple branches (V51): where this was recorded. Absent means the company's only branch;
+        // refused at a company with several (BranchStockService.resolveForWrite). Left out of the
+        // idempotency hash when absent, so a write queued before this field existed replays as before.
+        UUID branchId) {
+
+    /** The shape before {@code branchId} (multiple branches, Phase 0). */
+    public StockInRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt,
+            Boolean saveAsSupplierDefault,
+            String vendorSku,
+            Boolean recordedOffline) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+                saveAsSupplierDefault, vendorSku, recordedOffline, null);
+    }
 
     /** The shape before {@code recordedOffline} (A4); every server-side caller still uses it. */
     public StockInRequest(

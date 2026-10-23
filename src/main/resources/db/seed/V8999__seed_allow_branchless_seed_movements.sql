@@ -1,0 +1,11 @@
+-- Demo/local seed only - see V9000's header for why db/seed never reaches production.
+--
+-- V51 made stock_movements.branch_id NOT NULL. The demo seeds (V9000, V9001) insert stock movements
+-- with no branch, and on a fresh database they run AFTER V51, so they would fail. They cannot be
+-- edited without changing their checksums under every existing local database. Instead this file,
+-- versioned to run just before them, lifts the constraint, and V9004 fills in the seed's branches
+-- and puts it back. Production never loads db/seed, so it keeps V51's NOT NULL throughout.
+--
+-- On a database seeded before V51, all three of V51, this and V9004 arrive together (out of order,
+-- which the seed profiles allow), so the constraint is lifted and restored in the same run.
+ALTER TABLE stock_movements ALTER COLUMN branch_id DROP NOT NULL;

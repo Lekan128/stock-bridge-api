@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports.handler;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.product.quality.ProductSetupChecks;
 import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.Client;
@@ -141,6 +142,8 @@ public class StockInRowHandler implements ImportRowHandler {
     private final ProductVendorPackRepository productVendorPackRepository;
     private final ProductVendorService productVendorService;
     private final StockMovementRepository stockMovementRepository;
+    /** Undo puts stock back at the branch the import put it at (V51). */
+    private final BranchStockService branchStockService;
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final ImportSessionRowRepository importSessionRowRepository;
     private final StockManagementService stockManagementService;
@@ -1737,9 +1740,10 @@ public class StockInRowHandler implements ImportRowHandler {
             if (product == null) {
                 continue;
             }
-            product.setQuantityOnHand(product.getQuantityOnHand() - movement.getQuantity());
+            branchStockService.apply(product, movement.getBranchId(), -movement.getQuantity());
             stockMovementRepository.save(StockMovement.builder()
                     .product(product)
+                    .branchId(movement.getBranchId())
                     .movementType(MovementType.ADJUSTMENT)
                     .quantity(-movement.getQuantity())
                     .note("Reversing a delivery import that was undone")

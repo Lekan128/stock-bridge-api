@@ -77,7 +77,26 @@ public record StockOutRequest(
         UUID saleId,
         // What the customer paid for this whole line, when the seller typed a total ("the six for
         // 10,800") rather than a price each. Stored exactly as the sale amount.
-        @DecimalMin(value = "0", inclusive = true) BigDecimal lineTotal) {
+        @DecimalMin(value = "0", inclusive = true) BigDecimal lineTotal,
+        // Multiple branches (V51): where this was recorded. Absent means the company's only branch;
+        // refused at a company with several (BranchStockService.resolveForWrite). Left out of the
+        // idempotency hash when absent, so a write queued before this field existed replays as before.
+        UUID branchId) {
+
+    /** The shape before {@code branchId} (multiple branches, Phase 0). */
+    public StockOutRequest(
+            Integer quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            List<Allocation> allocations,
+            OffsetDateTime occurredAt,
+            Boolean recordedOffline,
+            OutReason reason,
+            UUID saleId,
+            BigDecimal lineTotal) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal, null);
+    }
 
     /** The shape before V46's reason, sale id and line total. */
     public StockOutRequest(

@@ -4,6 +4,7 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import java.time.OffsetDateTime;
+import java.util.UUID;
 
 /**
  * A stock count: how much was on the shelf, and when it was counted (A4, decision D1). Replaces
@@ -18,7 +19,17 @@ import java.time.OffsetDateTime;
  * @param countedAt when the shelf was counted. Null means now - the online case, where this is
  *     exactly the old absolute adjustment.
  * @param note optional; the history shows "Stock count" when it is absent.
+ * @param branchId the branch whose shelf was counted (V51); absent means the company's only branch -
+ *     see {@code StockInRequest.branchId}.
  */
 public record StockCountRequest(
-        @NotNull @Min(0) Integer countedQuantity, OffsetDateTime countedAt, @Size(max = 1000) String note) {
+        @NotNull @Min(0) Integer countedQuantity,
+        OffsetDateTime countedAt,
+        @Size(max = 1000) String note,
+        UUID branchId) {
+
+    /** The shape before {@code branchId} (multiple branches, Phase 0). */
+    public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note) {
+        this(countedQuantity, countedAt, note, null);
+    }
 }
