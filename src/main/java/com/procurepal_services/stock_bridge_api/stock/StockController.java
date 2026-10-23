@@ -213,8 +213,16 @@ public class StockController {
     @GetMapping("/api/products/{productId}/lots")
     @PreAuthorize("hasAnyAuthority('MANAGE_INVENTORY', 'STOCK_OUT')")
     public List<ProductLotResponse> lots(
-            @PathVariable UUID productId, @RequestParam(name = "open", defaultValue = "true") boolean open) {
-        return stockManagementService.lots(productId, open);
+            @PathVariable UUID productId,
+            @RequestParam(name = "open", defaultValue = "true") boolean open,
+            // V51: the deliveries on one branch's shelf - the stock-out sheet's branch. A branch this
+            // person can't see is refused, like every report (branchScope).
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        if (branchId != null) {
+            branchScope(branchId, principal);
+        }
+        return stockManagementService.lots(productId, open, branchId);
     }
 
     /**

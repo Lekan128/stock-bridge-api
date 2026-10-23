@@ -71,12 +71,18 @@ public class BranchService {
                         .thenComparing(Branch::getName, String.CASE_INSENSITIVE_ORDER))
                 .map(branch -> toResponse(branch, writable.contains(branch.getId()), totals.get(branch.getId()), manages))
                 .toList();
+        boolean multiBranch = branchStockService.isMultiBranch(clientId);
+        List<BranchListResponse.BranchName> sendTo = !multiBranch || !hasPermission(userId, "SEND_STOCK") ? List.of()
+                : branchRepository.findAllByClientIdAndActiveTrueOrderByNameAsc(clientId).stream()
+                        .map(branch -> new BranchListResponse.BranchName(branch.getId(), branch.getName()))
+                        .toList();
         return new BranchListResponse(
                 branches,
-                branchStockService.isMultiBranch(clientId),
+                multiBranch,
                 grants.seesEverywhere(),
                 grants.recordsEverywhere(),
-                manages && mayAddBranch(clientId));
+                manages && mayAddBranch(clientId),
+                sendTo);
     }
 
     /**

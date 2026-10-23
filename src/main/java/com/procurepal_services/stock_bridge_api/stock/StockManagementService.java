@@ -870,6 +870,10 @@ public class StockManagementService {
             case IN -> "STOCK_IN";
             case OUT -> "STOCK_OUT";
             case ADJUSTMENT -> "MANAGE_INVENTORY";
+            // Half a waybill is never undone on its own: the whole transfer is cancelled, before it
+            // is received (TransferService.cancel), so both branches' figures move together.
+            case TRANSFER_OUT, TRANSFER_IN -> throw new StockWriteNotUndoableException(
+                    "This is part of a transfer. Cancel the transfer instead, before it is received.");
         };
         stockWritePermissionGuard.require(actingUserId, authority);
 
@@ -901,6 +905,7 @@ public class StockManagementService {
             case IN -> voidStockIn(product, movement, snapshot, tenantId);
             case OUT -> voidStockOut(product, movement, tenantId);
             case ADJUSTMENT -> branchStockService.apply(product, movement.getBranchId(), -movement.getQuantity());
+            case TRANSFER_OUT, TRANSFER_IN -> throw new IllegalStateException("refused above");
         }
         stockMovementRepository.delete(movement);
         stockMovementRepository.flush();
@@ -1014,6 +1019,213 @@ public class StockManagementService {
         log.info("Sale line cancelled: line={} sale={} product={} client={} by={}",
                 line.getId(), line.getSaleId(), product.getId(), tenantId, actingUserId);
         return cancellation;
+    }
+
+    // ------------------------------------------------------------------------------ transfers (V53)
+
+    /**
+     * One piece of the stock a TRANSFER_OUT took: the lot it came from - null for stock that predates
+     * lots - and how much. A transfer's line is received, or found missing, in the order it was drawn.
+     */
+    public record TransferPiece(StockMovement lot, int quantity) {
+    }
+
+    /**
+     * Takes {@code quantity} off {@code branchId}'s shelf onto a waybill (MULTI_BRANCH_BUILD_PLAN.md
+     * section 5.3): judged against that branch's figure, drawn oldest-lot-first from that branch's lots
+     * like a stock-out, the company total down by the same amount until it arrives. The supplier's
+     * on-hand tally is NOT drawn down (D-B7): the stock is still the company's. The caller holds the
+     * product's lock.
+     */
+    @Transactional
+    public StockMovement transferOut(
+            Product product,
+            UUID branchId,
+            int quantity,
+            UUID transferId,
+            OffsetDateTime occurredAt,
+            String note,
+            String enteredUnit,
+            BigDecimal enteredQuantity,
+            UUID actingUserId) {
+        UUID tenantId = requireTenantId();
+        int available = branchStockService.quantityAt(product, branchId);
+        if (quantity > available) {
+            throw new InsufficientStockException(available, quantity, unitSymbol(product));
+        }
+        List<LotDraw> draws = resolveFifoAllocations(
+                stockMovementRepository.findInMovementsForUpdate(product.getId(), tenantId, branchId), quantity);
+        branchStockService.apply(product, branchId, -quantity);
+        StockMovement out = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(branchId)
+                .transferId(transferId)
+                .movementType(MovementType.TRANSFER_OUT)
+                .quantity(quantity)
+                .occurredAt(occurredAt)
+                .note(note)
+                .createdBy(reference(actingUserId))
+                .enteredUnit(enteredUnit)
+                .enteredQuantity(enteredQuantity)
+                .build());
+        for (LotDraw draw : draws) {
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(out)
+                    .inMovement(draw.lot())
+                    .quantity(draw.quantity())
+                    .build());
+        }
+        return out;
+    }
+
+    /**
+     * The pieces of a TRANSFER_OUT from {@code offset} for {@code quantity}, in the order it drew them:
+     * its lots, then whatever it took that had no lot. A line is consumed in that order by every receipt
+     * and loss, so the first lot sent is the first received (section 5.4).
+     */
+    @Transactional(readOnly = true)
+    public List<TransferPiece> transferPieces(StockMovement out, int offset, int quantity) {
+        List<TransferPiece> sequence = new ArrayList<>();
+        int drawn = 0;
+        for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(out.getId())) {
+            if (draw.getQuantity() > 0) {
+                sequence.add(new TransferPiece(draw.getInMovement(), draw.getQuantity()));
+                drawn += draw.getQuantity();
+            }
+        }
+        if (out.getQuantity() > drawn) {
+            sequence.add(new TransferPiece(null, out.getQuantity() - drawn));
+        }
+        List<TransferPiece> pieces = new ArrayList<>();
+        int skip = offset;
+        int want = quantity;
+        for (TransferPiece piece : sequence) {
+            if (want <= 0) break;
+            int available = piece.quantity();
+            int skipped = Math.min(skip, available);
+            skip -= skipped;
+            available -= skipped;
+            if (available <= 0) continue;
+            int take = Math.min(available, want);
+            pieces.add(new TransferPiece(piece.lot(), take));
+            want -= take;
+        }
+        return pieces;
+    }
+
+    /**
+     * Puts received stock on {@code branchId}'s shelf (D-B5): each piece a lot of its own, with the cost,
+     * supplier and packaging of the delivery it came from and {@code sourceLotId} naming it, so profit at
+     * this branch uses the real cost and the recall trace walks through. Stock that had no lot arrives at
+     * the product's average cost. The supplier's tally is not touched (D-B7). The caller holds the lock.
+     */
+    @Transactional
+    public void transferIn(
+            Product product,
+            UUID branchId,
+            List<TransferPiece> pieces,
+            UUID transferId,
+            OffsetDateTime occurredAt,
+            String note,
+            UUID actingUserId) {
+        int total = 0;
+        for (TransferPiece piece : pieces) {
+            StockMovement lot = piece.lot();
+            stockMovementRepository.save(StockMovement.builder()
+                    .product(product)
+                    .branchId(branchId)
+                    .transferId(transferId)
+                    .movementType(MovementType.TRANSFER_IN)
+                    .quantity(piece.quantity())
+                    .unitPriceAtTime(lot != null ? lot.getUnitPriceAtTime() : product.getCostPrice())
+                    .companyVendor(lot != null ? lot.getCompanyVendor() : null)
+                    .packagingUnit(lot != null ? lot.getPackagingUnit() : null)
+                    .packagingSize(lot != null ? lot.getPackagingSize() : null)
+                    .sourceLotId(lot != null ? lot.getId() : null)
+                    .occurredAt(occurredAt)
+                    .note(note)
+                    .createdBy(reference(actingUserId))
+                    .build());
+            total += piece.quantity();
+        }
+        if (total > 0) {
+            branchStockService.apply(product, branchId, total);
+        }
+    }
+
+    /**
+     * Stock lost on the way - missing or damaged (UX section 5.7). It already left the sending shelf, so
+     * no figure moves; it is gone from the company now, so the supplier tallies it came from go down.
+     */
+    @Transactional
+    public void transferLoss(Product product, List<TransferPiece> pieces) {
+        UUID tenantId = requireTenantId();
+        for (TransferPiece piece : pieces) {
+            CompanyVendor vendor = piece.lot() == null ? null : piece.lot().getCompanyVendor();
+            if (vendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), vendor.getId())
+                        .ifPresent(line -> productVendorService.recordAllocationDrawdown(line, piece.quantity()));
+            }
+        }
+    }
+
+    /**
+     * Takes back a TRANSFER_OUT whose waybill was cancelled before anything arrived: an ADJUSTMENT of
+     * +quantity that reverses it, and negative allocations giving each lot back what it gave - exactly
+     * how a sale line is cancelled ({@link #cancelSaleLine}), the ledger untouched.
+     */
+    @Transactional
+    public void cancelTransferOut(Product product, StockMovement out, UUID actingUserId) {
+        List<StockMovementAllocation> draws = stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(out.getId());
+        branchStockService.apply(product, out.getBranchId(), out.getQuantity());
+        StockMovement cancellation = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(out.getBranchId())
+                .transferId(out.getTransferId())
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(out.getQuantity())
+                .note("Transfer cancelled")
+                .createdBy(reference(actingUserId))
+                .reversesMovementId(out.getId())
+                .build());
+        for (StockMovementAllocation draw : draws) {
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(cancellation)
+                    .inMovement(draw.getInMovement())
+                    .quantity(-draw.getQuantity())
+                    .build());
+        }
+    }
+
+    /**
+     * More arrived than the waybill says (UX section 5.5, "Sent too many"): the sending branch had it
+     * without the books knowing, so its figure comes down by an ADJUSTMENT and the receiving branch gets
+     * it as a lot at the product's average cost. The company total doesn't move.
+     */
+    @Transactional
+    public void transferSurplus(
+            Product product,
+            UUID fromBranchId,
+            UUID toBranchId,
+            int extra,
+            UUID transferId,
+            String waybill,
+            OffsetDateTime occurredAt,
+            UUID actingUserId) {
+        branchStockService.apply(product, fromBranchId, -extra);
+        stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(fromBranchId)
+                .transferId(transferId)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(-extra)
+                .occurredAt(occurredAt)
+                .note("Sent more than recorded on " + waybill)
+                .createdBy(reference(actingUserId))
+                .build());
+        transferIn(product, toBranchId, List.of(new TransferPiece(null, extra)), transferId, occurredAt,
+                "More than " + waybill + " said", actingUserId);
     }
 
     /**
@@ -1249,7 +1461,11 @@ public class StockManagementService {
     public List<AllocationResponse> allocationsForInMovement(UUID inMovementId) {
         StockMovement inMovement = stockMovementRepository
                 .findByIdAndClientId(inMovementId, requireTenantId())
-                .filter(movement -> movement.getMovementType() == MovementType.IN)
+                // V53: stock that arrived on a waybill is a lot too, traced forward the same way; a lot drawn
+                // on by a TRANSFER_OUT shows that draw, and its stock continues as the TRANSFER_IN lot that
+                // names it as source_lot_id.
+                .filter(movement -> movement.getMovementType() == MovementType.IN
+                        || movement.getMovementType() == MovementType.TRANSFER_IN)
                 .orElseThrow(StockMovementNotFoundException::new);
         return stockMovementAllocationRepository.findAllByInMovementIdOrderByCreatedAtAsc(inMovement.getId()).stream()
                 .map(AllocationResponse::from)
@@ -1311,13 +1527,19 @@ public class StockManagementService {
      */
     @Transactional(readOnly = true)
     public List<ProductLotResponse> lots(UUID productId, boolean openOnly) {
+        return lots(productId, openOnly, null);
+    }
+
+    /** @param branchId one branch's shelf (V51) - the stock-out sheet's own branch; null for every branch. */
+    @Transactional(readOnly = true)
+    public List<ProductLotResponse> lots(UUID productId, boolean openOnly, UUID branchId) {
         UUID tenantId = requireTenantId();
         if (productRepository.findByIdAndClientId(productId, tenantId).isEmpty()) {
             throw new ProductNotFoundException();
         }
 
         List<StockMovement> lotsOldestFirst = stockMovementRepository.findAll(
-                StockMovementSpecifications.lotsForProduct(tenantId, productId),
+                StockMovementSpecifications.lotsForProduct(tenantId, productId, branchId),
                 Sort.by(Sort.Direction.ASC, "occurredAt", "createdAt"));
         if (lotsOldestFirst.isEmpty()) {
             return List.of();

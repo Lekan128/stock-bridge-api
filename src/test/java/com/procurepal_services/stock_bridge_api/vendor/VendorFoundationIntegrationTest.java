@@ -310,6 +310,9 @@ class VendorFoundationIntegrationTest {
                         // rather than by this grant.
                         "MANAGE_MARKETPLACE_ORDERS",
                         "MANAGE_PRODUCTS",
+                        // V53 gave it to every role holding STOCK_OUT. A seller can't add a
+                        // second branch in v1, so it has nowhere to send to yet.
+                        "SEND_STOCK",
                         // V27. Split out of MANAGE_INVENTORY, which this role already held -
                         // see StockController.
                         "STOCK_IN",

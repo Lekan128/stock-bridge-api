@@ -15,5 +15,9 @@ public enum NotificationType {
     PAYMENT_FAILED,
     ORDER_DELIVERED,
     /** ProcurePal support changed one of the company's settings (V45) - the owner is told who and why. */
-    ACCOUNT_SETTING_CHANGED
+    ACCOUNT_SETTING_CHANGED,
+    /** To the people at a branch: stock is on its way to them (V53, MULTI_BRANCH_UX_PLAN.md section 5.13). */
+    TRANSFER_ON_THE_WAY,
+    /** To the sending branch and the owners: a waybill arrived short (V53). */
+    TRANSFER_RECEIVED_SHORT
 }

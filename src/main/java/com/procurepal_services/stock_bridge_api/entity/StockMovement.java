@@ -107,6 +107,18 @@ public class StockMovement extends TenantAwareEntity {
     @Column(name = "branch_id", nullable = false, updatable = false)
     private UUID branchId;
 
+    /** The waybill this row is part of (V53) - TRANSFER_OUT and TRANSFER_IN only. Raw, like branchId. */
+    @Column(name = "transfer_id", updatable = false)
+    private UUID transferId;
+
+    /**
+     * On a TRANSFER_IN: the lot at the sending branch its stock came from (V53, D-B5). The new lot copies
+     * that lot's cost, supplier and packaging, and the recall trace walks back through it. Null for
+     * stock sent from before lots existed, which arrives at the product's average cost.
+     */
+    @Column(name = "source_lot_id", updatable = false)
+    private UUID sourceLotId;
+
     /**
      * Which supplier this delivery came from - IN movements only, added V19. Required by
      * {@code StockManagementService.stockIn} once the product already has any {@link

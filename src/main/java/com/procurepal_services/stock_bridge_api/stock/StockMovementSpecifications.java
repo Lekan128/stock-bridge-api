@@ -132,14 +132,23 @@ final class StockMovementSpecifications {
      * {@link #forTenant} above needs no such guard because it fetches nothing.
      */
     static Specification<StockMovement> lotsForProduct(UUID clientId, UUID productId) {
+        return lotsForProduct(clientId, productId, null);
+    }
+
+    /**
+     * One branch's lots (V51, V53): what is on that shelf to draw from - deliveries, and stock that
+     * arrived there on a waybill (a TRANSFER_IN is a lot of its own). {@code branchId} null: every branch.
+     */
+    static Specification<StockMovement> lotsForProduct(UUID clientId, UUID productId, UUID branchId) {
         return (root, query, cb) -> {
             if (query != null && query.getResultType() != Long.class && query.getResultType() != long.class) {
                 root.fetch("companyVendor", JoinType.LEFT);
             }
-            return cb.and(
+            jakarta.persistence.criteria.Predicate lots = cb.and(
                     cb.equal(root.get("clientId"), clientId),
                     cb.equal(root.get("product").get("id"), productId),
-                    cb.equal(root.get("movementType"), MovementType.IN));
+                    root.get("movementType").in(MovementType.IN, MovementType.TRANSFER_IN));
+            return branchId == null ? lots : cb.and(lots, cb.equal(root.get("branchId"), branchId));
         };
     }
 

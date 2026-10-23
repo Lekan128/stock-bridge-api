@@ -40,6 +40,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN THEN m.quantity "
             + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT THEN -m.quantity "
             + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.ADJUSTMENT THEN m.quantity "
+            // V53: stock that arrived on a waybill is on the shelf; stock sent away is not.
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_OUT THEN -m.quantity "
             + "ELSE 0 END), 0) "
             + "FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId AND m.occurredAt > :after")
     long netChangeAfter(
@@ -94,7 +97,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT m FROM StockMovement m WHERE m.product.id = :productId AND m.clientId = :clientId "
             + "AND m.branchId = :branchId "
-            + "AND m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN "
+            // V53: stock that arrived on a waybill is a lot of its own at this branch.
+            + "AND m.movementType IN (com.procurepal_services.stock_bridge_api.entity.MovementType.IN, "
+            + "com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_IN) "
             + "ORDER BY m.occurredAt ASC, m.createdAt ASC")
     List<StockMovement> findInMovementsForUpdate(
             @Param("productId") UUID productId, @Param("clientId") UUID clientId, @Param("branchId") UUID branchId);

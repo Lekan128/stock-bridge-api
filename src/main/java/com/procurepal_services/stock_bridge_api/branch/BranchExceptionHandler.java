@@ -40,4 +40,14 @@ public class BranchExceptionHandler {
     public ResponseEntity<ApiError> handleNotAllowed(BranchNotAllowedException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
     }
+
+    @ExceptionHandler(com.procurepal_services.stock_bridge_api.transfer.TransferNotFoundException.class)
+    public ResponseEntity<ApiError> handleTransferNotFound(RuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler(com.procurepal_services.stock_bridge_api.transfer.TransferRefusedException.class)
+    public ResponseEntity<ApiError> handleTransferRefused(RuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
 }

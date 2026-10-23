@@ -10,16 +10,28 @@ import java.util.UUID;
  * @param lowStockThreshold this branch's own level, or the product's when the branch has none.
  * @param isLowStock / {@code stockStatus} computed by {@link StockStatus}, as the company figure is,
  *     so the phone never re-derives them.
+ * @param onTheWay sent to this branch on open waybills and not yet accounted for (UX section 5.9's
+ *     "+ 20 on the way"). Not stock: never in {@code quantityOnHand}, never sellable (D-B8).
  */
 public record BranchFigure(
-        UUID branchId, int quantityOnHand, Integer lowStockThreshold, boolean isLowStock, StockStatus stockStatus) {
+        UUID branchId,
+        int quantityOnHand,
+        Integer lowStockThreshold,
+        boolean isLowStock,
+        StockStatus stockStatus,
+        int onTheWay) {
 
     public static BranchFigure of(UUID branchId, int quantityOnHand, Integer lowStockThreshold) {
+        return of(branchId, quantityOnHand, lowStockThreshold, 0);
+    }
+
+    public static BranchFigure of(UUID branchId, int quantityOnHand, Integer lowStockThreshold, int onTheWay) {
         return new BranchFigure(
                 branchId,
                 quantityOnHand,
                 lowStockThreshold,
                 StockStatus.isLowStock(quantityOnHand, lowStockThreshold),
-                StockStatus.of(quantityOnHand, lowStockThreshold));
+                StockStatus.of(quantityOnHand, lowStockThreshold),
+                onTheWay);
     }
 }

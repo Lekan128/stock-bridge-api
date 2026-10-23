@@ -57,6 +57,13 @@ public class Branch extends TenantAwareEntity {
     @Column(length = 50)
     private String phone;
 
+    /**
+     * The short code on its waybills - "BOL" in WB-BOL-0042 (V53). Given the first time the branch sends
+     * stock, from its name, unique in the company.
+     */
+    @Column(length = 8)
+    private String code;
+
     /** When it was closed (V52); null while open. Closing keeps every row that names the branch. */
     @Column(name = "closed_at")
     private OffsetDateTime closedAt;

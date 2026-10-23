@@ -192,6 +192,22 @@ public class BranchStockService {
                         thresholds.computeIfAbsent(product, key -> new HashMap<>()).put(branch, own);
                     }
                 });
+        Map<UUID, Map<UUID, Integer>> onTheWay = new HashMap<>();
+        jdbc.query("""
+                SELECT l.product_id, t.to_branch_id,
+                       SUM(l.quantity_sent - l.quantity_received - l.quantity_missing - l.quantity_damaged) AS on_the_way
+                FROM stock_transfers t JOIN stock_transfer_lines l ON l.transfer_id = t.id
+                WHERE t.client_id = :clientId AND t.status IN ('ON_THE_WAY', 'PARTLY_RECEIVED')
+                  AND t.to_branch_id IN (:branchIds) AND l.product_id IN (:productIds)
+                GROUP BY l.product_id, t.to_branch_id
+                """, new MapSqlParameterSource()
+                        .addValue("clientId", clientId)
+                        .addValue("productIds", productIds)
+                        .addValue("branchIds", branchIds),
+                rs -> {
+                    onTheWay.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
+                            .put(rs.getObject("to_branch_id", UUID.class), rs.getInt("on_the_way"));
+                });
         Map<UUID, List<BranchFigure>> figures = new HashMap<>();
         for (UUID product : productIds) {
             List<BranchFigure> list = new ArrayList<>(branchIds.size());
@@ -199,7 +215,8 @@ public class BranchStockService {
                 int[] quantity = found.getOrDefault(product, Map.of()).get(branch);
                 Integer threshold = thresholds.getOrDefault(product, Map.of())
                         .getOrDefault(branch, productThresholds.get(product));
-                list.add(BranchFigure.of(branch, quantity == null ? 0 : quantity[0], threshold));
+                list.add(BranchFigure.of(branch, quantity == null ? 0 : quantity[0], threshold,
+                        onTheWay.getOrDefault(product, Map.of()).getOrDefault(branch, 0)));
             }
             figures.put(product, list);
         }

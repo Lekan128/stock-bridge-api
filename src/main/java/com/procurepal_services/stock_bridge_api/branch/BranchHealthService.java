@@ -60,6 +60,8 @@ public class BranchHealthService {
                                    WHEN 'IN' THEN m.quantity
                                    WHEN 'OUT' THEN -m.quantity
                                    WHEN 'ADJUSTMENT' THEN m.quantity
+                                   WHEN 'TRANSFER_IN' THEN m.quantity
+                                   WHEN 'TRANSFER_OUT' THEN -m.quantity
                                    ELSE 0 END) AS net
                     FROM stock_movements m
                     GROUP BY m.client_id, m.product_id, m.branch_id
