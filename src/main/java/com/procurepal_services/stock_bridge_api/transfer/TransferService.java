@@ -13,6 +13,7 @@ import com.procurepal_services.stock_bridge_api.entity.StockTransferStatus;
 import com.procurepal_services.stock_bridge_api.entity.User;
 import com.procurepal_services.stock_bridge_api.notification.NotificationService;
 import com.procurepal_services.stock_bridge_api.product.ProductNotFoundException;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.repository.BranchRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
@@ -537,7 +538,7 @@ public class TransferService {
             lines.add(new TransferResponse.Line(
                     product.getId(), product.getName(), product.getSku(), product.getUnitOfMeasure(),
                     line.getQuantitySent(), line.getQuantityReceived(), line.getQuantityMissing(), line.getQuantityDamaged(),
-                    line.onTheWay(), line.getEnteredUnit(), line.getEnteredQuantity()));
+                    line.onTheWay(), line.getEnteredUnit(), line.getEnteredQuantity(), sentText(line, product)));
         }
         int missing = transfer.getMissingCheckedAt() != null ? 0
                 : transfer.getLines().stream().mapToInt(line -> line.getQuantityMissing() + line.getQuantityDamaged()).sum();
@@ -571,16 +572,23 @@ public class TransferService {
         }
         text.append('\n');
         for (TransferResponse.Line line : lines) {
-            String amount = line.enteredQuantity() != null
-                    ? line.enteredQuantity().stripTrailingZeros().toPlainString() + " " + line.enteredUnit().toLowerCase(Locale.ROOT)
-                    : line.quantitySent() + (line.unitOfMeasure() == null ? "" : " " + line.unitOfMeasure().toLowerCase(Locale.ROOT));
-            text.append("- ").append(line.productName()).append(": ").append(amount).append('\n');
+            text.append("- ").append(line.productName()).append(": ").append(line.sentText()).append('\n');
         }
         if (transfer.getNote() != null) {
             text.append('\n').append("Note: ").append(transfer.getNote()).append('\n');
         }
         text.append('\n').append("Received by: ____________________");
         return text.toString();
+    }
+
+    /** "10 crates" when it was typed in crates, else "240 pieces" / "50 kg" - the unit as people say it. */
+    private static String sentText(StockTransferLine line, Product product) {
+        if (line.getEnteredQuantity() != null && line.getEnteredUnit() != null) {
+            String word = UnitOptions.sizeUnitWord(line.getEnteredUnit(), line.getEnteredQuantity());
+            return line.getEnteredQuantity().stripTrailingZeros().toPlainString() + (word.isEmpty() ? "" : " " + word);
+        }
+        String word = UnitOptions.sizeUnitWord(product.getUnitOfMeasure(), BigDecimal.valueOf(line.getQuantitySent()));
+        return line.getQuantitySent() + (word.isEmpty() ? "" : " " + word);
     }
 
     private static int valueOf(Integer value) {

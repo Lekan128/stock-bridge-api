@@ -82,7 +82,9 @@ class StockTransferIntegrationTest {
         assertThat(figure(c.main(), c.product())).isEqualTo(6);
         assertThat(figure(c.oshodi(), c.product())).isZero();
         assertThat(branchFigures(c.owner(), c.product()).get(c.oshodi()).onTheWay()).isEqualTo(4);
-        assertThat(sent.shareText()).contains("Waybill " + sent.waybill()).contains("From Head Office to Oshodi");
+        assertThat(sent.shareText()).contains("Waybill " + sent.waybill()).contains("From Head Office to Oshodi")
+                .contains("Carried by Musa").contains("Received by:");
+        assertThat(sent.lines().getFirst().sentText()).isEqualTo("4");
 
         TransferResponse received = receiveAsSent(c.owner(), sent.id());
 

@@ -36,7 +36,10 @@ public record TransferResponse(
         List<Line> lines,
         String shareText) {
 
-    /** Quantities in the stock unit; {@code enteredUnit}/{@code enteredQuantity} as it was typed. */
+    /**
+     * Quantities in the stock unit; {@code enteredUnit}/{@code enteredQuantity} as it was typed, and
+     * {@code sentText} the two read out - "10 crates", "240 pieces" - as the waybill prints it.
+     */
     public record Line(
             UUID productId,
             String productName,
@@ -48,6 +51,7 @@ public record TransferResponse(
             int quantityDamaged,
             int onTheWay,
             String enteredUnit,
-            BigDecimal enteredQuantity) {
+            BigDecimal enteredQuantity,
+            String sentText) {
     }
 }
