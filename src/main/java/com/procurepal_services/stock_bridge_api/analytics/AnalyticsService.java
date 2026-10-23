@@ -60,8 +60,9 @@ public class AnalyticsService {
     }
 
     /**
-     * @param branchIds the branches the stock-in and stock-out figures cover (V51); null for every
-     *     branch. The product counts and sales stay the company's until the owner's view (Phase 3).
+     * @param branchIds the branches every figure covers (V51); null for every branch. At one branch of a
+     *     multi-branch company the product counts are that branch's figures against its own low-stock
+     *     levels; over several (All branches) they are the company's.
      */
     @Transactional(readOnly = true)
     public AnalyticsSummaryResponse summaryForClient(
@@ -73,18 +74,28 @@ public class AnalyticsService {
         BigDecimal totalOutValue = stockMovementRepository.sumValue(clientId, MovementType.OUT, range[0], range[1], scope);
         long totalUnitsIn = stockMovementRepository.sumQuantity(clientId, MovementType.IN, range[0], range[1], scope);
         long totalUnitsOut = stockMovementRepository.sumQuantity(clientId, MovementType.OUT, range[0], range[1], scope);
-        long lowStockProductCount = productRepository.countLowStockByClientId(clientId);
+        long lowStockProductCount;
         long activeProductCount = productRepository.countByClientIdAndActive(clientId, true);
-        long outOfStockProductCount = productRepository.countOutOfStockByClientId(clientId);
-        long wellStockedProductCount =
-                activeProductCount - productRepository.countNeedsAttentionByClientId(clientId);
+        long outOfStockProductCount;
+        long wellStockedProductCount;
+        if (branchIds != null && branchIds.size() == 1 && branchStockService.isMultiBranch(clientId)) {
+            long[] counts = branchStockService.productCounts(clientId, branchIds.iterator().next());
+            lowStockProductCount = counts[0];
+            outOfStockProductCount = counts[1];
+            wellStockedProductCount = activeProductCount - counts[2];
+        } else {
+            lowStockProductCount = productRepository.countLowStockByClientId(clientId);
+            outOfStockProductCount = productRepository.countOutOfStockByClientId(clientId);
+            wellStockedProductCount = activeProductCount - productRepository.countNeedsAttentionByClientId(clientId);
+        }
 
         Duration length = Duration.between(range[0], range[1]);
         Duration back = length.compareTo(Duration.ofDays(7)) <= 0 ? Duration.ofDays(7) : length;
         OffsetDateTime previousFrom = range[0].minus(back);
         OffsetDateTime previousTo = range[1].minus(back);
-        SalesTotals sales = salesReportService.totals(clientId, range[0], range[1], SalesReportService.Filters.NONE);
-        SalesTotals previousSales = salesReportService.totals(clientId, previousFrom, previousTo, SalesReportService.Filters.NONE);
+        SalesReportService.Filters salesScope = SalesReportService.Filters.NONE.atBranches(branchIds);
+        SalesTotals sales = salesReportService.totals(clientId, range[0], range[1], salesScope);
+        SalesTotals previousSales = salesReportService.totals(clientId, previousFrom, previousTo, salesScope);
 
         return new AnalyticsSummaryResponse(
                 totalInValue,

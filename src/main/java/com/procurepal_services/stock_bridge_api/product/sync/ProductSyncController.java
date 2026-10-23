@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class ProductSyncController {
 
     private final ProductSyncService productSyncService;
+    private final com.procurepal_services.stock_bridge_api.branch.PhoneStatusService phoneStatusService;
 
     /** A full copy, one page at a time. Start without {@code afterId}; keep the returned cursor. */
     @GetMapping("/snapshot")
@@ -34,13 +35,25 @@ public class ProductSyncController {
         return productSyncService.snapshot(afterId, clamp(limit), principal.getUserId());
     }
 
-    /** What changed since {@code cursor}. */
+    /**
+     * What changed since {@code cursor}. The phone also says what it has waiting to send ({@code device},
+     * {@code waiting}, {@code needsYou}, {@code oldestWaiting} in epoch ms, {@code branch}), for the
+     * owner's branch table (V55); all optional, and an older app sends none.
+     */
     @GetMapping("/changes")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public ProductChangesPage changes(
             @RequestParam String cursor,
             @RequestParam(defaultValue = "" + ProductSyncService.DEFAULT_LIMIT) int limit,
+            @RequestParam(required = false) UUID device,
+            @RequestParam(defaultValue = "0") int waiting,
+            @RequestParam(defaultValue = "0") int needsYou,
+            @RequestParam(required = false) Long oldestWaiting,
+            @RequestParam(required = false) UUID branch,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        if (device != null) {
+            phoneStatusService.report(principal.getClientId(), principal.getUserId(), device, branch, waiting, needsYou, oldestWaiting);
+        }
         return productSyncService.changes(cursor, clamp(limit), principal.getUserId());
     }
 

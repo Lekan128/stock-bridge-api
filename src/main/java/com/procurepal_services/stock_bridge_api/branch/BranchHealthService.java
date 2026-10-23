@@ -88,7 +88,44 @@ public class BranchHealthService {
                 totalMismatch,
                 mirrorDrift,
                 ledgerDrift,
-                withoutDefault == 0 && foreignBranch == 0 && totalMismatch == 0);
+                withoutDefault == 0 && foreignBranch == 0 && totalMismatch == 0,
+                metrics());
+    }
+
+    /** UX section 10's measures over the last 30 days, read from the waybills and phones themselves. */
+    private BranchHealthResponse.Metrics metrics() {
+        return jdbc.queryForObject("""
+                WITH recent AS (
+                    SELECT t.id, t.status, t.sent_at, t.received_at,
+                           SUM(l.quantity_sent) AS sent,
+                           SUM(l.quantity_missing + l.quantity_damaged) AS lost
+                    FROM stock_transfers t JOIN stock_transfer_lines l ON l.transfer_id = t.id
+                    WHERE t.sent_at > now() - interval '30 days' AND t.status <> 'CANCELLED'
+                    GROUP BY t.id),
+                branches_per AS (
+                    SELECT client_id, COUNT(*) AS n FROM branches WHERE is_active GROUP BY client_id HAVING COUNT(*) > 1)
+                SELECT (SELECT AVG(n) FROM branches_per) AS average_branches,
+                       (SELECT COUNT(*) FROM recent) AS transfers,
+                       (SELECT 100.0 * COUNT(*) FILTER (WHERE status = 'RECEIVED')
+                               / NULLIF(COUNT(*) FILTER (WHERE status IN ('RECEIVED', 'RECEIVED_SHORT')), 0) FROM recent)
+                           AS received_as_sent,
+                       (SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM received_at - sent_at) / 3600)
+                        FROM recent WHERE status = 'RECEIVED' AND received_at IS NOT NULL) AS median_hours,
+                       (SELECT 1000.0 * SUM(lost) / NULLIF(SUM(sent), 0) FROM recent) AS missing_per_thousand,
+                       (SELECT COUNT(*) FROM phone_sync_status
+                        WHERE waiting_count + needs_you_count > 0 AND last_seen_at > now() - interval '1 day') AS phones_waiting
+                """, java.util.Map.of(), (rs, n) -> new BranchHealthResponse.Metrics(
+                        nullableDouble(rs, "average_branches"),
+                        rs.getLong("transfers"),
+                        nullableDouble(rs, "received_as_sent"),
+                        nullableDouble(rs, "median_hours"),
+                        nullableDouble(rs, "missing_per_thousand"),
+                        rs.getLong("phones_waiting")));
+    }
+
+    private static Double nullableDouble(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
+        java.math.BigDecimal value = rs.getBigDecimal(column);
+        return value == null ? null : value.setScale(1, java.math.RoundingMode.HALF_UP).doubleValue();
     }
 
     private long count(String sql) {

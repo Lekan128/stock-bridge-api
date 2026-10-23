@@ -224,6 +224,27 @@ public class BranchStockService {
     }
 
     /**
+     * One branch's product counts, as the dashboard reads them (Phase 3): {low, out, needs attention},
+     * active products only, each against the branch's own level or else the product's - the same
+     * rules as {@code StockStatus} and the company counts in {@code ProductRepository}.
+     */
+    public long[] productCounts(UUID clientId, UUID branchId) {
+        return jdbc.queryForObject("""
+                WITH at_branch AS (
+                    SELECT COALESCE(bs.quantity_on_hand, 0) AS quantity,
+                           COALESCE(bs.low_stock_threshold, p.low_stock_threshold) AS threshold
+                    FROM products p
+                    LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id = :branchId
+                    WHERE p.client_id = :clientId AND p.is_active)
+                SELECT COUNT(*) FILTER (WHERE threshold IS NOT NULL AND quantity <= threshold) AS low,
+                       COUNT(*) FILTER (WHERE quantity <= 0) AS out,
+                       COUNT(*) FILTER (WHERE quantity <= 0 OR (threshold IS NOT NULL AND quantity <= threshold)) AS attention
+                FROM at_branch
+                """, new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId),
+                (rs, n) -> new long[] {rs.getLong("low"), rs.getLong("out"), rs.getLong("attention")});
+    }
+
+    /**
      * Sets a product's low-stock level at a branch; null goes back to the product's own (UX section
      * 5.9). A branch that holds none of the product gets a row at 0 to carry the level.
      */

@@ -63,6 +63,8 @@ public class StockController {
     /** Where each write lands (V51) and whether this person may record there now (V52). */
     private final BranchStockService branchStockService;
     private final BranchAccessService branchAccessService;
+    private final LossesService lossesService;
+    private final MovementsExportService movementsExportService;
 
     /**
      * The three writes below take an optional {@code Idempotency-Key}. Without one they behave
@@ -261,6 +263,54 @@ public class StockController {
         return stockManagementService.allMovements(
                 from, to, movementType, productId, companyVendorId, outReason, noReason,
                 branchScope(branchId, principal), pageable);
+    }
+
+    /** The same rows as a spreadsheet, newest first, with a Branch column at a multi-branch company (Phase 3). */
+    @GetMapping("/api/stock/movements/export")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public ResponseEntity<byte[]> exportMovements(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            @RequestParam(required = false) MovementType movementType,
+            @RequestParam(required = false) UUID productId,
+            @RequestParam(required = false) UUID companyVendorId,
+            @RequestParam(required = false) OutReason outReason,
+            @RequestParam(defaultValue = "false") boolean noReason,
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        Page<StockMovementResponse> page = stockManagementService.allMovements(
+                from, to, movementType, productId, companyVendorId, outReason, noReason, branchScope(branchId, principal),
+                org.springframework.data.domain.PageRequest.of(0, MovementsExportService.MAX_ROWS,
+                        Sort.by(Sort.Direction.DESC, "occurredAt")));
+        byte[] bytes = movementsExportService.export(principal.getClientId(), page.getContent(),
+                page.getTotalElements() > page.getNumberOfElements(),
+                branchStockService.isMultiBranch(principal.getClientId()));
+        return ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"stock-movements.xlsx\"")
+                .body(bytes);
+    }
+
+    /**
+     * The losses report (Phase 3, MULTI_BRANCH_UX_PLAN.md section 5.7): stock that left the books
+     * without being sold or used, at cost. MANAGE_INVENTORY, as the movements report: it shows costs.
+     *
+     * @param groupBy {@code kind} (default), {@code branch}, {@code person} or {@code month}.
+     */
+    @GetMapping("/api/stock/losses")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public ResponseEntity<?> losses(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            @RequestParam(required = false) String groupBy,
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        if (groupBy != null && !LossesService.GROUPINGS.contains(groupBy.toLowerCase(java.util.Locale.ROOT))) {
+            return ResponseEntity.badRequest().body(new com.procurepal_services.stock_bridge_api.auth.ApiError(
+                    "groupBy must be one of " + LossesService.GROUPINGS));
+        }
+        return ResponseEntity.ok(lossesService.report(principal.getClientId(), from, to, groupBy, branchScope(branchId, principal)));
     }
 
     /**

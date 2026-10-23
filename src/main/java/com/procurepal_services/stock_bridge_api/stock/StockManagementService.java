@@ -1457,7 +1457,8 @@ public class StockManagementService {
                 && sellingPolicy.showsSellingPrice(requireTenantId());
         com.procurepal_services.stock_bridge_api.selling.dto.SalesTotals sales = salesApply
                 ? salesReportService.totals(requireTenantId(), from, to,
-                        new com.procurepal_services.stock_bridge_api.selling.SalesReportService.Filters(productId, null, false, false, false))
+                        new com.procurepal_services.stock_bridge_api.selling.SalesReportService.Filters(productId, null, false, false, false)
+                                .atBranches(branchIds))
                 : null;
         return new StockMovementSummaryResponse(
                 (BigDecimal) row[0],

@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AnalyticsController {
 
     private final AnalyticsService analyticsService;
+    private final BranchTableService branchTableService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
 
     @GetMapping("/summary")
@@ -34,6 +35,17 @@ public class AnalyticsController {
                     com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
         return analyticsService.summaryForClient(principal.getClientId(), from, to,
                 branchAccessService.reportScope(principal.getUserId(), branchId));
+    }
+
+    /**
+     * The owner's branch table (Phase 3, MULTI_BRANCH_UX_PLAN.md section 5.8): one row per branch the
+     * person sees. A one-branch company never asks: the screen only exists in "All branches".
+     */
+    @GetMapping("/branches")
+    public com.procurepal_services.stock_bridge_api.analytics.dto.BranchTableResponse branches(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return branchTableService.table(principal.getClientId(), principal.getUserId());
     }
 
     @GetMapping("/movements-over-time")

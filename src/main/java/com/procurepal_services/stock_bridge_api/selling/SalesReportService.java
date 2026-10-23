@@ -46,22 +46,36 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class SalesReportService {
 
-    public static final List<String> GROUPINGS = List.of("sale", "product", "day", "user", "category");
+    /** "branch": one row per branch (V51, MULTI_BRANCH_UX_PLAN.md section 4.3's "Branch breakdown"). */
+    public static final List<String> GROUPINGS = List.of("sale", "product", "day", "user", "category", "branch");
     static final int MAX_ROWS = 1000;
 
     private final NamedParameterJdbcTemplate jdbc;
+    /** Whether rows may name a branch: never at a one-branch company (MULTI_BRANCH_UX_PLAN.md rule 1). */
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
 
     /** Optional narrowing of the lines a report covers. Nulls and falses mean "no filter". */
     /**
      * @param unpricedOnly lines with no price - "8 have no price" and its Fix these.
      * @param noCostOnly priced lines whose cost is unknown - "3 have no cost".
      */
+    /** @param branchIds only sales recorded at these branches (V51); null for every branch. */
     public record Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly,
-            boolean unpricedOnly, boolean noCostOnly) {
+            boolean unpricedOnly, boolean noCostOnly, java.util.Collection<UUID> branchIds) {
         public static final Filters NONE = new Filters(null, null, false, false, false);
 
         public Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly) {
             this(productId, userId, belowUsualPrice, belowCost, cancelledOnly, false, false);
+        }
+
+        public Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly,
+                boolean unpricedOnly, boolean noCostOnly) {
+            this(productId, userId, belowUsualPrice, belowCost, cancelledOnly, unpricedOnly, noCostOnly, null);
+        }
+
+        /** The same narrowing, at these branches only. */
+        public Filters atBranches(java.util.Collection<UUID> branches) {
+            return new Filters(productId, userId, belowUsualPrice, belowCost, cancelledOnly, unpricedOnly, noCostOnly, branches);
         }
     }
 
@@ -76,8 +90,9 @@ public class SalesReportService {
         int rowLimit = limit == null ? 500 : Math.max(1, Math.min(limit, MAX_ROWS));
         MapSqlParameterSource params = params(clientId, range, filters);
 
+        boolean namesBranches = branchStockService.isMultiBranch(clientId);
         List<SalesReportRow> rows = jdbc.query(groupQuery(grouping, filters) + " LIMIT " + (rowLimit + 1), params,
-                (rs, n) -> row(grouping, rs));
+                (rs, n) -> row(grouping, rs, namesBranches));
         boolean truncated = rows.size() > rowLimit;
         if (truncated) {
             rows = new ArrayList<>(rows.subList(0, rowLimit));
@@ -92,6 +107,40 @@ public class SalesReportService {
         return jdbc.queryForObject(
                 linesCte(filters) + "SELECT " + AGGREGATES + " FROM lines", params(clientId, range, filters),
                 (rs, n) -> totals(rs));
+    }
+
+    /**
+     * What the stock at these branches is worth (V51): each product's figure there, at its cost and
+     * price. Null branches: the company's, from the product figure.
+     */
+    @Transactional(readOnly = true)
+    public StockWorthResponse stockWorth(UUID clientId, java.util.Collection<UUID> branchIds) {
+        if (branchIds == null) {
+            return stockWorth(clientId);
+        }
+        return jdbc.queryForObject(
+                """
+                WITH held AS (
+                    SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(bs.quantity_on_hand), 0) AS quantity
+                    FROM products p
+                    LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id IN (:branchIds)
+                    WHERE p.client_id = :clientId AND p.is_active
+                    GROUP BY p.id, p.cost_price, p.unit_price)
+                SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
+                       COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
+                       COUNT(*) AS active,
+                       COUNT(*) FILTER (WHERE cost_price IS NULL) AS no_cost,
+                       COUNT(*) FILTER (WHERE unit_price IS NULL) AS no_price
+                FROM held
+                """,
+                new MapSqlParameterSource().addValue("clientId", clientId)
+                        .addValue("branchIds", branchIds.isEmpty() ? List.of(new UUID(0, 0)) : branchIds),
+                (rs, n) -> new StockWorthResponse(
+                        rs.getBigDecimal("at_cost").setScale(2, RoundingMode.HALF_UP),
+                        rs.getBigDecimal("at_price").setScale(2, RoundingMode.HALF_UP),
+                        rs.getLong("active"),
+                        rs.getLong("no_cost"),
+                        rs.getLong("no_price")));
     }
 
     @Transactional(readOnly = true)
@@ -152,6 +201,9 @@ public class SalesReportService {
         if (filters.userId() != null) {
             where.append(" AND o.created_by = :userId");
         }
+        if (filters.branchIds() != null) {
+            where.append(" AND o.branch_id IN (:branchIds)");
+        }
         StringBuilder narrowed = new StringBuilder(" WHERE TRUE");
         if (filters.belowUsualPrice()) {
             narrowed.append(" AND below_usual AND NOT cancelled");
@@ -170,7 +222,7 @@ public class SalesReportService {
         }
         return """
                 WITH all_lines AS (
-                    SELECT o.id, o.sale_id, o.product_id, o.created_by, o.occurred_at, o.quantity,
+                    SELECT o.id, o.sale_id, o.product_id, o.created_by, o.occurred_at, o.quantity, o.branch_id,
                            COALESCE(o.sale_amount, c.sale_amount) AS amount,
                            o.cost_amount AS cost,
                            (r.id IS NOT NULL) AS cancelled,
@@ -212,11 +264,19 @@ public class SalesReportService {
                     SELECT l.sale_id::text AS key,
                            MAX(COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), u.username)) AS label,
                            NULL AS unit, MIN(l.occurred_at) AS occurred_at,
-                           STRING_AGG(DISTINCT p.name, ', ') AS detail,
+                           STRING_AGG(DISTINCT p.name, ', ') AS detail, MAX(b.name) AS branch,
                     """ + AGGREGATES + """
 
                     FROM lines l LEFT JOIN users u ON u.id = l.created_by JOIN products p ON p.id = l.product_id
+                    LEFT JOIN branches b ON b.id = l.branch_id
                     GROUP BY l.sale_id ORDER BY MIN(l.occurred_at) DESC, l.sale_id""";
+            case "branch" -> cte + """
+                    SELECT l.branch_id::text AS key, b.name AS label, NULL AS unit, NULL::timestamptz AS occurred_at,
+                    """ + AGGREGATES + """
+
+                    FROM lines l JOIN branches b ON b.id = l.branch_id
+                    GROUP BY l.branch_id, b.name
+                    ORDER BY COALESCE(SUM(l.amount) FILTER (WHERE NOT l.cancelled), 0) DESC, b.name""";
             case "product" -> cte + """
                     SELECT l.product_id::text AS key, p.name AS label, p.unit_of_measure AS unit, NULL::timestamptz AS occurred_at,
                     """ + AGGREGATES + """
@@ -263,10 +323,13 @@ public class SalesReportService {
         if (filters.userId() != null) {
             params.addValue("userId", filters.userId());
         }
+        if (filters.branchIds() != null) {
+            params.addValue("branchIds", filters.branchIds().isEmpty() ? List.of(new UUID(0, 0)) : filters.branchIds());
+        }
         return params;
     }
 
-    private static SalesReportRow row(String grouping, ResultSet rs) throws SQLException {
+    private static SalesReportRow row(String grouping, ResultSet rs, boolean namesBranches) throws SQLException {
         String key = rs.getString("key");
         String label = rs.getString("label");
         if ("day".equals(grouping)) {
@@ -280,7 +343,8 @@ public class SalesReportService {
                 rs.getString("unit"),
                 occurred == null ? null : occurred.toInstant().atOffset(ZoneOffset.UTC),
                 totals(rs),
-                "sale".equals(grouping) ? rs.getString("detail") : null);
+                "sale".equals(grouping) ? rs.getString("detail") : null,
+                "sale".equals(grouping) && namesBranches ? rs.getString("branch") : null);
     }
 
     private static SalesTotals totals(ResultSet rs) throws SQLException {

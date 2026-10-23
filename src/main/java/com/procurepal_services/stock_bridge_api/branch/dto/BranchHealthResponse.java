@@ -29,5 +29,23 @@ public record BranchHealthResponse(
         long totalMismatchProducts,
         long mirrorDriftProducts,
         long ledgerDriftProducts,
-        boolean healthy) {
+        boolean healthy,
+        /** MULTI_BRANCH_UX_PLAN.md section 10's product metrics, last 30 days; null before any transfer. */
+        Metrics metrics) {
+
+    /**
+     * @param averageBranches branches per multi-branch company (open ones).
+     * @param receivedAsSentPercent of waybills received in full, how many with no line short.
+     * @param medianHoursToReceive from sent to received, waybills received in full.
+     * @param missingPerThousand units missing or damaged per 1,000 units sent.
+     * @param phonesWaiting phones that reported writes waiting to send in the last day.
+     */
+    public record Metrics(
+            Double averageBranches,
+            long transfers,
+            Double receivedAsSentPercent,
+            Double medianHoursToReceive,
+            Double missingPerThousand,
+            long phonesWaiting) {
+    }
 }
