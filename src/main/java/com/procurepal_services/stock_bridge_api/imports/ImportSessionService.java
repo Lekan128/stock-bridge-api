@@ -269,8 +269,9 @@ public class ImportSessionService {
             String text, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery,
             UUID branchId) {
         ImportRowHandler handler = handlerFor(kind);
+        List<ImportFieldDescriptor> fields = shownFields(handler.fields(), TenantContext.get());
         SheetTable table = PastedText.read(
-                text, cell -> columnMapper.recognisesHeader(cell, kind, handler.fields()));
+                text, cell -> columnMapper.recognisesHeader(cell, kind, fields));
         if (table.rows().isEmpty()) {
             throw new ImportExceptions.BadFile(
                     "We could not find any rows in that. Paste the lines themselves, one per row.");
@@ -319,7 +320,9 @@ public class ImportSessionService {
                 : (mode == null ? ImportMode.CREATE_ONLY : mode);
 
         ImportRowHandler handler = handlerFor(kind);
-        ImportColumnMapper.Mapping mapping = columnMapper.autoMap(table, kind, handler.fields());
+        // Only the fields this company has: a one-branch shop's sheet never maps a Branch column it
+        // can't see, and so can't unmap.
+        ImportColumnMapper.Mapping mapping = columnMapper.autoMap(table, kind, shownFields(handler.fields(), TenantContext.get()));
         // A company's bare "Price" column is asked about, not guessed (SELLING_PRICE_PLAN.md 6.8).
         Map<String, String> columnMapping = new LinkedHashMap<>(mapping.columnMapping());
         List<String> unmappedHeaders = new ArrayList<>(mapping.unmappedHeaders());

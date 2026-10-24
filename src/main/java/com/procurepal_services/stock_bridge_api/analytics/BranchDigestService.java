@@ -65,7 +65,7 @@ public class BranchDigestService {
     }
 
     /**
-     * Everyone due a digest today: turned on, active, at a company with two branches, and still holding
+     * Everyone due a digest today: turned on, active, at a company with two open branches, and still holding
      * the reports permission. Each is claimed before sending, so two servers never send one twice.
      *
      * @return how many were sent.
@@ -75,7 +75,7 @@ public class BranchDigestService {
                 SELECT u.id FROM users u
                 WHERE u.branch_digest AND u.is_active
                   AND (u.branch_digest_sent_on IS NULL OR u.branch_digest_sent_on < :today)
-                  AND (SELECT COUNT(*) FROM branches b WHERE b.client_id = u.client_id) > 1
+                  AND (SELECT COUNT(*) FROM branches b WHERE b.client_id = u.client_id AND b.is_active) > 1
                   AND (u.is_root OR EXISTS (
                         SELECT 1 FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
                         WHERE rp.role_id = u.role_id AND p.code = 'VIEW_ANALYTICS'))

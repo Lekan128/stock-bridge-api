@@ -261,6 +261,108 @@ class BranchGapsIntegrationTest {
         assertThat(digest(owner)).isFalse();
     }
 
+    // --------------------------------------------------------------- review fixes (2026-10-24)
+
+    @Test
+    void aClosedBranchIsNeitherLowNorAFigure() {
+        TenantLoginResponse owner = signup("Closed Not Low");
+        UUID main = mainBranch(owner);
+        UUID closed = addBranch(owner, "Ikeja");
+        post(owner, "/api/branches/" + closed + "/close", Map.of(), String.class);
+        UUID rice = product(owner, "Rice", Map.of("lowStockThreshold", 5));
+        stock(owner, rice, "stock-in", Map.of("quantity", 50, "branchId", main.toString()));
+
+        assertThat(lowStock(owner, null)).as("fine at every open branch").isEmpty();
+        assertThat(productOf(owner, rice).branchStock()).extracting(BranchFigure::branchId).containsExactly(main);
+        assertThat(branches(owner).openBranches()).isEqualTo(1L);
+        Map<String, Object> lowFilter = restTemplate.exchange("/api/products?stockStatus=LOW", HttpMethod.GET,
+                new HttpEntity<>(auth(owner)), new ParameterizedTypeReference<Map<String, Object>>() {}).getBody();
+        assertThat((List<?>) lowFilter.get("content")).as("Inventory's Low chip in All branches").isEmpty();
+    }
+
+    @Test
+    void theCompanysOpenBranchCountIsTheSameForSomebodyWhoSeesOnlyOne() {
+        TenantLoginResponse owner = signup("Open Count");
+        UUID oshodi = addBranch(owner, "Oshodi");
+        addBranch(owner, "Bolade");
+        createUser(owner, "ade", role("STOREKEEPER"), List.of(oshodi));
+
+        BranchListResponse theirs = branches(login(owner, "ade"));
+
+        assertThat(theirs.branches()).hasSize(1);
+        assertThat(theirs.openBranches()).as("a price applies at all of them").isEqualTo(3L);
+    }
+
+    @Test
+    void aLocationOrStoreColumnIsNotTakenForABranch() {
+        TenantLoginResponse solo = signup("Location Column");
+        String sku = "LC-" + UUID.randomUUID().toString().substring(0, 6);
+        product(solo, "Rice", Map.of("sku", sku));
+        UUID one = paste(solo, "sku,product_name,quantity,location\n" + sku + ",Rice,5,Aisle 3\n", null, "STOCK_IN");
+        assertThat(errors(solo, one)).isEmpty();
+        commit(solo, one);
+
+        TenantLoginResponse owner = signup("Store Column");
+        UUID main = mainBranch(owner);
+        addBranch(owner, "Oshodi");
+        String sku2 = "SC-" + UUID.randomUUID().toString().substring(0, 6);
+        UUID rice = product(owner, "Rice", Map.of("sku", sku2));
+        UUID two = paste(owner, "sku,product_name,quantity,store\n" + sku2 + ",Rice,4,Main store\n", main, "STOCK_IN");
+        assertThat(errors(owner, two)).isEmpty();
+        commit(owner, two);
+        assertThat(branchFigure(main, rice)).isEqualTo(4);
+    }
+
+    @Test
+    void aSheetLineForABranchClosedSinceItWasCheckedFailsOnItsOwnRow() {
+        TenantLoginResponse owner = signup("Closed Since");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        String sku = "CS-" + UUID.randomUUID().toString().substring(0, 6);
+        UUID rice = product(owner, "Rice", Map.of("sku", sku));
+        UUID session = paste(owner, "sku,product_name,quantity,branch\n"
+                + sku + ",Rice,5,Oshodi\n"
+                + sku + ",Rice,3,\n", main, "STOCK_IN");
+        assertThat(errors(owner, session)).isEmpty();
+
+        assertThat(post(owner, "/api/branches/" + oshodi + "/close", Map.of(), String.class).getStatusCode().is2xxSuccessful())
+                .isTrue();
+        commit(owner, session);
+
+        assertThat(branchFigure(oshodi, rice)).isZero();
+        assertThat(branchFigure(main, rice)).as("the rest of the sheet still goes in").isEqualTo(3);
+        assertThat(outcomeMessages(session)).contains("Not recorded: Oshodi has closed since this sheet was checked.");
+    }
+
+    @Test
+    void anExpectedDeliveryCanOnlyGoToABranchThePersonWorksAt() {
+        TenantLoginResponse owner = signup("Expected Elsewhere");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Rice", Map.of());
+        createUser(owner, "ade", createRole(owner, "Receiver", Set.of("VIEW_PRODUCTS", "MANAGE_INVENTORY")), List.of(main));
+        TenantLoginResponse ade = login(owner, "ade");
+        Map<String, Object> body = new HashMap<>();
+        body.put("lines", List.of(Map.of("productId", product.toString(), "unit", "PIECE", "quantity", 3)));
+
+        body.put("branchId", oshodi.toString());
+        assertThat(post(ade, "/api/expected-deliveries", body, String.class).getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        body.put("branchId", main.toString());
+        assertThat(post(ade, "/api/expected-deliveries", body, String.class).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
+    @Test
+    void theDigestStopsWhenTheCompanyIsBackToOneOpenBranch() {
+        TenantLoginResponse owner = signup("Digest Closed");
+        UUID oshodi = addBranch(owner, "Oshodi");
+        put(owner, "/api/analytics/branches/digest", Map.of("enabled", true));
+        post(owner, "/api/branches/" + oshodi + "/close", Map.of(), String.class);
+
+        branchDigestService.sendDue(LocalDate.now(ZoneId.of("Africa/Lagos")));
+
+        assertThat(sentOn(owner)).isNull();
+    }
+
     // ------------------------------------------------------------- BranchAccessTest (section 9)
 
     @Test
@@ -479,6 +581,13 @@ class BranchGapsIntegrationTest {
                 .filter(error -> "branch".equals(error.get("column")))
                 .map(error -> (String) error.get("message"))
                 .toList();
+    }
+
+    /** What each row's commit said happened (kept with the row, and read back by the report). */
+    private List<String> outcomeMessages(UUID session) {
+        return jdbc.queryForList(
+                "SELECT COALESCE(normalized ->> '_outcome_message', '') FROM import_session_rows WHERE session_id = :id",
+                new MapSqlParameterSource("id", session), String.class);
     }
 
     private static List<String> headers(byte[] workbook) throws Exception {

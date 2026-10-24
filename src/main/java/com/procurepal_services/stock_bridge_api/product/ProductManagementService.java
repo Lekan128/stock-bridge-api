@@ -176,7 +176,7 @@ public class ProductManagementService {
         if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
             return list(search, active, categoryId, stockStatus, hasSellingPrice, pageable);
         }
-        List<UUID> scope = branchAccessService.reportScope(userId, branchId);
+        List<UUID> scope = branchAccessService.stockScope(userId, branchId);
         Page<Product> page = branchId != null
                 ? productRepository.findAll(
                         ProductSpecifications.atBranch(tenantId, search, active, categoryId, stockStatus, hasSellingPrice, branchId),
@@ -193,7 +193,7 @@ public class ProductManagementService {
         Map<UUID, Integer> thresholds = new java.util.HashMap<>();
         page.getContent().forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
-                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.viewBranchIds(userId), thresholds);
+                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.openViewBranchIds(userId), thresholds);
         return page.map(product -> {
             ProductResponse response = ProductResponse.from(
                             product, preferredVendorNames.get(product.getId()), null,
@@ -261,7 +261,7 @@ public class ProductManagementService {
         java.util.Map<UUID, Integer> threshold = new java.util.HashMap<>();
         threshold.put(id, product.getLowStockThreshold());
         java.util.Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
-                branchStockService.figures(tenantId, List.of(id), branchAccessService.viewBranchIds(userId), threshold);
+                branchStockService.figures(tenantId, List.of(id), branchAccessService.openViewBranchIds(userId), threshold);
         if (figures == null) {
             return response;
         }
@@ -382,11 +382,11 @@ public class ProductManagementService {
             return lowStock();
         }
         List<Product> products = everyBranchStockQuery.lowAt(
-                tenantId, branchAccessService.reportScope(userId, branchId), LOW_STOCK_LIMIT);
+                tenantId, branchAccessService.stockScope(userId, branchId), LOW_STOCK_LIMIT);
         Map<UUID, Integer> thresholds = new java.util.HashMap<>();
         products.forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
-                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.viewBranchIds(userId), thresholds);
+                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.openViewBranchIds(userId), thresholds);
         return products.stream().map(product -> {
             ProductResponse response = ProductResponse.from(product);
             List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure> rows =

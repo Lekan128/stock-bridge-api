@@ -175,7 +175,8 @@ public class ProductSyncService {
         // branch's figures are left out here, not hidden there (D-U3).
         Map<UUID, Integer> thresholds = new java.util.HashMap<>();
         products.forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
-        List<UUID> visible = userId == null ? List.of() : branchAccessService.viewBranchIds(userId);
+        // Open branches only: a closed one holds nothing, and would read as out of everything.
+        List<UUID> visible = userId == null ? List.of() : branchAccessService.openViewBranchIds(userId);
         List<UUID> carried = visible.size() <= WIDE ? visible
                 : branchId != null && visible.contains(branchId) ? List.of(branchId) : List.of();
         Map<UUID, List<BranchFigure>> branchStock = userId == null

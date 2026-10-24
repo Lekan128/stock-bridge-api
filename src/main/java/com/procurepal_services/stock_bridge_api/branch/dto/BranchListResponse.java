@@ -15,6 +15,8 @@ import java.util.UUID;
  *     company have a second.
  * @param sendTo every open branch, by name only, for the Send screen's "To" (UX section 5.4): a
  *     storekeeper sends to a branch they don't see. Empty for someone who can't send stock.
+ * @param openBranches how many open branches the company has, whether or not this person sees them: a
+ *     price applies at every one ("at all 5 branches", UX section 5.14).
  */
 public record BranchListResponse(
         List<BranchResponse> branches,
@@ -22,7 +24,8 @@ public record BranchListResponse(
         boolean seesEverywhere,
         boolean recordsEverywhere,
         boolean mayAddBranch,
-        List<BranchName> sendTo) {
+        List<BranchName> sendTo,
+        long openBranches) {
 
     public record BranchName(UUID id, String name) {
     }

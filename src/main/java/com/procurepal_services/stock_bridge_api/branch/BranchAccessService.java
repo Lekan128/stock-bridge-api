@@ -77,6 +77,26 @@ public class BranchAccessService {
     }
 
     /**
+     * The open branches this person sees - what stock figures and low-stock judgements cover. A closed
+     * branch holds nothing (it can't close otherwise), so counting it would call every product with a
+     * level "low" there. Reports keep {@link #viewBranchIds}: a closed branch's history still happened.
+     */
+    public List<UUID> openViewBranchIds(UUID userId) {
+        Grants grants = grants(userId);
+        if (grants.seesEverywhere()) {
+            return jdbc.queryForList(
+                    "SELECT id FROM branches WHERE client_id = :clientId AND is_active ORDER BY is_default DESC, name",
+                    new MapSqlParameterSource("clientId", grants.clientId()), UUID.class);
+        }
+        return writeBranchIds(userId);
+    }
+
+    /** {@link #reportScope} for stock figures: with no branch asked for, only the open ones. */
+    public List<UUID> stockScope(UUID userId, UUID requested) {
+        return requested == null ? openViewBranchIds(userId) : reportScope(userId, requested);
+    }
+
+    /**
      * The branches a report covers (D-B11): the one asked for, if this person sees it, or else every
      * branch they see. Never one they don't - D-U3 held on the server, not only in the app.
      */

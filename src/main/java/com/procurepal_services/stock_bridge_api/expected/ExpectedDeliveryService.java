@@ -80,7 +80,7 @@ public class ExpectedDeliveryService {
                 .note(blankToNull(request.note()))
                 .status(ExpectedDeliveryStatus.OPEN)
                 .createdBy(actingUserId)
-                .branchId(branchStockService.resolveForWrite(request.branchId(), actingUserId))
+                .branchId(goingTo(request.branchId(), actingUserId))
                 .build();
 
         for (ExpectedDeliveryRequest.Line line : request.lines()) {
@@ -105,6 +105,18 @@ public class ExpectedDeliveryService {
         }
 
         return respond(expectedDeliveryRepository.saveAndFlush(expected));
+    }
+
+    /**
+     * Where it is going: named, or the only branch. A person files it only at a branch they may record at
+     * - it lands on that branch's Needs you, and receiving it there is theirs to do.
+     */
+    private UUID goingTo(UUID requested, UUID actingUserId) {
+        UUID branchId = branchStockService.resolveForWrite(requested, actingUserId);
+        if (actingUserId != null && branchStockService.isMultiBranch(requireTenantId())) {
+            branchAccessService.requireMayRecordAt(actingUserId, branchId);
+        }
+        return branchId;
     }
 
     @Transactional(readOnly = true)

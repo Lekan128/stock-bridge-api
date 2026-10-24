@@ -202,7 +202,9 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.WAYBILL_OR_INVOICE_NO,
                 "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "doc_no");
         // A distributor's weekly report from all its sites names the site in its own words.
-        put(aliases, ImportFields.BRANCH, "branch", "branch_name", "location", "site", "store", "outlet", "depot", "shop");
+        // Only headers that say "branch": "Location" or "Store" on a delivery sheet is as often a shelf
+        // or the supplier's shop, and a wrong guess here fails every row.
+        put(aliases, ImportFields.BRANCH, "branch", "branch_name", "to_branch", "for_branch");
         return Map.copyOf(aliases);
     }
 

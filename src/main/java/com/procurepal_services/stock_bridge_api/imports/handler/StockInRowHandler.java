@@ -1410,6 +1410,15 @@ public class StockInRowHandler implements ImportRowHandler {
                 continue;
             }
 
+            // The line's own branch, checked again: it may have closed, been renamed, or been taken from
+            // the uploader since the sheet was checked. That row fails on its own; the rest go in.
+            String branchProblem = lineBranchProblem(ctx.tenantId(), ctx.actingUserId(), state.text(ImportFields.BRANCH));
+            if (branchProblem != null) {
+                state.setOutcome(ImportFields.OUTCOME_FAILED);
+                state.setOutcomeMessage(branchProblem);
+                continue;
+            }
+
             Product product = state.getResolvedEntityId() != null
                     ? productRepository.findByIdAndClientId(state.getResolvedEntityId(), ctx.tenantId()).orElse(null)
                     : createdProductFor(ctx, state, createdProducts);
@@ -2184,5 +2193,23 @@ public class StockInRowHandler implements ImportRowHandler {
         }
         Branch branch = branchNamed(clientId, name);
         return branch == null ? sheetBranch : branch.getId();
+    }
+
+    /** At commit: why a line's named branch can't take it now, or null when it can (or names none). */
+    private String lineBranchProblem(java.util.UUID clientId, java.util.UUID actingUserId, String name) {
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        Branch branch = branchNamed(clientId, name);
+        if (branch == null) {
+            return "Not recorded: there is no branch called %s any more.".formatted(ImportCopy.quote(name.trim()));
+        }
+        if (!branch.isActive()) {
+            return "Not recorded: %s has closed since this sheet was checked.".formatted(branch.getName());
+        }
+        if (actingUserId != null && !branchAccessService.mayRecordAt(actingUserId, branch.getId())) {
+            return "Not recorded: you no longer work at %s.".formatted(branch.getName());
+        }
+        return null;
     }
 }

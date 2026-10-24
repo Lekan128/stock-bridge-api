@@ -82,7 +82,8 @@ public class BranchService {
                 grants.seesEverywhere(),
                 grants.recordsEverywhere(),
                 manages && mayAddBranch(clientId),
-                sendTo);
+                sendTo,
+                branchRepository.countByClientIdAndActiveTrue(clientId));
     }
 
     /** {@link BranchController#setThresholds}: a branch the person sees, of a multi-branch company. */
