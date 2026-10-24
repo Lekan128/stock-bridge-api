@@ -44,6 +44,10 @@ public class BranchTableService {
         if (visible.isEmpty()) {
             return new BranchTableResponse(List.of(), emptyTotals(), OffsetDateTime.now(ZoneOffset.UTC));
         }
+        // Planned for this company each time: a generic plan sizes "one company's rows" by an average
+        // company, and a chain's are 100x that (Phase 4, measured at 26 branches x 20k products).
+        jdbc.getJdbcTemplate().execute("SET LOCAL plan_cache_mode = force_custom_plan");
+
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("clientId", clientId)
                 .addValue("branchIds", visible)

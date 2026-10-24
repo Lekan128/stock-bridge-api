@@ -104,14 +104,14 @@ public class TransferService {
             branchAccessService.requireMayRecordAt(userId, to);
         }
 
-        // One send at a time per company: the next waybill number, and a code for a first-time sender.
+        // One send at a time per company, for the next waybill number. (The sending branch's code was
+        // given when it was created - V57 - so nothing here writes to the branch row.)
         // NO KEY UPDATE, not UPDATE: every stock write inserts rows referencing the company, which takes a
         // key-share lock on it; FOR UPDATE would block those while this waits for their products - a
         // deadlock (found by the section 9 test). Sends still queue on each other.
         jdbc.queryForList("SELECT id FROM clients WHERE id = :clientId FOR NO KEY UPDATE",
                 new MapSqlParameterSource("clientId", clientId), UUID.class);
         Branch fromBranch = requireBranch(from, clientId);
-        ensureCode(fromBranch, clientId);
         OffsetDateTime sentAt = request.occurredAt() != null ? request.occurredAt() : OffsetDateTime.now();
         StockTransfer transfer = StockTransfer.builder()
                 .id(request.id())
@@ -494,25 +494,6 @@ public class TransferService {
 
     private StockMovement outMovementOf(StockTransferLine line) {
         return stockMovementRepository.findById(line.getOutMovementId()).orElseThrow();
-    }
-
-    /** A first-time sender gets a short code from its name: "Bolade" is BOL, a clash adds a digit. */
-    private void ensureCode(Branch branch, UUID clientId) {
-        if (branch.getCode() != null) {
-            return;
-        }
-        Set<String> taken = new HashSet<>();
-        for (Branch other : branchRepository.findAllByClientId(clientId)) {
-            if (other.getCode() != null) taken.add(other.getCode());
-        }
-        String letters = branch.getName().toUpperCase(Locale.ROOT).replaceAll("[^A-Z]", "");
-        String base = letters.isEmpty() ? "BR" : letters.substring(0, Math.min(3, letters.length()));
-        String code = base;
-        for (int n = 2; taken.contains(code); n++) {
-            code = base + n;
-        }
-        branch.setCode(code);
-        branchRepository.saveAndFlush(branch);
     }
 
     private String waybillNumber(Branch from, int number) {

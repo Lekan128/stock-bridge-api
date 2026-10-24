@@ -170,18 +170,42 @@ public class BranchStockService {
      */
     public Map<UUID, List<BranchFigure>> figures(
             UUID clientId, Collection<UUID> productIds, List<UUID> branchIds, Map<UUID, Integer> productThresholds) {
-        if (productIds.isEmpty() || branchIds.isEmpty() || !isMultiBranch(clientId)) {
+        return figures(clientId, productIds, branchIds, productThresholds, false);
+    }
+
+    /**
+     * @param knownMultiBranch the caller already knows the company has more than one branch (it sees
+     *     two), so the check is skipped - one query fewer on each sync page.
+     */
+    public Map<UUID, List<BranchFigure>> figures(
+            UUID clientId, Collection<UUID> productIds, List<UUID> branchIds, Map<UUID, Integer> productThresholds,
+            boolean knownMultiBranch) {
+        if (productIds.isEmpty() || branchIds.isEmpty() || (!knownMultiBranch && !isMultiBranch(clientId))) {
             return null;
         }
+        // Arrays, not IN lists (a sync page is 2,000 products), planned for the values each time, and no
+        // client_id test: the product ids are this company's own, and a generic plan judged "one
+        // company's rows at these branches" by an average company's size - 3 rows, against a chain's
+        // 312k - and took 1.6 s for a 50-product page (Phase 4, 26 branches x 20k products).
+        jdbc.getJdbcTemplate().execute("SET LOCAL plan_cache_mode = force_custom_plan");
         Map<UUID, Map<UUID, int[]>> found = new HashMap<>();
         Map<UUID, Map<UUID, Integer>> thresholds = new HashMap<>();
-        jdbc.query("""
-                SELECT product_id, branch_id, quantity_on_hand, low_stock_threshold FROM branch_stock
-                WHERE client_id = :clientId AND product_id IN (:productIds) AND branch_id IN (:branchIds)
-                """, new MapSqlParameterSource()
+        // A sync page (2,000 products): the page's ids joined as a table, a hash join over the branch's
+        // rows - 4 ms. A list page (50): the product index - 2 ms. Each is several times the other's.
+        String figuresSql = productIds.size() > 200
+                ? """
+                  SELECT bs.product_id, bs.branch_id, bs.quantity_on_hand, bs.low_stock_threshold
+                  FROM unnest(:productIds) AS page(product_id)
+                  JOIN branch_stock bs ON bs.product_id = page.product_id AND bs.branch_id = ANY(:branchIds)
+                  """
+                : """
+                  SELECT product_id, branch_id, quantity_on_hand, low_stock_threshold FROM branch_stock
+                  WHERE product_id = ANY(:productIds) AND branch_id = ANY(:branchIds)
+                  """;
+        jdbc.query(figuresSql, new MapSqlParameterSource()
                         .addValue("clientId", clientId)
-                        .addValue("productIds", productIds)
-                        .addValue("branchIds", branchIds),
+                        .addValue("productIds", productIds.toArray(UUID[]::new))
+                        .addValue("branchIds", branchIds.toArray(UUID[]::new)),
                 rs -> {
                     UUID product = rs.getObject("product_id", UUID.class);
                     UUID branch = rs.getObject("branch_id", UUID.class);
@@ -198,12 +222,12 @@ public class BranchStockService {
                        SUM(l.quantity_sent - l.quantity_received - l.quantity_missing - l.quantity_damaged) AS on_the_way
                 FROM stock_transfers t JOIN stock_transfer_lines l ON l.transfer_id = t.id
                 WHERE t.client_id = :clientId AND t.status IN ('ON_THE_WAY', 'PARTLY_RECEIVED')
-                  AND t.to_branch_id IN (:branchIds) AND l.product_id IN (:productIds)
+                  AND t.to_branch_id = ANY(:branchIds) AND l.product_id = ANY(:productIds)
                 GROUP BY l.product_id, t.to_branch_id
                 """, new MapSqlParameterSource()
                         .addValue("clientId", clientId)
-                        .addValue("productIds", productIds)
-                        .addValue("branchIds", branchIds),
+                        .addValue("productIds", productIds.toArray(UUID[]::new))
+                        .addValue("branchIds", branchIds.toArray(UUID[]::new)),
                 rs -> {
                     onTheWay.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
                             .put(rs.getObject("to_branch_id", UUID.class), rs.getInt("on_the_way"));
@@ -257,6 +281,28 @@ public class BranchStockService {
                         .addValue("clientId", clientId)
                         .addValue("branchId", branchId)
                         .addValue("productId", productId)
+                        .addValue("threshold", threshold));
+    }
+
+    /**
+     * One low-stock level for many products at a branch (Phase 4, Avatar C: "20 at Lekki for every
+     * drink"); null takes them back to each product's own. Products of another company are skipped.
+     *
+     * @return how many products were set.
+     */
+    public int setThresholds(UUID clientId, UUID branchId, java.util.Collection<UUID> productIds, Integer threshold) {
+        if (productIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.update("""
+                INSERT INTO branch_stock (client_id, branch_id, product_id, quantity_on_hand, low_stock_threshold)
+                SELECT :clientId, :branchId, p.id, 0, :threshold
+                FROM products p WHERE p.client_id = :clientId AND p.id IN (:productIds)
+                ON CONFLICT (branch_id, product_id) DO UPDATE SET low_stock_threshold = :threshold
+                """, new MapSqlParameterSource()
+                        .addValue("clientId", clientId)
+                        .addValue("branchId", branchId)
+                        .addValue("productIds", productIds)
                         .addValue("threshold", threshold));
     }
 

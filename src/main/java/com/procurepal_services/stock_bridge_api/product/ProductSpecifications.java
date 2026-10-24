@@ -82,6 +82,42 @@ final class ProductSpecifications {
     }
 
     /**
+     * At one branch (MULTI_BRANCH_BUILD_PLAN.md section 6, Phase 4): the stock filter reads that
+     * branch's figure against its own level, else the product's; a branch that holds none reads 0.
+     * "All branches" is not here: OUT there is the company figure ({@link #forTenant}), and LOW / OK
+     * are {@code EveryBranchStockQuery}'s, which needs one pass over every branch's figures.
+     */
+    static Specification<Product> atBranch(
+            UUID clientId, String search, Boolean active, UUID categoryId, StockStatus stockStatus, Boolean hasSellingPrice,
+            UUID branchId) {
+        Specification<Product> base = forTenant(clientId, search, active, categoryId, null, hasSellingPrice);
+        if (stockStatus == null) {
+            return base;
+        }
+        return base.and((root, query, cb) -> {
+            jakarta.persistence.criteria.Subquery<Integer> quantity = query.subquery(Integer.class);
+            Root<com.procurepal_services.stock_bridge_api.entity.BranchStockEntry> held =
+                    quantity.from(com.procurepal_services.stock_bridge_api.entity.BranchStockEntry.class);
+            quantity.select(held.get("quantityOnHand"))
+                    .where(cb.equal(held.get("productId"), root.get("id")), cb.equal(held.get("branchId"), branchId));
+            jakarta.persistence.criteria.Subquery<Integer> level = query.subquery(Integer.class);
+            Root<com.procurepal_services.stock_bridge_api.entity.BranchStockEntry> own =
+                    level.from(com.procurepal_services.stock_bridge_api.entity.BranchStockEntry.class);
+            level.select(own.get("lowStockThreshold"))
+                    .where(cb.equal(own.get("productId"), root.get("id")), cb.equal(own.get("branchId"), branchId));
+            jakarta.persistence.criteria.Expression<Integer> figure = cb.coalesce(quantity, 0);
+            jakarta.persistence.criteria.Expression<Integer> threshold = cb.coalesce(level, root.<Integer>get("lowStockThreshold"));
+            Predicate out = cb.le(figure, 0);
+            Predicate atOrBelow = cb.and(cb.isNotNull(threshold), cb.le(figure, threshold));
+            return switch (stockStatus) {
+                case OUT -> out;
+                case LOW -> cb.and(cb.not(out), atOrBelow);
+                case OK -> cb.not(cb.or(out, atOrBelow));
+            };
+        });
+    }
+
+    /**
      * {@code OUT} wins over {@code LOW} where both could apply (zero on hand with a threshold
      * set) — see {@link StockStatus}'s own javadoc for why. Kept here rather than inlined above so
      * the three branches read as one definition next to each other instead of split across two

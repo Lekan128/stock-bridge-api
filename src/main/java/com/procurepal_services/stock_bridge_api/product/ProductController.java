@@ -114,8 +114,13 @@ public class ProductController {
             @RequestParam(required = false) StockStatus stockStatus,
             // "Has a price" / "No selling price" (SELLING_PRICE_PLAN.md section 6.5).
             @RequestParam(required = false) Boolean hasSellingPrice,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return productManagementService.list(search, active, categoryId, stockStatus, hasSellingPrice, pageable);
+            // Multiple branches (Phase 4): one branch's figures; absent is every branch the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @PageableDefault(size = 20) Pageable pageable,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return productManagementService.list(search, active, categoryId, stockStatus, hasSellingPrice, pageable,
+                principal == null ? null : principal.getUserId(), branchId);
     }
 
     /**

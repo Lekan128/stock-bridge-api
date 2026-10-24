@@ -86,6 +86,7 @@ public class ProductManagementService {
     private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
     private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
+    private final EveryBranchStockQuery everyBranchStockQuery;
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
     private final SellerDirectory sellerDirectory;
@@ -158,6 +159,60 @@ public class ProductManagementService {
                         null,
                         hasMultiplePacks.getOrDefault(product.getId(), false))
                 .withExpectedQuantity(expected.get(product.getId())));
+    }
+
+    /**
+     * The list for a person at a multi-branch company (Phase 4, MULTI_BRANCH_BUILD_PLAN.md section 6):
+     * at {@code branchId}, the stock filter and each row's figure are that branch's; with no branch,
+     * the company's, LOW meaning low somewhere they see. Every row carries the branches' figures, as
+     * the phone's catalogue rows do. A one-branch company gets exactly the list it always had.
+     */
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> list(
+            String search, Boolean active, UUID categoryId, StockStatus stockStatus, Boolean hasSellingPrice,
+            Pageable pageable, UUID userId, UUID branchId) {
+        UUID tenantId = requireTenantId();
+        if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
+            return list(search, active, categoryId, stockStatus, hasSellingPrice, pageable);
+        }
+        List<UUID> scope = branchAccessService.reportScope(userId, branchId);
+        Page<Product> page = branchId != null
+                ? productRepository.findAll(
+                        ProductSpecifications.atBranch(tenantId, search, active, categoryId, stockStatus, hasSellingPrice, branchId),
+                        pageable)
+                : stockStatus == StockStatus.LOW || stockStatus == StockStatus.OK
+                        ? everyBranchStockQuery.page(tenantId, search, active, categoryId, stockStatus, hasSellingPrice, scope, pageable)
+                        : productRepository.findAll(
+                                ProductSpecifications.forTenant(tenantId, search, active, categoryId, stockStatus, hasSellingPrice),
+                                pageable);
+        Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
+        Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
+        Map<UUID, BigDecimal> expected = expectedDeliveryService.outstandingByProduct(
+                tenantId, page.getContent().stream().map(Product::getId).toList());
+        Map<UUID, Integer> thresholds = new java.util.HashMap<>();
+        page.getContent().forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
+                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.viewBranchIds(userId), thresholds);
+        return page.map(product -> {
+            ProductResponse response = ProductResponse.from(
+                            product, preferredVendorNames.get(product.getId()), null,
+                            hasMultiplePacks.getOrDefault(product.getId(), false))
+                    .withExpectedQuantity(expected.get(product.getId()));
+            List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure> rows =
+                    figures == null ? null : figures.get(product.getId());
+            if (rows == null) {
+                return response;
+            }
+            response = response.withBranchStock(rows);
+            if (branchId != null) {
+                for (var figure : rows) {
+                    if (figure.branchId().equals(branchId)) {
+                        return response.atBranch(figure);
+                    }
+                }
+            }
+            return response;
+        });
     }
 
     @Transactional(readOnly = true)

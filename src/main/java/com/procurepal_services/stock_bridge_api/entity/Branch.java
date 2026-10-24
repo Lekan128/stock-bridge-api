@@ -58,10 +58,11 @@ public class Branch extends TenantAwareEntity {
     private String phone;
 
     /**
-     * The short code on its waybills - "BOL" in WB-BOL-0042 (V53). Given the first time the branch sends
-     * stock, from its name, unique in the company.
+     * The short code on its waybills - "BOL" in WB-BOL-0042 (V53). Given by the database when the branch
+     * is created (V57's trigger), from its name, unique in the company; never written from here, so a
+     * branch saved before it was read back can't overwrite it with null.
      */
-    @Column(length = 8)
+    @Column(length = 8, insertable = false, updatable = false)
     private String code;
 
     /** When it was closed (V52); null while open. Closing keeps every row that names the branch. */

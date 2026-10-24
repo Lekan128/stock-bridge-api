@@ -31,8 +31,10 @@ public class ProductSyncController {
     public ProductSnapshotPage snapshot(
             @RequestParam(required = false) UUID afterId,
             @RequestParam(defaultValue = "" + ProductSyncService.DEFAULT_LIMIT) int limit,
+            // The phone's working branch: past ProductSyncService.WIDE branches, the one rows carry.
+            @RequestParam(required = false) UUID branch,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return productSyncService.snapshot(afterId, clamp(limit), principal.getUserId());
+        return productSyncService.snapshot(afterId, clamp(limit), principal.getUserId(), branch);
     }
 
     /**
@@ -54,7 +56,7 @@ public class ProductSyncController {
         if (device != null) {
             phoneStatusService.report(principal.getClientId(), principal.getUserId(), device, branch, waiting, needsYou, oldestWaiting);
         }
-        return productSyncService.changes(cursor, clamp(limit), principal.getUserId());
+        return productSyncService.changes(cursor, clamp(limit), principal.getUserId(), branch);
     }
 
     @ExceptionHandler(InvalidSyncCursorException.class)

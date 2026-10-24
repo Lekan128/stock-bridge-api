@@ -193,6 +193,19 @@ public record ProductResponse(
                 branchStock);
     }
 
+    /**
+     * The product as one branch holds it (Phase 4): that branch's figure, level and low flag, as the
+     * phone's catalogue reads a row at a branch. {@code branchStock} still lists every branch it sees.
+     */
+    public ProductResponse atBranch(BranchFigure figure) {
+        return new ProductResponse(
+                id, name, sku, barcode, description, unitPrice, costPrice, figure.quantityOnHand(), incomingQuantity,
+                expectedQuantity, sourceProductId, preferredVendorName, figure.lowStockThreshold(), brand, unitOfMeasure,
+                packagingUnit, packagingSize, imageUrl, unitOptions, active, figure.isLowStock(), createdAt, updatedAt,
+                warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
+                branchStock);
+    }
+
     /** The same product with its figure at each branch the person sees (V52) - the product page only. */
     public ProductResponse withBranchStock(List<BranchFigure> figures) {
         return new ProductResponse(

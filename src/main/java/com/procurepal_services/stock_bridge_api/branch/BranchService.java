@@ -85,6 +85,20 @@ public class BranchService {
                 sendTo);
     }
 
+    /** {@link BranchController#setThresholds}: a branch the person sees, of a multi-branch company. */
+    @Transactional
+    public int setThresholds(UUID branchId, BranchController.BulkThresholdRequest request, UUID userId) {
+        UUID clientId = requireTenantId();
+        if (!branchStockService.isMultiBranch(clientId)) {
+            throw new BranchChangeRefusedException("Your company has one branch: set each product's own low-stock level instead.");
+        }
+        if (!branchAccessService.viewBranchIds(userId).contains(branchId)) {
+            throw new BranchNotFoundException();
+        }
+        return branchStockService.setThresholds(clientId, branchId, new java.util.LinkedHashSet<>(request.productIds()),
+                request.lowStockThreshold());
+    }
+
     /**
      * Adds a branch; the company's second also switches it to per-branch figures (class javadoc). Refused
      * in the pilot for a company support hasn't enabled, so a company is never left half-switched.

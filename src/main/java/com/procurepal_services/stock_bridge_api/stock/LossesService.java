@@ -54,6 +54,9 @@ public class LossesService {
         if (!GROUPINGS.contains(grouping)) {
             throw new IllegalArgumentException("groupBy must be one of " + GROUPINGS);
         }
+        // Planned for this company each time: a generic plan sizes "one company's rows" by an average
+        // company, and a chain's are 100x that (Phase 4, measured at 26 branches x 20k products).
+        jdbc.getJdbcTemplate().execute("SET LOCAL plan_cache_mode = force_custom_plan");
         OffsetDateTime end = to != null ? to : OffsetDateTime.now(LAGOS);
         OffsetDateTime start = from != null
                 ? from

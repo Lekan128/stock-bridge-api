@@ -63,6 +63,15 @@ public class ProductSyncService {
     /** @param userId whose branches each row carries figures for (V52); null for none. */
     @Transactional(readOnly = true)
     public ProductSnapshotPage snapshot(UUID afterId, int limit, UUID userId) {
+        return snapshot(afterId, limit, userId, null);
+    }
+
+    /**
+     * @param branchId the phone's working branch: at a company where the person sees more than
+     *     {@link #WIDE} branches, the only branch rows carry a figure for (section 6.1); else unused.
+     */
+    @Transactional(readOnly = true)
+    public ProductSnapshotPage snapshot(UUID afterId, int limit, UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         useCustomPlans();
         String cursor = afterId == null
@@ -81,7 +90,7 @@ public class ProductSyncService {
 
         boolean hasMore = ids.size() > limit;
         List<UUID> pageIds = hasMore ? ids.subList(0, limit) : ids;
-        List<ProductSyncRow> rows = toRows(tenantId, pageIds, userId);
+        List<ProductSyncRow> rows = toRows(tenantId, pageIds, userId, branchId);
         UUID nextAfterId = hasMore ? pageIds.get(pageIds.size() - 1) : null;
         Long total = afterId == null
                 ? jdbc.queryForObject("SELECT count(*) FROM products WHERE client_id = :clientId",
@@ -102,6 +111,12 @@ public class ProductSyncService {
     /** @param userId whose branches each row carries figures for (V52); null for none. */
     @Transactional(readOnly = true)
     public ProductChangesPage changes(String cursorText, int limit, UUID userId) {
+        return changes(cursorText, limit, userId, null);
+    }
+
+    /** @param branchId as {@link #snapshot(UUID, int, UUID, UUID)}. */
+    @Transactional(readOnly = true)
+    public ProductChangesPage changes(String cursorText, int limit, UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         useCustomPlans();
         SyncCursor cursor = SyncCursor.decode(cursorText);
@@ -125,7 +140,7 @@ public class ProductSyncService {
 
         Set<UUID> changedIds = new LinkedHashSet<>();
         page.forEach(change -> changedIds.add(change.productId()));
-        List<ProductSyncRow> rows = toRows(tenantId, new ArrayList<>(changedIds), userId);
+        List<ProductSyncRow> rows = toRows(tenantId, new ArrayList<>(changedIds), userId, branchId);
         Set<UUID> stillThere = new java.util.HashSet<>();
         rows.forEach(row -> stillThere.add(row.id()));
         List<UUID> removed = changedIds.stream().filter(id -> !stillThere.contains(id)).toList();
@@ -140,7 +155,14 @@ public class ProductSyncService {
      * {@link ExpectedDeliveryService#outstandingByProduct} - so a row on the phone and a row from
      * {@code GET /api/products} can never disagree.
      */
-    private List<ProductSyncRow> toRows(UUID tenantId, List<UUID> ids, UUID userId) {
+    /**
+     * Past this many branches (Avatar C, a chain) rows carry one branch's figure, the phone's working
+     * branch, instead of every branch's: 26 branches x 20k products would be half a million figures
+     * on a phone. Switching branch there downloads the catalogue again (MULTI_BRANCH_BUILD_PLAN.md 6.1).
+     */
+    public static final int WIDE = 10;
+
+    private List<ProductSyncRow> toRows(UUID tenantId, List<UUID> ids, UUID userId, UUID branchId) {
         if (ids.isEmpty()) {
             return List.of();
         }
@@ -153,10 +175,12 @@ public class ProductSyncService {
         // branch's figures are left out here, not hidden there (D-U3).
         Map<UUID, Integer> thresholds = new java.util.HashMap<>();
         products.forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
+        List<UUID> visible = userId == null ? List.of() : branchAccessService.viewBranchIds(userId);
+        List<UUID> carried = visible.size() <= WIDE ? visible
+                : branchId != null && visible.contains(branchId) ? List.of(branchId) : List.of();
         Map<UUID, List<BranchFigure>> branchStock = userId == null
                 ? null
-                : branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.viewBranchIds(userId),
-                        thresholds);
+                : branchStockService.figures(tenantId, thresholds.keySet(), carried, thresholds, visible.size() > 1);
 
         return products.stream()
                 .map(product -> new ProductSyncRow(
