@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.imports.handler;
 
 import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
+import com.procurepal_services.stock_bridge_api.entity.Branch;
 import com.procurepal_services.stock_bridge_api.product.quality.ProductSetupChecks;
 import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.Client;
@@ -144,6 +145,8 @@ public class StockInRowHandler implements ImportRowHandler {
     private final StockMovementRepository stockMovementRepository;
     /** Undo puts stock back at the branch the import put it at (V51). */
     private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final ImportSessionRowRepository importSessionRowRepository;
     private final StockManagementService stockManagementService;
@@ -346,6 +349,10 @@ public class StockInRowHandler implements ImportRowHandler {
                                 + "stock was sold first."),
                 ImportFieldDescriptor.text(ImportFields.WAYBILL_OR_INVOICE_NO, "Waybill or invoice",
                         "So you can find this delivery again."),
+                // V52/section 5.12: one sheet for several sites. Only read when the sheet has it.
+                ImportFieldDescriptor.text(ImportFields.BRANCH, "Branch",
+                        "Which branch this line arrived at, for a sheet covering several. Leave it empty for "
+                                + "the branch you chose when uploading."),
                 new ImportFieldDescriptor(ImportFields.REF, "Ref", ImportFieldDescriptor.Type.TEXT,
                         false, true, false,
                         "How the sheet recognises the product. Leave it alone.", null, null));
@@ -639,6 +646,7 @@ public class StockInRowHandler implements ImportRowHandler {
                 validateCountedIn(ctx, out, product, options, unitContext.packEntities(), subject);
         BigDecimal typedPrice = RowValues.money(ctx, out, ImportFields.COST_PER_UNIT, "Price paid for one", subject);
         validateReceivedDate(ctx, out, subject);
+        validateBranch(ctx, out, subject);
         out.value(ImportFields.WAYBILL_OR_INVOICE_NO, ctx.text(ImportFields.WAYBILL_OR_INVOICE_NO));
         describeUnits(out, subject, product, options, countedIn, quantity);
         // Recomputed, never read from the file: the "Last price paid" a blank price will record.
@@ -964,6 +972,37 @@ public class StockInRowHandler implements ImportRowHandler {
      * would catch it in the database and roll back the entire import with a constraint name for a
      * message; catching it here costs one comparison and names the row.
      */
+    /**
+     * A line's own branch (section 5.12): one the company has, open, and that the person uploading
+     * may record at - the same refusals a stock-in at that branch would make, said on the row.
+     */
+    private void validateBranch(RowContext ctx, RowValidation.Builder out, String subject) {
+        String name = ctx.text(ImportFields.BRANCH);
+        out.value(ImportFields.BRANCH, name);
+        if (name == null || name.isBlank()) {
+            return;
+        }
+        Branch branch = branchNamed(ctx.tenantId(), name);
+        if (branch == null) {
+            out.error(ImportFields.BRANCH, "BRANCH_UNKNOWN",
+                    "%s is for %s, and there is no branch by that name.".formatted(subject, ImportCopy.quote(name.trim())));
+        } else if (!branch.isActive()) {
+            out.error(ImportFields.BRANCH, "BRANCH_CLOSED",
+                    "%s is for %s, which is closed.".formatted(subject, branch.getName()));
+        } else if (ctx.actingUserId() != null && !branchAccessService.mayRecordAt(ctx.actingUserId(), branch.getId())) {
+            out.error(ImportFields.BRANCH, "BRANCH_NOT_ALLOWED",
+                    "%s is for %s, and you don't work there.".formatted(subject, branch.getName()));
+        }
+    }
+
+    /** By name, ignoring case and spaces at the ends; null when the company has none so called. */
+    private Branch branchNamed(java.util.UUID clientId, String name) {
+        String wanted = name.trim();
+        return branchRepository.findAllByClientId(clientId).stream()
+                .filter(branch -> branch.getName().equalsIgnoreCase(wanted))
+                .findFirst().orElse(null);
+    }
+
     private void validateReceivedDate(RowContext ctx, RowValidation.Builder out, String subject) {
         LocalDate received = RowValues.date(ctx, out, ImportFields.RECEIVED_DATE, "Date received", subject);
         if (received == null) {
@@ -1412,9 +1451,10 @@ public class StockInRowHandler implements ImportRowHandler {
                             // go and confirm.
                             false,
                             null)
-                            // The branch the sheet was uploaded for (V52); null on a session from
-                            // before branches, which the company's only branch then receives.
-                            .withBranchId(ctx.session().getBranchId()),
+                            // The line's own branch (section 5.12), else the one the sheet was
+                            // uploaded for (V52); null on a session from before branches, which
+                            // the company's only branch then receives.
+                            .withBranchId(lineBranch(ctx.tenantId(), state.text(ImportFields.BRANCH), ctx.session().getBranchId())),
                     ctx.actingUserId(),
                     batchId);
             state.setOutcome(ImportFields.OUTCOME_CREATED);
@@ -2135,5 +2175,14 @@ public class StockInRowHandler implements ImportRowHandler {
             return null;
         }
         return value instanceof BigDecimal decimal ? decimal : new BigDecimal(value.toString());
+    }
+
+    /** The branch a validated line names, or the sheet's. */
+    private java.util.UUID lineBranch(java.util.UUID clientId, String name, java.util.UUID sheetBranch) {
+        if (name == null || name.isBlank()) {
+            return sheetBranch;
+        }
+        Branch branch = branchNamed(clientId, name);
+        return branch == null ? sheetBranch : branch.getId();
     }
 }

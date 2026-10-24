@@ -57,6 +57,10 @@ public class Branch extends TenantAwareEntity {
     @Column(length = 50)
     private String phone;
 
+    /** Where it is (V59): on the branch list and the waybill's header, never used to route anything. */
+    @Column(length = 300)
+    private String address;
+
     /**
      * The short code on its waybills - "BOL" in WB-BOL-0042 (V53). Given by the database when the branch
      * is created (V57's trigger), from its name, unique in the company; never written from here, so a

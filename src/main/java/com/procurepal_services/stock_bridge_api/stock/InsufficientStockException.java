@@ -35,6 +35,8 @@ public class InsufficientStockException extends RuntimeException {
 
     private final int availableQuantity;
     private final int requestedQuantity;
+    /** Which product, where a write names several (a waybill): the phone offers "Send 8 instead" for it. */
+    private java.util.UUID productId;
 
     public InsufficientStockException(int available, int requested) {
         this(available, requested, null);
@@ -52,6 +54,15 @@ public class InsufficientStockException extends RuntimeException {
                 + symbolOrUnits(unitSymbol) + ".");
         this.availableQuantity = available;
         this.requestedQuantity = requested;
+    }
+
+    public InsufficientStockException forProduct(java.util.UUID productId) {
+        this.productId = productId;
+        return this;
+    }
+
+    public java.util.UUID getProductId() {
+        return productId;
     }
 
     private static String symbolOrUnits(String unitSymbol) {

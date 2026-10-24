@@ -57,6 +57,7 @@ public class ExpectedDeliveryService {
     private final StockInTemplateService stockInTemplateService;
     /** Which branch it is going to (V52): named, or the company's only one, or the person's only one. */
     private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
 
     @Transactional
     public ExpectedDeliveryResponse create(ExpectedDeliveryRequest request, UUID actingUserId) {
@@ -108,8 +109,25 @@ public class ExpectedDeliveryService {
 
     @Transactional(readOnly = true)
     public Page<ExpectedDeliveryResponse> list(ExpectedDeliveryStatus status, Pageable pageable) {
+        return list(status, pageable, null, null);
+    }
+
+    /**
+     * At a multi-branch company (MULTI_BRANCH_UX_PLAN.md section 5.1): at a branch, the deliveries going
+     * there; in All branches, every one going to a branch the person sees.
+     */
+    @Transactional(readOnly = true)
+    public Page<ExpectedDeliveryResponse> list(ExpectedDeliveryStatus status, Pageable pageable, UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
-        Page<ExpectedDelivery> page = status == null
+        List<UUID> scope = userId != null && branchStockService.isMultiBranch(tenantId)
+                ? branchAccessService.reportScope(userId, branchId)
+                : null;
+        Page<ExpectedDelivery> page = scope != null
+                ? status == null
+                        ? expectedDeliveryRepository.findAllByClientIdAndBranchIdInOrderByCreatedAtDesc(tenantId, scope, pageable)
+                        : expectedDeliveryRepository.findAllByClientIdAndStatusAndBranchIdInOrderByCreatedAtDesc(
+                                tenantId, status, scope, pageable)
+                : status == null
                 ? expectedDeliveryRepository.findAllByClientIdOrderByCreatedAtDesc(tenantId, pageable)
                 : expectedDeliveryRepository.findAllByClientIdAndStatusOrderByCreatedAtDesc(tenantId, status, pageable);
         // One lookup for every product on the page rather than one per line.

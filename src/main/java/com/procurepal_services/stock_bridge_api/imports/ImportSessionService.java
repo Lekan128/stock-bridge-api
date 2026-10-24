@@ -1549,7 +1549,7 @@ public class ImportSessionService {
     @Transactional(readOnly = true)
     public byte[] report(UUID id) {
         ImportSession session = require(id);
-        List<ImportFieldDescriptor> fields = handlerFor(session.getKind()).fields();
+        List<ImportFieldDescriptor> fields = shownFields(handlerFor(session.getKind()).fields(), session.getClientId());
 
         List<ImportResultReport.Column> columns = fields.stream()
                 .map(field -> new ImportResultReport.Column(field.key(), field.label()))
@@ -1758,10 +1758,18 @@ public class ImportSessionService {
                 defaults.get(ImportFields.VENDOR_NAME));
     }
 
+    /** No Branch column at a one-branch company: not on the grid, the mapping or the result file (rule 1). */
+    private List<ImportFieldDescriptor> shownFields(List<ImportFieldDescriptor> fields, UUID clientId) {
+        if (clientId != null && branchStockService.isMultiBranch(clientId)) {
+            return fields;
+        }
+        return fields.stream().filter(field -> !ImportFields.BRANCH.equals(field.key())).toList();
+    }
+
     private ImportSessionResponse toResponse(
             ImportSession session, List<String> unmappedHeaders, List<String> requiredFieldsMissing) {
         ImportRowHandler handler = handlerFor(session.getKind());
-        List<ImportFieldDescriptor> fields = handler.fields();
+        List<ImportFieldDescriptor> fields = shownFields(handler.fields(), session.getClientId());
         Map<String, String> mapping = session.getColumnMapping() == null ? Map.of() : session.getColumnMapping();
 
         List<String> missing = requiredFieldsMissing != null

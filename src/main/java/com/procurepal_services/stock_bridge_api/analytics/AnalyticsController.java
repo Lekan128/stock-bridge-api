@@ -23,6 +23,7 @@ public class AnalyticsController {
 
     private final AnalyticsService analyticsService;
     private final BranchTableService branchTableService;
+    private final BranchDigestService branchDigestService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
 
     @GetMapping("/summary")
@@ -46,6 +47,22 @@ public class AnalyticsController {
             @org.springframework.security.core.annotation.AuthenticationPrincipal
                     com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
         return branchTableService.table(principal.getClientId(), principal.getUserId());
+    }
+
+    /** The daily digest switch for this person (UX section 5.13), shown under the branch table. */
+    @org.springframework.web.bind.annotation.PutMapping("/branches/digest")
+    public java.util.Map<String, Boolean> setDigest(
+            @org.springframework.web.bind.annotation.RequestBody java.util.Map<String, Boolean> body,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return java.util.Map.of("enabled", branchDigestService.set(principal.getUserId(), Boolean.TRUE.equals(body.get("enabled"))));
+    }
+
+    @GetMapping("/branches/digest")
+    public java.util.Map<String, Boolean> digest(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return java.util.Map.of("enabled", branchDigestService.isOn(principal.getUserId()));
     }
 
     @GetMapping("/movements-over-time")

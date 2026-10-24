@@ -114,4 +114,33 @@ class EveryBranchStockQuery {
                     GROUP BY bs.product_id HAVING COUNT(*) = :branches)
                 SELECT COUNT(*) FROM products p WHERE\s""" + where, params, Long.class);
     }
+
+    /**
+     * The low-stock alerts at a multi-branch company (MULTI_BRANCH_UX_PLAN.md section 5.1, Low stock): active
+     * products at or below their level (the branch's, else the product's) at a branch in scope. At one
+     * branch, "low here"; in All branches, "low anywhere". A branch with no row holds 0, as Inventory
+     * shows it, so the alerts and the list's per-branch figures always agree.
+     */
+    List<Product> lowAt(UUID clientId, Collection<UUID> scope, int limit) {
+        jdbc.getJdbcTemplate().execute("SET LOCAL plan_cache_mode = force_custom_plan");
+        List<UUID> ids = jdbc.queryForList("""
+                SELECT p.id FROM products p
+                WHERE p.client_id = :clientId AND p.is_active
+                  AND EXISTS (SELECT 1 FROM unnest(:scope) AS b(branch_id)
+                              LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id = b.branch_id
+                              WHERE COALESCE(bs.low_stock_threshold, p.low_stock_threshold) IS NOT NULL
+                                AND COALESCE(bs.quantity_on_hand, 0) <= COALESCE(bs.low_stock_threshold, p.low_stock_threshold))
+                ORDER BY p.name, p.id LIMIT :limit""",
+                new MapSqlParameterSource()
+                        .addValue("clientId", clientId)
+                        .addValue("scope", scope.toArray(UUID[]::new))
+                        .addValue("limit", limit),
+                UUID.class);
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        Map<UUID, Product> byId = new HashMap<>();
+        productRepository.findForSync(clientId, ids).forEach(product -> byId.put(product.getId(), product));
+        return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
+    }
 }

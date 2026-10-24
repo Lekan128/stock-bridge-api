@@ -47,8 +47,12 @@ public class ExpectedDeliveryController {
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public Page<ExpectedDeliveryResponse> list(
             @RequestParam(required = false) ExpectedDeliveryStatus status,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return expectedDeliveryService.list(status, pageable);
+            // Multiple branches: going to this branch; absent is every branch the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @PageableDefault(size = 20) Pageable pageable,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return expectedDeliveryService.list(status, pageable, principal == null ? null : principal.getUserId(), branchId);
     }
 
     @GetMapping("/{id}")

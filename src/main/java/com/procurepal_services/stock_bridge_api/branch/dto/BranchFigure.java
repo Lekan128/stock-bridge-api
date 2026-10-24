@@ -19,7 +19,11 @@ public record BranchFigure(
         Integer lowStockThreshold,
         boolean isLowStock,
         StockStatus stockStatus,
-        int onTheWay) {
+        int onTheWay,
+        /** The product page only (section 6): the branch's latest count; absent if never counted. */
+        java.time.OffsetDateTime lastCountedAt,
+        /** The product page only: the branch's own level, absent when it uses the product's. */
+        Integer ownLowStockThreshold) {
 
     public static BranchFigure of(UUID branchId, int quantityOnHand, Integer lowStockThreshold) {
         return of(branchId, quantityOnHand, lowStockThreshold, 0);
@@ -32,6 +36,13 @@ public record BranchFigure(
                 lowStockThreshold,
                 StockStatus.isLowStock(quantityOnHand, lowStockThreshold),
                 StockStatus.of(quantityOnHand, lowStockThreshold),
-                onTheWay);
+                onTheWay,
+                null,
+                null);
+    }
+
+    /** The same figure with the product page's two extras. */
+    public BranchFigure withDetail(java.time.OffsetDateTime lastCounted, Integer ownLevel) {
+        return new BranchFigure(branchId, quantityOnHand, lowStockThreshold, isLowStock, stockStatus, onTheWay, lastCounted, ownLevel);
     }
 }

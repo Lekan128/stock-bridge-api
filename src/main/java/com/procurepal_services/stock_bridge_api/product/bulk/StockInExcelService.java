@@ -52,6 +52,8 @@ public class StockInExcelService {
     static final String YOUR_CODE = "Your code";
     static final String DATE_IF_DIFFERENT = "Date (if different)";
     static final String REF = "Ref";
+    /** Multi-branch companies only (MULTI_BRANCH_UX_PLAN.md section 5.12): one sheet for several sites. */
+    static final String BRANCH = "Branch (if not the one you upload for)";
 
     static final List<String> HEADERS = List.of(
             PRODUCT, COMES_IN, QUANTITY, PRICE_PAID, LAST_PRICE, SUPPLIER, YOUR_CODE, DATE_IF_DIFFERENT, REF);
@@ -65,11 +67,12 @@ public class StockInExcelService {
             SUPPLIER, "Your usual supplier. Change it if this came from someone else.",
             YOUR_CODE, "For reference.",
             DATE_IF_DIFFERENT, "Only if this line arrived on a different day from the rest.",
-            REF, "Leave alone - it's how we recognise the product.");
+            REF, "Leave alone - it's how we recognise the product.",
+            BRANCH, "Only for a sheet from several branches: the branch this line arrived at.");
 
     private static final Map<String, Integer> WIDTHS = Map.of(
             PRODUCT, 32, COMES_IN, 20, QUANTITY, 16, PRICE_PAID, 18, LAST_PRICE, 16,
-            SUPPLIER, 22, YOUR_CODE, 16, DATE_IF_DIFFERENT, 16, REF, 12);
+            SUPPLIER, 22, YOUR_CODE, 16, DATE_IF_DIFFERENT, 16, REF, 12, BRANCH, 22);
 
     static final String HELP_TITLE = "Record a delivery";
 
@@ -88,47 +91,56 @@ public class StockInExcelService {
             "Only a few items? You don't need a spreadsheet: record the delivery straight in the app.");
 
     public byte[] generateTemplate(List<StockInTemplateRow> rows) {
+        return generateTemplate(rows, false);
+    }
+
+    /** @param branchColumn a multi-branch company's sheet: an optional Branch column before Ref. */
+    public byte[] generateTemplate(List<StockInTemplateRow> rows, boolean branchColumn) {
+        List<String> headers = new java.util.ArrayList<>(HEADERS);
+        if (branchColumn) {
+            headers.add(headers.indexOf(REF), BRANCH);
+        }
         try (WorkbookBuilder builder = new WorkbookBuilder(SHEET_NAME)) {
-            builder.writeHeaderRow(HEADERS, WIDTHS, Map.of());
-            builder.writeGuidanceRow(HEADERS.stream().map(GUIDANCE::get).toList());
-            builder.formatColumn(HEADERS.indexOf(QUANTITY), builder.primaryInputStyle());
-            builder.formatColumn(HEADERS.indexOf(PRICE_PAID), builder.moneyStyle());
-            builder.formatColumn(HEADERS.indexOf(DATE_IF_DIFFERENT), builder.dateStyle());
+            builder.writeHeaderRow(headers, WIDTHS, Map.of());
+            builder.writeGuidanceRow(headers.stream().map(GUIDANCE::get).toList());
+            builder.formatColumn(headers.indexOf(QUANTITY), builder.primaryInputStyle());
+            builder.formatColumn(headers.indexOf(PRICE_PAID), builder.moneyStyle());
+            builder.formatColumn(headers.indexOf(DATE_IF_DIFFERENT), builder.dateStyle());
 
             int rowIndex = 2;
             for (StockInTemplateRow row : rows) {
-                writeRow(builder, rowIndex++, row);
+                writeRow(builder, headers, rowIndex++, row);
             }
-            builder.hideColumn(HEADERS.indexOf(REF));
+            builder.hideColumn(headers.indexOf(REF));
             builder.addHelpSheet(HELP_TITLE, HELP_LINES);
             return builder.toBytes();
         }
     }
 
-    private void writeRow(WorkbookBuilder builder, int rowIndex, StockInTemplateRow source) {
+    private void writeRow(WorkbookBuilder builder, List<String> headers, int rowIndex, StockInTemplateRow source) {
         Row row = builder.sheet().createRow(rowIndex);
         CellStyle reference = builder.referenceStyle();
 
-        row.createCell(HEADERS.indexOf(PRODUCT)).setCellValue(source.productName() == null ? "" : source.productName());
-        Cell comesIn = row.createCell(HEADERS.indexOf(COMES_IN));
+        row.createCell(headers.indexOf(PRODUCT)).setCellValue(source.productName() == null ? "" : source.productName());
+        Cell comesIn = row.createCell(headers.indexOf(COMES_IN));
         comesIn.setCellValue(SheetUnitOptions.comesInLabel(source.option()));
         comesIn.setCellStyle(reference);
         // The quantity and price cells are left uncreated: the column style already gives a typed
         // value its format and highlight.
         if (source.lastPricePerOption() != null) {
-            Cell last = row.createCell(HEADERS.indexOf(LAST_PRICE));
+            Cell last = row.createCell(headers.indexOf(LAST_PRICE));
             last.setCellValue(source.lastPricePerOption().doubleValue());
             last.setCellStyle(builder.moneyStyle());
         }
         if (source.vendorName() != null) {
-            row.createCell(HEADERS.indexOf(SUPPLIER)).setCellValue(source.vendorName());
+            row.createCell(headers.indexOf(SUPPLIER)).setCellValue(source.vendorName());
         }
         if (source.sku() != null) {
-            Cell code = row.createCell(HEADERS.indexOf(YOUR_CODE));
+            Cell code = row.createCell(headers.indexOf(YOUR_CODE));
             code.setCellValue(source.sku());
             code.setCellStyle(reference);
         }
-        row.createCell(HEADERS.indexOf(REF)).setCellValue(ProductRefs.encode(source.productId()));
+        row.createCell(headers.indexOf(REF)).setCellValue(ProductRefs.encode(source.productId()));
     }
 
     /**

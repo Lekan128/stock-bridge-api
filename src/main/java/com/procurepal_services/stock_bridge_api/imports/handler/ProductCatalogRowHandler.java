@@ -138,6 +138,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private final StockMovementRepository stockMovementRepository;
     /** Undo puts stock back at the branch the import put it at (V51). */
     private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final StockManagementService stockManagementService;
     private final ProductVendorService productVendorService;
@@ -1192,6 +1193,14 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                     "Opening balance of %s recorded across %s"
                             .formatted(quantityPhrase(tally), ImportCopy.products(tally.openingProducts)));
         }
+        // Multi-branch (UX section 5.14): a price set here is the price at every branch - said before
+        // the import, not discovered after. Only when the person's prices will actually be applied.
+        int branches = branchCount(ctx.tenantId());
+        if (tally.priced > 0 && branches > 1 && sellingPricePermission.allows(ctx.actingUserId())) {
+            preview.always("prices", "Prices", tally.priced,
+                    "%s, at all %d branches".formatted(
+                            tally.priced == 1 ? "1 price is set" : tally.priced + " prices are set", branches));
+        }
         if (total == 0) {
             preview.blockedReason("There is nothing left to import - every row is either skipped or still has "
                     + "something to fix.");
@@ -1225,6 +1234,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return ImportCopy.quantityTotals(tally.openingByStockUnit);
     }
 
+    private int branchCount(java.util.UUID clientId) {
+        return (int) branchRepository.findAllByClientId(clientId).stream().filter(branch -> branch.isActive()).count();
+    }
+
     private static final class Tally {
         int creates;
         int updates;
@@ -1232,6 +1245,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         int vendorsToCreate;
         int categoriesToCreate;
         int openingProducts;
+        /** Rows that set a selling price: one price serves every branch (multi-branch section 5.14). */
+        int priced;
         /** Stock-unit symbol to the opening stock counted in it. Insertion-ordered by file order. */
         final Map<String, Long> openingByStockUnit = new LinkedHashMap<>();
     }
@@ -1245,6 +1260,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             }
             if (!state.isCommittable() || state.getContinuationOf() != null) {
                 continue;
+            }
+            if (state.text(ImportFields.UNIT_PRICE) != null) {
+                tally.priced++;
             }
             if (state.getResolvedEntityId() == null) {
                 tally.creates++;

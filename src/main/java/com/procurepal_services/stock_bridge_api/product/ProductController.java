@@ -141,8 +141,12 @@ public class ProductController {
 
     @GetMapping("/low-stock")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public List<ProductResponse> lowStock() {
-        return productManagementService.lowStock();
+    public List<ProductResponse> lowStock(
+            // Multiple branches: low at this branch; absent is low at any branch the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return productManagementService.lowStock(principal == null ? null : principal.getUserId(), branchId);
     }
 
     /** BULK_IMPORT_CX_PLAN.md task 1.8 - products whose setup needs a one-time fix. */

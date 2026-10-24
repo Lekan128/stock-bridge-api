@@ -170,6 +170,12 @@ public final class ImportFields {
     public static final String WAYBILL_OR_INVOICE_NO = "waybill_or_invoice_no";
 
     /**
+     * Optional, stock sheets only (MULTI_BRANCH_UX_PLAN.md section 5.12): which branch a line arrived
+     * at, for one sheet covering several sites. Empty means the branch chosen when uploading.
+     */
+    public static final String BRANCH = "branch";
+
+    /**
      * Reserved keys inside {@code import_session_rows.normalized}.
      *
      * <h2>Why bookkeeping lives inside a jsonb column</h2>

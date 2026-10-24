@@ -87,6 +87,7 @@ public class ProductManagementService {
     private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
     private final EveryBranchStockQuery everyBranchStockQuery;
+    private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
     private final SellerDirectory sellerDirectory;
@@ -261,7 +262,31 @@ public class ProductManagementService {
         threshold.put(id, product.getLowStockThreshold());
         java.util.Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
                 branchStockService.figures(tenantId, List.of(id), branchAccessService.viewBranchIds(userId), threshold);
-        return figures == null ? response : response.withBranchStock(figures.get(id));
+        if (figures == null) {
+            return response;
+        }
+        // The product page's extras (section 6): when each branch last counted it, and its own level.
+        java.util.Map<UUID, java.time.OffsetDateTime> lastCounted = new java.util.HashMap<>();
+        java.util.Map<UUID, Integer> ownLevels = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT branch_id, MAX(occurred_at) AS counted FROM stock_movements
+                WHERE client_id = :clientId AND product_id = :productId AND is_count GROUP BY branch_id
+                """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                        .addValue("clientId", tenantId).addValue("productId", id),
+                rs -> {
+                    lastCounted.put(rs.getObject("branch_id", UUID.class),
+                            rs.getTimestamp("counted").toInstant().atOffset(java.time.ZoneOffset.UTC));
+                });
+        jdbc.query("""
+                SELECT branch_id, low_stock_threshold FROM branch_stock
+                WHERE product_id = :productId AND low_stock_threshold IS NOT NULL
+                """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("productId", id),
+                rs -> {
+                    ownLevels.put(rs.getObject("branch_id", UUID.class), rs.getInt("low_stock_threshold"));
+                });
+        return response.withBranchStock(figures.get(id).stream()
+                .map(figure -> figure.withDetail(lastCounted.get(figure.branchId()), ownLevels.get(figure.branchId())))
+                .toList());
     }
 
     /**
@@ -340,6 +365,45 @@ public class ProductManagementService {
         return productRepository.findLowStockByClientId(requireTenantId()).stream()
                 .map(ProductResponse::from)
                 .toList();
+    }
+
+    /** How many alerts the Low stock page lists at most at a chain; past this it says to filter Inventory. */
+    static final int LOW_STOCK_LIMIT = 2000;
+
+    /**
+     * Low stock at a multi-branch company (Phase 4 gap): at a branch, what is low there, with that
+     * branch's figures; in All branches, what is low at any branch the person sees, each with its
+     * per-branch figures so the page can group by branch. Elsewhere, {@link #lowStock()} as before.
+     */
+    @Transactional(readOnly = true)
+    public List<ProductResponse> lowStock(UUID userId, UUID branchId) {
+        UUID tenantId = requireTenantId();
+        if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
+            return lowStock();
+        }
+        List<Product> products = everyBranchStockQuery.lowAt(
+                tenantId, branchAccessService.reportScope(userId, branchId), LOW_STOCK_LIMIT);
+        Map<UUID, Integer> thresholds = new java.util.HashMap<>();
+        products.forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
+                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.viewBranchIds(userId), thresholds);
+        return products.stream().map(product -> {
+            ProductResponse response = ProductResponse.from(product);
+            List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure> rows =
+                    figures == null ? null : figures.get(product.getId());
+            if (rows == null) {
+                return response;
+            }
+            response = response.withBranchStock(rows);
+            if (branchId != null) {
+                for (var figure : rows) {
+                    if (figure.branchId().equals(branchId)) {
+                        return response.atBranch(figure);
+                    }
+                }
+            }
+            return response;
+        }).toList();
     }
 
     /** Delegates to {@link #create(CreateProductRequest, MultipartFile, UUID)} with no acting user. */

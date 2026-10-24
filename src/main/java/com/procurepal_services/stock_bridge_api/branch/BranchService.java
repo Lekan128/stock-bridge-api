@@ -124,6 +124,7 @@ public class BranchService {
         Branch branch = branchRepository.save(Branch.builder()
                 .name(name)
                 .phone(blankToNull(request.phone()))
+                .address(blankToNull(request.address()))
                 .defaultBranch(false)
                 .active(true)
                 .build());
@@ -142,6 +143,9 @@ public class BranchService {
         }
         if (request.phone() != null) {
             branch.setPhone(blankToNull(request.phone()));
+        }
+        if (request.address() != null) {
+            branch.setAddress(blankToNull(request.address()));
         }
         return toResponse(branch, true, null, true);
     }
@@ -299,7 +303,7 @@ public class BranchService {
                 clientId, copied, placed);
     }
 
-    private record Totals(long productsInStock, BigDecimal stockWorth) {
+    private record Totals(long productsInStock, BigDecimal stockWorth, long people) {
     }
 
     private Map<UUID, Totals> totals(UUID clientId) {
@@ -319,16 +323,27 @@ public class BranchService {
                   WHERE b.client_id = :clientId AND b.is_default
                   GROUP BY b.id
                   """;
+        // Who works there: their own Works at. People whose role works everywhere are not counted at each.
+        Map<UUID, Long> people = new HashMap<>();
+        jdbc.query("""
+                SELECT ub.branch_id, COUNT(*) AS people FROM user_branches ub JOIN users u ON u.id = ub.user_id
+                WHERE ub.client_id = :clientId AND u.is_active GROUP BY ub.branch_id
+                """, params, rs -> {
+                    people.put(rs.getObject("branch_id", UUID.class), rs.getLong("people"));
+                });
         Map<UUID, Totals> totals = new HashMap<>();
         jdbc.query(sql, params, rs -> {
-            totals.put(rs.getObject("branch_id", UUID.class),
-                    new Totals(rs.getLong("products"), rs.getBigDecimal("worth")));
+            UUID branch = rs.getObject("branch_id", UUID.class);
+            totals.put(branch, new Totals(rs.getLong("products"), rs.getBigDecimal("worth"), people.getOrDefault(branch, 0L)));
         });
+        for (Map.Entry<UUID, Long> entry : people.entrySet()) {
+            totals.putIfAbsent(entry.getKey(), new Totals(0, BigDecimal.ZERO, entry.getValue()));
+        }
         return totals;
     }
 
     private static BranchResponse toResponse(Branch branch, boolean canRecord, Totals totals, boolean manages) {
-        Totals shown = manages ? (totals == null ? new Totals(0, BigDecimal.ZERO) : totals) : null;
+        Totals shown = manages ? (totals == null ? new Totals(0, BigDecimal.ZERO, 0) : totals) : null;
         return new BranchResponse(
                 branch.getId(),
                 branch.getName(),
@@ -338,7 +353,9 @@ public class BranchService {
                 branch.getClosedAt(),
                 canRecord && branch.isActive(),
                 shown == null ? null : shown.productsInStock(),
-                shown == null ? null : shown.stockWorth());
+                shown == null ? null : shown.stockWorth(),
+                branch.getAddress(),
+                shown == null ? null : shown.people());
     }
 
     private boolean hasPermission(UUID userId, String code) {

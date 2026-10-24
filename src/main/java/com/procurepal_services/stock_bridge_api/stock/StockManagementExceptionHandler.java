@@ -67,7 +67,8 @@ public class StockManagementExceptionHandler {
     public ResponseEntity<InsufficientStockErrorResponse> handleInsufficientStock(InsufficientStockException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new InsufficientStockErrorResponse(
-                        HttpStatus.CONFLICT.value(), ex.getMessage(), ex.getAvailableQuantity(), ex.getRequestedQuantity()));
+                        HttpStatus.CONFLICT.value(), ex.getMessage(), ex.getAvailableQuantity(), ex.getRequestedQuantity(),
+                        ex.getProductId()));
     }
 
     @ExceptionHandler(CompanyVendorRequiredException.class)

@@ -24,5 +24,9 @@ public record BranchResponse(
         OffsetDateTime closedAt,
         boolean canRecord,
         Long productsInStock,
-        BigDecimal stockWorth) {
+        BigDecimal stockWorth,
+        /** V59; absent when not given. */
+        String address,
+        /** For people who manage branches: who works there (their Works at), active people only. */
+        Long people) {
 }

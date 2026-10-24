@@ -1,0 +1,631 @@
+package com.procurepal_services.stock_bridge_api.branch;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.procurepal_services.stock_bridge_api.analytics.BranchDigestService;
+import com.procurepal_services.stock_bridge_api.auth.dto.LoginRequest;
+import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
+import com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure;
+import com.procurepal_services.stock_bridge_api.branch.dto.BranchListResponse;
+import com.procurepal_services.stock_bridge_api.branch.dto.BranchResponse;
+import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
+import com.procurepal_services.stock_bridge_api.imports.dto.CommitPreviewResponse;
+import com.procurepal_services.stock_bridge_api.imports.dto.PasteRequest;
+import com.procurepal_services.stock_bridge_api.product.bulk.StockInExcelService;
+import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
+import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
+import com.procurepal_services.stock_bridge_api.user.dto.RoleResponse;
+import com.procurepal_services.stock_bridge_api.user.dto.UserSummaryResponse;
+import java.time.LocalDate;
+import java.time.ZoneId;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.resttestclient.TestRestTemplate;
+import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+
+/**
+ * The plan gaps closed after Phase 4 (MULTI_BRANCH_BUILD_PLAN.md section 8.0e): a branch's address and
+ * people, the product page's per-branch extras, low stock and expected deliveries by branch, the waybill
+ * refusal that names its product, the stock sheet's Branch column, the evening digest - and the section 9 cases still missing:
+ * {@code BranchAccessTest}'s VIEW_ALL / WORK_AT_ALL and cost reports, {@code SellingPricePermissionTest}'s
+ * create, import, legacy review, sale and migration.
+ */
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@AutoConfigureTestRestTemplate
+@ActiveProfiles("local")
+class BranchGapsIntegrationTest {
+
+    private static final String PASSWORD = "correct-horse-battery-staple";
+
+    @Autowired
+    private TestRestTemplate restTemplate;
+
+    @Autowired
+    private NamedParameterJdbcTemplate jdbc;
+
+    @Autowired
+    private RoleRepository roleRepository;
+
+    @Autowired
+    private BranchDigestService branchDigestService;
+
+    @Autowired
+    private StockInExcelService stockInExcelService;
+
+    // ------------------------------------------------------------------------- managing (UX 5.11)
+
+    @Test
+    void aBranchKeepsItsAddressAndSaysHowManyPeopleWorkThere() {
+        TenantLoginResponse owner = signup("Branch Address");
+        UUID oshodi = post(owner, "/api/branches",
+                Map.of("name", "Oshodi", "address", "12 Agege Motor Road", "phone", "0803"), BranchResponse.class)
+                .getBody().id();
+        createUser(owner, "ade", role("STOREKEEPER"), List.of(oshodi));
+        createUser(owner, "bola", role("STOREKEEPER"), List.of(oshodi));
+
+        BranchResponse listed = branch(owner, oshodi);
+        assertThat(listed.address()).isEqualTo("12 Agege Motor Road");
+        assertThat(listed.people()).isEqualTo(2L);
+
+        restTemplate.exchange("/api/branches/" + oshodi, HttpMethod.PATCH,
+                new HttpEntity<>(Map.of("address", "  "), json(owner)), String.class);
+        assertThat(branch(owner, oshodi).address()).as("blank clears it").isNull();
+        assertThat(branch(login(owner, "ade"), oshodi).people()).as("only for people who manage branches").isNull();
+    }
+
+    // ----------------------------------------------------------------------- product page (5.9)
+
+    @Test
+    void theProductPageSaysWhenEachBranchLastCountedAndItsOwnLevel() {
+        TenantLoginResponse owner = signup("Branch Detail");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Rice", Map.of("lowStockThreshold", 5));
+        stock(owner, product, "stock-in", Map.of("quantity", 10, "branchId", oshodi.toString()));
+        stock(owner, product, "count", Map.of("countedQuantity", 9, "branchId", oshodi.toString()));
+        put(owner, "/api/products/" + product + "/branch-thresholds",
+                List.of(Map.of("branchId", oshodi.toString(), "lowStockThreshold", 12)));
+
+        List<BranchFigure> figures = productOf(owner, product).branchStock();
+
+        BranchFigure atOshodi = at(figures, oshodi);
+        assertThat(atOshodi.lastCountedAt()).isNotNull();
+        assertThat(atOshodi.ownLowStockThreshold()).isEqualTo(12);
+        assertThat(atOshodi.lowStockThreshold()).isEqualTo(12);
+        BranchFigure atMain = at(figures, main);
+        assertThat(atMain.lastCountedAt()).as("never counted there").isNull();
+        assertThat(atMain.ownLowStockThreshold()).as("uses the product's").isNull();
+        assertThat(atMain.lowStockThreshold()).isEqualTo(5);
+    }
+
+    // ------------------------------------------------------------------- low stock by branch (5.1)
+
+    @Test
+    void lowStockIsLowHereAtABranchAndLowAnywhereInAllBranchesWithEachBranchsFigure() {
+        TenantLoginResponse owner = signup("Branch Low");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID rice = product(owner, "Rice", Map.of("lowStockThreshold", 5));
+        UUID beans = product(owner, "Beans", Map.of("lowStockThreshold", 5));
+        stock(owner, rice, "stock-in", Map.of("quantity", 50, "branchId", main.toString()));
+        stock(owner, rice, "stock-in", Map.of("quantity", 2, "branchId", oshodi.toString()));
+        stock(owner, beans, "stock-in", Map.of("quantity", 50, "branchId", main.toString()));
+        stock(owner, beans, "stock-in", Map.of("quantity", 50, "branchId", oshodi.toString()));
+
+        List<ProductResponse> atMain = lowStock(owner, main);
+        List<ProductResponse> atOshodi = lowStock(owner, oshodi);
+        List<ProductResponse> anywhere = lowStock(owner, null);
+
+        assertThat(atMain).isEmpty();
+        assertThat(atOshodi).extracting(ProductResponse::id).containsExactly(rice);
+        assertThat(atOshodi.getFirst().quantityOnHand()).as("that branch's figure").isEqualTo(2);
+        assertThat(anywhere).extracting(ProductResponse::id).containsExactly(rice);
+        assertThat(anywhere.getFirst().quantityOnHand()).as("the company's figure").isEqualTo(52);
+        assertThat(at(anywhere.getFirst().branchStock(), oshodi).isLowStock()).isTrue();
+        assertThat(at(anywhere.getFirst().branchStock(), main).isLowStock()).isFalse();
+    }
+
+    // ------------------------------------------------------------ expected deliveries (5.1, 5.12)
+
+    @Test
+    void anExpectedDeliveryIsListedAtTheBranchItIsGoingToAndInAllBranches() {
+        TenantLoginResponse owner = signup("Branch Expected");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Rice", Map.of());
+        Map<String, Object> body = new HashMap<>();
+        body.put("branchId", oshodi.toString());
+        body.put("lines", List.of(Map.of("productId", product.toString(), "unit", "PIECE", "quantity", 3)));
+        ResponseEntity<String> created = post(owner, "/api/expected-deliveries", body, String.class);
+        assertThat(created.getStatusCode()).as(created.getBody()).isEqualTo(HttpStatus.CREATED);
+
+        assertThat(expectedCount(owner, oshodi)).isEqualTo(1);
+        assertThat(expectedCount(owner, main)).isZero();
+        assertThat(expectedCount(owner, null)).isEqualTo(1);
+    }
+
+    // ------------------------------------------------------ the stock-in sheet's Branch (5.12)
+
+    @Test
+    void aStockSheetRowNamingABranchGoesThereAndOneNamingNoneGoesWhereTheSheetIsFor() {
+        TenantLoginResponse owner = signup("Branch Column");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID closed = addBranch(owner, "Ikeja");
+        post(owner, "/api/branches/" + closed + "/close", Map.of(), String.class);
+        String sku = "BC-" + UUID.randomUUID().toString().substring(0, 6);
+        UUID product = product(owner, "Rice", Map.of("sku", sku));
+
+        UUID session = paste(owner, "sku,product_name,quantity,branch\n"
+                + sku + ",Rice,5,oshodi\n"
+                + sku + ",Rice,3,\n", main, "STOCK_IN");
+        UUID refused = paste(owner, "sku,product_name,quantity,branch\n"
+                + sku + ",Rice,2,Nowhere\n"
+                + sku + ",Rice,1,Ikeja\n", main, "STOCK_IN");
+
+        assertThat(errors(owner, session)).isEmpty();
+        assertThat(errors(owner, refused)).hasSize(2)
+                .anyMatch(message -> message.endsWith(" is for \u201cNowhere\u201d, and there is no branch by that name."))
+                .anyMatch(message -> message.endsWith(" is for Ikeja, which is closed."));
+        commit(owner, session);
+        assertThat(branchFigure(oshodi, product)).as("named, whatever its case").isEqualTo(5);
+        assertThat(branchFigure(main, product)).as("the branch the sheet is for").isEqualTo(3);
+    }
+
+    @Test
+    void aStockSheetRowForABranchThePersonDoesntWorkAtIsAnErrorOnThatRow() {
+        TenantLoginResponse owner = signup("Branch Column Keeper");
+        UUID main = mainBranch(owner);
+        addBranch(owner, "Oshodi");
+        String sku = "BK-" + UUID.randomUUID().toString().substring(0, 6);
+        product(owner, "Rice", Map.of("sku", sku));
+        createUser(owner, "ade", role("STOREKEEPER"), List.of(main));
+        TenantLoginResponse ade = login(owner, "ade");
+
+        UUID session = paste(ade, "sku,product_name,quantity,branch\n" + sku + ",Rice,5,Oshodi\n", null, "STOCK_IN");
+
+        assertThat(errors(ade, session)).singleElement()
+                .satisfies(message -> assertThat(message).endsWith(" is for Oshodi, and you don't work there."));
+    }
+
+    @Test
+    void theStockInTemplateHasABranchColumnOnlyAtAMultiBranchCompany() throws Exception {
+        assertThat(headers(stockInExcelService.generateTemplate(List.of(), true))).contains("Branch (if not the one you upload for)");
+        assertThat(headers(stockInExcelService.generateTemplate(List.of(), false))).doesNotContain("Branch (if not the one you upload for)");
+    }
+
+    // ---------------------------------------------------------------- send stock (UX section 6)
+
+    @Test
+    void aWaybillRefusedForWantOfStockNamesTheProductItWasShortOf() {
+        TenantLoginResponse owner = signup("Branch Short");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID rice = product(owner, "Rice", Map.of());
+        UUID beans = product(owner, "Beans", Map.of());
+        stock(owner, rice, "stock-in", Map.of("quantity", 20, "branchId", main.toString()));
+        stock(owner, beans, "stock-in", Map.of("quantity", 3, "branchId", main.toString()));
+
+        ResponseEntity<Map<String, Object>> refused = restTemplate.exchange("/api/stock-transfers", HttpMethod.POST,
+                new HttpEntity<>(Map.of(
+                        "id", UUID.randomUUID().toString(),
+                        "fromBranchId", main.toString(),
+                        "toBranchId", oshodi.toString(),
+                        "lines", List.of(
+                                Map.of("productId", rice.toString(), "quantity", 5),
+                                Map.of("productId", beans.toString(), "quantity", 8))),
+                        json(owner)),
+                new ParameterizedTypeReference<>() {});
+
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(refused.getBody()).containsEntry("productId", beans.toString())
+                .containsEntry("availableQuantity", 3)
+                .containsEntry("requestedQuantity", 8);
+    }
+
+    // ------------------------------------------------------------------ evening digest (5.13)
+
+    @Test
+    void theEveningDigestGoesOnlyToThoseWhoTurnItOnAndOnlyOnceADay() {
+        TenantLoginResponse owner = signup("Branch Digest");
+        addBranch(owner, "Oshodi");
+        LocalDate today = LocalDate.now(ZoneId.of("Africa/Lagos"));
+        assertThat(digest(owner)).isFalse();
+
+        put(owner, "/api/analytics/branches/digest", Map.of("enabled", true));
+
+        assertThat(digest(owner)).isTrue();
+        assertThat(branchDigestService.sendDue(today)).isPositive();
+        assertThat(sentOn(owner)).isEqualTo(today);
+        assertThat(dueToday(owner, today)).as("claimed for today: the next run passes them by").isFalse();
+
+        put(owner, "/api/analytics/branches/digest", Map.of("enabled", false));
+        assertThat(digest(owner)).isFalse();
+    }
+
+    // ------------------------------------------------------------- BranchAccessTest (section 9)
+
+    @Test
+    void viewAllBranchesReadsEveryBranchButRecordsOnlyWhereThePersonWorks() {
+        TenantLoginResponse owner = signup("View All");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Rice", Map.of());
+        stock(owner, product, "stock-in", Map.of("quantity", 7, "branchId", oshodi.toString()));
+        UUID roleId = createRole(owner, "Area Supervisor",
+                Set.of("VIEW_PRODUCTS", "STOCK_IN", "VIEW_ALL_BRANCHES", "VIEW_ANALYTICS", "MANAGE_INVENTORY"));
+        createUser(owner, "sup", roleId, List.of(main));
+        TenantLoginResponse sup = login(owner, "sup");
+
+        BranchListResponse list = branches(sup);
+        assertThat(list.branches()).extracting(BranchResponse::id).contains(main, oshodi);
+        assertThat(list.seesEverywhere()).isTrue();
+        assertThat(at(productOf(sup, product).branchStock(), oshodi).quantityOnHand()).isEqualTo(7);
+        assertThat(get(sup, "/api/stock/movements?branchId=" + oshodi).getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        assertThat(stockRaw(sup, product, "stock-in", Map.of("quantity", 1, "branchId", oshodi.toString())).getStatusCode())
+                .as("reads it, never records there").isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(stockRaw(sup, product, "stock-in", Map.of("quantity", 1, "branchId", main.toString())).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void workAtAllBranchesRecordsAtABranchAddedAfterTheRoleWasGiven() {
+        TenantLoginResponse owner = signup("Work At All");
+        addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Rice", Map.of());
+        UUID roleId = createRole(owner, "Roaming Keeper", Set.of("VIEW_PRODUCTS", "STOCK_IN", "WORK_AT_ALL_BRANCHES"));
+        createUser(owner, "roam", roleId, null);
+        TenantLoginResponse roam = login(owner, "roam");
+
+        UUID bolade = addBranch(owner, "Bolade");
+
+        ResponseEntity<String> in = stockRaw(roam, product, "stock-in", Map.of("quantity", 4, "branchId", bolade.toString()));
+        assertThat(in.getStatusCode()).as(in.getBody()).isEqualTo(HttpStatus.OK);
+        assertThat(branchFigure(bolade, product)).isEqualTo(4);
+        assertThat(branches(roam).recordsEverywhere()).isTrue();
+    }
+
+    @Test
+    void aViewOnlyRoleWithoutTheReportPermissionsIsRefusedEveryCostReport() {
+        TenantLoginResponse owner = signup("View Only Costs");
+        UUID roleId = createRole(owner, "Looker", Set.of("VIEW_PRODUCTS", "VIEW_ALL_BRANCHES"));
+        createUser(owner, "look", roleId, null);
+        addBranch(owner, "Oshodi");
+        TenantLoginResponse look = login(owner, "look");
+
+        for (String path : List.of("/api/stock/losses", "/api/analytics/stock-worth", "/api/analytics/branches",
+                "/api/analytics/summary", "/api/stock/movements")) {
+            assertThat(get(look, path).getStatusCode()).as(path).isEqualTo(HttpStatus.FORBIDDEN);
+        }
+        assertThat(get(look, "/api/products").getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    // ------------------------------------------------------ SellingPricePermissionTest (section 9)
+
+    @Test
+    void withoutChangeSellingPricesACreatedProductHasNoPrice() {
+        TenantLoginResponse owner = signup("Price Create");
+        put(owner, "/api/company/selling", Map.of("sellsStock", true));
+        createUser(owner, "clerk", catalogueClerk(owner), null);
+        TenantLoginResponse clerk = login(owner, "clerk");
+
+        UUID product = product(clerk, "Milk", Map.of("unitPrice", 650));
+
+        assertThat(productOf(owner, product).unitPrice()).as("saved, without the price").isNull();
+    }
+
+    @Test
+    void withoutChangeSellingPricesAnImportAppliesTheRowMinusItsPrice() {
+        TenantLoginResponse owner = signup("Price Import");
+        put(owner, "/api/company/selling", Map.of("sellsStock", true));
+        createUser(owner, "clerk", catalogueClerk(owner), null);
+        addBranch(owner, "Oshodi");
+        TenantLoginResponse clerk = login(owner, "clerk");
+        String sku = "PI-" + UUID.randomUUID().toString().substring(0, 6);
+        String sheet = "Product name\tYour code\tSelling price\nSugar\t" + sku + "\t1200\n";
+
+        UUID clerkSession = paste(clerk, sheet, null);
+        assertThat(preview(clerk, clerkSession).lines()).extracting(CommitPreviewResponse.Line::key)
+                .as("no prices line: their prices won't apply").doesNotContain("prices");
+        commit(clerk, clerkSession);
+
+        Map<String, Object> created = jdbc.queryForMap("SELECT name, unit_price FROM products WHERE sku = :sku",
+                new MapSqlParameterSource("sku", sku));
+        assertThat(created.get("name")).isEqualTo("Sugar");
+        assertThat(created.get("unit_price")).isNull();
+
+        String ownerSku = sku + "-O";
+        UUID ownerSession = paste(owner, "Product name\tYour code\tSelling price\nSalt\t" + ownerSku + "\t300\n", mainBranch(owner));
+        assertThat(preview(owner, ownerSession).lines())
+                .filteredOn(line -> line.key().equals("prices"))
+                .singleElement()
+                .satisfies(line -> assertThat(line.text()).isEqualTo("1 price is set, at all 2 branches"));
+    }
+
+    @Test
+    void withoutChangeSellingPricesTheOldPriceReviewIsRefused() {
+        TenantLoginResponse owner = signup("Price Legacy");
+        put(owner, "/api/company/selling", Map.of("sellsStock", true));
+        createUser(owner, "clerk", catalogueClerk(owner), null);
+        TenantLoginResponse clerk = login(owner, "clerk");
+
+        ResponseEntity<String> adopt = post(clerk, "/api/company/selling/legacy-prices/adopt", Map.of("all", true), String.class);
+
+        assertThat(adopt.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(adopt.getBody()).contains("Prices are set by people who can change selling prices");
+    }
+
+    @Test
+    void withoutChangeSellingPricesASaleCanStillBeMadeAtAnyPrice() {
+        TenantLoginResponse owner = signup("Price Sale");
+        put(owner, "/api/company/selling", Map.of("sellsStock", true));
+        UUID product = product(owner, "Milk", Map.of("unitPrice", 500));
+        stock(owner, product, "stock-in", Map.of("quantity", 10));
+        createUser(owner, "till", createRole(owner, "Till", Set.of("VIEW_PRODUCTS", "STOCK_OUT")), null);
+        TenantLoginResponse till = login(owner, "till");
+
+        ResponseEntity<String> sold = stockRaw(till, product, "stock-out", Map.of("quantity", 1, "unitPrice", 450));
+
+        assertThat(sold.getStatusCode()).as(sold.getBody()).isEqualTo(HttpStatus.OK);
+        assertThat(productOf(owner, product).unitPrice()).as("the list price is untouched").isEqualByComparingTo("500");
+    }
+
+    /**
+     * V52: every role that held MANAGE_PRODUCTS before it, system or custom, was given the new one. A
+     * custom role is judged by its company's age (roles carry no date of their own).
+     */
+    @Test
+    void theMigrationGaveChangeSellingPricesToEveryRoleThatCouldManageProducts() {
+        Long missing = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM role_permissions rp
+                JOIN permissions mp ON mp.id = rp.permission_id AND mp.code = 'MANAGE_PRODUCTS'
+                JOIN roles r ON r.id = rp.role_id
+                WHERE (r.client_id IS NULL OR (SELECT c.created_at FROM clients c WHERE c.id = r.client_id)
+                       < (SELECT installed_on FROM flyway_schema_history WHERE version = '52'))
+                  AND NOT EXISTS (SELECT 1 FROM role_permissions c JOIN permissions cp ON cp.id = c.permission_id
+                                  WHERE c.role_id = rp.role_id AND cp.code = 'CHANGE_SELLING_PRICES')
+                """, new MapSqlParameterSource(), Long.class);
+        assertThat(missing).isZero();
+        for (String system : List.of("OWNER", "PROCUREMENT_MANAGER")) {
+            Long has = jdbc.queryForObject("""
+                    SELECT COUNT(*) FROM role_permissions rp JOIN permissions p ON p.id = rp.permission_id
+                    JOIN roles r ON r.id = rp.role_id
+                    WHERE r.client_id IS NULL AND r.name = :name AND p.code = 'CHANGE_SELLING_PRICES'
+                    """, new MapSqlParameterSource("name", system), Long.class);
+            assertThat(has).as(system).isEqualTo(1L);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------ helpers
+
+    private UUID catalogueClerk(TenantLoginResponse owner) {
+        return createRole(owner, "Catalogue Clerk", Set.of("VIEW_PRODUCTS", "MANAGE_PRODUCTS", "MANAGE_INVENTORY"));
+    }
+
+    private static BranchFigure at(List<BranchFigure> figures, UUID branchId) {
+        return figures.stream().filter(figure -> figure.branchId().equals(branchId)).findFirst().orElseThrow();
+    }
+
+    private List<ProductResponse> lowStock(TenantLoginResponse who, UUID branchId) {
+        return restTemplate.exchange("/api/products/low-stock" + (branchId == null ? "" : "?branchId=" + branchId),
+                HttpMethod.GET, new HttpEntity<>(auth(who)), new ParameterizedTypeReference<List<ProductResponse>>() {})
+                .getBody();
+    }
+
+    private int expectedCount(TenantLoginResponse who, UUID branchId) {
+        Map<String, Object> page = restTemplate.exchange(
+                "/api/expected-deliveries" + (branchId == null ? "" : "?branchId=" + branchId),
+                HttpMethod.GET, new HttpEntity<>(auth(who)), new ParameterizedTypeReference<Map<String, Object>>() {})
+                .getBody();
+        return ((List<?>) page.get("content")).size();
+    }
+
+    private boolean digest(TenantLoginResponse who) {
+        return Boolean.TRUE.equals(restTemplate.exchange("/api/analytics/branches/digest", HttpMethod.GET,
+                new HttpEntity<>(auth(who)), new ParameterizedTypeReference<Map<String, Boolean>>() {}).getBody().get("enabled"));
+    }
+
+    private LocalDate sentOn(TenantLoginResponse who) {
+        return jdbc.queryForObject("SELECT branch_digest_sent_on FROM users WHERE id = :id",
+                new MapSqlParameterSource("id", who.user().id()), LocalDate.class);
+    }
+
+    /** Opted in and not yet sent today's: what the next run would send this person. */
+    private boolean dueToday(TenantLoginResponse who, LocalDate today) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT branch_digest AND branch_digest_sent_on IS DISTINCT FROM :today FROM users WHERE id = :id",
+                new MapSqlParameterSource().addValue("today", today).addValue("id", who.user().id()), Boolean.class));
+    }
+
+    private UUID paste(TenantLoginResponse who, String text, UUID branchId) {
+        return paste(who, text, branchId, "PRODUCT_CATALOG");
+    }
+
+    private UUID paste(TenantLoginResponse who, String text, UUID branchId, String kind) {
+        ResponseEntity<Map<String, Object>> response = restTemplate.exchange("/api/imports/paste", HttpMethod.POST,
+                new HttpEntity<>(new PasteRequest(text, kind, null, null, null, null, branchId), json(who)),
+                new ParameterizedTypeReference<>() {});
+        assertThat(response.getStatusCode().is2xxSuccessful()).as("%s", response.getBody()).isTrue();
+        return UUID.fromString((String) response.getBody().get("id"));
+    }
+
+    /** Every Branch error on the session's rows. */
+    @SuppressWarnings("unchecked")
+    private List<String> errors(TenantLoginResponse who, UUID session) {
+        Map<String, Object> page = restTemplate.exchange("/api/imports/" + session + "/rows?status=ALL&size=200",
+                HttpMethod.GET, new HttpEntity<>(auth(who)), new ParameterizedTypeReference<Map<String, Object>>() {})
+                .getBody();
+        return ((List<Map<String, Object>>) page.get("content")).stream()
+                .flatMap(row -> ((List<Map<String, Object>>) row.getOrDefault("errors", List.of())).stream())
+                .filter(error -> "branch".equals(error.get("column")))
+                .map(error -> (String) error.get("message"))
+                .toList();
+    }
+
+    private static List<String> headers(byte[] workbook) throws Exception {
+        try (var book = new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(workbook))) {
+            List<String> cells = new java.util.ArrayList<>();
+            for (var sheet : book) {
+                for (int r = 0; r <= Math.min(10, sheet.getLastRowNum()); r++) {
+                    var row = sheet.getRow(r);
+                    if (row != null) {
+                        row.forEach(cell -> cells.add(cell.toString()));
+                    }
+                }
+            }
+            return cells;
+        }
+    }
+
+    private CommitPreviewResponse preview(TenantLoginResponse who, UUID session) {
+        return restTemplate.exchange("/api/imports/" + session + "/preview", HttpMethod.GET, new HttpEntity<>(auth(who)),
+                CommitPreviewResponse.class).getBody();
+    }
+
+    private void commit(TenantLoginResponse who, UUID session) {
+        ResponseEntity<String> response = restTemplate.exchange("/api/imports/" + session + "/commit", HttpMethod.POST,
+                new HttpEntity<>(auth(who)), String.class);
+        assertThat(response.getStatusCode()).as(response.getBody()).isEqualTo(HttpStatus.OK);
+    }
+
+    private BranchListResponse branches(TenantLoginResponse who) {
+        return restTemplate.exchange("/api/branches", HttpMethod.GET, new HttpEntity<>(auth(who)), BranchListResponse.class)
+                .getBody();
+    }
+
+    private BranchResponse branch(TenantLoginResponse who, UUID id) {
+        return branches(who).branches().stream().filter(branch -> branch.id().equals(id)).findFirst().orElseThrow();
+    }
+
+    private UUID mainBranch(TenantLoginResponse owner) {
+        return branches(owner).branches().getFirst().id();
+    }
+
+    private UUID addBranch(TenantLoginResponse owner, String name) {
+        ResponseEntity<BranchResponse> response = post(owner, "/api/branches", Map.of("name", name), BranchResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        return response.getBody().id();
+    }
+
+    private int branchFigure(UUID branchId, UUID productId) {
+        List<Integer> found = jdbc.queryForList(
+                "SELECT quantity_on_hand FROM branch_stock WHERE branch_id = :b AND product_id = :p",
+                new MapSqlParameterSource().addValue("b", branchId).addValue("p", productId), Integer.class);
+        return found.isEmpty() ? 0 : found.getFirst();
+    }
+
+    private void stock(TenantLoginResponse who, UUID product, String action, Map<String, Object> body) {
+        ResponseEntity<String> response = stockRaw(who, product, action, body);
+        assertThat(response.getStatusCode()).as("%s %s: %s", action, body, response.getBody()).isEqualTo(HttpStatus.OK);
+    }
+
+    private ResponseEntity<String> stockRaw(TenantLoginResponse who, UUID product, String action, Map<String, Object> body) {
+        return post(who, "/api/products/" + product + "/stock/" + action, body, String.class);
+    }
+
+    private UUID role(String name) {
+        return roleRepository.findByName(name).orElseThrow().getId();
+    }
+
+    private UUID createRole(TenantLoginResponse owner, String name, Set<String> permissions) {
+        return post(owner, "/api/roles",
+                Map.of("name", name, "description", "Test role", "permissionCodes", permissions), RoleResponse.class)
+                .getBody().id();
+    }
+
+    private void createUser(TenantLoginResponse owner, String username, UUID roleId, List<UUID> branchIds) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("username", username);
+        body.put("password", PASSWORD);
+        body.put("roleId", roleId.toString());
+        if (branchIds != null) {
+            body.put("branchIds", branchIds.stream().map(UUID::toString).toList());
+        }
+        ResponseEntity<UserSummaryResponse> response = post(owner, "/api/users", body, UserSummaryResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
+    private TenantLoginResponse login(TenantLoginResponse owner, String username) {
+        return restTemplate.postForObject("/api/auth/login",
+                new LoginRequest(owner.user().clientIdentifier(), username, PASSWORD), TenantLoginResponse.class);
+    }
+
+    private UUID product(TenantLoginResponse who, String name, Map<String, Object> extra) {
+        String unique = UUID.randomUUID().toString().substring(0, 8);
+        Map<String, Object> fields = new HashMap<>(extra);
+        fields.put("name", name + " " + unique);
+        fields.putIfAbsent("sku", "BG-" + unique);
+        fields.put("unitOfMeasure", "PIECE");
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        body.add("product", new HttpEntity<>(fields, jsonOnly()));
+        HttpHeaders headers = auth(who);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ResponseEntity<ProductResponse> response =
+                restTemplate.exchange("/api/products", HttpMethod.POST, new HttpEntity<>(body, headers), ProductResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        return response.getBody().id();
+    }
+
+    private ProductResponse productOf(TenantLoginResponse who, UUID product) {
+        return restTemplate.exchange("/api/products/" + product, HttpMethod.GET, new HttpEntity<>(auth(who)),
+                ProductResponse.class).getBody();
+    }
+
+    private ResponseEntity<String> get(TenantLoginResponse who, String path) {
+        return restTemplate.exchange(path, HttpMethod.GET, new HttpEntity<>(auth(who)), String.class);
+    }
+
+    private <T> ResponseEntity<T> post(TenantLoginResponse who, String path, Object body, Class<T> type) {
+        return restTemplate.exchange(path, HttpMethod.POST, new HttpEntity<>(body, json(who)), type);
+    }
+
+    private void put(TenantLoginResponse who, String path, Object body) {
+        ResponseEntity<String> response = restTemplate.exchange(path, HttpMethod.PUT, new HttpEntity<>(body, json(who)), String.class);
+        assertThat(response.getStatusCode().is2xxSuccessful()).as(response.getBody()).isTrue();
+    }
+
+    private TenantLoginResponse signup(String name) {
+        String unique = UUID.randomUUID().toString();
+        return restTemplate.postForObject("/api/clients/signup",
+                new ClientSignupRequest(name + " " + unique.substring(0, 8), null, "owner-" + unique + "@example.com",
+                        PASSWORD, PASSWORD),
+                TenantLoginResponse.class);
+    }
+
+    private static HttpHeaders jsonOnly() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
+    }
+
+    private HttpHeaders json(TenantLoginResponse who) {
+        HttpHeaders headers = auth(who);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
+    }
+
+    private HttpHeaders auth(TenantLoginResponse who) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setBearerAuth(who.tokens().accessToken());
+        return headers;
+    }
+}

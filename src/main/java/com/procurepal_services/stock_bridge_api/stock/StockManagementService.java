@@ -1051,7 +1051,7 @@ public class StockManagementService {
         UUID tenantId = requireTenantId();
         int available = branchStockService.quantityAt(product, branchId);
         if (quantity > available) {
-            throw new InsufficientStockException(available, quantity, unitSymbol(product));
+            throw new InsufficientStockException(available, quantity, unitSymbol(product)).forProduct(product.getId());
         }
         List<LotDraw> draws = resolveFifoAllocations(
                 stockMovementRepository.findInMovementsForUpdate(product.getId(), tenantId, branchId), quantity);

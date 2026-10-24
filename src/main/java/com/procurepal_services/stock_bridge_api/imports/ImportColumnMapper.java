@@ -201,6 +201,8 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.RECEIVED_DATE, "date", "received", "delivery_date", "date_received", "invoice_date", "receipt_date");
         put(aliases, ImportFields.WAYBILL_OR_INVOICE_NO,
                 "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "doc_no");
+        // A distributor's weekly report from all its sites names the site in its own words.
+        put(aliases, ImportFields.BRANCH, "branch", "branch_name", "location", "site", "store", "outlet", "depot", "shop");
         return Map.copyOf(aliases);
     }
 
