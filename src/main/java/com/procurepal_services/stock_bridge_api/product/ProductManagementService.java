@@ -367,6 +367,21 @@ public class ProductManagementService {
                 .toList();
     }
 
+    /**
+     * The low-stock products by id, as {@link #lowStock(UUID, UUID)} judges them (low here at a branch, low
+     * anywhere in All branches) - for the stock sheet's and Record a delivery's "Low stock" choice. Null
+     * at a one-branch company, where the old company-wide rule is the same thing.
+     */
+    @Transactional(readOnly = true)
+    public List<UUID> lowStockIds(UUID userId, UUID branchId) {
+        UUID tenantId = requireTenantId();
+        if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
+            return null;
+        }
+        return everyBranchStockQuery.lowAt(tenantId, branchAccessService.stockScope(userId, branchId), LOW_STOCK_LIMIT)
+                .stream().map(Product::getId).toList();
+    }
+
     /** How many alerts the Low stock page lists at most at a chain; past this it says to filter Inventory. */
     static final int LOW_STOCK_LIMIT = 2000;
 
@@ -762,14 +777,39 @@ public class ProductManagementService {
      */
     @Transactional(readOnly = true)
     public byte[] exportActiveProducts() {
+        return exportActiveProducts(null, null);
+    }
+
+    /**
+     * At a multi-branch company the stock column is the branch's figure (or, in All branches, what the
+     * branches this person sees hold together) - the figure the Inventory screen shows them, and never
+     * the company's total for somebody who sees one branch (D-U3).
+     */
+    @Transactional(readOnly = true)
+    public byte[] exportActiveProducts(UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         List<Product> products = productRepository.findAll(ProductSpecifications.forTenant(tenantId, null, true));
+        Map<UUID, Integer> quantities = null;
+        if (userId != null && branchStockService.isMultiBranch(tenantId)) {
+            List<UUID> scope = branchAccessService.stockScope(userId, branchId);
+            Map<UUID, Integer> held = new java.util.HashMap<>();
+            jdbc.query("""
+                    SELECT product_id, SUM(quantity_on_hand) AS held FROM branch_stock
+                    WHERE client_id = :clientId AND branch_id = ANY(:scope) GROUP BY product_id
+                    """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                            .addValue("clientId", tenantId)
+                            .addValue("scope", scope.toArray(UUID[]::new)),
+                    rs -> {
+                        held.put(rs.getObject("product_id", UUID.class), rs.getInt("held"));
+                    });
+            quantities = held;
+        }
         // The seller flag is resolved here rather than inside ProductExcelService for the reason
         // generateTemplate states, and for the same reason the two files must agree on it: the
         // export IS the template once it has your products in it.
         return productExcelService.exportProducts(
                 products, preferredVendorSnapshotsFor(tenantId, products), sellingPolicy.showsSellingPrice(tenantId),
-                sellingPolicy.sheetSellingPricePerPack(tenantId));
+                sellingPolicy.sheetSellingPricePerPack(tenantId), quantities);
     }
 
     /**

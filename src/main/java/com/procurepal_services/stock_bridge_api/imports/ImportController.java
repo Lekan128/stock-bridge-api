@@ -336,8 +336,15 @@ public class ImportController {
             @RequestParam(required = false) String productIds,
             @RequestParam(required = false) StockInTemplateFilter filter,
             @RequestParam(required = false) UUID vendorId,
-            @RequestParam(required = false) UUID categoryId) {
+            @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         List<UUID> ids = parseIds(productIds);
+        List<UUID> low = ids.isEmpty() ? lowAtBranch(filter, branchId, principal) : null;
+        if (low != null) {
+            ids = low;
+            filter = null;
+        }
         return stockInTemplateService.rows(ids, ids.isEmpty() ? filter : null, vendorId, categoryId).stream()
                 .map(row -> new DeliveryLineResponse(
                         row.productId(),
@@ -363,7 +370,7 @@ public class ImportController {
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public List<DeliveryLineResponse> deliveryLinesByBarcode(@PathVariable String barcode) {
         UUID productId = productManagementService.requireByBarcode(barcode).getId();
-        return deliveryLines(productId.toString(), null, null, null);
+        return deliveryLines(productId.toString(), null, null, null, null, null);
     }
 
     /**
@@ -433,8 +440,15 @@ public class ImportController {
             @RequestParam(required = false) String productIds,
             @RequestParam(required = false) StockInTemplateFilter filter,
             @RequestParam(required = false) UUID vendorId,
-            @RequestParam(required = false) UUID categoryId) {
+            @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         List<UUID> ids = parseIds(productIds);
+        List<UUID> low = ids.isEmpty() ? lowAtBranch(filter, branchId, principal) : null;
+        if (low != null) {
+            ids = low;
+            filter = null;
+        }
         return xlsx(
                 stockInTemplateService.generate(ids, ids.isEmpty() ? filter : null, vendorId, categoryId),
                 "stock-sheet.xlsx");
@@ -447,6 +461,20 @@ public class ImportController {
      * answer to that is the sheet for the products we did recognise - not an error page in place
      * of a download.
      */
+    /**
+     * "Low stock" at a multi-branch company: what is low at this branch (or anywhere, in All branches),
+     * as the Low stock page lists it - the company-wide rule would miss a branch that has run low while
+     * the company total looks fine. Null where that rule already applies. Nothing low is one id that
+     * matches no product, never an empty list (which would mean "every product").
+     */
+    private List<UUID> lowAtBranch(StockInTemplateFilter filter, UUID branchId, AuthenticatedUserPrincipal principal) {
+        if (filter != StockInTemplateFilter.LOW_STOCK || principal == null) {
+            return null;
+        }
+        List<UUID> low = productManagementService.lowStockIds(principal.getUserId(), branchId);
+        return low == null ? null : low.isEmpty() ? List.of(new UUID(0, 0)) : low;
+    }
+
     private List<UUID> parseIds(String productIds) {
         if (productIds == null || productIds.isBlank()) {
             return List.of();

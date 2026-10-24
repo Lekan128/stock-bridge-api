@@ -194,6 +194,18 @@ public class BranchService {
             throw new BranchChangeRefusedException(branch.getName() + " still has " + stocked
                     + (stocked == 1 ? " product" : " products") + " in stock. Count them to zero first.");
         }
+        Long travelling = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM stock_transfers
+                WHERE (from_branch_id = :branchId OR to_branch_id = :branchId)
+                  AND status IN ('ON_THE_WAY', 'PARTLY_RECEIVED')
+                """, params, Long.class);
+        if (travelling != null && travelling > 0) {
+            // A waybill to it could never be received, and one from it, cancelled, would put stock
+            // back on a closed shelf (UX section 5.11).
+            throw new BranchChangeRefusedException(branch.getName() + " has " + travelling
+                    + (travelling == 1 ? " transfer" : " transfers") + " on the way. Receive or cancel "
+                    + (travelling == 1 ? "it" : "them") + " first.");
+        }
         List<String> stranded = jdbc.queryForList("""
                 SELECT COALESCE(NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), u.username)
                 FROM users u

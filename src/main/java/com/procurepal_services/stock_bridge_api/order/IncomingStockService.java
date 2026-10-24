@@ -98,6 +98,7 @@ public class IncomingStockService {
      */
     private final ProductSkuSettingsService productSkuSettingsService;
     private final SkuGenerationService skuGenerationService;
+    private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
 
     /**
      * Called exactly once per order, on the transition into PLACED. Callers must
@@ -271,8 +272,10 @@ public class IncomingStockService {
                             saveAsSupplierDefault,
                             item.getProductSku())
                             // At the branch the order was going to (V52); null on an order from before
-                            // branches, which the company's only branch then receives.
-                            .withBranchId(order.getBranchId()),
+                            // branches, which the company's only branch then receives. A branch closed
+                            // since the order was placed can't take it: the main branch does, as
+                            // checkout does for an address whose branch has closed.
+                            .withBranchId(receivingBranch(order)),
                     actingUserId);
 
             item.setReceivedQuantity(item.getReceivedQuantity() + quantity);
@@ -457,5 +460,15 @@ public class IncomingStockService {
             }
             return suggestions;
         });
+    }
+
+    private UUID receivingBranch(Order order) {
+        UUID branchId = order.getBranchId();
+        if (branchId == null) {
+            return null;
+        }
+        boolean open = branchRepository.findById(branchId).map(branch -> branch.isActive()).orElse(false);
+        return open ? branchId
+                : branchRepository.findByClientIdAndDefaultBranchTrue(order.getClientId()).map(branch -> branch.getId()).orElse(null);
     }
 }

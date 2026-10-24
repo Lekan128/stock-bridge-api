@@ -363,6 +363,108 @@ class BranchGapsIntegrationTest {
         assertThat(sentOn(owner)).isNull();
     }
 
+    // ----------------------------------------------------- impact on the rest of the app (2026-10-24)
+
+    @Test
+    void aSaleIsFixedOnlyBySomebodyWhoWorksAtTheBranchItWasSoldFrom() {
+        TenantLoginResponse owner = signup("Sale Elsewhere");
+        put(owner, "/api/company/selling", Map.of("sellsStock", true));
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Milk", Map.of());
+        stock(owner, product, "stock-in", Map.of("quantity", 10, "branchId", oshodi.toString()));
+        stock(owner, product, "stock-out", Map.of("quantity", 1, "reason", "SALE", "branchId", oshodi.toString()));
+        UUID line = jdbc.queryForObject(
+                "SELECT id FROM stock_movements WHERE product_id = :p AND movement_type = 'OUT'",
+                new MapSqlParameterSource("p", product), UUID.class);
+        createUser(owner, "boss", createRole(owner, "Main Manager",
+                Set.of("VIEW_PRODUCTS", "STOCK_OUT", "MANAGE_INVENTORY")), List.of(main));
+        TenantLoginResponse boss = login(owner, "boss");
+
+        ResponseEntity<String> elsewhere = post(boss, "/api/sales/lines/" + line + "/price", Map.of("unitPrice", 500), String.class);
+
+        assertThat(elsewhere.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(elsewhere.getBody()).contains("You don't work at Oshodi");
+        assertThat(post(owner, "/api/sales/lines/" + line + "/price", Map.of("unitPrice", 500), String.class)
+                .getStatusCode().is2xxSuccessful()).isTrue();
+    }
+
+    @Test
+    void anExpectedDeliveryAtAnotherBranchIsNeitherShownNorCalledOffThere() {
+        TenantLoginResponse owner = signup("Expected Other");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Rice", Map.of());
+        Map<String, Object> body = new HashMap<>();
+        body.put("branchId", oshodi.toString());
+        body.put("lines", List.of(Map.of("productId", product.toString(), "unit", "PIECE", "quantity", 3)));
+        String id = (String) restTemplate.exchange("/api/expected-deliveries", HttpMethod.POST, new HttpEntity<>(body, json(owner)),
+                new ParameterizedTypeReference<Map<String, Object>>() {}).getBody().get("id");
+        createUser(owner, "ade", createRole(owner, "Receiver", Set.of("VIEW_PRODUCTS", "MANAGE_INVENTORY")), List.of(main));
+        TenantLoginResponse ade = login(owner, "ade");
+
+        assertThat(get(ade, "/api/expected-deliveries/" + id).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(post(ade, "/api/expected-deliveries/" + id + "/cancel", Map.of(), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(post(owner, "/api/expected-deliveries/" + id + "/cancel", Map.of(), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void aBranchWithATransferOnTheWayCannotClose() {
+        TenantLoginResponse owner = signup("Close Travelling");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID product = product(owner, "Rice", Map.of());
+        stock(owner, product, "stock-in", Map.of("quantity", 5, "branchId", main.toString()));
+        ResponseEntity<String> sent = post(owner, "/api/stock-transfers", Map.of(
+                "id", UUID.randomUUID().toString(),
+                "fromBranchId", main.toString(),
+                "toBranchId", oshodi.toString(),
+                "lines", List.of(Map.of("productId", product.toString(), "quantity", 5))), String.class);
+        assertThat(sent.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+
+        ResponseEntity<String> close = post(owner, "/api/branches/" + oshodi + "/close", Map.of(), String.class);
+
+        assertThat(close.getStatusCode().is4xxClientError()).isTrue();
+        assertThat(close.getBody()).contains("Oshodi has 1 transfer on the way. Receive or cancel it first.");
+        assertThat(branch(owner, oshodi).active()).isTrue();
+    }
+
+    @Test
+    void theLowStockSheetIsWhatIsLowAtTheBranch() {
+        TenantLoginResponse owner = signup("Low Sheet");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID rice = product(owner, "Rice", Map.of("lowStockThreshold", 5));
+        UUID beans = product(owner, "Beans", Map.of("lowStockThreshold", 5));
+        stock(owner, rice, "stock-in", Map.of("quantity", 50, "branchId", main.toString()));
+        stock(owner, rice, "stock-in", Map.of("quantity", 2, "branchId", oshodi.toString()));
+        stock(owner, beans, "stock-in", Map.of("quantity", 50, "branchId", oshodi.toString()));
+
+        List<Map<String, Object>> atOshodi = restTemplate.exchange(
+                "/api/imports/delivery-lines?filter=LOW_STOCK&branchId=" + oshodi, HttpMethod.GET, new HttpEntity<>(auth(owner)),
+                new ParameterizedTypeReference<List<Map<String, Object>>>() {}).getBody();
+
+        assertThat(atOshodi).extracting(line -> line.get("productId")).containsOnly(rice.toString());
+    }
+
+    @Test
+    void theInventoryExportCarriesTheBranchsFigure() throws Exception {
+        TenantLoginResponse owner = signup("Export Branch");
+        UUID main = mainBranch(owner);
+        UUID oshodi = addBranch(owner, "Oshodi");
+        UUID rice = product(owner, "Rice", Map.of());
+        stock(owner, rice, "stock-in", Map.of("quantity", 50, "branchId", main.toString()));
+        stock(owner, rice, "stock-in", Map.of("quantity", 7, "branchId", oshodi.toString()));
+        createUser(owner, "ade", role("STOREKEEPER"), List.of(oshodi));
+
+        assertThat(exportedFigures(login(owner, "ade"), "")).as("their one branch, never the company's 57").contains(7.0)
+                .doesNotContain(57.0);
+        assertThat(exportedFigures(owner, "?branchId=" + main)).contains(50.0).doesNotContain(57.0);
+        assertThat(exportedFigures(owner, "")).as("All branches").contains(57.0);
+    }
+
     // ------------------------------------------------------------- BranchAccessTest (section 9)
 
     @Test
@@ -588,6 +690,27 @@ class BranchGapsIntegrationTest {
         return jdbc.queryForList(
                 "SELECT COALESCE(normalized ->> '_outcome_message', '') FROM import_session_rows WHERE session_id = :id",
                 new MapSqlParameterSource("id", session), String.class);
+    }
+
+    /** Every number on the export's data rows. */
+    private List<Double> exportedFigures(TenantLoginResponse who, String query) throws Exception {
+        byte[] sheet = restTemplate.exchange("/api/products/export" + query, HttpMethod.GET, new HttpEntity<>(auth(who)),
+                byte[].class).getBody();
+        try (var book = new org.apache.poi.xssf.usermodel.XSSFWorkbook(new java.io.ByteArrayInputStream(sheet))) {
+            List<Double> numbers = new java.util.ArrayList<>();
+            var products = book.getSheetAt(0);
+            for (int r = 2; r <= products.getLastRowNum(); r++) {
+                var row = products.getRow(r);
+                if (row != null) {
+                    row.forEach(cell -> {
+                        if (cell.getCellType() == org.apache.poi.ss.usermodel.CellType.NUMERIC) {
+                            numbers.add(cell.getNumericCellValue());
+                        }
+                    });
+                }
+            }
+            return numbers;
+        }
     }
 
     private static List<String> headers(byte[] workbook) throws Exception {

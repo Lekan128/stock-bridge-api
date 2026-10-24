@@ -153,12 +153,31 @@ public class ExpectedDeliveryService {
 
     @Transactional(readOnly = true)
     public ExpectedDeliveryResponse get(UUID id) {
-        return respond(require(id));
+        return get(id, null);
     }
 
-    @Transactional
-    public ExpectedDeliveryResponse cancel(UUID id) {
+    /** One going to a branch this person sees (D-U3); another branch's is not found, as in the list. */
+    @Transactional(readOnly = true)
+    public ExpectedDeliveryResponse get(UUID id, UUID userId) {
         ExpectedDelivery expected = require(id);
+        if (userId != null && branchStockService.isMultiBranch(requireTenantId())
+                && !branchAccessService.viewBranchIds(userId).contains(expected.getBranchId())) {
+            throw ExpectedDeliveryException.notFound();
+        }
+        return respond(expected);
+    }
+
+    public ExpectedDeliveryResponse cancel(UUID id) {
+        return cancel(id, null);
+    }
+
+    /** Called off by somebody who records at the branch it is going to - it is on that branch's Needs you. */
+    @Transactional
+    public ExpectedDeliveryResponse cancel(UUID id, UUID userId) {
+        ExpectedDelivery expected = require(id);
+        if (userId != null && branchStockService.isMultiBranch(requireTenantId())) {
+            branchAccessService.requireMayRecordAt(userId, expected.getBranchId());
+        }
         if (expected.getStatus() == ExpectedDeliveryStatus.RECEIVED) {
             throw ExpectedDeliveryException.alreadyClosed("received");
         }

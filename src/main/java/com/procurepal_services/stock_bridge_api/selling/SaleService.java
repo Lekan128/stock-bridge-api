@@ -58,6 +58,8 @@ public class SaleService {
     private final ProductRepository productRepository;
     private final StockManagementService stockManagementService;
     private final StockWritePermissionGuard permissions;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
 
     @Transactional(readOnly = true)
     public SaleResponse get(UUID saleId) {
@@ -157,6 +159,11 @@ public class SaleService {
     // ------------------------------------------------------------------------------ rules ----
 
     private void requireMayFix(StockMovement line, UUID actingUserId, String verb) {
+        // At the branch it was sold from (the stock goes back there): managing inventory somewhere
+        // else is not managing it there.
+        if (line.getBranchId() != null && branchStockService.isMultiBranch(line.getClientId())) {
+            branchAccessService.requireMayRecordAt(actingUserId, line.getBranchId());
+        }
         if (permissions.has(actingUserId, "MANAGE_INVENTORY")) {
             return;
         }

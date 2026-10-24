@@ -61,8 +61,12 @@ public class ProductController {
 
     @GetMapping("/export")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public ResponseEntity<byte[]> export() {
-        return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
+    public ResponseEntity<byte[]> export(
+            // Multiple branches: that branch's figures; absent is the branches the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return xlsxResponse(productManagementService.exportActiveProducts(principal == null ? null : principal.getUserId(), branchId),
+                "products-export.xlsx");
     }
 
     /** "Add prices in a sheet" - products with no selling price (or {@code all=true}: every active one). */
