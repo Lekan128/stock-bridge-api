@@ -14,7 +14,6 @@ import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.selling.dto.SellingSettingsResponse;
 import com.procurepal_services.stock_bridge_api.selling.dto.UpdateSellingSettingsRequest;
-import com.procurepal_services.stock_bridge_api.stock.dto.LossesResponse;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferResponse;
 import java.io.ByteArrayInputStream;
 import java.math.BigDecimal;
@@ -45,7 +44,7 @@ import org.springframework.util.MultiValueMap;
 
 /**
  * Multiple branches, Phase 3 (MULTI_BRANCH_BUILD_PLAN.md section 8.1 row 3): the owner's branch table,
- * the losses report, sales and dashboard figures per branch, the phones' "waiting" report, and the
+ * stock adjustments at cost, sales and dashboard figures per branch, the phones' "waiting" report, and the
  * movements spreadsheet with its Branch column (MULTI_BRANCH_UX_PLAN.md sections 4.3, 5.7, 5.8).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -149,52 +148,45 @@ class OwnerViewIntegrationTest {
         assertThat(new BigDecimal(worthOshodi.get("valueAtCost").toString())).isEqualByComparingTo("100");
     }
 
-    // ------------------------------------------------------------------------------------- losses
+    // -------------------------------------------------------------------------- stock adjustments
 
     @Test
-    void theLossesReportCostsMissingDamagedCountsAndWriteOffsByKindBranchPersonAndMonth() {
-        Company c = company("Losses");
+    void theAdjustmentsFilterKeepsCountsAndWriteOffsAtCostAndLeavesOutStockThatWasUsed() {
+        Company c = company("Adjustments");
         stockIn(c, c.rice(), c.main(), 20, "100");
-        TransferResponse sent = send(c, c.main(), c.oshodi(), 5, "Tunde");
-        post(c.owner(), "/api/stock-transfers/" + sent.id() + "/receipts", receipt(c.rice(), 2, 3), String.class);
-        // One of the three turns up: two stay missing.
-        post(c.owner(), "/api/stock-transfers/" + sent.id() + "/found", Map.of("id", UUID.randomUUID().toString(),
-                "productId", c.rice().toString(), "quantity", 1, "branchId", c.oshodi().toString()), String.class);
-        count(c, c.rice(), c.main(), 13); // 15 on the books: 2 short
-        Map<String, Object> writeOff = new HashMap<>();
-        writeOff.put("quantity", 1);
-        writeOff.put("reason", "EXPIRED");
-        writeOff.put("branchId", c.main().toString());
-        assertThat(post(c.owner(), "/api/products/" + c.rice() + "/stock/stock-out", writeOff, String.class).getStatusCode())
-                .isEqualTo(HttpStatus.OK);
+        stockOut(c, c.rice(), c.main(), 3, "USED");
+        count(c, c.rice(), c.main(), 13); // 17 on the books: 4 short
+        stockOut(c, c.rice(), c.main(), 1, "EXPIRED");
 
-        LossesResponse byKind = getAs(c.owner(), "/api/stock/losses", LossesResponse.class);
-        LossesResponse byBranch = getAs(c.owner(), "/api/stock/losses?groupBy=branch", LossesResponse.class);
-        LossesResponse byPerson = getAs(c.owner(), "/api/stock/losses?groupBy=person", LossesResponse.class);
-        LossesResponse byMonth = getAs(c.owner(), "/api/stock/losses?groupBy=month", LossesResponse.class);
+        Map<String, Object> rows = getMap(c.owner(), "/api/stock/movements?adjustments=true");
+        Map<String, Object> summary = getMap(c.owner(), "/api/stock/movements/summary?adjustments=true");
 
-        assertThat(byKind.totals().byKind().get("MISSING_IN_TRANSIT").units()).as("found stock netted out").isEqualTo(2);
-        assertThat(byKind.totals().byKind().get("COUNTED_SHORT").units()).isEqualTo(2);
-        assertThat(byKind.totals().byKind().get("EXPIRED").units()).isEqualTo(1);
-        assertThat(byKind.totals().units()).isEqualTo(5);
-        assertThat(byKind.totals().cost()).isEqualByComparingTo("500");
-        assertThat(byBranch.rows()).extracting(LossesResponse.Row::label).containsExactlyInAnyOrder("Head Office", "Oshodi");
-        assertThat(byPerson.rows()).extracting(LossesResponse.Row::label).contains("Tunde (carried)");
-        assertThat(byMonth.rows()).hasSize(1);
-        assertThat(get(c.owner(), "/api/stock/losses?groupBy=colour", String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(((Number) rows.get("totalElements")).intValue()).as("the count and the expired rice, not the delivery or the use")
+                .isEqualTo(2);
+        assertThat(((Number) summary.get("writtenOffQuantity")).intValue()).isEqualTo(5);
+        assertThat(new BigDecimal(summary.get("writtenOffCost").toString())).isEqualByComparingTo("500");
+        assertThat(((Number) summary.get("writtenOffUnpricedCount")).intValue()).isZero();
     }
 
     @Test
-    void aCountOverIsAGainThatComesOffTheLosses() {
-        Company c = company("Losses Over");
+    void aCountOverIsAGainThatComesOffWhatWasWrittenOff() {
+        Company c = company("Adjustments Over");
         stockIn(c, c.rice(), c.main(), 10, "100");
         count(c, c.rice(), c.main(), 12);
 
-        LossesResponse report = getAs(c.owner(), "/api/stock/losses", LossesResponse.class);
+        Map<String, Object> summary = getMap(c.owner(), "/api/stock/movements/summary?adjustments=true");
 
-        assertThat(report.totals().byKind().get("COUNTED_OVER").units()).isEqualTo(2);
-        assertThat(report.totals().units()).isEqualTo(-2);
-        assertThat(report.totals().cost()).isEqualByComparingTo("-200");
+        assertThat(((Number) summary.get("writtenOffQuantity")).intValue()).isEqualTo(-2);
+        assertThat(new BigDecimal(summary.get("writtenOffCost").toString())).isEqualByComparingTo("-200");
+    }
+
+    private void stockOut(Company c, UUID product, UUID branch, int quantity, String reason) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("quantity", quantity);
+        body.put("reason", reason);
+        body.put("branchId", branch.toString());
+        assertThat(post(c.owner(), "/api/products/" + product + "/stock/stock-out", body, String.class).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
     }
 
     // --------------------------------------------------------------------------- movements export

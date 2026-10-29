@@ -63,7 +63,6 @@ public class StockController {
     /** Where each write lands (V51) and whether this person may record there now (V52). */
     private final BranchStockService branchStockService;
     private final BranchAccessService branchAccessService;
-    private final LossesService lossesService;
     private final MovementsExportService movementsExportService;
 
     /**
@@ -256,12 +255,14 @@ public class StockController {
             // V46: narrow to stock-outs with this reason, or (noReason) to those with none given.
             @RequestParam(required = false) OutReason outReason,
             @RequestParam(defaultValue = "false") boolean noReason,
+            // Only stock adjustments: counts that changed the figure, and damaged, expired or lost stock-outs.
+            @RequestParam(defaultValue = "false") boolean adjustments,
             // V51: one branch, or (absent) every branch this person sees.
             @RequestParam(required = false) UUID branchId,
             @PageableDefault(size = 20, sort = "occurredAt", direction = Sort.Direction.DESC) Pageable pageable,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return stockManagementService.allMovements(
-                from, to, movementType, productId, companyVendorId, outReason, noReason,
+                from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments,
                 branchScope(branchId, principal), pageable);
     }
 
@@ -276,10 +277,11 @@ public class StockController {
             @RequestParam(required = false) UUID companyVendorId,
             @RequestParam(required = false) OutReason outReason,
             @RequestParam(defaultValue = "false") boolean noReason,
+            @RequestParam(defaultValue = "false") boolean adjustments,
             @RequestParam(required = false) UUID branchId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         Page<StockMovementResponse> page = stockManagementService.allMovements(
-                from, to, movementType, productId, companyVendorId, outReason, noReason, branchScope(branchId, principal),
+                from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments, branchScope(branchId, principal),
                 org.springframework.data.domain.PageRequest.of(0, MovementsExportService.MAX_ROWS,
                         Sort.by(Sort.Direction.DESC, "occurredAt")));
         byte[] bytes = movementsExportService.export(principal.getClientId(), page.getContent(),
@@ -290,27 +292,6 @@ public class StockController {
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"stock-movements.xlsx\"")
                 .body(bytes);
-    }
-
-    /**
-     * The losses report (Phase 3, MULTI_BRANCH_UX_PLAN.md section 5.7): stock that left the books
-     * without being sold or used, at cost. MANAGE_INVENTORY, as the movements report: it shows costs.
-     *
-     * @param groupBy {@code kind} (default), {@code branch}, {@code person} or {@code month}.
-     */
-    @GetMapping("/api/stock/losses")
-    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
-    public ResponseEntity<?> losses(
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
-            @RequestParam(required = false) String groupBy,
-            @RequestParam(required = false) UUID branchId,
-            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        if (groupBy != null && !LossesService.GROUPINGS.contains(groupBy.toLowerCase(java.util.Locale.ROOT))) {
-            return ResponseEntity.badRequest().body(new com.procurepal_services.stock_bridge_api.auth.ApiError(
-                    "groupBy must be one of " + LossesService.GROUPINGS));
-        }
-        return ResponseEntity.ok(lossesService.report(principal.getClientId(), from, to, groupBy, branchScope(branchId, principal)));
     }
 
     /**
@@ -329,10 +310,11 @@ public class StockController {
             @RequestParam(required = false) UUID companyVendorId,
             @RequestParam(required = false) OutReason outReason,
             @RequestParam(defaultValue = "false") boolean noReason,
+            @RequestParam(defaultValue = "false") boolean adjustments,
             @RequestParam(required = false) UUID branchId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return stockManagementService.movementSummary(
-                from, to, movementType, productId, companyVendorId, outReason, noReason,
+                from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments,
                 branchScope(branchId, principal));
     }
 

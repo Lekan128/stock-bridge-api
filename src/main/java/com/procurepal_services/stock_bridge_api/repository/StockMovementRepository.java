@@ -174,7 +174,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      *
      * <p>Returns a one-element list holding {@code [inValue(numeric), outValue(numeric), inQuantity(bigint),
      * outQuantity(bigint), inCount(bigint), outCount(bigint), unpricedInCount(bigint),
-     * unpricedOutCount(bigint), adjustmentCount(bigint), otherOutCost(numeric), otherOutCount(bigint)]}. One pass over the filtered set with
+     * unpricedOutCount(bigint), adjustmentCount(bigint), otherOutCost(numeric), otherOutCount(bigint),
+     * the four moved-between-branches figures, writtenOffCost(numeric), writtenOffQuantity(bigint),
+     * writtenOffUnpricedCount(bigint)]}. One pass over the filtered set with
      * nine conditional aggregates, rather than nine round trips or - worse - paging the whole
      * range into the application to add it up there.
      *
@@ -212,7 +214,17 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'TRANSFER_IN'), 0) AS moved_in_quantity, "
                     + "COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'TRANSFER_OUT'), 0) AS moved_out_quantity, "
                     + "COUNT(*) FILTER (WHERE movement_type = 'TRANSFER_IN') AS moved_in_count, "
-                    + "COUNT(*) FILTER (WHERE movement_type = 'TRANSFER_OUT') AS moved_out_count "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'TRANSFER_OUT') AS moved_out_count, "
+                    // Stock adjustments (StockMovementSpecifications.WRITE_OFF_REASONS): what was written off,
+                    // net. A stock-out at its snapshot cost; a count at the product's cost, short as a loss
+                    // and over as a gain taken off it.
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN cost_amount "
+                    + "ELSE -quantity * (SELECT p.cost_price FROM products p WHERE p.id = product_id) END) "
+                    + "FILTER (WHERE " + WRITE_OFF + "), 0) AS written_off_cost, "
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE -quantity END) "
+                    + "FILTER (WHERE " + WRITE_OFF + "), 0) AS written_off_quantity, "
+                    + "COUNT(*) FILTER (WHERE " + WRITE_OFF + " AND CASE WHEN movement_type = 'OUT' THEN cost_amount IS NULL "
+                    + "ELSE (SELECT p.cost_price FROM products p WHERE p.id = product_id) IS NULL END) AS written_off_unpriced "
                     + "FROM stock_movements "
                     + "WHERE client_id = :clientId "
                     + "AND (CAST(:productId AS uuid) IS NULL OR product_id = CAST(:productId AS uuid)) "
@@ -223,6 +235,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     // V46: why it went out - the same two narrowings as StockMovementSpecifications.forTenant.
                     + "AND (CAST(:outReason AS text) IS NULL OR out_reason = CAST(:outReason AS text)) "
                     + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL)) "
+                    + "AND (:adjustments = FALSE OR " + WRITE_OFF + ") "
                     // V51: the branches the person sees, as the rows above it are (atBranches).
                     + "AND branch_id IN (:branchIds)",
             nativeQuery = true)
@@ -235,7 +248,12 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("to") OffsetDateTime to,
             @Param("outReason") String outReason,
             @Param("noReason") boolean noReason,
+            @Param("adjustments") boolean adjustments,
             @Param("branchIds") java.util.Collection<UUID> branchIds);
+
+    /** A stock adjustment, as {@code StockMovementSpecifications.forTenant}'s {@code adjustments} filter keeps them. */
+    String WRITE_OFF = "((movement_type = 'ADJUSTMENT' AND is_count AND quantity <> 0) "
+            + "OR (movement_type = 'OUT' AND out_reason IN ('DAMAGED', 'EXPIRED', 'LOST')))";
 
     /**
      * <h2>V28: these five reporting queries bracket occurred_at, not created_at</h2>

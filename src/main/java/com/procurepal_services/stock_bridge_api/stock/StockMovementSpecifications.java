@@ -60,13 +60,20 @@ final class StockMovementSpecifications {
             OffsetDateTime from,
             OffsetDateTime to,
             MovementType movementType) {
-        return forTenant(clientId, productId, companyVendorId, from, to, movementType, null, false);
+        return forTenant(clientId, productId, companyVendorId, from, to, movementType, null, false, false);
     }
+
+    /** The stock-out reasons that write stock off: it went, and nothing came of it. */
+    static final java.util.Set<OutReason> WRITE_OFF_REASONS = java.util.EnumSet.of(OutReason.DAMAGED, OutReason.EXPIRED, OutReason.LOST);
 
     /**
      * The same, narrowed by why a stock-out happened (V46): {@code outReason} keeps the stock-outs
      * with that reason; {@code noReason} keeps the stock-outs where none was given. Mirrored exactly
      * by {@code StockMovementRepository.summarise}, so the report's footer never disagrees with it.
+     *
+     * <p>{@code adjustments} keeps the stock adjustments: counts that changed the figure, and
+     * stock-outs given as damaged, expired or lost ({@link #WRITE_OFF_REASONS}). Not the other
+     * ADJUSTMENT rows - a cancelled sale or a price added later is a fix to a sale, not stock gone.
      */
     static Specification<StockMovement> forTenant(
             UUID clientId,
@@ -76,7 +83,8 @@ final class StockMovementSpecifications {
             OffsetDateTime to,
             MovementType movementType,
             OutReason outReason,
-            boolean noReason) {
+            boolean noReason,
+            boolean adjustments) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             predicates.add(cb.equal(root.get("clientId"), clientId));
@@ -108,6 +116,14 @@ final class StockMovementSpecifications {
             if (noReason) {
                 predicates.add(cb.equal(root.get("movementType"), MovementType.OUT));
                 predicates.add(cb.isNull(root.get("outReason")));
+            }
+            if (adjustments) {
+                predicates.add(cb.or(
+                        cb.and(cb.equal(root.get("movementType"), MovementType.ADJUSTMENT),
+                                cb.isTrue(root.get("count")),
+                                cb.notEqual(root.get("quantity"), 0)),
+                        cb.and(cb.equal(root.get("movementType"), MovementType.OUT),
+                                root.get("outReason").in(WRITE_OFF_REASONS))));
             }
 
             return cb.and(predicates.toArray(new Predicate[0]));

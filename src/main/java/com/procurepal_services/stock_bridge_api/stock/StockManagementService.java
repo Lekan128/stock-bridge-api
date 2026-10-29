@@ -1359,10 +1359,13 @@ public class StockManagementService {
             OutReason outReason,
             boolean noReason,
             Pageable pageable) {
-        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, null, pageable);
+        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, false, null, pageable);
     }
 
-    /** @param branchIds only these branches' movements (V51); null for every branch. */
+    /**
+     * @param adjustments only stock adjustments - see {@code StockMovementSpecifications.forTenant}.
+     * @param branchIds only these branches' movements (V51); null for every branch.
+     */
     @Transactional(readOnly = true)
     public Page<StockMovementResponse> allMovements(
             OffsetDateTime from,
@@ -1372,10 +1375,11 @@ public class StockManagementService {
             UUID companyVendorId,
             OutReason outReason,
             boolean noReason,
+            boolean adjustments,
             java.util.Collection<UUID> branchIds,
             Pageable pageable) {
         org.springframework.data.jpa.domain.Specification<StockMovement> spec = StockMovementSpecifications.forTenant(
-                requireTenantId(), productId, companyVendorId, from, to, movementType, outReason, noReason);
+                requireTenantId(), productId, companyVendorId, from, to, movementType, outReason, noReason, adjustments);
         if (branchIds != null) {
             spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
         }
@@ -1410,10 +1414,13 @@ public class StockManagementService {
             UUID companyVendorId,
             OutReason outReason,
             boolean noReason) {
-        return movementSummary(from, to, movementType, productId, companyVendorId, outReason, noReason, null);
+        return movementSummary(from, to, movementType, productId, companyVendorId, outReason, noReason, false, null);
     }
 
-    /** @param branchIds only these branches' movements (V51); null for every branch. */
+    /**
+     * @param adjustments only stock adjustments - see {@code StockMovementSpecifications.forTenant}.
+     * @param branchIds only these branches' movements (V51); null for every branch.
+     */
     @Transactional(readOnly = true)
     public StockMovementSummaryResponse movementSummary(
             OffsetDateTime from,
@@ -1423,12 +1430,13 @@ public class StockManagementService {
             UUID companyVendorId,
             OutReason outReason,
             boolean noReason,
+            boolean adjustments,
             java.util.Collection<UUID> branchIds) {
         UUID tenantId = requireTenantId();
         java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(tenantId);
         if (scope.isEmpty()) {
             return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
-                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0);
+                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0, BigDecimal.ZERO.setScale(2), 0, 0);
         }
         List<Object[]> rows = stockMovementRepository.summarise(
                 tenantId,
@@ -1439,6 +1447,7 @@ public class StockManagementService {
                 to,
                 outReason == null ? null : outReason.name(),
                 noReason,
+                adjustments,
                 scope);
         // A conditional aggregate with no GROUP BY always returns exactly one row, zeroes
         // included, so an empty list here would mean the query stopped being an aggregate.
@@ -1446,12 +1455,12 @@ public class StockManagementService {
         // worth a 500, and every branch below would read zero anyway.
         if (rows.isEmpty()) {
             return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
-                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0);
+                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0, BigDecimal.ZERO.setScale(2), 0, 0);
         }
         Object[] row = rows.getFirst();
         // Sales, from the Sales report's own query so the two pages cannot disagree - only where
         // the rows here include sales at all and the report can answer for the same lines.
-        boolean salesApply = from != null && to != null && companyVendorId == null && !noReason
+        boolean salesApply = from != null && to != null && companyVendorId == null && !noReason && !adjustments
                 && (movementType == null || movementType == MovementType.OUT)
                 && (outReason == null || outReason == OutReason.SALE)
                 && sellingPolicy.showsSellingPrice(requireTenantId());
@@ -1477,7 +1486,10 @@ public class StockManagementService {
                 ((Number) row[11]).longValue(),
                 ((Number) row[12]).longValue(),
                 ((Number) row[13]).longValue(),
-                ((Number) row[14]).longValue());
+                ((Number) row[14]).longValue(),
+                ((BigDecimal) row[15]).setScale(2, java.math.RoundingMode.HALF_UP),
+                ((Number) row[16]).longValue(),
+                ((Number) row[17]).longValue());
     }
 
     /**

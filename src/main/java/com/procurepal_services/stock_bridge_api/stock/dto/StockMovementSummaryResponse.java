@@ -64,5 +64,14 @@ public record StockMovementSummaryResponse(
         long movedInQuantity,
         long movedOutQuantity,
         long movedInCount,
-        long movedOutCount) {
+        long movedOutCount,
+        /**
+         * Stock adjustments in range, net, at cost: stock-outs given as damaged, expired or lost, and
+         * counts at the product's cost - short adds, over takes off. Entries with no cost are left out
+         * of it and counted in {@code writtenOffUnpricedCount}.
+         */
+        BigDecimal writtenOffCost,
+        /** The same, in units: net units written off. */
+        long writtenOffQuantity,
+        long writtenOffUnpricedCount) {
 }

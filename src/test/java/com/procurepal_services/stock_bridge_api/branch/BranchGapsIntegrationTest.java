@@ -516,7 +516,7 @@ class BranchGapsIntegrationTest {
         addBranch(owner, "Oshodi");
         TenantLoginResponse look = login(owner, "look");
 
-        for (String path : List.of("/api/stock/losses", "/api/analytics/stock-worth", "/api/analytics/branches",
+        for (String path : List.of("/api/stock/movements/summary?adjustments=true", "/api/analytics/stock-worth", "/api/analytics/branches",
                 "/api/analytics/summary", "/api/stock/movements")) {
             assertThat(get(look, path).getStatusCode()).as(path).isEqualTo(HttpStatus.FORBIDDEN);
         }
