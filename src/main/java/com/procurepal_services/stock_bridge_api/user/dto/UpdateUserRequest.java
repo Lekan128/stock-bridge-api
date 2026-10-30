@@ -23,7 +23,23 @@ public record UpdateUserRequest(
         @Size(max = 50) String phone,
         @Size(max = 100) String jobTitle,
         // Multiple branches (V52): where they work, replacing what was there. Absent leaves it alone.
-        List<UUID> branchIds) {
+        List<UUID> branchIds,
+        // Areas (V64, STOCK_AREAS_PART_3.md): the areas they're limited to, replacing the list. Absent leaves
+        // it alone; empty = every area.
+        List<UUID> areaIds) {
+
+    /** The shape before {@code areaIds} (areas, Part 3). */
+    public UpdateUserRequest(
+            UUID roleId,
+            Boolean active,
+            String firstName,
+            String lastName,
+            String email,
+            String phone,
+            String jobTitle,
+            List<UUID> branchIds) {
+        this(roleId, active, firstName, lastName, email, phone, jobTitle, branchIds, null);
+    }
 
     /** The shape before {@code branchIds} (multiple branches, Phase 1). */
     public UpdateUserRequest(
@@ -34,6 +50,6 @@ public record UpdateUserRequest(
             String email,
             String phone,
             String jobTitle) {
-        this(roleId, active, firstName, lastName, email, phone, jobTitle, null);
+        this(roleId, active, firstName, lastName, email, phone, jobTitle, null, null);
     }
 }

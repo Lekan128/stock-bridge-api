@@ -28,14 +28,16 @@ public record UserSummaryResponse(
         // somebody placed nowhere, every one when their role works everywhere (worksEverywhere). Absent
         // where nobody asked (the super-admin screens).
         List<UUID> branchIds,
-        Boolean worksEverywhere) {
+        Boolean worksEverywhere,
+        // Areas (V64): the areas they're limited to; absent = every area.
+        List<UUID> areaIds) {
 
     /** Without branches - the super-admin screens, which have no branch interface. */
     public static UserSummaryResponse from(User user) {
-        return from(user, null, null);
+        return from(user, null, null, null);
     }
 
-    public static UserSummaryResponse from(User user, List<UUID> branchIds, Boolean worksEverywhere) {
+    public static UserSummaryResponse from(User user, List<UUID> branchIds, Boolean worksEverywhere, List<UUID> areaIds) {
         return new UserSummaryResponse(
                 user.getId(),
                 user.getUsername(),
@@ -51,6 +53,7 @@ public record UserSummaryResponse(
                 user.isActive(),
                 user.getCreatedAt(),
                 branchIds,
-                worksEverywhere);
+                worksEverywhere,
+                areaIds == null || areaIds.isEmpty() ? null : areaIds);
     }
 }

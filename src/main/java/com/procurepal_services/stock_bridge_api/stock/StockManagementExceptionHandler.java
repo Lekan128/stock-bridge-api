@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.stock;
 
 import com.procurepal_services.stock_bridge_api.branch.AreaClosedException;
 import com.procurepal_services.stock_bridge_api.branch.AreaKeepsNoStockException;
+import com.procurepal_services.stock_bridge_api.branch.AreaNotAllowedException;
 import com.procurepal_services.stock_bridge_api.branch.AreaNotFoundException;
 import com.procurepal_services.stock_bridge_api.branch.AreaRequiredException;
 import com.procurepal_services.stock_bridge_api.branch.BranchClosedException;
@@ -49,9 +50,9 @@ public class StockManagementExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 
-    /** 403, like a permission taken away: the phone keeps the write as "needs you" with the reason. */
-    @ExceptionHandler(BranchNotAllowedException.class)
-    public ResponseEntity<ApiError> handleBranchNotAllowed(BranchNotAllowedException ex) {
+    /** 403, like a permission taken away: the phone keeps the write as "needs you" with the reason. Areas too (D-E9). */
+    @ExceptionHandler({BranchNotAllowedException.class, AreaNotAllowedException.class})
+    public ResponseEntity<ApiError> handleBranchNotAllowed(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
     }
 

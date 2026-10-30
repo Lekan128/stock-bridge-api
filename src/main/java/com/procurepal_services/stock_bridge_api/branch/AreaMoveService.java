@@ -65,7 +65,7 @@ public class AreaMoveService {
         stockWritePermissionGuard.require(userId, "STOCK_OUT");
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), userId);
         branchAccessService.requireMayRecordAt(userId, branchId);
-        UUID fromAreaId = branchStockService.resolveAreaForWrite(branchId, request.fromAreaId(), AreaUse.TAKE);
+        UUID fromAreaId = branchStockService.resolveAreaForWrite(branchId, request.fromAreaId(), AreaUse.TAKE, userId);
         AreaRow to = requireArea(request.toAreaId(), branchId);
         if (!to.active()) {
             throw new AreaClosedException(to.name());

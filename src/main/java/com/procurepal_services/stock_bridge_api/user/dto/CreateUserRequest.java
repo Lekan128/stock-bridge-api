@@ -31,7 +31,24 @@ public record CreateUserRequest(
         @Size(max = 100) String jobTitle,
         // Multiple branches (V52): where they work. Required at a company with more than one branch,
         // unless their role works at every branch; absent at a one-branch company.
-        List<UUID> branchIds) {
+        List<UUID> branchIds,
+        // Areas (V64, STOCK_AREAS_PART_3.md): the areas they're limited to, across their branches. Absent or
+        // empty = every area.
+        List<UUID> areaIds) {
+
+    /** The shape before {@code areaIds} (areas, Part 3). */
+    public CreateUserRequest(
+            String username,
+            String password,
+            UUID roleId,
+            String firstName,
+            String lastName,
+            String email,
+            String phone,
+            String jobTitle,
+            List<UUID> branchIds) {
+        this(username, password, roleId, firstName, lastName, email, phone, jobTitle, branchIds, null);
+    }
 
     /** The shape before {@code branchIds} (multiple branches, Phase 1). */
     public CreateUserRequest(
@@ -43,6 +60,6 @@ public record CreateUserRequest(
             String email,
             String phone,
             String jobTitle) {
-        this(username, password, roleId, firstName, lastName, email, phone, jobTitle, null);
+        this(username, password, roleId, firstName, lastName, email, phone, jobTitle, null, null);
     }
 }

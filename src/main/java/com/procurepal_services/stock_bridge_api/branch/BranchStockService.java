@@ -68,6 +68,7 @@ public class BranchStockService {
 
     private final NamedParameterJdbcTemplate jdbc;
     private final BranchAccessService branchAccessService;
+    private final AreaAccessService areaAccessService;
 
     /** {@link #resolveForWrite(UUID, UUID)} for a write with nobody's branches to fall back on. */
     public UUID resolveForWrite(UUID requestedBranchId) {
@@ -509,7 +510,20 @@ public class BranchStockService {
      * BranchRequiredException} gives.
      */
     public UUID resolveAreaForWrite(UUID branchId, UUID requestedAreaId, AreaUse use) {
+        return resolveAreaForWrite(branchId, requestedAreaId, use, null);
+    }
+
+    /**
+     * {@link #resolveAreaForWrite(UUID, UUID, AreaUse)} for a person's own write (STOCK_AREAS_PART_3.md,
+     * D-E9): a named area must also be one they work in (refused otherwise, 403), and with none named only
+     * the areas they work in are candidates - a cook's older app records in the Kitchen, their only one.
+     *
+     * @param userId who is writing; null for the system's own writes (waybills, marketplace), which follow
+     *     the branch's rules alone.
+     */
+    public UUID resolveAreaForWrite(UUID branchId, UUID requestedAreaId, AreaUse use, UUID userId) {
         List<AreaRow> areas = areasOf(branchId);
+        AreaAccessService.Limits limits = userId == null || areas.size() < 2 ? null : areaAccessService.limits(userId);
         if (requestedAreaId != null) {
             AreaRow area = areas.stream()
                     .filter(row -> row.id().equals(requestedAreaId))
@@ -521,16 +535,22 @@ public class BranchStockService {
             if (!area.keepsStock()) {
                 throw new AreaKeepsNoStockException(area.name());
             }
+            if (limits != null && !limits.worksIn(branchId, area.id())) {
+                throw new AreaNotAllowedException(area.name());
+            }
             return area.id();
         }
-        List<AreaRow> stocking = areas.stream().filter(row -> row.active() && row.keepsStock()).toList();
+        List<AreaRow> stocking = areas.stream()
+                .filter(row -> row.active() && row.keepsStock())
+                .filter(row -> limits == null || limits.worksIn(branchId, row.id()))
+                .toList();
         if (stocking.size() == 1) {
             return stocking.getFirst().id();
         }
         if (use == AreaUse.TAKE) {
             throw new AreaRequiredException();
         }
-        return areas.stream()
+        return stocking.stream()
                 .filter(AreaRow::delivery)
                 .map(AreaRow::id)
                 .findFirst()

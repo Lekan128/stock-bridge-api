@@ -205,7 +205,7 @@ public class StockManagementService {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
-        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.RECEIVE);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.RECEIVE, actingUserId);
         OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
 
         ResolvedEntry entry = resolveEntry(
@@ -428,7 +428,7 @@ public class StockManagementService {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
-        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse, actingUserId);
 
         ResolvedEntry entry = resolveEntry(
                 product, BigDecimal.valueOf(request.quantity()), SaleFacts.enteredPrice(request), request.unit(), null, null);
@@ -551,7 +551,7 @@ public class StockManagementService {
     public StockMutationResponse count(UUID productId, StockCountRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
-        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
         OffsetDateTime countedAt = resolveOccurredAt(request.countedAt());
         if (countedAfter(productId, branchId, areaId, countedAt)) {
             return StockMutationResponse.of(product, null);
@@ -1438,7 +1438,7 @@ public class StockManagementService {
     public StockMutationResponse adjust(UUID productId, StockAdjustmentRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
-        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
         int delta = request.newQuantity() - branchStockService.quantityAt(product, branchId, areaId);
         if (delta == 0) {
             return StockMutationResponse.of(product, null);

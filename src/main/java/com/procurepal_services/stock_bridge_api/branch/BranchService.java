@@ -50,6 +50,7 @@ public class BranchService {
     private final BranchAccessService branchAccessService;
     private final BranchStockService branchStockService;
     private final AreaService areaService;
+    private final AreaAccessService areaAccessService;
     private final NamedParameterJdbcTemplate jdbc;
 
     /** {@code pilot} until multiple branches launch; see {@link #mayAddBranch}. */
@@ -64,8 +65,11 @@ public class BranchService {
         boolean manages = hasPermission(userId, "MANAGE_BRANCHES");
         Map<UUID, Totals> totals = manages ? totals(clientId) : Map.of();
         BranchAccessService.Grants grants = branchAccessService.grants(userId);
-        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse>> areas =
-                areaService.areasByBranch(clientId, manages);
+        // Each area says whether this person works in it (Part 3), so the phone knows where they are.
+        AreaAccessService.Limits limits = areaAccessService.limits(userId);
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse>> areas = new java.util.HashMap<>();
+        areaService.areasByBranch(clientId, manages).forEach((branchId, list) -> areas.put(branchId,
+                list.stream().map(area -> area.withWorksHere(limits.worksIn(branchId, area.id()))).toList()));
 
         List<BranchResponse> branches = branchRepository.findAllByClientId(clientId).stream()
                 .filter(branch -> visible.contains(branch.getId()))

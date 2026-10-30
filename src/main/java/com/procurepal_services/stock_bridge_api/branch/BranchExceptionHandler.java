@@ -37,8 +37,8 @@ public class BranchExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
     }
 
-    @ExceptionHandler(BranchNotAllowedException.class)
-    public ResponseEntity<ApiError> handleNotAllowed(BranchNotAllowedException ex) {
+    @ExceptionHandler({BranchNotAllowedException.class, AreaNotAllowedException.class})
+    public ResponseEntity<ApiError> handleNotAllowed(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
     }
 

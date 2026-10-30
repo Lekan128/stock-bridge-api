@@ -303,7 +303,7 @@ public class AreaService {
 
     private static AreaResponse toResponse(AreaRow area, Long productsInStock) {
         return new AreaResponse(area.id(), area.name(), area.keepsStock(), area.delivery(), area.active(),
-                area.closedAt(), productsInStock);
+                area.closedAt(), productsInStock, null);
     }
 
     private static String requireName(String raw) {

@@ -57,6 +57,7 @@ public class UserManagementService {
     /** Where people work (V52, MULTI_BRANCH_UX_PLAN.md section 5.10). */
     private final BranchService branchService;
     private final BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.branch.AreaAccessService areaAccessService;
     private final BranchStockService branchStockService;
 
     @Transactional(readOnly = true)
@@ -106,6 +107,9 @@ public class UserManagementService {
         userRepository.flush();
         if (placed) {
             branchService.assign(user.getId(), request.branchIds());
+        }
+        if (request.areaIds() != null && !request.areaIds().isEmpty()) {
+            areaAccessService.assign(tenantId, user.getId(), request.areaIds());
         }
 
         // Tells the new user their account exists and what to sign in as. It cannot
@@ -162,6 +166,9 @@ public class UserManagementService {
             } else {
                 branchService.assign(user.getId(), request.branchIds());
             }
+        }
+        if (request.areaIds() != null) {
+            areaAccessService.assign(user.getClientId(), user.getId(), request.areaIds());
         }
         userRepository.flush();
         return withBranches(user);
@@ -279,9 +286,12 @@ public class UserManagementService {
 
     /** A user with where they record now - what the Users screen's "Works at" shows and edits. */
     private UserSummaryResponse withBranches(User user) {
+        boolean everywhere = user.isRoot() || branchAccessService.roleRecordsEverywhere(user.getRole().getId());
         return UserSummaryResponse.from(
                 user,
                 branchAccessService.writeBranchIds(user.getId()),
-                user.isRoot() || branchAccessService.roleRecordsEverywhere(user.getRole().getId()));
+                everywhere,
+                // A role that works everywhere works in every area: a list left from before says nothing.
+                everywhere ? null : areaAccessService.listed(user.getId()));
     }
 }

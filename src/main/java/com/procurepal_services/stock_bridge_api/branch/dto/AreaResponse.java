@@ -11,6 +11,8 @@ import java.util.UUID;
  * @param delivery where deliveries arrive and waybills leave from; one per branch.
  * @param productsInStock how many products it holds any of - only for people who can manage branches,
  *     and only at a branch with more than one area (absent otherwise, like every null here).
+ * @param worksHere whether the signed-in person works in it (V64, STOCK_AREAS_PART_3.md): the branch list
+ *     says so for each area; absent on the answer to a change.
  */
 public record AreaResponse(
         UUID id,
@@ -19,5 +21,10 @@ public record AreaResponse(
         boolean delivery,
         boolean active,
         OffsetDateTime closedAt,
-        Long productsInStock) {
+        Long productsInStock,
+        Boolean worksHere) {
+
+    public AreaResponse withWorksHere(boolean works) {
+        return new AreaResponse(id, name, keepsStock, delivery, active, closedAt, productsInStock, works);
+    }
 }
