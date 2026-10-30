@@ -137,7 +137,7 @@ public class AreaMoveService {
         if (!userId.equals(move.get("moved_by"))) {
             throw new StockWriteNotUndoableException("Only the person who moved this can undo it.");
         }
-        OffsetDateTime createdAt = (OffsetDateTime) move.get("created_at");
+        OffsetDateTime createdAt = timestamp(move.get("created_at"));
         if (createdAt.isBefore(OffsetDateTime.now().minus(UNDO_WINDOW))) {
             throw new StockWriteNotUndoableException("It's too late to undo this. Move it back instead.");
         }
@@ -216,7 +216,7 @@ public class AreaMoveService {
                 JOIN areas fa ON fa.id = m.from_area_id
                 JOIN areas ta ON ta.id = m.to_area_id
                 LEFT JOIN users u ON u.id = m.moved_by
-                WHERE """ + where + """
+                WHERE\s""" + where + """
                  ORDER BY m.moved_at DESC, m.created_at DESC
                 OFFSET :offset LIMIT :limit
                 """, params);
@@ -243,7 +243,7 @@ public class AreaMoveService {
         for (Map<String, Object> m : moves) {
             UUID id = (UUID) m.get("id");
             boolean toKeepsStock = Boolean.TRUE.equals(m.get("to_keeps_stock"));
-            OffsetDateTime createdAt = (OffsetDateTime) m.get("created_at");
+            OffsetDateTime createdAt = timestamp(m.get("created_at"));
             boolean undoable = "DONE".equals(m.get("status")) && userId != null && userId.equals(m.get("moved_by"))
                     && !Boolean.TRUE.equals(m.get("recorded_offline"))
                     && createdAt.isAfter(OffsetDateTime.now().minus(UNDO_WINDOW));
@@ -259,7 +259,7 @@ public class AreaMoveService {
                     (String) m.get("status"),
                     (UUID) m.get("moved_by"),
                     name,
-                    (OffsetDateTime) m.get("moved_at"),
+                    timestamp(m.get("moved_at")),
                     (String) m.get("note"),
                     undoable ? createdAt.plus(UNDO_WINDOW) : null,
                     // A give's lines were Used there (D-E7): said by the area it went to.
@@ -319,6 +319,14 @@ public class AreaMoveService {
             throw new AreaNotFoundException();
         }
         return found.getFirst();
+    }
+
+    /** A timestamptz as {@code queryForList} hands it back (a {@link java.sql.Timestamp}), as an instant in UTC. */
+    private static OffsetDateTime timestamp(Object value) {
+        if (value instanceof OffsetDateTime offset) {
+            return offset;
+        }
+        return ((java.sql.Timestamp) value).toInstant().atOffset(java.time.ZoneOffset.UTC);
     }
 
     private static String blankToNull(String value) {
