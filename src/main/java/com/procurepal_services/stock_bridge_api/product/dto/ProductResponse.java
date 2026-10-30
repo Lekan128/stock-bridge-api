@@ -112,7 +112,10 @@ public record ProductResponse(
         // Multiple branches (V52): the product page's "At other branches" (MULTI_BRANCH_UX_PLAN.md
         // section 5.9) - each branch the person sees. quantityOnHand above stays the company's.
         // Absent at a one-branch company and on every response but the product page.
-        List<BranchFigure> branchStock) {
+        List<BranchFigure> branchStock,
+        // Areas inside a branch (V60, STOCK_AREAS_PART_1.md): "Store 30 · Kitchen 6" - each open area that
+        // keeps stock, at each branch the person sees that has more than one. Absent otherwise.
+        List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> areaStock) {
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -176,6 +179,7 @@ public record ProductResponse(
                 product.getCompanyCategory() == null ? null : product.getCompanyCategory().getName(),
                 product.getUnitPriceEntered(),
                 product.getUnitPriceEnteredUnit(),
+                null,
                 null);
     }
 
@@ -190,7 +194,7 @@ public record ProductResponse(
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock);
+                branchStock, areaStock);
     }
 
     /**
@@ -203,7 +207,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, figure.lowStockThreshold(), brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, figure.isLowStock(), createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock);
+                branchStock, areaStock);
     }
 
     /** The same product with its figure at each branch the person sees (V52) - the product page only. */
@@ -213,6 +217,16 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                figures);
+                figures, areaStock);
+    }
+
+    /** The same product with its figure in each area (V60) of the branches the person sees that have areas. */
+    public ProductResponse withAreaStock(List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> figures) {
+        return new ProductResponse(
+                id, name, sku, barcode, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
+                expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
+                packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
+                warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
+                branchStock, figures);
     }
 }

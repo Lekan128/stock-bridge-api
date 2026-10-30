@@ -42,5 +42,8 @@ public record ProductSyncRow(
         // Multiple branches (V52): this product at each branch the person sees, so the phone can show
         // any of them offline (MULTI_BRANCH_UX_PLAN.md section 4.3). quantityOnHand and stockStatus
         // above stay the company's. Absent at a one-branch company.
-        List<BranchFigure> branchStock) {
+        List<BranchFigure> branchStock,
+        // Areas inside a branch (V60, STOCK_AREAS_PART_1.md): this product in each area of the branches
+        // carried above that have more than one. Absent otherwise.
+        List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> areaStock) {
 }

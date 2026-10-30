@@ -48,6 +48,10 @@ app:
     # MULTI_BRANCH_BUILD_PLAN.md D-B12. "pilot": only companies support has enabled may add a second
     # branch. "open": every company. Defaults to pilot, like selling.
     rollout: ${MULTI_BRANCH_ROLLOUT:pilot}
+  areas:
+    # STOCK_AREAS_BUILD_PLAN.md D-E12. "pilot": only companies support has enabled may add areas inside
+    # a branch. "open": every company. Gates adding only, never a stock write.
+    rollout: ${AREAS_ROLLOUT:pilot}
   jwt:
     secret: ${JWT_SECRET}
     access-token-expiration-ms: ${JWT_ACCESS_TOKEN_EXPIRATION_MS:900000}

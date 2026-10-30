@@ -17,6 +17,8 @@ import java.util.UUID;
  *     storekeeper sends to a branch they don't see. Empty for someone who can't send stock.
  * @param openBranches how many open branches the company has, whether or not this person sees them: a
  *     price applies at every one ("at all 5 branches", UX section 5.14).
+ * @param mayAddArea the person may add areas inside a branch now (STOCK_AREAS_PART_1.md): they can
+ *     manage branches, and the areas rollout lets this company.
  */
 public record BranchListResponse(
         List<BranchResponse> branches,
@@ -25,7 +27,8 @@ public record BranchListResponse(
         boolean recordsEverywhere,
         boolean mayAddBranch,
         List<BranchName> sendTo,
-        long openBranches) {
+        long openBranches,
+        boolean mayAddArea) {
 
     public record BranchName(UUID id, String name) {
     }

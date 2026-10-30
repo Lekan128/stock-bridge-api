@@ -344,6 +344,90 @@ public class BranchStockService {
 
     // ------------------------------------------------------------------------------------- areas (V60)
 
+    /**
+     * Each product's figure in each open area that keeps stock, at those of {@code branchIds} that have
+     * more than one area (STOCK_AREAS_PART_1.md) - "Store 30 · Kitchen 6". An area holding none of a
+     * product reads 0. Null when none of the branches has areas, so a response without them is exactly
+     * what it was before areas.
+     */
+    public Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> areaFigures(
+            Collection<UUID> productIds, List<UUID> branchIds) {
+        if (productIds.isEmpty() || branchIds.isEmpty()) {
+            return null;
+        }
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("branchIds", branchIds.toArray(UUID[]::new))
+                .addValue("productIds", productIds.toArray(UUID[]::new));
+        // The areas a figure is shown for, in the branches' order and each branch's own order.
+        List<UUID[]> areas = jdbc.query("""
+                SELECT a.id, a.branch_id FROM areas a
+                WHERE a.branch_id = ANY(:branchIds) AND a.is_active AND a.keeps_stock
+                  AND a.branch_id IN (SELECT branch_id FROM areas WHERE branch_id = ANY(:branchIds)
+                                      GROUP BY branch_id HAVING COUNT(*) > 1)
+                ORDER BY array_position(:branchIds, a.branch_id), a.sort_order, a.created_at
+                """, params, (rs, n) -> new UUID[] {rs.getObject("id", UUID.class), rs.getObject("branch_id", UUID.class)});
+        if (areas.isEmpty()) {
+            return null;
+        }
+        Map<UUID, Map<UUID, Integer>> held = new HashMap<>();
+        jdbc.query("""
+                SELECT s.product_id, s.area_id, s.quantity_on_hand FROM area_stock s
+                WHERE s.product_id = ANY(:productIds) AND s.area_id = ANY(:areaIds)
+                """, params.addValue("areaIds", areas.stream().map(area -> area[0]).toArray(UUID[]::new)),
+                rs -> {
+                    held.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
+                            .put(rs.getObject("area_id", UUID.class), rs.getInt("quantity_on_hand"));
+                });
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> figures = new HashMap<>();
+        for (UUID product : productIds) {
+            Map<UUID, Integer> at = held.getOrDefault(product, Map.of());
+            figures.put(product, areas.stream()
+                    .map(area -> new com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure(
+                            area[0], area[1], at.getOrDefault(area[0], 0)))
+                    .toList());
+        }
+        return figures;
+    }
+
+    /**
+     * The switch (D-E2): {@code branchId}'s figures become its one area's, before a second area exists to
+     * share them. At a one-branch company the product's own figure is the truth (the first mode above),
+     * so that is what is copied; at a multi-branch company, the branch's row. The products are locked
+     * first, in id order like every write, so a write either finished before this (and is copied) or
+     * waits for it (and lands in an area). The caller adds the second area in the same transaction.
+     */
+    public void becomeAreaMode(UUID clientId, UUID branchId, UUID areaId) {
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("clientId", clientId)
+                .addValue("branchId", branchId)
+                .addValue("areaId", areaId);
+        jdbc.queryForList("SELECT id FROM products WHERE client_id = :clientId ORDER BY id FOR UPDATE", params, UUID.class);
+        boolean multiBranch = isMultiBranch(clientId);
+        if (!multiBranch) {
+            // The one branch's row is a copy that can lag the product's figure (Branch Health's mirror
+            // drift). From now on it must equal its areas' sum, so it is made exact here, once.
+            jdbc.update("""
+                    INSERT INTO branch_stock (client_id, branch_id, product_id, quantity_on_hand)
+                    SELECT p.client_id, :branchId, p.id, p.quantity_on_hand FROM products p WHERE p.client_id = :clientId
+                    ON CONFLICT (branch_id, product_id) DO UPDATE SET quantity_on_hand = EXCLUDED.quantity_on_hand
+                    """, params);
+        }
+        String source = multiBranch
+                ? """
+                  SELECT bs.client_id, :areaId, bs.branch_id, bs.product_id, bs.quantity_on_hand
+                  FROM branch_stock bs WHERE bs.branch_id = :branchId AND bs.quantity_on_hand <> 0
+                  """
+                : """
+                  SELECT p.client_id, :areaId, :branchId, p.id, p.quantity_on_hand
+                  FROM products p WHERE p.client_id = :clientId AND p.quantity_on_hand <> 0
+                  """;
+        int copied = jdbc.update("INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand) "
+                + source
+                + " ON CONFLICT (area_id, product_id) DO UPDATE SET quantity_on_hand = EXCLUDED.quantity_on_hand", params);
+        log.info("Branch {} of company {} now has areas: {} product figures copied into its first area",
+                branchId, clientId, copied);
+    }
+
     /** What a write is doing, which decides the area it lands in when it names none (D-E10). */
     public enum AreaUse {
         /** Stock arriving: a delivery, an import, a receipt off a waybill. Goes to the delivery area. */

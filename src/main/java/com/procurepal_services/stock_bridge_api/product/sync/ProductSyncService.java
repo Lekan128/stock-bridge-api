@@ -182,6 +182,10 @@ public class ProductSyncService {
         Map<UUID, List<BranchFigure>> branchStock = userId == null
                 ? null
                 : branchStockService.figures(tenantId, thresholds.keySet(), carried, thresholds, visible.size() > 1);
+        // The same branches' areas, where they have more than one (V60): a one-branch company's too.
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> areaStock = userId == null
+                ? null
+                : branchStockService.areaFigures(thresholds.keySet(), carried);
 
         return products.stream()
                 .map(product -> new ProductSyncRow(
@@ -206,7 +210,8 @@ public class ProductSyncService {
                         StockStatus.of(product.getQuantityOnHand(), product.getLowStockThreshold()),
                         product.getUnitPriceEntered(),
                         product.getUnitPriceEnteredUnit(),
-                        branchStock == null ? null : branchStock.get(product.getId())))
+                        branchStock == null ? null : branchStock.get(product.getId()),
+                        areaStock == null ? null : areaStock.get(product.getId())))
                 .toList();
     }
 

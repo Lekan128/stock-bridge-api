@@ -160,6 +160,14 @@ public class Client {
     private boolean branchesEnabled;
 
     /**
+     * Support has let this company add areas inside its branches while areas are in pilot (V61,
+     * {@code app.areas.rollout}). Read through {@code AreaService.mayAddArea}; a branch that already has
+     * areas keeps them whatever this says.
+     */
+    @Column(name = "areas_enabled", nullable = false)
+    private boolean areasEnabled;
+
+    /**
      * The answer to the first-week question "What happens to your stock?" (V49): USE, SELL or BOTH,
      * null until answered. Kept so it is asked once on any phone. See {@code SellingSettingsService}.
      */

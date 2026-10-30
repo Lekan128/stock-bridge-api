@@ -28,5 +28,7 @@ public record BranchResponse(
         /** V59; absent when not given. */
         String address,
         /** For people who manage branches: who works there (their Works at), active people only. */
-        Long people) {
+        Long people,
+        /** V60: its areas, open ones first; one (its Store) at a branch that hasn't added any. */
+        java.util.List<AreaResponse> areas) {
 }

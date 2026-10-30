@@ -54,6 +54,7 @@ public class SuperAdminClientController {
     private final ClientCatalogResetService clientCatalogResetService;
     private final SellingSettingsService sellingSettingsService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchService branchService;
+    private final com.procurepal_services.stock_bridge_api.branch.AreaService areaService;
 
     @GetMapping
     public Page<SuperAdminClientSummary> list(
@@ -87,6 +88,15 @@ public class SuperAdminClientController {
 
     /** {@code enabled}: whether this company may add branches while they are in pilot. */
     public record BranchesPilotRequest(boolean enabled) {
+    }
+
+    /**
+     * Support letting a company into the areas pilot (STOCK_AREAS_BUILD_PLAN.md D-E12), or out of it.
+     * Only gates adding areas: a branch that has areas keeps them.
+     */
+    @PutMapping("/{id}/areas")
+    public void updateAreas(@PathVariable UUID id, @RequestBody BranchesPilotRequest request) {
+        areaService.setEnabledBySupport(id, request.enabled());
     }
 
     @GetMapping("/{id}")

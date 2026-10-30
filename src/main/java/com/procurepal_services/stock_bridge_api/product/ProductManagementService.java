@@ -174,7 +174,7 @@ public class ProductManagementService {
             Pageable pageable, UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
-            return list(search, active, categoryId, stockStatus, hasSellingPrice, pageable);
+            return withAreaStock(list(search, active, categoryId, stockStatus, hasSellingPrice, pageable), userId);
         }
         List<UUID> scope = branchAccessService.stockScope(userId, branchId);
         Page<Product> page = branchId != null
@@ -194,7 +194,7 @@ public class ProductManagementService {
         page.getContent().forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
                 branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.openViewBranchIds(userId), thresholds);
-        return page.map(product -> {
+        return withAreaStock(page.map(product -> {
             ProductResponse response = ProductResponse.from(
                             product, preferredVendorNames.get(product.getId()), null,
                             hasMultiplePacks.getOrDefault(product.getId(), false))
@@ -213,7 +213,22 @@ public class ProductManagementService {
                 }
             }
             return response;
-        });
+        }), userId);
+    }
+
+    /**
+     * Each product of {@code page} with its figure in each area (V60, STOCK_AREAS_PART_1.md) of the
+     * branches {@code userId} sees that have more than one. The page as it is when none has.
+     */
+    private Page<ProductResponse> withAreaStock(Page<ProductResponse> page, UUID userId) {
+        if (userId == null || page.isEmpty()) {
+            return page;
+        }
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> figures =
+                branchStockService.areaFigures(
+                        page.getContent().stream().map(ProductResponse::id).toList(),
+                        branchAccessService.openViewBranchIds(userId));
+        return figures == null ? page : page.map(response -> response.withAreaStock(figures.get(response.id())));
     }
 
     @Transactional(readOnly = true)
@@ -257,6 +272,11 @@ public class ProductManagementService {
                         expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id));
         if (userId == null) {
             return response;
+        }
+        java.util.Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> areas =
+                branchStockService.areaFigures(List.of(id), branchAccessService.openViewBranchIds(userId));
+        if (areas != null) {
+            response = response.withAreaStock(areas.get(id));
         }
         java.util.Map<UUID, Integer> threshold = new java.util.HashMap<>();
         threshold.put(id, product.getLowStockThreshold());

@@ -49,6 +49,7 @@ public class BranchService {
     private final ClientRepository clientRepository;
     private final BranchAccessService branchAccessService;
     private final BranchStockService branchStockService;
+    private final AreaService areaService;
     private final NamedParameterJdbcTemplate jdbc;
 
     /** {@code pilot} until multiple branches launch; see {@link #mayAddBranch}. */
@@ -63,13 +64,16 @@ public class BranchService {
         boolean manages = hasPermission(userId, "MANAGE_BRANCHES");
         Map<UUID, Totals> totals = manages ? totals(clientId) : Map.of();
         BranchAccessService.Grants grants = branchAccessService.grants(userId);
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse>> areas =
+                areaService.areasByBranch(clientId, manages);
 
         List<BranchResponse> branches = branchRepository.findAllByClientId(clientId).stream()
                 .filter(branch -> visible.contains(branch.getId()))
                 .sorted(Comparator.comparing((Branch branch) -> !branch.isDefaultBranch())
                         .thenComparing(branch -> !branch.isActive())
                         .thenComparing(Branch::getName, String.CASE_INSENSITIVE_ORDER))
-                .map(branch -> toResponse(branch, writable.contains(branch.getId()), totals.get(branch.getId()), manages))
+                .map(branch -> toResponse(branch, writable.contains(branch.getId()), totals.get(branch.getId()), manages,
+                        areas.getOrDefault(branch.getId(), List.of())))
                 .toList();
         boolean multiBranch = branchStockService.isMultiBranch(clientId);
         List<BranchListResponse.BranchName> sendTo = !multiBranch || !hasPermission(userId, "SEND_STOCK") ? List.of()
@@ -83,7 +87,8 @@ public class BranchService {
                 grants.recordsEverywhere(),
                 manages && mayAddBranch(clientId),
                 sendTo,
-                branchRepository.countByClientIdAndActiveTrue(clientId));
+                branchRepository.countByClientIdAndActiveTrue(clientId),
+                manages && areaService.mayAddArea(clientId));
     }
 
     /** {@link BranchController#setThresholds}: a branch the person sees, of a multi-branch company. */
@@ -130,7 +135,7 @@ public class BranchService {
                 .active(true)
                 .build());
         log.info("Branch added: {} '{}' for company {}", branch.getId(), name, clientId);
-        return toResponse(branch, true, null, true);
+        return toResponse(branch, true, null, true, null);
     }
 
     @Transactional
@@ -148,7 +153,7 @@ public class BranchService {
         if (request.address() != null) {
             branch.setAddress(blankToNull(request.address()));
         }
-        return toResponse(branch, true, null, true);
+        return toResponse(branch, true, null, true, null);
     }
 
     /**
@@ -169,7 +174,7 @@ public class BranchService {
         jdbc.update("UPDATE branches SET is_default = TRUE WHERE id = :branchId", params);
         // The entity loaded above predates both statements; say what is now true.
         branch.setDefaultBranch(true);
-        return toResponse(branch, true, null, true);
+        return toResponse(branch, true, null, true, null);
     }
 
     /**
@@ -185,7 +190,7 @@ public class BranchService {
                     branch.getName() + " is the main branch. Make another branch the main branch first.");
         }
         if (!branch.isActive()) {
-            return toResponse(branch, false, null, true);
+            return toResponse(branch, false, null, true, null);
         }
         MapSqlParameterSource params = new MapSqlParameterSource("branchId", branchId);
         Long stocked = jdbc.queryForObject(
@@ -223,7 +228,7 @@ public class BranchService {
         branch.setActive(false);
         branch.setClosedAt(OffsetDateTime.now());
         log.info("Branch closed: {} '{}' for company {}", branchId, branch.getName(), clientId);
-        return toResponse(branch, false, null, true);
+        return toResponse(branch, false, null, true, null);
     }
 
     @Transactional
@@ -232,7 +237,7 @@ public class BranchService {
         Branch branch = requireBranch(branchId, clientId);
         branch.setActive(true);
         branch.setClosedAt(null);
-        return toResponse(branch, true, null, true);
+        return toResponse(branch, true, null, true, null);
     }
 
     /**
@@ -355,7 +360,10 @@ public class BranchService {
         return totals;
     }
 
-    private static BranchResponse toResponse(Branch branch, boolean canRecord, Totals totals, boolean manages) {
+    /** {@code areas}: the list has them; the answer to a change leaves them out, and the app reads the list again. */
+    private static BranchResponse toResponse(
+            Branch branch, boolean canRecord, Totals totals, boolean manages,
+            List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse> areas) {
         Totals shown = manages ? (totals == null ? new Totals(0, BigDecimal.ZERO, 0) : totals) : null;
         return new BranchResponse(
                 branch.getId(),
@@ -368,7 +376,8 @@ public class BranchService {
                 shown == null ? null : shown.productsInStock(),
                 shown == null ? null : shown.stockWorth(),
                 branch.getAddress(),
-                shown == null ? null : shown.people());
+                shown == null ? null : shown.people(),
+                areas);
     }
 
     private boolean hasPermission(UUID userId, String code) {
