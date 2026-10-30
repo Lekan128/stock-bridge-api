@@ -121,6 +121,7 @@ public class StockManagementService {
      * class for why a one-branch company's figure is still {@code Product.quantityOnHand}.
      */
     private final BranchStockService branchStockService;
+    private final MoveRows moveRows;
 
     /**
      * Records a delivery. Weighted-average cost is recalculated unconditionally (guarding the
@@ -1004,6 +1005,7 @@ public class StockManagementService {
             // is received (TransferService.cancel), so both branches' figures move together.
             case TRANSFER_OUT, TRANSFER_IN -> throw new StockWriteNotUndoableException(
                     "This is part of a transfer. Cancel the transfer instead, before it is received.");
+            case MOVE -> throw new IllegalStateException("a move is not a stock movement");
         };
         stockWritePermissionGuard.require(actingUserId, authority);
 
@@ -1036,7 +1038,7 @@ public class StockManagementService {
             case OUT -> voidStockOut(product, movement, tenantId);
             case ADJUSTMENT -> branchStockService.apply(
                     product, movement.getBranchId(), branchStockService.areaOf(movement), -movement.getQuantity());
-            case TRANSFER_OUT, TRANSFER_IN -> throw new IllegalStateException("refused above");
+            case TRANSFER_OUT, TRANSFER_IN, MOVE -> throw new IllegalStateException("refused above");
         }
         stockMovementRepository.delete(movement);
         stockMovementRepository.flush();
@@ -1473,7 +1475,7 @@ public class StockManagementService {
         if (branchIds != null) {
             spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
         }
-        return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        return withMoves(spec, pageable, tenantId, branchIds, productId, null, null);
     }
 
     /**
@@ -1527,12 +1529,88 @@ public class StockManagementService {
             boolean adjustments,
             java.util.Collection<UUID> branchIds,
             Pageable pageable) {
+        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments, branchIds,
+                false, pageable);
+    }
+
+    /**
+     * @param includeMoves moves between areas among the rows (V63), when nothing filters them out: no type,
+     *     supplier or reason chosen. The list asks for them; the spreadsheet, a ledger, does not.
+     */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> allMovements(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds,
+            boolean includeMoves,
+            Pageable pageable) {
+        UUID tenantId = requireTenantId();
         org.springframework.data.jpa.domain.Specification<StockMovement> spec = StockMovementSpecifications.forTenant(
-                requireTenantId(), productId, companyVendorId, from, to, movementType, outReason, noReason, adjustments);
+                tenantId, productId, companyVendorId, from, to, movementType, outReason, noReason, adjustments);
         if (branchIds != null) {
             spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
         }
-        return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        boolean movesFit = includeMoves && movementType == null && companyVendorId == null && outReason == null
+                && !noReason && !adjustments;
+        if (!movesFit) {
+            return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        }
+        return withMoves(spec, pageable, tenantId, branchIds, productId, from, to);
+    }
+
+    /** Past this many rows from the top, a page is the ledger alone - nobody pages that far back. */
+    private static final int MOVES_MERGE_DEPTH = 5_000;
+
+    /**
+     * The ledger's page with the moves between areas (V63) in among it, newest first - two lists, each
+     * sorted the same way, merged. Both are read from the top down to the end of the page asked for, so a
+     * deep page costs more; past {@link #MOVES_MERGE_DEPTH}, or sorted any other way, it is the ledger alone.
+     */
+    private Page<StockMovementResponse> withMoves(
+            org.springframework.data.jpa.domain.Specification<StockMovement> spec,
+            Pageable pageable,
+            UUID tenantId,
+            java.util.Collection<UUID> branchIds,
+            UUID productId,
+            OffsetDateTime from,
+            OffsetDateTime to) {
+        List<Sort.Order> orders = pageable.getSort().toList();
+        String sortedBy = orders.size() == 1 && orders.getFirst().isDescending() ? orders.getFirst().getProperty() : "";
+        boolean byCreatedAt = "createdAt".equals(sortedBy);
+        long depth = pageable.isPaged() ? pageable.getOffset() + pageable.getPageSize() : Long.MAX_VALUE;
+        if (!(byCreatedAt || "occurredAt".equals(sortedBy)) || depth > MOVES_MERGE_DEPTH) {
+            return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        }
+        MoveRows.Window moves = moveRows.newest(tenantId, branchIds, productId, from, to, byCreatedAt, (int) depth);
+        if (moves.total() == 0) {
+            return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        }
+        Page<StockMovementResponse> ledger = stockMovementRepository
+                .findAll(spec, org.springframework.data.domain.PageRequest.of(0, (int) depth, pageable.getSort()))
+                .map(StockMovementResponse::from);
+        java.util.function.Function<StockMovementResponse, OffsetDateTime> key =
+                byCreatedAt ? StockMovementResponse::createdAt : StockMovementResponse::occurredAt;
+        List<StockMovementResponse> merged = new ArrayList<>(ledger.getNumberOfElements() + moves.rows().size());
+        int a = 0;
+        int b = 0;
+        List<StockMovementResponse> left = ledger.getContent();
+        List<StockMovementResponse> right = moves.rows();
+        while (a < left.size() || b < right.size()) {
+            // Newest first; on the same moment the ledger's row comes first.
+            boolean takeLeft = b >= right.size()
+                    || (a < left.size() && !key.apply(left.get(a)).isBefore(key.apply(right.get(b))));
+            merged.add(takeLeft ? left.get(a++) : right.get(b++));
+        }
+        int start = (int) Math.min(pageable.getOffset(), merged.size());
+        int end = (int) Math.min(depth, merged.size());
+        return new org.springframework.data.domain.PageImpl<>(
+                merged.subList(start, end), pageable, ledger.getTotalElements() + moves.total());
     }
 
     /**

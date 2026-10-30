@@ -263,7 +263,7 @@ public class StockController {
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return stockManagementService.allMovements(
                 from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments,
-                branchScope(branchId, principal), pageable);
+                branchScope(branchId, principal), true, pageable);
     }
 
     /** The same rows as a spreadsheet, newest first, with a Branch column at a multi-branch company (Phase 3). */

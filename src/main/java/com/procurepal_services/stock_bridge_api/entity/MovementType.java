@@ -15,5 +15,11 @@ public enum MovementType {
     /** Stock leaving a branch on a waybill (V53). Draws on that branch's lots, like a stock-out. */
     TRANSFER_OUT,
     /** Stock arriving at a branch off a waybill (V53). A lot of its own, carrying its delivery's cost. */
-    TRANSFER_IN
+    TRANSFER_IN,
+    /**
+     * Never stored: a move between two areas of a branch (V63, area_moves) as the movements list and a
+     * product's history show it, so a move reads among the deliveries and issues. It changes no branch
+     * figure, so no total counts it.
+     */
+    MOVE
 }

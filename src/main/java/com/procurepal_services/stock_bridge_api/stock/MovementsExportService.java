@@ -90,6 +90,8 @@ public class MovementsExportService {
             case OUT, TRANSFER_OUT -> -Math.abs(movement.quantity());
             case IN, TRANSFER_IN -> Math.abs(movement.quantity());
             case ADJUSTMENT -> movement.quantity();
+            // The export lists the ledger only; a move changes no branch figure.
+            case MOVE -> 0;
         };
     }
 

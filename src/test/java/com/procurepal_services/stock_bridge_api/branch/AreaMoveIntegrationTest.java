@@ -266,7 +266,48 @@ class AreaMoveIntegrationTest {
         assertThat(((Map<?, ?>) content.getFirst()).get("movedByName")).isNotNull();
     }
 
+    @Test
+    void movesReadAmongTheStockMovementsAndTheProductsHistory() {
+        Session s = session("Move Rows");
+        stockIn(s, 10, "100");
+        Areas a = areas(s, "Kitchen", true);
+        UUID housekeeping = addArea(s, "Housekeeping", false);
+        AreaMoveResponse moved = move(s, a.store(), a.other(), 4);
+        move(s, a.store(), housekeeping, 1);
+        AreaMoveResponse undone = move(s, a.store(), a.other(), 2);
+        post(s, "/api/area-moves/" + undone.id() + "/undo", Map.of(), AreaMoveResponse.class);
+
+        // Newest first: the give is a Used stock-out (not a move row), then the move, then the delivery;
+        // the undone move is not a row.
+        List<Object> list = rows(s, "/api/stock/movements?productId=" + s.productId());
+        assertThat(list).extracting(row -> (Object) ((Map<?, ?>) row).get("movementType")).containsExactly("OUT", "MOVE", "IN");
+        Map<?, ?> row = (Map<?, ?>) list.get(1);
+        assertThat(row.get("areaId")).isEqualTo(a.store().toString());
+        assertThat(row.get("toAreaId")).isEqualTo(a.other().toString());
+        assertThat(row.get("moveId")).isEqualTo(moved.id().toString());
+        assertThat(row.get("areaName")).isEqualTo("Store");
+        assertThat(row.get("toAreaName")).isEqualTo("Kitchen");
+        assertThat(row.get("quantity")).isEqualTo(4);
+        assertThat(row.get("createdByName")).isNotNull();
+        assertThat(row.get("lineValue")).isNull();
+
+        assertThat(rows(s, "/api/products/" + s.productId() + "/stock/history"))
+                .extracting(r -> (Object) ((Map<?, ?>) r).get("movementType")).containsExactly("OUT", "MOVE", "IN");
+        // A type, supplier or reason chosen leaves moves out; pages split the rows merged.
+        assertThat(rows(s, "/api/stock/movements?movementType=IN&productId=" + s.productId())).hasSize(1);
+        assertThat(rows(s, "/api/stock/movements?size=2&page=1&productId=" + s.productId()))
+                .extracting(r -> (Object) ((Map<?, ?>) r).get("movementType")).containsExactly("IN");
+        Map<?, ?> page = restTemplate.exchange("/api/stock/movements?size=2&productId=" + s.productId(), HttpMethod.GET,
+                new HttpEntity<>(auth(s)), Map.class).getBody();
+        assertThat(((Number) page.get("totalElements")).intValue()).isEqualTo(3);
+    }
+
     // ------------------------------------------------------------------------------------ helpers
+
+    private List<Object> rows(Session s, String path) {
+        Map<?, ?> page = restTemplate.exchange(path, HttpMethod.GET, new HttpEntity<>(auth(s)), Map.class).getBody();
+        return List.copyOf((List<?>) page.get("content"));
+    }
 
     private record Session(TenantLoginResponse login, UUID productId) {
     }
