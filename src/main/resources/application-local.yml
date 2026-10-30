@@ -42,8 +42,6 @@ app:
     rollout: ${SELLING_ROLLOUT:open}
   branches:
     rollout: ${MULTI_BRANCH_ROLLOUT:open}
-  areas:
-    rollout: ${AREAS_ROLLOUT:open}
   jwt:
     # Dev-only placeholder, >=32 bytes (HS256 minimum). Never used outside local/docker.
     secret: ${JWT_SECRET:local-dev-only-jwt-signing-secret-do-not-use-in-prod}

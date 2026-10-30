@@ -43,8 +43,12 @@ public class AreaService {
     /** More than this many areas in one branch is a warehouse's bins, which areas are not (rule 2). */
     static final int MAX_AREAS_PER_BRANCH = 20;
 
-    /** {@code pilot} until areas launch; see {@link #mayAddArea}. */
-    @Value("${app.areas.rollout:pilot}")
+    /**
+     * {@code open} (the default): every company may add areas - they are free, so there is no one to
+     * approve (owner, 2026-10-30). {@code off}: nobody may, the server-wide switch for hiding the feature
+     * without a deploy if something goes wrong. See {@link #mayAddArea}.
+     */
+    @Value("${app.areas.rollout:open}")
     private String rollout;
 
     private final NamedParameterJdbcTemplate jdbc;
@@ -90,17 +94,17 @@ public class AreaService {
     }
 
     /**
-     * Whether this company may add areas now: launched for everyone, or enabled for it by support in the
-     * pilot. Never a marketplace seller: its dispatch and availability read one figure, as with branches
-     * (D-U7). Only gates adding - a branch that already has areas keeps them.
+     * Whether this company may add areas now: every company, unless the server-wide switch is off. Never a
+     * marketplace seller yet: its dispatch and availability read one figure, as with branches (D-U7). Only
+     * gates adding - a branch that already has areas keeps them.
      */
     @Transactional(readOnly = true)
     public boolean mayAddArea(UUID clientId) {
-        Client client = clientRepository.findById(clientId).orElse(null);
-        if (client == null || client.canSell()) {
+        if ("off".equalsIgnoreCase(rollout)) {
             return false;
         }
-        return "open".equalsIgnoreCase(rollout) || client.isAreasEnabled();
+        Client client = clientRepository.findById(clientId).orElse(null);
+        return client != null && !client.canSell();
     }
 
     // --------------------------------------------------------------------------------------- changing
@@ -119,7 +123,7 @@ public class AreaService {
         }
         if (!mayAddArea(clientId)) {
             throw new BranchChangeRefusedException(
-                    "Areas aren't switched on for your company yet. Talk to us on WhatsApp to join the pilot.");
+                    "Adding areas isn't available for your company right now. Talk to us on WhatsApp.");
         }
 
         List<AreaRow> existing = rows("WHERE a.branch_id = :branchId", new MapSqlParameterSource("branchId", branchId));
@@ -237,13 +241,6 @@ public class AreaService {
         jdbc.update("UPDATE areas SET is_active = TRUE, closed_at = NULL WHERE id = :id",
                 new MapSqlParameterSource("id", areaId));
         return toResponse(requireArea(areaId, clientId), null);
-    }
-
-    /** Support letting a company into the areas pilot, or taking it out (its branches keep their areas). */
-    public void setEnabledBySupport(UUID clientId, boolean enabled) {
-        Client client = clientRepository.findById(clientId).orElseThrow(BranchNotFoundException::new);
-        client.setAreasEnabled(enabled);
-        log.info("Areas {} for company {} by support", enabled ? "enabled" : "disabled", clientId);
     }
 
     // ---------------------------------------------------------------------------------------- helpers

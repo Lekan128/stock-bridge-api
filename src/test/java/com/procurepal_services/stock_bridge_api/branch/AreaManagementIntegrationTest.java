@@ -205,28 +205,36 @@ class AreaManagementIntegrationTest {
 
     // ---------------------------------------------------------------------------- who may, and when
 
+    /** Areas are free: every company may add them, with no one to approve (owner, 2026-10-30). */
     @Test
-    void inThePilotOnlyACompanySupportEnabledMayAddAreas() {
-        Object rollout = ReflectionTestUtils.getField(areaService, "rollout");
-        ReflectionTestUtils.setField(areaService, "rollout", "pilot");
-        try {
-            Session s = session("Areas Pilot");
-            UUID main = mainBranch(s);
-            stockIn(s, body(3));
+    void everyCompanyMayAddAreasUnlessTheServerWideSwitchIsOff() {
+        Session s = session("Areas Open");
+        UUID main = mainBranch(s);
+        assertThat(branches(s).mayAddArea()).isTrue();
 
+        Object rollout = ReflectionTestUtils.getField(areaService, "rollout");
+        ReflectionTestUtils.setField(areaService, "rollout", "off");
+        try {
             assertThat(branches(s).mayAddArea()).isFalse();
             ResponseEntity<String> refused = addAreasRaw(s, main, newArea("Kitchen", true));
             assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-            assertThat(refused.getBody()).contains("Areas aren't switched on for your company yet");
+            assertThat(refused.getBody()).contains("Adding areas isn't available for your company right now.");
             assertThat(branches(s).branches().getFirst().areas()).as("not left half-switched").hasSize(1);
-
-            jdbc.update("UPDATE clients SET areas_enabled = TRUE WHERE slug = :slug",
-                    new MapSqlParameterSource("slug", s.login().user().clientIdentifier()));
-            assertThat(branches(s).mayAddArea()).isTrue();
-            assertThat(addAreasRaw(s, main, newArea("Kitchen", true)).getStatusCode()).isEqualTo(HttpStatus.CREATED);
         } finally {
             ReflectionTestUtils.setField(areaService, "rollout", rollout);
         }
+        assertThat(addAreasRaw(s, main, newArea("Kitchen", true)).getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
+    /** A marketplace seller's dispatch reads one figure (D-U7), so it can't split it into areas yet. */
+    @Test
+    void aMarketplaceSellerCantAddAreasYet() {
+        Session s = session("Areas Seller");
+        jdbc.update("UPDATE clients SET client_type = 'VENDOR' WHERE slug = :slug",
+                new MapSqlParameterSource("slug", s.login().user().clientIdentifier()));
+
+        assertThat(branches(s).mayAddArea()).isFalse();
+        assertThat(addAreasRaw(s, mainBranch(s), newArea("Kitchen", true)).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
 
     @Test
