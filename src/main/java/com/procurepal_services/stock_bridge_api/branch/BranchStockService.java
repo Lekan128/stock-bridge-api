@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.branch;
 
 import com.procurepal_services.stock_bridge_api.client.ClientProvisioning;
 import com.procurepal_services.stock_bridge_api.entity.Product;
+import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure;
 import java.util.ArrayList;
@@ -35,6 +36,14 @@ import org.springframework.stereotype.Service;
  * </ul>
  * A company counts as multi-branch once it has ever had two branches, closed ones included: a
  * closed branch holds nothing, but its history is real, so the rows stay the truth.
+ *
+ * <h2>Areas inside a branch (V60, STOCK_AREAS_BUILD_PLAN.md D-E2)</h2>
+ * The same two modes again, one level down and decided per branch. A branch with <b>one area</b>
+ * (every branch until areas can be added) keeps its {@code branch_stock} row as its truth and writes
+ * nothing to {@code area_stock}. A branch that has <b>ever had two</b> keeps each area's figure in
+ * {@code area_stock}, and its {@code branch_stock} row - moved by the same delta in the same
+ * {@link #apply} - is their sum. Lots, FIFO and costs stay per branch (D-E4): an area is a quantity,
+ * not a ledger of its own.
  *
  * <h2>Locking</h2>
  * Callers hold the product row's lock (D-B2), as every stock write already did; that is what
@@ -122,7 +131,22 @@ public class BranchStockService {
                 Boolean.class));
     }
 
-    /** How many of {@code product} the branch holds now: the figure a stock-out or count is judged against. */
+    /**
+     * How many of {@code product} the area holds now: the figure a stock-out or count is judged against.
+     * At a branch with one area, the branch's own figure, exactly as before areas.
+     */
+    public int quantityAt(Product product, UUID branchId, UUID areaId) {
+        if (!isAreaMode(branchId)) {
+            return quantityAt(product, branchId);
+        }
+        List<Integer> found = jdbc.queryForList(
+                "SELECT quantity_on_hand FROM area_stock WHERE area_id = :areaId AND product_id = :productId",
+                new MapSqlParameterSource().addValue("areaId", areaId).addValue("productId", product.getId()),
+                Integer.class);
+        return found.isEmpty() ? 0 : found.getFirst();
+    }
+
+    /** How many of {@code product} the branch holds now, whatever area it is in. */
     public int quantityAt(Product product, UUID branchId) {
         if (!isMultiBranch(product.getClientId())) {
             return product.getQuantityOnHand();
@@ -135,10 +159,14 @@ public class BranchStockService {
     }
 
     /**
-     * Moves {@code product}'s figure at {@code branchId} by {@code delta} (signed), and the company
-     * total with it. The caller holds the product's lock and has decided the move is allowed.
+     * Moves {@code product}'s figure in {@code branchId}'s {@code areaId} by {@code delta} (signed), and
+     * the branch's and the company's totals with it. The caller holds the product's lock and has decided
+     * the move is allowed. The area is required even at a branch with one, so that no caller can forget
+     * it on the day a second appears: {@link #resolveAreaForWrite} for a new write, {@link #areaOf} for
+     * one being reversed.
      */
-    public void apply(Product product, UUID branchId, int delta) {
+    public void apply(Product product, UUID branchId, UUID areaId, int delta) {
+        java.util.Objects.requireNonNull(areaId, "every stock figure is in an area (V60)");
         product.setQuantityOnHand(product.getQuantityOnHand() + delta);
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("clientId", product.getClientId())
@@ -160,6 +188,14 @@ public class BranchStockService {
                     ON CONFLICT (branch_id, product_id)
                     DO UPDATE SET quantity_on_hand = :total
                     """, params);
+        }
+        if (isAreaMode(branchId)) {
+            jdbc.update("""
+                    INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand)
+                    VALUES (:clientId, :areaId, :branchId, :productId, :delta)
+                    ON CONFLICT (area_id, product_id)
+                    DO UPDATE SET quantity_on_hand = area_stock.quantity_on_hand + :delta
+                    """, params.addValue("areaId", areaId));
         }
     }
 
@@ -304,6 +340,129 @@ public class BranchStockService {
                         .addValue("branchId", branchId)
                         .addValue("productIds", productIds)
                         .addValue("threshold", threshold));
+    }
+
+    // ------------------------------------------------------------------------------------- areas (V60)
+
+    /** What a write is doing, which decides the area it lands in when it names none (D-E10). */
+    public enum AreaUse {
+        /** Stock arriving: a delivery, an import, a receipt off a waybill. Goes to the delivery area. */
+        RECEIVE,
+        /** Stock the system sends out of the branch: a waybill, a marketplace dispatch. From the delivery area. */
+        DISPATCH,
+        /** A person's stock-out, sale, count or adjustment: they must say where, once there is a choice. */
+        TAKE
+    }
+
+    /** One of a branch's areas, as a write needs to know it. */
+    private record AreaRow(UUID id, String name, boolean active, boolean keepsStock, boolean delivery, boolean original) {
+    }
+
+    private static final String AREAS_OF_BRANCH = """
+            SELECT id, name, is_active, keeps_stock, is_delivery, is_original FROM areas
+            WHERE branch_id = :branchId ORDER BY sort_order, created_at
+            """;
+
+    /**
+     * Whether {@code branchId}'s areas hold its figures: it has ever had two, closed ones included, for
+     * the reason the class javadoc gives for closed branches.
+     */
+    public boolean isAreaMode(UUID branchId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT COUNT(*) > 1 FROM areas WHERE branch_id = :branchId",
+                new MapSqlParameterSource("branchId", branchId), Boolean.class));
+    }
+
+    /**
+     * The area a write at {@code branchId} is recorded in (D-E10). A named area must be this branch's,
+     * open, and one that keeps stock. None named: the branch's only area that keeps stock; else the
+     * delivery area for stock arriving or sent away by the system; else refused - a person's stock-out
+     * at a branch with a Store and a Kitchen is never recorded at a guess, for the reason {@link
+     * BranchRequiredException} gives.
+     */
+    public UUID resolveAreaForWrite(UUID branchId, UUID requestedAreaId, AreaUse use) {
+        List<AreaRow> areas = areasOf(branchId);
+        if (requestedAreaId != null) {
+            AreaRow area = areas.stream()
+                    .filter(row -> row.id().equals(requestedAreaId))
+                    .findFirst()
+                    .orElseThrow(AreaNotFoundException::new);
+            if (!area.active()) {
+                throw new AreaClosedException(area.name());
+            }
+            if (!area.keepsStock()) {
+                throw new AreaKeepsNoStockException(area.name());
+            }
+            return area.id();
+        }
+        List<AreaRow> stocking = areas.stream().filter(row -> row.active() && row.keepsStock()).toList();
+        if (stocking.size() == 1) {
+            return stocking.getFirst().id();
+        }
+        if (use == AreaUse.TAKE) {
+            throw new AreaRequiredException();
+        }
+        return areas.stream()
+                .filter(AreaRow::delivery)
+                .map(AreaRow::id)
+                .findFirst()
+                .orElseThrow(AreaRequiredException::new);
+    }
+
+    /**
+     * The area {@code movement} happened in: its own, or - for a row from before V60 - its branch's
+     * original area, which holds that history (D-E3). Where a reversal puts the stock back.
+     */
+    public UUID areaOf(StockMovement movement) {
+        return movement.getAreaId() != null ? movement.getAreaId() : originalAreaId(movement.getBranchId());
+    }
+
+    /** The area holding {@code branchId}'s history from before it had areas. */
+    public UUID originalAreaId(UUID branchId) {
+        return areasOf(branchId).stream()
+                .filter(AreaRow::original)
+                .map(AreaRow::id)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Branch " + branchId + " has no original area"));
+    }
+
+    /** Where {@code branchId}'s deliveries arrive, and stock sent to another branch leaves from. */
+    public UUID deliveryAreaId(UUID branchId) {
+        return areasOf(branchId).stream()
+                .filter(AreaRow::delivery)
+                .map(AreaRow::id)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Branch " + branchId + " has no delivery area"));
+    }
+
+    /**
+     * {@code branchId}'s areas. V60's trigger gives every branch its Store, so a branch without one was
+     * made by something that went around the database - a repair gives it the Store it should have had,
+     * logged, like {@link #createMissingDefaultBranch}.
+     */
+    private List<AreaRow> areasOf(UUID branchId) {
+        MapSqlParameterSource params = new MapSqlParameterSource("branchId", branchId);
+        List<AreaRow> areas = jdbc.query(AREAS_OF_BRANCH, params, BranchStockService::areaRow);
+        if (!areas.isEmpty()) {
+            return areas;
+        }
+        log.warn("Branch {} had no area; creating its Store", branchId);
+        jdbc.update("""
+                INSERT INTO areas (client_id, branch_id, name, is_delivery, is_original)
+                SELECT client_id, id, 'Store', TRUE, TRUE FROM branches WHERE id = :branchId
+                ON CONFLICT DO NOTHING
+                """, params);
+        return jdbc.query(AREAS_OF_BRANCH, params, BranchStockService::areaRow);
+    }
+
+    private static AreaRow areaRow(java.sql.ResultSet rs, int rowNum) throws java.sql.SQLException {
+        return new AreaRow(
+                rs.getObject("id", UUID.class),
+                rs.getString("name"),
+                rs.getBoolean("is_active"),
+                rs.getBoolean("keeps_stock"),
+                rs.getBoolean("is_delivery"),
+                rs.getBoolean("is_original"));
     }
 
     private List<UUID> openBranchIds(UUID clientId) {

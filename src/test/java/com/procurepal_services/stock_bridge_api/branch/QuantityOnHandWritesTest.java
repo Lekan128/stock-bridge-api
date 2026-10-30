@@ -41,6 +41,33 @@ class QuantityOnHandWritesTest {
                 .isEmpty();
     }
 
+    /** The same rule one level down (V60): an area's figure moves with its branch's, in one place. */
+    @Test
+    void onlyBranchStockServiceWritesAnAreasFigure() throws IOException {
+        List<String> offenders;
+        try (Stream<Path> files = Files.walk(SOURCES)) {
+            offenders = files
+                    .filter(file -> file.toString().endsWith(".java"))
+                    .filter(file -> !file.equals(ALLOWED))
+                    .filter(QuantityOnHandWritesTest::writesAreaStock)
+                    .map(Path::toString)
+                    .toList();
+        }
+
+        assertThat(offenders)
+                .as("move an area's stock with BranchStockService.apply, never SQL of your own")
+                .isEmpty();
+    }
+
+    private static boolean writesAreaStock(Path file) {
+        try {
+            String source = Files.readString(file);
+            return source.contains("INSERT INTO area_stock") || source.contains("UPDATE area_stock");
+        } catch (IOException e) {
+            throw new IllegalStateException("Could not read " + file, e);
+        }
+    }
+
     private static boolean setsQuantityOnHand(Path file) {
         try {
             return Files.readString(file).contains("setQuantityOnHand(");

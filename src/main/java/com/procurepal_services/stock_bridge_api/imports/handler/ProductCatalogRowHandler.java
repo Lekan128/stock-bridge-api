@@ -1905,7 +1905,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             if (product == null) {
                 continue;
             }
-            branchStockService.apply(product, movement.getBranchId(), -movement.getQuantity());
+            branchStockService.apply(
+                    product, movement.getBranchId(), branchStockService.areaOf(movement), -movement.getQuantity());
             stockMovementRepository.save(StockMovement.builder()
                     .product(product)
                     .branchId(movement.getBranchId())

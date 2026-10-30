@@ -1,5 +1,9 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
+import com.procurepal_services.stock_bridge_api.branch.AreaClosedException;
+import com.procurepal_services.stock_bridge_api.branch.AreaKeepsNoStockException;
+import com.procurepal_services.stock_bridge_api.branch.AreaNotFoundException;
+import com.procurepal_services.stock_bridge_api.branch.AreaRequiredException;
 import com.procurepal_services.stock_bridge_api.branch.BranchClosedException;
 import com.procurepal_services.stock_bridge_api.branch.BranchNotAllowedException;
 import com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException;
@@ -24,20 +28,23 @@ public class StockManagementExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
     }
 
-    @ExceptionHandler(BranchNotFoundException.class)
-    public ResponseEntity<ApiError> handleBranchNotFound(BranchNotFoundException ex) {
+    @ExceptionHandler({BranchNotFoundException.class, AreaNotFoundException.class})
+    public ResponseEntity<ApiError> handleBranchNotFound(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
     }
 
-    /** 409, like {@link InsufficientStockException}: the same write was fine before the branch closed. */
-    @ExceptionHandler(BranchClosedException.class)
-    public ResponseEntity<ApiError> handleBranchClosed(BranchClosedException ex) {
+    /**
+     * 409, like {@link InsufficientStockException}: the same write was fine before the branch or area
+     * closed. An area that uses what it's given is the same answer: nothing there to record against.
+     */
+    @ExceptionHandler({BranchClosedException.class, AreaClosedException.class, AreaKeepsNoStockException.class})
+    public ResponseEntity<ApiError> handleBranchClosed(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
 
-    /** 400: the request is missing the branch it needs (D-B10). The phone shows it as "needs you". */
-    @ExceptionHandler(BranchRequiredException.class)
-    public ResponseEntity<ApiError> handleBranchRequired(BranchRequiredException ex) {
+    /** 400: the request is missing the branch or area it needs (D-B10, D-E10). The phone shows it as "needs you". */
+    @ExceptionHandler({BranchRequiredException.class, AreaRequiredException.class})
+    public ResponseEntity<ApiError> handleBranchRequired(RuntimeException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 

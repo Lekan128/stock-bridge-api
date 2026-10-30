@@ -49,6 +49,40 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("productId") UUID productId, @Param("branchId") UUID branchId, @Param("after") OffsetDateTime after);
 
     /**
+     * {@link #existsCountAfter} for one area of a branch that has several (V60): a count of the Kitchen
+     * says nothing about the Store. A row with no area is the branch's original area's (D-E3).
+     */
+    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId "
+            + "AND COALESCE(m.areaId, :originalAreaId) = :areaId AND m.count = true AND m.occurredAt > :after")
+    boolean existsCountAfterInArea(
+            @Param("productId") UUID productId,
+            @Param("branchId") UUID branchId,
+            @Param("areaId") UUID areaId,
+            @Param("originalAreaId") UUID originalAreaId,
+            @Param("after") OffsetDateTime after);
+
+    /**
+     * {@link #netChangeAfter} for one area of a branch that has several (V60), every type signed on
+     * purpose exactly as there. Moves between areas (Part 2) live outside this table and are added by
+     * the caller.
+     */
+    @Query("SELECT COALESCE(SUM(CASE "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT THEN -m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.ADJUSTMENT THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_OUT THEN -m.quantity "
+            + "ELSE 0 END), 0) "
+            + "FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId "
+            + "AND COALESCE(m.areaId, :originalAreaId) = :areaId AND m.occurredAt > :after")
+    long netChangeAfterInArea(
+            @Param("productId") UUID productId,
+            @Param("branchId") UUID branchId,
+            @Param("areaId") UUID areaId,
+            @Param("originalAreaId") UUID originalAreaId,
+            @Param("after") OffsetDateTime after);
+
+    /**
      * Whether this product has ever had a movement recorded. Backs the V19 rule that {@code
      * Product.unitOfMeasure} becomes immutable once true - see {@code Product}'s javadoc on
      * that field and {@code ProductManagementService.update}'s guard.

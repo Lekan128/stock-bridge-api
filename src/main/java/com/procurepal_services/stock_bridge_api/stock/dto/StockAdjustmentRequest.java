@@ -11,15 +11,24 @@ import java.util.UUID;
  *     {@code StockInRequest.branchId}.
  */
 public record StockAdjustmentRequest(
-        @NotNull @Min(0) Integer newQuantity, @NotBlank @Size(max = 1000) String note, UUID branchId) {
+        @NotNull @Min(0) Integer newQuantity,
+        @NotBlank @Size(max = 1000) String note,
+        UUID branchId,
+        // Areas inside a branch (V60): see StockInRequest.areaId.
+        UUID areaId) {
+
+    /** The shape before {@code areaId} (areas, Part 0). */
+    public StockAdjustmentRequest(Integer newQuantity, String note, UUID branchId) {
+        this(newQuantity, note, branchId, null);
+    }
 
     /** The shape before {@code branchId} (multiple branches, Phase 0). */
     public StockAdjustmentRequest(Integer newQuantity, String note) {
-        this(newQuantity, note, null);
+        this(newQuantity, note, null, null);
     }
 
     /** This adjustment, at {@code branch} - how a caller states the branch it has resolved. */
     public StockAdjustmentRequest withBranchId(UUID branch) {
-        return new StockAdjustmentRequest(newQuantity, note, branch);
+        return new StockAdjustmentRequest(newQuantity, note, branch, areaId);
     }
 }

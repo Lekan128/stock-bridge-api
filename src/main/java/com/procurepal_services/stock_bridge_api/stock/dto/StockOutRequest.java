@@ -81,7 +81,28 @@ public record StockOutRequest(
         // Multiple branches (V51): where this was recorded. Absent means the company's only branch;
         // refused at a company with several (BranchStockService.resolveForWrite). Left out of the
         // idempotency hash when absent, so a write queued before this field existed replays as before.
-        UUID branchId) {
+        UUID branchId,
+        // Areas inside a branch (V60): the area this happened in. Absent means the branch's only area that
+        // keeps stock, else its delivery area for a delivery, else refused (BranchStockService
+        // .resolveAreaForWrite). Left out of the idempotency hash when absent, like branchId.
+        UUID areaId) {
+
+    /** The shape before {@code areaId} (areas, Part 0). */
+    public StockOutRequest(
+            Integer quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            List<Allocation> allocations,
+            OffsetDateTime occurredAt,
+            Boolean recordedOffline,
+            OutReason reason,
+            UUID saleId,
+            BigDecimal lineTotal,
+            UUID branchId) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                branchId, null);
+    }
 
     /** The shape before {@code branchId} (multiple branches, Phase 0). */
     public StockOutRequest(
@@ -95,7 +116,8 @@ public record StockOutRequest(
             OutReason reason,
             UUID saleId,
             BigDecimal lineTotal) {
-        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal, null);
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                null, null);
     }
 
     /** The shape before V46's reason, sale id and line total. */
@@ -127,7 +149,13 @@ public record StockOutRequest(
     /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
     public StockOutRequest withBranchId(UUID branch) {
         return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
-                saleId, lineTotal, branch);
+                saleId, lineTotal, branch, areaId);
+    }
+
+    /** This request, recorded in {@code area} - how a caller states the area it has resolved. */
+    public StockOutRequest withAreaId(UUID area) {
+        return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
+                saleId, lineTotal, branchId, area);
     }
 
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */

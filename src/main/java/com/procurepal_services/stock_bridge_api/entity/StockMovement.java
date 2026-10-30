@@ -107,6 +107,14 @@ public class StockMovement extends TenantAwareEntity {
     @Column(name = "branch_id", nullable = false, updatable = false)
     private UUID branchId;
 
+    /**
+     * The area of the branch this change happened in (V60, STOCK_AREAS_BUILD_PLAN.md D-E3): its Store
+     * at a branch with one area. Null on rows from before V60, which belong to the branch's original
+     * area - {@code BranchStockService.areaOf} reads it that way. Raw, like branchId.
+     */
+    @Column(name = "area_id", updatable = false)
+    private UUID areaId;
+
     /** The waybill this row is part of (V53) - TRANSFER_OUT and TRANSFER_IN only. Raw, like branchId. */
     @Column(name = "transfer_id", updatable = false)
     private UUID transferId;

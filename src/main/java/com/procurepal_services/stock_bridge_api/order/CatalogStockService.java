@@ -334,7 +334,9 @@ public class CatalogStockService {
                                 quantity,
                                 item.getUnitPrice(),
                                 "Dispatched on marketplace order " + order.getOrderNumber()),
-                        actingUserId);
+                        actingUserId,
+                        // From the seller's delivery area, never refused for want of one (areas, D-E10).
+                        com.procurepal_services.stock_bridge_api.branch.BranchStockService.AreaUse.DISPATCH);
             }
         });
     }
