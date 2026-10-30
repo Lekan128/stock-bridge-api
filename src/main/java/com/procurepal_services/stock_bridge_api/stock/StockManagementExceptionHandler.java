@@ -17,10 +17,11 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 /**
- * Scoped to StockController, and TransferController whose sends and receipts are stock writes too -
- * see ClientSignupExceptionHandler for why.
+ * Scoped to StockController, and TransferController and AreaMoveController whose sends, receipts and
+ * moves are stock writes too - see ClientSignupExceptionHandler for why.
  */
-@RestControllerAdvice(assignableTypes = {StockController.class, com.procurepal_services.stock_bridge_api.transfer.TransferController.class})
+@RestControllerAdvice(assignableTypes = {StockController.class, com.procurepal_services.stock_bridge_api.transfer.TransferController.class,
+        com.procurepal_services.stock_bridge_api.branch.AreaMoveController.class})
 public class StockManagementExceptionHandler {
 
     @ExceptionHandler(ProductNotFoundException.class)

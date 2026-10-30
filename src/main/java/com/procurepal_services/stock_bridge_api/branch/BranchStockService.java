@@ -428,6 +428,50 @@ public class BranchStockService {
                 branchId, clientId, copied);
     }
 
+    /**
+     * Moves {@code quantity} of {@code product} from one area of {@code branchId} to another (V63,
+     * STOCK_AREAS_PART_2.md): two area figures change, and nothing else - the branch's and the company's
+     * figures, the lots and the costs are the same before and after. The caller holds the product's lock
+     * and has checked the sending area has it.
+     */
+    public void moveBetweenAreas(Product product, UUID branchId, UUID fromAreaId, UUID toAreaId, int quantity) {
+        if (!isAreaMode(branchId)) {
+            throw new IllegalStateException("Branch " + branchId + " has one area: there is nowhere to move stock to");
+        }
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("clientId", product.getClientId())
+                .addValue("branchId", branchId)
+                .addValue("productId", product.getId());
+        String upsert = """
+                INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand)
+                VALUES (:clientId, :areaId, :branchId, :productId, :delta)
+                ON CONFLICT (area_id, product_id)
+                DO UPDATE SET quantity_on_hand = area_stock.quantity_on_hand + :delta
+                """;
+        jdbc.update(upsert, new MapSqlParameterSource(params.getValues()).addValue("areaId", fromAreaId).addValue("delta", -quantity));
+        jdbc.update(upsert, new MapSqlParameterSource(params.getValues()).addValue("areaId", toAreaId).addValue("delta", quantity));
+    }
+
+    /**
+     * The net of {@code productId}'s moves into and out of {@code areaId} after {@code after} - what a count
+     * of the area taken then is carried forward by, beside its stock movements. Gives to an area that uses
+     * what it's given are left out: each is a stock-out row, already in the ledger's share.
+     */
+    public long moveNetAfter(UUID productId, UUID branchId, UUID areaId, java.time.OffsetDateTime after) {
+        Long net = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(CASE WHEN m.to_area_id = :areaId THEN l.quantity ELSE -l.quantity END), 0)
+                FROM area_moves m JOIN area_move_lines l ON l.move_id = m.id
+                WHERE m.branch_id = :branchId AND l.product_id = :productId AND m.status = 'DONE'
+                  AND l.used_movement_id IS NULL AND m.moved_at > :after
+                  AND (m.from_area_id = :areaId OR m.to_area_id = :areaId)
+                """, new MapSqlParameterSource()
+                        .addValue("productId", productId)
+                        .addValue("branchId", branchId)
+                        .addValue("areaId", areaId)
+                        .addValue("after", after), Long.class);
+        return net == null ? 0 : net;
+    }
+
     /** What a write is doing, which decides the area it lands in when it names none (D-E10). */
     public enum AreaUse {
         /** Stock arriving: a delivery, an import, a receipt off a waybill. Goes to the delivery area. */

@@ -415,6 +415,15 @@ public class StockManagementService {
      */
     @Transactional
     public StockMutationResponse stockOut(UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse) {
+        return stockOut(productId, request, actingUserId, areaUse, null);
+    }
+
+    /**
+     * @param usedAreaId the area this stock was given to, when it uses what it's given (V63, D-E7): the row
+     *     says "Used at Housekeeping". Set only by a move ({@code AreaMoveService}), never from a request.
+     */
+    private StockMutationResponse stockOut(
+            UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse, UUID usedAreaId) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
@@ -476,6 +485,7 @@ public class StockManagementService {
                 .enteredQuantity(entry.enteredQuantity())
                 .enteredUnitPrice(entry.enteredUnitPrice())
                 .outReason(reason)
+                .usedAreaId(usedAreaId)
                 // A sale sent without an id is a sale of its own; one sent with it joins its basket.
                 .saleId(sale ? (request.saleId() != null ? request.saleId() : UUID.randomUUID()) : null)
                 .saleAmount(sale ? SaleFacts.saleAmount(request) : null)
@@ -608,8 +618,90 @@ public class StockManagementService {
         if (!branchStockService.isAreaMode(branchId)) {
             return stockMovementRepository.netChangeAfter(productId, branchId, after);
         }
+        // Moves between areas (V63) are not ledger rows: the area's moves in and out are added beside it.
         return stockMovementRepository.netChangeAfterInArea(
-                productId, branchId, areaId, branchStockService.originalAreaId(branchId), after);
+                        productId, branchId, areaId, branchStockService.originalAreaId(branchId), after)
+                + branchStockService.moveNetAfter(productId, branchId, areaId, after);
+    }
+
+    // --------------------------------------------------------------------- moves between areas (V63)
+
+    /** What one line of a move between areas came to: in stock units, as typed, and a give's stock-out. */
+    public record AreaMovePiece(int quantity, String enteredUnit, BigDecimal enteredQuantity, UUID usedMovementId) {
+    }
+
+    /**
+     * One line of a move between two areas of a branch (STOCK_AREAS_PART_2.md). To an area that keeps
+     * stock: the sending area's figure down, the receiving one's up, nothing else (lots, costs and the
+     * branch's figure stay). To one that uses what it's given: a stock-out at the sending area, reason
+     * USED, tagged with the area - FIFO, cost and usage reports as for any Used stock-out.
+     *
+     * <p>A late line from an offline phone, at an area counted after it happened: the count already saw
+     * it, so that side gets the same "already in a later stock count" adjustment a late stock-in or
+     * stock-out gets, and every figure still adds up. The caller locks nothing; products are locked here,
+     * one at a time, and the caller passes lines in product-id order so every write takes them in one
+     * order.
+     */
+    @Transactional
+    public AreaMovePiece moveBetweenAreas(
+            UUID productId,
+            UUID branchId,
+            UUID fromAreaId,
+            UUID toAreaId,
+            boolean toKeepsStock,
+            int quantity,
+            String unit,
+            OffsetDateTime occurredAt,
+            boolean recordedOffline,
+            String note,
+            UUID actingUserId) {
+        if (!toKeepsStock) {
+            StockMutationResponse out = stockOut(productId,
+                    new StockOutRequest(quantity, null, note, unit, null, occurredAt, recordedOffline, OutReason.USED,
+                            null, null, branchId, fromAreaId),
+                    actingUserId, AreaUse.TAKE, toAreaId);
+            StockMovement movement = stockMovementRepository.findById(out.movement().id()).orElseThrow();
+            return new AreaMovePiece(movement.getQuantity(), movement.getEnteredUnit(), movement.getEnteredQuantity(),
+                    movement.getId());
+        }
+        Product product = lockProductOrThrow(productId);
+        ResolvedEntry entry = resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, null, null);
+        int base = entry.baseQuantity();
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        boolean late = recordedOffline;
+        boolean fromCounted = late && countedAfter(productId, branchId, fromAreaId, at);
+        // The sending area's figure is the ceiling, as for a stock-out - unless a later count there already
+        // saw this stock gone, in which case today's figure no longer has it to give.
+        int available = branchStockService.quantityAt(product, branchId, fromAreaId);
+        if (!fromCounted && base > available) {
+            throw new InsufficientStockException(available, base, unitSymbol(product)).forProduct(productId);
+        }
+        branchStockService.moveBetweenAreas(product, branchId, fromAreaId, toAreaId, base);
+        if (fromCounted) {
+            absorbIntoLaterCount(product, branchId, fromAreaId, base, at, actingUserId);
+        }
+        if (late && countedAfter(productId, branchId, toAreaId, at)) {
+            absorbIntoLaterCount(product, branchId, toAreaId, -base, at, actingUserId);
+        }
+        return new AreaMovePiece(base, entry.enteredUnit(), entry.enteredQuantity(), null);
+    }
+
+    /** Undo of a move's line between two areas that keep stock: back where it came from. The caller checked it may. */
+    @Transactional
+    public void moveAreaLineBack(UUID productId, UUID branchId, UUID fromAreaId, UUID toAreaId, int quantity) {
+        Product product = lockProductOrThrow(productId);
+        branchStockService.moveBetweenAreas(product, branchId, toAreaId, fromAreaId, quantity);
+    }
+
+    /**
+     * A late move's side that a later count already saw (above): the move is applied in full, and this
+     * puts that area back to what the count found - a recorded adjustment, so the ledger and the branch's
+     * figure agree with the areas.
+     */
+    private void absorbIntoLaterCount(
+            Product product, UUID branchId, UUID areaId, int effect, OffsetDateTime occurredAt, UUID actingUserId) {
+        branchStockService.apply(product, branchId, areaId, effect);
+        recordAbsorbedByLaterCount(product, branchId, areaId, effect, occurredAt, actingUserId);
     }
 
     /**

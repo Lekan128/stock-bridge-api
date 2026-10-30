@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @org.springframework.core.annotation.Order(org.springframework.core.Ordered.LOWEST_PRECEDENCE)
 public class BranchExceptionHandler {
 
-    @ExceptionHandler({BranchNotFoundException.class, AreaNotFoundException.class})
+    @ExceptionHandler({BranchNotFoundException.class, AreaNotFoundException.class, AreaMoveNotFoundException.class})
     public ResponseEntity<ApiError> handleNotFound(RuntimeException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
     }

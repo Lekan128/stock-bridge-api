@@ -115,6 +115,13 @@ public class StockMovement extends TenantAwareEntity {
     @Column(name = "area_id", updatable = false)
     private UUID areaId;
 
+    /**
+     * On a stock-out that gave stock to an area that uses what it's given (V63, D-E7): that area - "Used at
+     * Housekeeping". The stock left {@link #areaId}. Null on every other row. Raw, like branchId.
+     */
+    @Column(name = "used_area_id", updatable = false)
+    private UUID usedAreaId;
+
     /** The waybill this row is part of (V53) - TRANSFER_OUT and TRANSFER_IN only. Raw, like branchId. */
     @Column(name = "transfer_id", updatable = false)
     private UUID transferId;

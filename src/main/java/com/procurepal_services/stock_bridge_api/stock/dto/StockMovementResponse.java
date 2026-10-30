@@ -83,7 +83,11 @@ public record StockMovementResponse(
         UUID reversesMovementId,
         UUID correctsMovementId,
         // Multiple branches (V51): where it happened.
-        UUID branchId) {
+        UUID branchId,
+        // Areas (V60): the area of that branch it happened in; null on rows from before areas, which are
+        // the branch's first area's. A give to an area that uses what it's given (V63) also names it.
+        UUID areaId,
+        UUID usedAreaId) {
 
     public static StockMovementResponse from(StockMovement movement) {
         return new StockMovementResponse(
@@ -120,7 +124,9 @@ public record StockMovementResponse(
                 movement.getCostBasis(),
                 movement.getReversesMovementId(),
                 movement.getCorrectsMovementId(),
-                movement.getBranchId());
+                movement.getBranchId(),
+                movement.getAreaId(),
+                movement.getUsedAreaId());
     }
 
     /** Null, not zero, when the movement recorded no price - see the class doc. */
