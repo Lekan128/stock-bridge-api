@@ -17,6 +17,8 @@ import java.util.UUID;
  * @param branchId absent: the person's branch, as for any stock write.
  * @param occurredAt when it happened, as recorded on the phone; absent means now.
  * @param recordedOffline sent late from a phone that was offline: a later count may already have seen it.
+ * @param requestId the request it fills (Part 5): the area asked moving to the area that asked. A request that
+ *     was cancelled or filled meanwhile doesn't stop the move - it's simply not counted towards it.
  */
 public record AreaMoveRequest(
         @NotNull UUID id,
@@ -26,7 +28,14 @@ public record AreaMoveRequest(
         OffsetDateTime occurredAt,
         Boolean recordedOffline,
         @Size(max = 1000) String note,
-        @NotEmpty @Size(max = 200) List<@Valid Line> lines) {
+        @NotEmpty @Size(max = 200) List<@Valid Line> lines,
+        UUID requestId) {
+
+    /** The shape before {@code requestId} (Part 5). */
+    public AreaMoveRequest(UUID id, UUID branchId, UUID fromAreaId, UUID toAreaId, OffsetDateTime occurredAt,
+            Boolean recordedOffline, String note, List<Line> lines) {
+        this(id, branchId, fromAreaId, toAreaId, occurredAt, recordedOffline, note, lines, null);
+    }
 
     /**
      * @param quantity in {@code unit}, or the stock unit when it is absent - whole numbers, as on every sheet.

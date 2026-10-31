@@ -23,5 +23,9 @@ public enum NotificationType {
     /** To the people of an area that confirms: a move is waiting for them (V66, STOCK_AREAS_PART_4.md). */
     AREA_MOVE_WAITING,
     /** To the mover and the owners: an area confirmed a move short (V66). */
-    AREA_MOVE_SHORT
+    AREA_MOVE_SHORT,
+    /** To the people of the area asked: another area asked it for stock (V67, STOCK_AREAS_PART_5.md). */
+    STOCK_REQUEST,
+    /** To the asker: what they asked for was moved, or there's none in the store (V67). */
+    STOCK_REQUEST_ANSWERED
 }

@@ -22,7 +22,8 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
  * moves are stock writes too - see ClientSignupExceptionHandler for why.
  */
 @RestControllerAdvice(assignableTypes = {StockController.class, com.procurepal_services.stock_bridge_api.transfer.TransferController.class,
-        com.procurepal_services.stock_bridge_api.branch.AreaMoveController.class})
+        com.procurepal_services.stock_bridge_api.branch.AreaMoveController.class,
+        com.procurepal_services.stock_bridge_api.branch.StockRequestController.class})
 public class StockManagementExceptionHandler {
 
     @ExceptionHandler(ProductNotFoundException.class)

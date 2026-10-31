@@ -789,6 +789,20 @@ public class StockManagementService {
         return new AreaMovePiece(base, entry.enteredUnit(), entry.enteredQuantity(), null);
     }
 
+    /**
+     * {@code quantity} of {@code productId} in {@code unit} (its stock unit when absent) as the stock unit, and as
+     * typed - for a record that names an amount without moving any stock: a request (Part 5).
+     */
+    @Transactional
+    public AreaMovePiece inStockUnits(UUID productId, int quantity, String unit) {
+        UUID clientId = requireTenantId();
+        Product product = productRepository.findById(productId)
+                .filter(found -> clientId.equals(found.getClientId()))
+                .orElseThrow(ProductNotFoundException::new);
+        ResolvedEntry entry = resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, null, null);
+        return new AreaMovePiece(entry.baseQuantity(), entry.enteredUnit(), entry.enteredQuantity(), null);
+    }
+
     /** What settling a waiting line wrote: the Used stock-out where what arrived was used there, else null. */
     public record SettledLine(UUID usedMovementId) {
     }

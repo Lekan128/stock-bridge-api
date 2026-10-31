@@ -68,6 +68,8 @@ public class AreaMoveService {
     private final StockWritePermissionGuard stockWritePermissionGuard;
     private final AreaAccessService areaAccessService;
     private final NotificationService notificationService;
+    private final AreaPeople areaPeople;
+    private final StockRequestService stockRequestService;
 
     /** One area as a move needs it. */
     private record AreaRow(UUID id, String name, boolean keepsStock, boolean active, boolean confirms) {
@@ -101,12 +103,16 @@ public class AreaMoveService {
         boolean late = Boolean.TRUE.equals(request.recordedOffline());
         // To an area that confirms (Part 4): handed over now, in its figure once someone there says so.
         boolean waits = to.confirms();
+        // Filling a request (Part 5): counted towards it while it's open and this is its route.
+        UUID requestId = request.requestId() != null
+                && stockRequestService.fillable(request.requestId(), branchId, fromAreaId, to.id()) ? request.requestId() : null;
         jdbc.update("""
                 INSERT INTO area_moves (id, client_id, branch_id, from_area_id, to_area_id, status, waits, moved_by,
-                                        moved_at, recorded_offline, note)
+                                        moved_at, recorded_offline, note, request_id)
                 VALUES (:id, :clientId, :branchId, :fromAreaId, :toAreaId, :status, :waits, :userId, :movedAt, :late,
-                        :note)
+                        :note, :requestId)
                 """, new MapSqlParameterSource()
+                        .addValue("requestId", requestId)
                         .addValue("id", request.id())
                         .addValue("clientId", clientId)
                         .addValue("branchId", branchId)
@@ -151,6 +157,9 @@ public class AreaMoveService {
                 to.id(), branchId, userId, waits ? ", waiting to be confirmed" : "");
         if (waits) {
             notifyWaiting(clientId, request.id(), branchId, fromAreaId, to, lines.size(), movedAt, userId);
+        }
+        if (requestId != null) {
+            stockRequestService.recount(requestId, userId);
         }
         return get(request.id(), userId);
     }
@@ -266,6 +275,7 @@ public class AreaMoveService {
         jdbc.update("""
                 UPDATE area_moves SET status = 'CANCELLED', cancelled_by = :userId, cancelled_at = now() WHERE id = :id
                 """, new MapSqlParameterSource().addValue("userId", userId).addValue("id", moveId));
+        recountRequest(move);
         log.info("Area move {} cancelled by {}", moveId, userId);
         return get(moveId, userId);
     }
@@ -317,6 +327,7 @@ public class AreaMoveService {
             }
             releaseHolds(moveId, branchId, fromAreaId, toAreaId, userId);
             jdbc.update("UPDATE area_moves SET status = 'VOIDED' WHERE id = :id", new MapSqlParameterSource("id", moveId));
+            recountRequest(move);
             log.info("Area move {} undone by {} while waiting", moveId, userId);
             return get(moveId, userId);
         }
@@ -342,6 +353,7 @@ public class AreaMoveService {
             }
         }
         jdbc.update("UPDATE area_moves SET status = 'VOIDED' WHERE id = :id", new MapSqlParameterSource("id", moveId));
+        recountRequest(move);
         log.info("Area move {} undone by {}", moveId, userId);
         return get(moveId, userId);
     }
@@ -375,6 +387,13 @@ public class AreaMoveService {
 
     // ---------------------------------------------------------------------------------------- helpers
 
+    /** A move that filled a request (Part 5) was undone or taken back: the request asks for it again. */
+    private void recountRequest(Map<String, Object> move) {
+        if (move.get("request_id") != null) {
+            stockRequestService.recount((UUID) move.get("request_id"), null);
+        }
+    }
+
     /** A waiting move's lines back where they were moved from: cancelled, or undone. */
     private void releaseHolds(UUID moveId, UUID branchId, UUID fromAreaId, UUID toAreaId, UUID userId) {
         List<Map<String, Object>> lines = jdbc.queryForList(
@@ -393,24 +412,9 @@ public class AreaMoveService {
      */
     private void notifyWaiting(UUID clientId, UUID moveId, UUID branchId, UUID fromAreaId, AreaRow to, int items,
             OffsetDateTime movedAt, UUID moverId) {
-        MapSqlParameterSource params = new MapSqlParameterSource()
-                .addValue("areaId", to.id())
-                .addValue("branchId", branchId)
-                .addValue("mover", moverId);
-        List<UUID> people = jdbc.queryForList("""
-                SELECT ua.user_id FROM user_areas ua JOIN users u ON u.id = ua.user_id
-                WHERE ua.area_id = :areaId AND u.is_active AND u.id <> :mover
-                """, params, UUID.class);
-        if (people.isEmpty()) {
-            people = jdbc.queryForList("""
-                    SELECT ub.user_id FROM user_branches ub JOIN users u ON u.id = ub.user_id
-                    WHERE ub.branch_id = :branchId AND u.is_active AND u.id <> :mover
-                      AND NOT EXISTS (SELECT 1 FROM user_areas ua JOIN areas a ON a.id = ua.area_id
-                                      WHERE ua.user_id = ub.user_id AND a.branch_id = :branchId)
-                    """, params, UUID.class);
-        }
+        List<UUID> people = areaPeople.of(to.id(), branchId, moverId);
         String fromName = requireArea(fromAreaId, branchId).name();
-        String mover = displayName(moverId);
+        String mover = areaPeople.name(moverId);
         String title = (items == 1 ? "1 item" : items + " items") + " from the " + fromName + " to confirm";
         String body = "Moved to the " + to.name() + (mover != null ? " by " + mover : "") + " at " + TIME.format(movedAt);
         for (UUID person : people) {
@@ -440,18 +444,6 @@ public class AreaMoveService {
             notificationService.notifyClient(clientId, person, NotificationType.AREA_MOVE_SHORT, title, body,
                     "/app?move=" + moveId, null);
         }
-    }
-
-    private String displayName(UUID userId) {
-        List<Map<String, Object>> found = jdbc.queryForList("""
-                SELECT NULLIF(TRIM(COALESCE(first_name, '') || ' ' || COALESCE(last_name, '')), '') AS full_name, username
-                FROM users WHERE id = :id
-                """, new MapSqlParameterSource("id", userId));
-        if (found.isEmpty()) {
-            return null;
-        }
-        Object full = found.getFirst().get("full_name");
-        return full != null ? (String) full : (String) found.getFirst().get("username");
     }
 
     private List<AreaMoveResponse> read(String where, MapSqlParameterSource params, UUID userId, int offset, int limit) {
@@ -579,7 +571,8 @@ public class AreaMoveService {
 
     private Map<String, Object> requireMove(UUID moveId, UUID clientId) {
         List<Map<String, Object>> found = jdbc.queryForList("""
-                SELECT id, branch_id, from_area_id, to_area_id, status, waits, moved_by, created_at, recorded_offline
+                SELECT id, branch_id, from_area_id, to_area_id, status, waits, moved_by, created_at, recorded_offline,
+                       request_id
                 FROM area_moves WHERE id = :id AND client_id = :clientId
                 """, new MapSqlParameterSource().addValue("id", moveId).addValue("clientId", clientId));
         if (found.isEmpty()) {
