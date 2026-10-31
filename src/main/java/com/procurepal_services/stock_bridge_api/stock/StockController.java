@@ -64,6 +64,7 @@ public class StockController {
     private final BranchStockService branchStockService;
     private final BranchAccessService branchAccessService;
     private final MovementsExportService movementsExportService;
+    private final com.procurepal_services.stock_bridge_api.branch.AreaAccessService areaAccessService;
 
     /**
      * The three writes below take an optional {@code Idempotency-Key}. Without one they behave
@@ -259,11 +260,14 @@ public class StockController {
             @RequestParam(defaultValue = "false") boolean adjustments,
             // V51: one branch, or (absent) every branch this person sees.
             @RequestParam(required = false) UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) List<UUID> areaIds,
             @PageableDefault(size = 20, sort = "occurredAt", direction = Sort.Direction.DESC) Pageable pageable,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        List<UUID> branches = branchScope(branchId, principal);
         return stockManagementService.allMovements(
                 from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments,
-                branchScope(branchId, principal), true, pageable);
+                branches, areaAccessService.scope(principal.getUserId(), branches, areaIds), true, pageable);
     }
 
     /** The same rows as a spreadsheet, newest first, with a Branch column at a multi-branch company (Phase 3). */
@@ -312,10 +316,12 @@ public class StockController {
             @RequestParam(defaultValue = "false") boolean noReason,
             @RequestParam(defaultValue = "false") boolean adjustments,
             @RequestParam(required = false) UUID branchId,
+            @RequestParam(required = false) List<UUID> areaIds,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        List<UUID> branches = branchScope(branchId, principal);
         return stockManagementService.movementSummary(
                 from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments,
-                branchScope(branchId, principal));
+                branches, areaAccessService.scope(principal.getUserId(), branches, areaIds));
     }
 
     /**

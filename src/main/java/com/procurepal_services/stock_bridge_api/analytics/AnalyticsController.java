@@ -25,6 +25,7 @@ public class AnalyticsController {
     private final BranchTableService branchTableService;
     private final BranchDigestService branchDigestService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.branch.AreaAccessService areaAccessService;
 
     @GetMapping("/summary")
     public AnalyticsSummaryResponse summary(
@@ -32,10 +33,13 @@ public class AnalyticsController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
             // V51: one branch, or (absent) every branch this person sees.
             @RequestParam(required = false) java.util.UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<java.util.UUID> areaIds,
             @org.springframework.security.core.annotation.AuthenticationPrincipal
                     com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
-        return analyticsService.summaryForClient(principal.getClientId(), from, to,
-                branchAccessService.reportScope(principal.getUserId(), branchId));
+        java.util.List<java.util.UUID> branches = branchAccessService.reportScope(principal.getUserId(), branchId);
+        return analyticsService.summaryForClient(principal.getClientId(), from, to, branches,
+                areaAccessService.scope(principal.getUserId(), branches, areaIds));
     }
 
     /**
@@ -71,10 +75,13 @@ public class AnalyticsController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
             @RequestParam(defaultValue = "day") String granularity,
             @RequestParam(required = false) java.util.UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<java.util.UUID> areaIds,
             @org.springframework.security.core.annotation.AuthenticationPrincipal
                     com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
-        return analyticsService.movementsOverTimeForClient(principal.getClientId(), from, to, granularity,
-                branchAccessService.reportScope(principal.getUserId(), branchId));
+        java.util.List<java.util.UUID> branches = branchAccessService.reportScope(principal.getUserId(), branchId);
+        return analyticsService.movementsOverTimeForClient(principal.getClientId(), from, to, granularity, branches,
+                areaAccessService.scope(principal.getUserId(), branches, areaIds));
     }
 
     @GetMapping("/top-products")
@@ -85,10 +92,13 @@ public class AnalyticsController {
             @RequestParam(defaultValue = "in") String direction,
             @RequestParam(defaultValue = "10") int limit,
             @RequestParam(required = false) java.util.UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<java.util.UUID> areaIds,
             @org.springframework.security.core.annotation.AuthenticationPrincipal
                     com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
-        return analyticsService.topProductsForClient(principal.getClientId(), from, to, by, direction, limit,
-                branchAccessService.reportScope(principal.getUserId(), branchId));
+        java.util.List<java.util.UUID> branches = branchAccessService.reportScope(principal.getUserId(), branchId);
+        return analyticsService.topProductsForClient(principal.getClientId(), from, to, by, direction, limit, branches,
+                areaAccessService.scope(principal.getUserId(), branches, areaIds));
     }
 
     @GetMapping("/low-stock-summary")

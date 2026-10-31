@@ -1536,7 +1536,7 @@ public class StockManagementService {
         if (branchIds != null) {
             spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
         }
-        return withMoves(spec, pageable, tenantId, branchIds, productId, null, null);
+        return withMoves(spec, pageable, tenantId, branchIds, null, productId, null, null);
     }
 
     /**
@@ -1611,18 +1611,40 @@ public class StockManagementService {
             java.util.Collection<UUID> branchIds,
             boolean includeMoves,
             Pageable pageable) {
+        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments, branchIds,
+                null, includeMoves, pageable);
+    }
+
+    /** @param areas only these areas' rows and moves (Part 3.6); null is every area. */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> allMovements(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds,
+            com.procurepal_services.stock_bridge_api.branch.AreaScope areas,
+            boolean includeMoves,
+            Pageable pageable) {
         UUID tenantId = requireTenantId();
         org.springframework.data.jpa.domain.Specification<StockMovement> spec = StockMovementSpecifications.forTenant(
                 tenantId, productId, companyVendorId, from, to, movementType, outReason, noReason, adjustments);
         if (branchIds != null) {
             spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
         }
+        if (areas != null) {
+            spec = spec.and(StockMovementSpecifications.inAreas(areas));
+        }
         boolean movesFit = includeMoves && movementType == null && companyVendorId == null && outReason == null
                 && !noReason && !adjustments;
         if (!movesFit) {
             return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
         }
-        return withMoves(spec, pageable, tenantId, branchIds, productId, from, to);
+        return withMoves(spec, pageable, tenantId, branchIds, areas, productId, from, to);
     }
 
     /** Past this many rows from the top, a page is the ledger alone - nobody pages that far back. */
@@ -1638,6 +1660,7 @@ public class StockManagementService {
             Pageable pageable,
             UUID tenantId,
             java.util.Collection<UUID> branchIds,
+            com.procurepal_services.stock_bridge_api.branch.AreaScope areas,
             UUID productId,
             OffsetDateTime from,
             OffsetDateTime to) {
@@ -1648,7 +1671,7 @@ public class StockManagementService {
         if (!(byCreatedAt || "occurredAt".equals(sortedBy)) || depth > MOVES_MERGE_DEPTH) {
             return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
         }
-        MoveRows.Window moves = moveRows.newest(tenantId, branchIds, productId, from, to, byCreatedAt, (int) depth);
+        MoveRows.Window moves = moveRows.newest(tenantId, branchIds, areas, productId, from, to, byCreatedAt, (int) depth);
         if (moves.total() == 0) {
             return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
         }
@@ -1720,6 +1743,23 @@ public class StockManagementService {
             boolean noReason,
             boolean adjustments,
             java.util.Collection<UUID> branchIds) {
+        return movementSummary(from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments, branchIds,
+                null);
+    }
+
+    /** @param areas only these areas' rows (Part 3.6); null is every area. */
+    @Transactional(readOnly = true)
+    public StockMovementSummaryResponse movementSummary(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds,
+            com.procurepal_services.stock_bridge_api.branch.AreaScope areas) {
         UUID tenantId = requireTenantId();
         java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(tenantId);
         if (scope.isEmpty()) {
@@ -1736,7 +1776,8 @@ public class StockManagementService {
                 outReason == null ? null : outReason.name(),
                 noReason,
                 adjustments,
-                scope);
+                scope,
+                areas);
         // A conditional aggregate with no GROUP BY always returns exactly one row, zeroes
         // included, so an empty list here would mean the query stopped being an aggregate.
         // Answered as an all-zero summary rather than an exception: a report footer is not

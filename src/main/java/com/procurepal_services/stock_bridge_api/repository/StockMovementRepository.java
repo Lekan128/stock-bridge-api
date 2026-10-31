@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.repository;
 
+import com.procurepal_services.stock_bridge_api.branch.AreaScope;
+
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import jakarta.persistence.LockModeType;
@@ -271,9 +273,10 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL)) "
                     + "AND (:adjustments = FALSE OR " + WRITE_OFF + ") "
                     // V51: the branches the person sees, as the rows above it are (atBranches).
-                    + "AND branch_id IN (:branchIds)",
+                    + "AND branch_id IN (:branchIds)"
+                    + " AND (CAST(:allAreas AS boolean) OR area_id IN (:areaIds) OR (area_id IS NULL AND branch_id IN (:origBranches)))",
             nativeQuery = true)
-    List<Object[]> summarise(
+    List<Object[]> summariseInAreas(
             @Param("clientId") UUID clientId,
             @Param("productId") UUID productId,
             @Param("companyVendorId") UUID companyVendorId,
@@ -283,7 +286,19 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("outReason") String outReason,
             @Param("noReason") boolean noReason,
             @Param("adjustments") boolean adjustments,
-            @Param("branchIds") java.util.Collection<UUID> branchIds);
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> summarise(UUID clientId, UUID productId, UUID companyVendorId, String movementType, OffsetDateTime from, OffsetDateTime to, String outReason, boolean noReason, boolean adjustments, java.util.Collection<UUID> branchIds) {
+        return summariseInAreas(clientId, productId, companyVendorId, movementType, from, to, outReason, noReason, adjustments, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #summarise} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> summarise(UUID clientId, UUID productId, UUID companyVendorId, String movementType, OffsetDateTime from, OffsetDateTime to, String outReason, boolean noReason, boolean adjustments, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return summariseInAreas(clientId, productId, companyVendorId, movementType, from, to, outReason, noReason, adjustments, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     /** A stock adjustment, as {@code StockMovementSpecifications.forTenant}'s {@code adjustments} filter keeps them. */
     String WRITE_OFF = "((movement_type = 'ADJUSTMENT' AND is_count AND quantity <> 0) "
@@ -310,23 +325,49 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      */
     @Query("SELECT COALESCE(SUM(m.quantity * m.unitPriceAtTime), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType AND m.unitPriceAtTime IS NOT NULL "
-            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds")
-    BigDecimal sumValue(
+            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds"
+            + " AND (:allAreas = true OR m.areaId IN :areaIds OR (m.areaId IS NULL AND m.branchId IN :origBranches))")
+    BigDecimal sumValueInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
-            @Param("branchIds") java.util.Collection<UUID> branchIds);
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default BigDecimal sumValue(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+        return sumValueInAreas(clientId, movementType, from, to, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #sumValue} over these areas only (Part 3.6); null is every area. */
+    default BigDecimal sumValue(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return sumValueInAreas(clientId, movementType, from, to, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     @Query("SELECT COALESCE(SUM(m.quantity), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType "
-            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds")
-    long sumQuantity(
+            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds"
+            + " AND (:allAreas = true OR m.areaId IN :areaIds OR (m.areaId IS NULL AND m.branchId IN :origBranches))")
+    long sumQuantityInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
-            @Param("branchIds") java.util.Collection<UUID> branchIds);
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default long sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+        return sumQuantityInAreas(clientId, movementType, from, to, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #sumQuantity} over these areas only (Part 3.6); null is every area. */
+    default long sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return sumQuantityInAreas(clientId, movementType, from, to, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     /**
      * Native (Postgres-specific date_trunc/to_char) rather than JPQL - portable
@@ -350,15 +391,28 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS out_quantity "
                     + "FROM stock_movements "
                     + "WHERE client_id = :clientId AND occurred_at BETWEEN :from AND :to AND branch_id IN (:branchIds) "
+                    + " AND (CAST(:allAreas AS boolean) OR area_id IN (:areaIds) OR (area_id IS NULL AND branch_id IN (:origBranches))) "
                     + "GROUP BY period "
                     + "ORDER BY period",
             nativeQuery = true)
-    List<Object[]> movementsOverTime(
+    List<Object[]> movementsOverTimeInAreas(
             @Param("clientId") UUID clientId,
             @Param("granularity") String granularity,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
-            @Param("branchIds") java.util.Collection<UUID> branchIds);
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> movementsOverTime(UUID clientId, String granularity, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+        return movementsOverTimeInAreas(clientId, granularity, from, to, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #movementsOverTime} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> movementsOverTime(UUID clientId, String granularity, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return movementsOverTimeInAreas(clientId, granularity, from, to, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     /** Each row: [productId(uuid), name(text), sku(text), totalValue(numeric), totalQuantity(bigint)]. */
     @Query(
@@ -368,17 +422,30 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
                     + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
                     + "AND m.branch_id IN (:branchIds) "
+                    + " AND (CAST(:allAreas AS boolean) OR m.area_id IN (:areaIds) OR (m.area_id IS NULL AND m.branch_id IN (:origBranches))) "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_value DESC "
                     + "LIMIT :limit",
             nativeQuery = true)
-    List<Object[]> topProductsByValue(
+    List<Object[]> topProductsByValueInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
             @Param("limit") int limit,
-            @Param("branchIds") java.util.Collection<UUID> branchIds);
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> topProductsByValue(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds) {
+        return topProductsByValueInAreas(clientId, movementType, from, to, limit, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #topProductsByValue} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> topProductsByValue(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return topProductsByValueInAreas(clientId, movementType, from, to, limit, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     @Query(
             value = "SELECT p.id, p.name, p.sku, "
@@ -387,17 +454,30 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
                     + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
                     + "AND m.branch_id IN (:branchIds) "
+                    + " AND (CAST(:allAreas AS boolean) OR m.area_id IN (:areaIds) OR (m.area_id IS NULL AND m.branch_id IN (:origBranches))) "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_quantity DESC "
                     + "LIMIT :limit",
             nativeQuery = true)
-    List<Object[]> topProductsByQuantity(
+    List<Object[]> topProductsByQuantityInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
             @Param("limit") int limit,
-            @Param("branchIds") java.util.Collection<UUID> branchIds);
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> topProductsByQuantity(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds) {
+        return topProductsByQuantityInAreas(clientId, movementType, from, to, limit, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #topProductsByQuantity} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> topProductsByQuantity(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return topProductsByQuantityInAreas(clientId, movementType, from, to, limit, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     /** The most recent write on a product - a void (D8) is only exact while its write is still this. */
     Optional<StockMovement> findFirstByProductIdOrderByCreatedAtDescIdDesc(UUID productId);

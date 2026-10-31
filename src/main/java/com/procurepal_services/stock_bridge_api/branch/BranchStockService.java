@@ -520,6 +520,21 @@ public class BranchStockService {
      * Whether {@code branchId}'s areas hold its figures: it has ever had two, closed ones included, for
      * the reason the class javadoc gives for closed branches.
      */
+    /**
+     * The summary's product counts over areas (Part 3.6): {low, out, needing attention}. An area has no level of
+     * its own until Part 8, so nothing is "low" there - only out, when the areas hold none of an active product.
+     */
+    public long[] areaProductCounts(UUID clientId, AreaScope areas) {
+        Long out = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM products p
+                WHERE p.client_id = :clientId AND p.is_active
+                  AND COALESCE((SELECT SUM(s.quantity_on_hand) FROM area_stock s
+                                WHERE s.product_id = p.id AND s.area_id IN (:scopeAreaIds)), 0) <= 0
+                """, AreaScope.bind(areas, new MapSqlParameterSource("clientId", clientId)), Long.class);
+        long none = out == null ? 0 : out;
+        return new long[] {0, none, none};
+    }
+
     public boolean isShortUsed(UUID areaId) {
         return Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT short_is_used FROM areas WHERE id = :id", new MapSqlParameterSource("id", areaId), Boolean.class));

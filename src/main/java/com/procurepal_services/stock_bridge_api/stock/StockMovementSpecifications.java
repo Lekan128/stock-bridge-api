@@ -176,4 +176,15 @@ final class StockMovementSpecifications {
     public static Specification<StockMovement> atBranches(java.util.Collection<UUID> branchIds) {
         return (root, query, cb) -> root.get("branchId").in(branchIds);
     }
+
+    /**
+     * Only in these areas (Part 3.6): a row's own area, or - for a row from before areas - its branch's original
+     * area, when that is one of them (D-E3).
+     */
+    public static Specification<StockMovement> inAreas(com.procurepal_services.stock_bridge_api.branch.AreaScope areas) {
+        return (root, query, cb) -> cb.or(
+                root.get("areaId").in(com.procurepal_services.stock_bridge_api.branch.AreaScope.areaIds(areas)),
+                cb.and(cb.isNull(root.get("areaId")),
+                        root.get("branchId").in(com.procurepal_services.stock_bridge_api.branch.AreaScope.originalBranchIds(areas))));
+    }
 }

@@ -61,7 +61,8 @@ public class SalesReportService {
      */
     /** @param branchIds only sales recorded at these branches (V51); null for every branch. */
     public record Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly,
-            boolean unpricedOnly, boolean noCostOnly, java.util.Collection<UUID> branchIds) {
+            boolean unpricedOnly, boolean noCostOnly, java.util.Collection<UUID> branchIds,
+            com.procurepal_services.stock_bridge_api.branch.AreaScope areas) {
         public static final Filters NONE = new Filters(null, null, false, false, false);
 
         public Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly) {
@@ -70,12 +71,19 @@ public class SalesReportService {
 
         public Filters(UUID productId, UUID userId, boolean belowUsualPrice, boolean belowCost, boolean cancelledOnly,
                 boolean unpricedOnly, boolean noCostOnly) {
-            this(productId, userId, belowUsualPrice, belowCost, cancelledOnly, unpricedOnly, noCostOnly, null);
+            this(productId, userId, belowUsualPrice, belowCost, cancelledOnly, unpricedOnly, noCostOnly, null, null);
         }
 
         /** The same narrowing, at these branches only. */
         public Filters atBranches(java.util.Collection<UUID> branches) {
-            return new Filters(productId, userId, belowUsualPrice, belowCost, cancelledOnly, unpricedOnly, noCostOnly, branches);
+            return new Filters(productId, userId, belowUsualPrice, belowCost, cancelledOnly, unpricedOnly, noCostOnly, branches,
+                    areas);
+        }
+
+        /** The same narrowing, in these areas only (Part 3.6); null is every area. */
+        public Filters atAreas(com.procurepal_services.stock_bridge_api.branch.AreaScope scope) {
+            return new Filters(productId, userId, belowUsualPrice, belowCost, cancelledOnly, unpricedOnly, noCostOnly, branchIds,
+                    scope);
         }
     }
 
@@ -115,6 +123,38 @@ public class SalesReportService {
      */
     @Transactional(readOnly = true)
     public StockWorthResponse stockWorth(UUID clientId, java.util.Collection<UUID> branchIds) {
+        return stockWorth(clientId, branchIds, null);
+    }
+
+    /** {@link #stockWorth(UUID, java.util.Collection)} of what these areas hold (Part 3.6); null is every area. */
+    @Transactional(readOnly = true)
+    public StockWorthResponse stockWorth(
+            UUID clientId, java.util.Collection<UUID> branchIds, com.procurepal_services.stock_bridge_api.branch.AreaScope areas) {
+        if (areas != null) {
+            return jdbc.queryForObject(
+                    """
+                    WITH held AS (
+                        SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(s.quantity_on_hand), 0) AS quantity
+                        FROM products p
+                        LEFT JOIN area_stock s ON s.product_id = p.id AND s.area_id IN (:scopeAreaIds)
+                        WHERE p.client_id = :clientId AND p.is_active
+                        GROUP BY p.id, p.cost_price, p.unit_price)
+                    SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
+                           COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
+                           COUNT(*) AS active,
+                           COUNT(*) FILTER (WHERE cost_price IS NULL) AS no_cost,
+                           COUNT(*) FILTER (WHERE unit_price IS NULL) AS no_price
+                    FROM held
+                    """,
+                    com.procurepal_services.stock_bridge_api.branch.AreaScope.bind(
+                            areas, new MapSqlParameterSource().addValue("clientId", clientId)),
+                    (rs, n) -> new StockWorthResponse(
+                            rs.getBigDecimal("at_cost").setScale(2, RoundingMode.HALF_UP),
+                            rs.getBigDecimal("at_price").setScale(2, RoundingMode.HALF_UP),
+                            rs.getLong("active"),
+                            rs.getLong("no_cost"),
+                            rs.getLong("no_price")));
+        }
         if (branchIds == null) {
             return stockWorth(clientId);
         }
@@ -204,6 +244,7 @@ public class SalesReportService {
         if (filters.branchIds() != null) {
             where.append(" AND o.branch_id IN (:branchIds)");
         }
+        where.append(com.procurepal_services.stock_bridge_api.branch.AreaScope.sql(filters.areas(), "o."));
         StringBuilder narrowed = new StringBuilder(" WHERE TRUE");
         if (filters.belowUsualPrice()) {
             narrowed.append(" AND below_usual AND NOT cancelled");
@@ -326,6 +367,7 @@ public class SalesReportService {
         if (filters.branchIds() != null) {
             params.addValue("branchIds", filters.branchIds().isEmpty() ? List.of(new UUID(0, 0)) : filters.branchIds());
         }
+        com.procurepal_services.stock_bridge_api.branch.AreaScope.bind(filters.areas(), params);
         return params;
     }
 

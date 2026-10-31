@@ -36,6 +36,12 @@ class MoveRows {
      */
     Window newest(UUID clientId, Collection<UUID> branchIds, UUID productId, OffsetDateTime from, OffsetDateTime to,
             boolean byCreatedAt, int limit) {
+        return newest(clientId, branchIds, null, productId, from, to, byCreatedAt, limit);
+    }
+
+    /** @param areas only moves into or out of these areas (Part 3.6); null is every area. */
+    Window newest(UUID clientId, Collection<UUID> branchIds, com.procurepal_services.stock_bridge_api.branch.AreaScope areas,
+            UUID productId, OffsetDateTime from, OffsetDateTime to, boolean byCreatedAt, int limit) {
         if (branchIds != null && branchIds.isEmpty()) {
             return new Window(List.of(), 0);
         }
@@ -47,6 +53,10 @@ class MoveRows {
         if (branchIds != null) {
             where.append(" AND m.branch_id = ANY(:branchIds)");
             params.addValue("branchIds", branchIds.toArray(UUID[]::new));
+        }
+        if (areas != null) {
+            where.append(" AND (m.from_area_id IN (:scopeAreaIds) OR m.to_area_id IN (:scopeAreaIds))");
+            com.procurepal_services.stock_bridge_api.branch.AreaScope.bind(areas, params);
         }
         if (productId != null) {
             where.append(" AND l.product_id = :productId");

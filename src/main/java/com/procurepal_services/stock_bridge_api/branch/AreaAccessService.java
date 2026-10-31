@@ -78,6 +78,41 @@ public class AreaAccessService {
         }
     }
 
+    /**
+     * What a report covers when the top bar names areas (STOCK_AREAS_PART_3_6.md): {@code requested}, each of
+     * which must be one of {@code branchIds}' areas and one the person works in; null or empty is the whole of
+     * those branches (null scope). Refused rather than quietly narrowed, like a branch they don't see.
+     */
+    public AreaScope scope(UUID userId, Collection<UUID> branchIds, Collection<UUID> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return null;
+        }
+        Limits limits = limits(userId);
+        Set<UUID> areas = new LinkedHashSet<>();
+        Set<UUID> originals = new HashSet<>();
+        jdbc.query("""
+                SELECT id, branch_id, is_original FROM areas WHERE id IN (:ids)
+                """, new MapSqlParameterSource("ids", requested), rs -> {
+                    UUID id = rs.getObject("id", UUID.class);
+                    UUID branchId = rs.getObject("branch_id", UUID.class);
+                    if (!branchIds.contains(branchId)) {
+                        throw new AreaNotFoundException();
+                    }
+                    if (!limits.worksIn(branchId, id)) {
+                        throw new AreaNotAllowedException(jdbc.queryForObject("SELECT name FROM areas WHERE id = :id",
+                                new MapSqlParameterSource("id", id), String.class));
+                    }
+                    areas.add(id);
+                    if (rs.getBoolean("is_original")) {
+                        originals.add(branchId);
+                    }
+                });
+        if (areas.size() != new HashSet<>(requested).size()) {
+            throw new AreaNotFoundException();
+        }
+        return new AreaScope(areas, originals);
+    }
+
     /** Each listed area of a person, for the Users screen; empty = all areas. */
     public List<UUID> listed(UUID userId) {
         return jdbc.queryForList("""
