@@ -46,9 +46,10 @@ public record AreaMoveResponse(
      * @param quantity in the product's stock unit; {@code enteredQuantity}/{@code enteredUnit} as typed.
      * @param got what arrived, once a move that waited is confirmed (Part 4); absent before.
      * @param damaged of what didn't arrive, what was recorded as damaged.
+     * @param unitOfMeasure the product's stock unit, which {@code quantity} and {@code got} are in.
      */
     public record Line(
             UUID productId, String productName, int quantity, BigDecimal enteredQuantity, String enteredUnit,
-            boolean used, Integer got, int damaged) {
+            boolean used, Integer got, int damaged, String unitOfMeasure) {
     }
 }

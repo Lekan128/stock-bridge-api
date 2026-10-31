@@ -479,7 +479,8 @@ public class AreaMoveService {
         Map<UUID, List<AreaMoveResponse.Line>> linesByMove = new LinkedHashMap<>();
         jdbc.query("""
                 SELECT l.move_id, l.product_id, p.name, l.quantity, l.entered_quantity, l.entered_unit,
-                       l.used_movement_id IS NOT NULL OR l.used_now AS used, l.quantity_confirmed, l.quantity_damaged
+                       l.used_movement_id IS NOT NULL OR l.used_now AS used, l.quantity_confirmed, l.quantity_damaged,
+                       p.unit_of_measure
                 FROM area_move_lines l JOIN products p ON p.id = l.product_id
                 WHERE l.move_id = ANY(:ids) ORDER BY p.name
                 """, new MapSqlParameterSource("ids", moves.stream().map(m -> (UUID) m.get("id")).toArray(UUID[]::new)),
@@ -493,7 +494,8 @@ public class AreaMoveService {
                                     rs.getString("entered_unit"),
                                     rs.getBoolean("used"),
                                     rs.getObject("quantity_confirmed", Integer.class),
-                                    rs.getInt("quantity_damaged")));
+                                    rs.getInt("quantity_damaged"),
+                                    rs.getString("unit_of_measure")));
                 });
         // What this person may do with a move that waits: worked out once, not per move.
         boolean anyWaiting = moves.stream().anyMatch(m -> "WAITING".equals(m.get("status")));
@@ -537,7 +539,7 @@ public class AreaMoveService {
                     linesByMove.getOrDefault(id, List.of()).stream()
                             .map(line -> new AreaMoveResponse.Line(line.productId(), line.productName(), line.quantity(),
                                     line.enteredQuantity(), line.enteredUnit(), !toKeepsStock || line.used(), line.got(),
-                                    line.damaged()))
+                                    line.damaged(), line.unitOfMeasure()))
                             .toList(),
                     waits,
                     confirmedBy,
