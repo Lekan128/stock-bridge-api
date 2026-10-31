@@ -415,7 +415,7 @@ public class AreaMoveService {
         String body = "Moved to the " + to.name() + (mover != null ? " by " + mover : "") + " at " + TIME.format(movedAt);
         for (UUID person : people) {
             notificationService.notifyClient(clientId, person, NotificationType.AREA_MOVE_WAITING, title, body,
-                    "/app/dashboard?move=" + moveId, null);
+                    "/app?move=" + moveId, null);
         }
     }
 
@@ -438,7 +438,7 @@ public class AreaMoveService {
         String body = damaged > 0 ? damaged + " recorded as damaged" : rest + " still in the " + fromName;
         for (UUID person : people) {
             notificationService.notifyClient(clientId, person, NotificationType.AREA_MOVE_SHORT, title, body,
-                    "/app/dashboard?move=" + moveId, null);
+                    "/app?move=" + moveId, null);
         }
     }
 
