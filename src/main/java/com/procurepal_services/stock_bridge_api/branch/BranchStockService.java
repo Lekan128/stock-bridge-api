@@ -384,7 +384,7 @@ public class BranchStockService {
             Map<UUID, Integer> at = held.getOrDefault(product, Map.of());
             figures.put(product, areas.stream()
                     .map(area -> new com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure(
-                            area[0], area[1], at.getOrDefault(area[0], 0)))
+                            area[0], area[1], at.getOrDefault(area[0], 0), at.containsKey(area[0])))
                     .toList());
         }
         return figures;
@@ -525,11 +525,14 @@ public class BranchStockService {
      * its own until Part 8, so nothing is "low" there - only out, when the areas hold none of an active product.
      */
     public long[] areaProductCounts(UUID clientId, AreaScope areas) {
+        // Out only where the areas have had the product (a row in area_stock): a kitchen isn't "out" of pots it
+        // never holds.
         Long out = jdbc.queryForObject("""
                 SELECT COUNT(*) FROM products p
                 WHERE p.client_id = :clientId AND p.is_active
-                  AND COALESCE((SELECT SUM(s.quantity_on_hand) FROM area_stock s
-                                WHERE s.product_id = p.id AND s.area_id IN (:scopeAreaIds)), 0) <= 0
+                  AND EXISTS (SELECT 1 FROM area_stock s WHERE s.product_id = p.id AND s.area_id IN (:scopeAreaIds))
+                  AND (SELECT SUM(s.quantity_on_hand) FROM area_stock s
+                       WHERE s.product_id = p.id AND s.area_id IN (:scopeAreaIds)) <= 0
                 """, AreaScope.bind(areas, new MapSqlParameterSource("clientId", clientId)), Long.class);
         long none = out == null ? 0 : out;
         return new long[] {0, none, none};

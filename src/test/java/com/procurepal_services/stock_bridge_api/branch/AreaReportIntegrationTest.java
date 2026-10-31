@@ -76,11 +76,27 @@ class AreaReportIntegrationTest {
         assertThat(((Number) summary(s, "?areaIds=" + a.store()).get("totalUnitsIn")).intValue()).isEqualTo(10);
         assertThat(((Number) summary(s, "?areaIds=" + a.other()).get("totalUnitsIn")).intValue()).isZero();
         assertThat(((Number) summary(s, "").get("totalUnitsIn")).intValue()).isEqualTo(10);
-        // In an area: out when it holds none, never "low" (levels per area come with Part 8).
+        // In an area: never "low" (levels per area come with Part 8), and not "out" of what it never had.
         Map<?, ?> atBar = summary(s, "?areaIds=" + bar);
-        assertThat(((Number) atBar.get("outOfStockProductCount")).intValue()).isEqualTo(1);
+        assertThat(((Number) atBar.get("outOfStockProductCount")).intValue()).isZero();
         assertThat(((Number) atBar.get("lowStockProductCount")).intValue()).isZero();
         assertThat(((Number) summary(s, "?areaIds=" + a.other()).get("outOfStockProductCount")).intValue()).isZero();
+        // Had and ran out of: out.
+        move(s, a.other(), bar, 2);
+        move(s, bar, a.other(), 2);
+        assertThat(((Number) summary(s, "?areaIds=" + bar).get("outOfStockProductCount")).intValue()).isEqualTo(1);
+        // The product's area figures say which areas carry it.
+        Map<?, ?> product = get(s, "/api/products/" + s.productId());
+        Map<String, Object> carried = new HashMap<>();
+        for (Object figure : (List<?>) product.get("areaStock")) {
+            carried.put((String) ((Map<?, ?>) figure).get("areaId"), ((Map<?, ?>) figure).get("carried"));
+        }
+        assertThat(carried).containsEntry(a.store().toString(), true).containsEntry(a.other().toString(), true)
+                .containsEntry(bar.toString(), true);
+        UUID newArea = addArea(s, "Pantry", true);
+        Map<?, ?> again = get(s, "/api/products/" + s.productId());
+        assertThat(((List<?>) again.get("areaStock")).stream().map(f -> (Map<?, ?>) f)
+                .filter(f -> newArea.toString().equals(f.get("areaId"))).findFirst().orElseThrow().get("carried")).isEqualTo(false);
     }
 
     @Test
