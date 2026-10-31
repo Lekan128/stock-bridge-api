@@ -103,9 +103,12 @@ public class AreaMoveService {
         List<AreaMoveRequest.Line> lines = new ArrayList<>(request.lines());
         lines.sort(Comparator.comparing(AreaMoveRequest.Line::productId));
         for (AreaMoveRequest.Line line : lines) {
+            // Used straight away (Part 3.5): a give to an area that otherwise keeps it, for this line alone.
+            boolean usedNow = to.keepsStock() && Boolean.TRUE.equals(line.usedNow());
             StockManagementService.AreaMovePiece piece = stockManagementService.moveBetweenAreas(
-                    line.productId(), branchId, fromAreaId, to.id(), to.keepsStock(), line.quantity(),
-                    blankToNull(line.unit()), movedAt, late, usedNote, userId);
+                    line.productId(), branchId, fromAreaId, to.id(), to.keepsStock() && !usedNow, line.quantity(),
+                    blankToNull(line.unit()), movedAt, late, usedNow ? "Used straight away at " + to.name() : usedNote,
+                    userId);
             jdbc.update("""
                     INSERT INTO area_move_lines (move_id, product_id, quantity, entered_unit, entered_quantity, used_movement_id)
                     VALUES (:moveId, :productId, :quantity, :enteredUnit, :enteredQuantity, :usedMovementId)
@@ -225,7 +228,8 @@ public class AreaMoveService {
         }
         Map<UUID, List<AreaMoveResponse.Line>> linesByMove = new LinkedHashMap<>();
         jdbc.query("""
-                SELECT l.move_id, l.product_id, p.name, l.quantity, l.entered_quantity, l.entered_unit
+                SELECT l.move_id, l.product_id, p.name, l.quantity, l.entered_quantity, l.entered_unit,
+                       l.used_movement_id IS NOT NULL AS used
                 FROM area_move_lines l JOIN products p ON p.id = l.product_id
                 WHERE l.move_id = ANY(:ids) ORDER BY p.name
                 """, new MapSqlParameterSource("ids", moves.stream().map(m -> (UUID) m.get("id")).toArray(UUID[]::new)),
@@ -237,7 +241,7 @@ public class AreaMoveService {
                                     rs.getInt("quantity"),
                                     rs.getBigDecimal("entered_quantity"),
                                     rs.getString("entered_unit"),
-                                    false));
+                                    rs.getBoolean("used")));
                 });
         List<AreaMoveResponse> out = new ArrayList<>();
         for (Map<String, Object> m : moves) {
@@ -262,10 +266,11 @@ public class AreaMoveService {
                     timestamp(m.get("moved_at")),
                     (String) m.get("note"),
                     undoable ? createdAt.plus(UNDO_WINDOW) : null,
-                    // A give's lines were Used there (D-E7): said by the area it went to.
+                    // A give's lines were Used there (D-E7): said by the area it went to, or by the line when it
+                    // was used straight away (Part 3.5).
                     linesByMove.getOrDefault(id, List.of()).stream()
                             .map(line -> new AreaMoveResponse.Line(line.productId(), line.productName(), line.quantity(),
-                                    line.enteredQuantity(), line.enteredUnit(), !toKeepsStock))
+                                    line.enteredQuantity(), line.enteredUnit(), !toKeepsStock || line.used()))
                             .toList()));
         }
         return out;

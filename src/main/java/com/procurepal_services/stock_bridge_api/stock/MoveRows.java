@@ -41,7 +41,9 @@ class MoveRows {
         }
         MapSqlParameterSource params = new MapSqlParameterSource("clientId", clientId).addValue("limit", limit);
         StringBuilder where = new StringBuilder(
-                "m.client_id = :clientId AND m.status = 'DONE' AND ta.keeps_stock = TRUE");
+                "m.client_id = :clientId AND m.status = 'DONE' AND ta.keeps_stock = TRUE"
+                        // A line used straight away (Part 3.5) is a Used stock-out row already.
+                        + " AND l.used_movement_id IS NULL");
         if (branchIds != null) {
             where.append(" AND m.branch_id = ANY(:branchIds)");
             params.addValue("branchIds", branchIds.toArray(UUID[]::new));
@@ -120,7 +122,8 @@ class MoveRows {
                             rs.getObject("to_area_id", UUID.class),
                             moveId,
                             rs.getString("from_name"),
-                            rs.getString("to_name"));
+                            rs.getString("to_name"),
+                            null);
                 });
         return new Window(rows, total);
     }

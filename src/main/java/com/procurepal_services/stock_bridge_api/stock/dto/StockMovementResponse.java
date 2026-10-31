@@ -93,7 +93,10 @@ public record StockMovementResponse(
         UUID toAreaId,
         UUID moveId,
         String areaName,
-        String toAreaName) {
+        String toAreaName,
+        // Written by a stock count (Part 3.5): a kitchen's count records what it found short as a Used stock-out,
+        // and the list says "Used at Kitchen · count". Absent on everything else.
+        Boolean count) {
 
     public static StockMovementResponse from(StockMovement movement) {
         return new StockMovementResponse(
@@ -136,7 +139,8 @@ public record StockMovementResponse(
                 null,
                 null,
                 null,
-                null);
+                null,
+                movement.isCount() ? Boolean.TRUE : null);
     }
 
     /** Null, not zero, when the movement recorded no price - see the class doc. */

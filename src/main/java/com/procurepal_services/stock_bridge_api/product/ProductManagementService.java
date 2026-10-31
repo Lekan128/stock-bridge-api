@@ -276,7 +276,7 @@ public class ProductManagementService {
         java.util.Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> areas =
                 branchStockService.areaFigures(List.of(id), branchAccessService.openViewBranchIds(userId));
         if (areas != null) {
-            response = response.withAreaStock(areas.get(id));
+            response = response.withAreaStock(branchStockService.withLastCounted(id, areas.get(id)));
         }
         java.util.Map<UUID, Integer> threshold = new java.util.HashMap<>();
         threshold.put(id, product.getLowStockThreshold());

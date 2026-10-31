@@ -59,7 +59,7 @@ public class AreaService {
     /** One area as this service reads it. */
     private record AreaRow(
             UUID id, UUID branchId, String name, boolean keepsStock, boolean delivery, boolean original,
-            boolean active, OffsetDateTime closedAt) {
+            boolean active, OffsetDateTime closedAt, boolean shortIsUsed) {
     }
 
     // ---------------------------------------------------------------------------------------- reading
@@ -149,15 +149,17 @@ public class AreaService {
         for (int i = 0; i < names.size(); i++) {
             AreaRequest.NewArea wanted = request.areas().get(i);
             boolean keepsStock = wanted.keepsStock() == null || wanted.keepsStock();
+            boolean shortIsUsed = keepsStock && Boolean.TRUE.equals(wanted.shortIsUsed());
             UUID id = jdbc.queryForObject("""
-                    INSERT INTO areas (client_id, branch_id, name, keeps_stock, sort_order)
-                    VALUES (:clientId, :branchId, :name, :keepsStock, :order)
+                    INSERT INTO areas (client_id, branch_id, name, keeps_stock, short_is_used, sort_order)
+                    VALUES (:clientId, :branchId, :name, :keepsStock, :shortIsUsed, :order)
                     RETURNING id
                     """, new MapSqlParameterSource()
                             .addValue("clientId", clientId)
                             .addValue("branchId", branchId)
                             .addValue("name", names.get(i))
                             .addValue("keepsStock", keepsStock)
+                            .addValue("shortIsUsed", shortIsUsed)
                             .addValue("order", order++), UUID.class);
             added.add(toResponse(requireArea(id, clientId), keepsStock ? 0L : null));
         }
@@ -197,6 +199,15 @@ public class AreaService {
             }
             jdbc.update("UPDATE areas SET keeps_stock = :keepsStock WHERE id = :id",
                     params.addValue("keepsStock", request.keepsStock()));
+        }
+
+        // Stored ↔ worked with (Part 3.5): any time, it only changes what later counts mean. An area that uses
+        // what it's given has no counts, so it's never "worked with".
+        boolean keepsNow = request.keepsStock() != null ? request.keepsStock() : area.keepsStock();
+        boolean shortIsUsed = keepsNow && (request.shortIsUsed() != null ? request.shortIsUsed() : area.shortIsUsed());
+        if (shortIsUsed != area.shortIsUsed()) {
+            jdbc.update("UPDATE areas SET short_is_used = :shortIsUsed WHERE id = :id",
+                    new MapSqlParameterSource("id", areaId).addValue("shortIsUsed", shortIsUsed));
         }
 
         if (Boolean.TRUE.equals(request.delivery()) && !area.delivery()) {
@@ -287,7 +298,8 @@ public class AreaService {
 
     private List<AreaRow> rows(String where, MapSqlParameterSource params) {
         return jdbc.query("""
-                SELECT a.id, a.branch_id, a.name, a.keeps_stock, a.is_delivery, a.is_original, a.is_active, a.closed_at
+                SELECT a.id, a.branch_id, a.name, a.keeps_stock, a.is_delivery, a.is_original, a.is_active, a.closed_at,
+                       a.short_is_used
                 FROM areas a
                 """ + where + " ORDER BY a.is_active DESC, a.sort_order, a.created_at", params,
                 (rs, n) -> new AreaRow(
@@ -298,12 +310,13 @@ public class AreaService {
                         rs.getBoolean("is_delivery"),
                         rs.getBoolean("is_original"),
                         rs.getBoolean("is_active"),
-                        rs.getObject("closed_at", OffsetDateTime.class)));
+                        rs.getObject("closed_at", OffsetDateTime.class),
+                        rs.getBoolean("short_is_used")));
     }
 
     private static AreaResponse toResponse(AreaRow area, Long productsInStock) {
         return new AreaResponse(area.id(), area.name(), area.keepsStock(), area.delivery(), area.active(),
-                area.closedAt(), productsInStock, null);
+                area.closedAt(), productsInStock, null, area.shortIsUsed());
     }
 
     private static String requireName(String raw) {

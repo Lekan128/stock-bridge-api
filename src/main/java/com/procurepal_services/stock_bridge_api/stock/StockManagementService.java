@@ -561,6 +561,18 @@ public class StockManagementService {
         // unrecorded); the shelf cannot hold less than nothing.
         int target = (int) Math.max(0, request.countedQuantity() + carriedForward);
         int delta = target - branchStockService.quantityAt(product, branchId, areaId);
+
+        // Where stock is worked with (a kitchen, Part 3.5, D-E13), what a count finds short is what was used:
+        // a Used stock-out, costed off the lots like any other, that is also this count. Elsewhere, or when
+        // the sheet says it went missing this time, the count's adjustment as ever. More is never "used".
+        String note = request.note() == null || request.note().isBlank() ? "Stock count" : request.note();
+        boolean shortUsed = delta < 0 && (request.shortAs() != null
+                ? request.shortAs() == StockCountRequest.ShortAs.USED
+                : branchStockService.isAreaMode(branchId) && branchStockService.isShortUsed(areaId));
+        if (shortUsed) {
+            StockMovement used = recordUsedByCount(product, branchId, areaId, -delta, countedAt, note, actingUserId);
+            return StockMutationResponse.of(product, used);
+        }
         branchStockService.apply(product, branchId, areaId, delta);
 
         StockMovement movement = stockMovementRepository.save(StockMovement.builder()
@@ -571,13 +583,61 @@ public class StockManagementService {
                 .quantity(delta)
                 .count(true)
                 .occurredAt(countedAt)
-                .note(request.note() == null || request.note().isBlank() ? "Stock count" : request.note())
+                .note(note)
                 .createdBy(reference(actingUserId))
                 .build());
         // Undoable for two minutes (D8): the difference it made is the movement's own quantity.
         stockMovementRepository.flush();
         stockWriteUndoStore.record(movement.getId(), requireTenantId(), actingUserId, null, null, null, null, null);
         return StockMutationResponse.of(product, movement);
+    }
+
+    /**
+     * A count's shortfall where stock is worked with (Part 3.5): {@code quantity} used at the area, drawn off the
+     * branch's oldest lots and costed as a stock-out is, marked as the count it is - so a later count, a late
+     * offline write and the "already counted" check treat it exactly as a count. Undone like any stock-out.
+     */
+    private StockMovement recordUsedByCount(
+            Product product, UUID branchId, UUID areaId, int quantity, OffsetDateTime countedAt, String note,
+            UUID actingUserId) {
+        UUID tenantId = requireTenantId();
+        List<StockMovement> lots = stockMovementRepository.findInMovementsForUpdate(product.getId(), tenantId, branchId);
+        List<LotDraw> draws = resolveFifoAllocations(lots, quantity);
+        SaleFacts.Cost cost = SaleFacts.costOf(
+                draws.stream().map(draw -> new SaleFacts.Draw(draw.lot(), draw.quantity())).toList(),
+                quantity,
+                product.getCostPrice());
+        branchStockService.apply(product, branchId, areaId, -quantity);
+        StockMovement used = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
+                .movementType(MovementType.OUT)
+                .outReason(OutReason.USED)
+                .quantity(quantity)
+                .count(true)
+                .occurredAt(countedAt)
+                .note(note)
+                .createdBy(reference(actingUserId))
+                .costAmount(cost.amount())
+                .costBasis(cost.basis())
+                .build());
+        for (LotDraw draw : draws) {
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(used)
+                    .inMovement(draw.lot())
+                    .quantity(draw.quantity())
+                    .build());
+            CompanyVendor lotVendor = draw.lot().getCompanyVendor();
+            if (lotVendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), lotVendor.getId())
+                        .ifPresent(vendor -> productVendorService.recordAllocationDrawdown(vendor, draw.quantity()));
+            }
+        }
+        stockMovementRepository.flush();
+        stockWriteUndoStore.record(used.getId(), tenantId, actingUserId, null, null, null, null, null);
+        return used;
     }
 
     /**
@@ -999,7 +1059,8 @@ public class StockManagementService {
         // remembers it, so a permission removed in the meantime is respected.
         String authority = switch (movement.getMovementType()) {
             case IN -> "STOCK_IN";
-            case OUT -> "STOCK_OUT";
+            // A kitchen count's shortfall is an OUT (Part 3.5), but undoing it undoes a count.
+            case OUT -> movement.isCount() ? "MANAGE_INVENTORY" : "STOCK_OUT";
             case ADJUSTMENT -> "MANAGE_INVENTORY";
             // Half a waybill is never undone on its own: the whole transfer is cancelled, before it
             // is received (TransferService.cancel), so both branches' figures move together.

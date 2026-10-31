@@ -391,6 +391,30 @@ public class BranchStockService {
     }
 
     /**
+     * {@code figures} of one product, each with when its area last counted it (Part 3.5): "Last counted today
+     * 18:05" on the count sheet. A count from before areas is the branch's original area's (D-E3).
+     */
+    public List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> withLastCounted(
+            UUID productId, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> figures) {
+        if (figures == null || figures.isEmpty()) {
+            return figures;
+        }
+        Map<UUID, java.time.OffsetDateTime> last = new HashMap<>();
+        jdbc.query("""
+                SELECT COALESCE(m.area_id, o.id) AS area_id, MAX(m.occurred_at) AS at
+                FROM stock_movements m LEFT JOIN areas o ON o.branch_id = m.branch_id AND o.is_original
+                WHERE m.product_id = :productId AND m.is_count
+                GROUP BY COALESCE(m.area_id, o.id)
+                """, new MapSqlParameterSource("productId", productId), rs -> {
+                    UUID area = rs.getObject("area_id", UUID.class);
+                    if (area != null) {
+                        last.put(area, rs.getObject("at", java.time.OffsetDateTime.class));
+                    }
+                });
+        return figures.stream().map(figure -> figure.withLastCountedAt(last.get(figure.areaId()))).toList();
+    }
+
+    /**
      * The switch (D-E2): {@code branchId}'s figures become its one area's, before a second area exists to
      * share them. At a one-branch company the product's own figure is the truth (the first mode above),
      * so that is what is copied; at a multi-branch company, the branch's row. The products are locked
@@ -496,6 +520,11 @@ public class BranchStockService {
      * Whether {@code branchId}'s areas hold its figures: it has ever had two, closed ones included, for
      * the reason the class javadoc gives for closed branches.
      */
+    public boolean isShortUsed(UUID areaId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT short_is_used FROM areas WHERE id = :id", new MapSqlParameterSource("id", areaId), Boolean.class));
+    }
+
     public boolean isAreaMode(UUID branchId) {
         return Boolean.TRUE.equals(jdbc.queryForObject(
                 "SELECT COUNT(*) > 1 FROM areas WHERE branch_id = :branchId",

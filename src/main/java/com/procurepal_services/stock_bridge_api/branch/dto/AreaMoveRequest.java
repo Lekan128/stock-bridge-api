@@ -28,7 +28,15 @@ public record AreaMoveRequest(
         @Size(max = 1000) String note,
         @NotEmpty @Size(max = 200) List<@Valid Line> lines) {
 
-    /** @param quantity in {@code unit}, or the stock unit when it is absent - whole numbers, as on every sheet. */
-    public record Line(@NotNull UUID productId, @NotNull @Positive Integer quantity, String unit) {
+    /**
+     * @param quantity in {@code unit}, or the stock unit when it is absent - whole numbers, as on every sheet.
+     * @param usedNow used straight away where it goes (Part 3.5): a crate of tomatoes for today's stew. The line is
+     *     recorded as used there at once - a give (D-E7) - and doesn't join the area's stock.
+     */
+    public record Line(@NotNull UUID productId, @NotNull @Positive Integer quantity, String unit, Boolean usedNow) {
+
+        public Line(UUID productId, Integer quantity, String unit) {
+            this(productId, quantity, unit, null);
+        }
     }
 }
