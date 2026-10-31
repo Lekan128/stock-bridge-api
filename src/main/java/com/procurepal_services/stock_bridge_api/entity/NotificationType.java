@@ -19,5 +19,9 @@ public enum NotificationType {
     /** To the people at a branch: stock is on its way to them (V53, MULTI_BRANCH_UX_PLAN.md section 5.13). */
     TRANSFER_ON_THE_WAY,
     /** To the sending branch and the owners: a waybill arrived short (V53). */
-    TRANSFER_RECEIVED_SHORT
+    TRANSFER_RECEIVED_SHORT,
+    /** To the people of an area that confirms: a move is waiting for them (V66, STOCK_AREAS_PART_4.md). */
+    AREA_MOVE_WAITING,
+    /** To the mover and the owners: an area confirmed a move short (V66). */
+    AREA_MOVE_SHORT
 }

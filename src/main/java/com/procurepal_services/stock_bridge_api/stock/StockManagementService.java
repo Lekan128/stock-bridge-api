@@ -425,10 +425,20 @@ public class StockManagementService {
      */
     private StockMutationResponse stockOut(
             UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse, UUID usedAreaId) {
+        return stockOut(productId, request, actingUserId, areaUse, usedAreaId, false);
+    }
+
+    /**
+     * @param forMove written by settling a move (Part 4) at its sending area, which the person confirming
+     *     needn't work in - the move was checked when it was made, and the confirmation against its own area.
+     */
+    private StockMutationResponse stockOut(
+            UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse, UUID usedAreaId, boolean forMove) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
-        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse, actingUserId);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse,
+                forMove ? null : actingUserId);
 
         ResolvedEntry entry = resolveEntry(
                 product, BigDecimal.valueOf(request.quantity()), SaleFacts.enteredPrice(request), request.unit(), null, null);
@@ -745,6 +755,95 @@ public class StockManagementService {
             absorbIntoLaterCount(product, branchId, toAreaId, -base, at, actingUserId);
         }
         return new AreaMovePiece(base, entry.enteredUnit(), entry.enteredQuantity(), null);
+    }
+
+    /**
+     * One line of a move to an area that confirms (Part 4, STOCK_AREAS_PART_4.md): it leaves the sending area
+     * now - handed over - and waits, in no area's figure and still in the branch's, until it is settled. The
+     * sending area's figure is the ceiling, as for any move; a late line a later count there already saw gone
+     * is put back as that count's adjustment, as {@link #moveBetweenAreas} does.
+     */
+    @Transactional
+    public AreaMovePiece holdForMove(
+            UUID productId,
+            UUID branchId,
+            UUID fromAreaId,
+            int quantity,
+            String unit,
+            OffsetDateTime occurredAt,
+            boolean recordedOffline,
+            UUID actingUserId) {
+        Product product = lockProductOrThrow(productId);
+        ResolvedEntry entry = resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, null, null);
+        int base = entry.baseQuantity();
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        boolean fromCounted = recordedOffline && countedAfter(productId, branchId, fromAreaId, at);
+        int available = branchStockService.quantityAt(product, branchId, fromAreaId);
+        if (!fromCounted && base > available) {
+            throw new InsufficientStockException(available, base, unitSymbol(product)).forProduct(productId);
+        }
+        branchStockService.holdInArea(product, branchId, fromAreaId, -base);
+        if (fromCounted) {
+            absorbIntoLaterCount(product, branchId, fromAreaId, base, at, actingUserId);
+        }
+        return new AreaMovePiece(base, entry.enteredUnit(), entry.enteredQuantity(), null);
+    }
+
+    /** What settling a waiting line wrote: the Used stock-out where what arrived was used there, else null. */
+    public record SettledLine(UUID usedMovementId) {
+    }
+
+    /**
+     * A waiting line settled (Part 4): confirmed - {@code got} arrived, the rest stayed behind or was damaged -
+     * or cancelled ({@code got} 0, nothing damaged). The hold goes back to the sending area first; then what
+     * arrived goes on into the receiving area, or, where it's used there ({@code keep} false: an area that uses
+     * what it's given, or a "used straight away" line), is a Used stock-out at the sending area tagged with the
+     * receiving one, as a give is (D-E7); what was damaged is a Damaged stock-out at the sending area (D-A9).
+     * Late from an offline phone, behind a count that already saw it: that side is put back as the count's
+     * adjustment, as for every late write.
+     */
+    @Transactional
+    public SettledLine settleWaitingLine(
+            UUID productId,
+            UUID branchId,
+            UUID fromAreaId,
+            UUID toAreaId,
+            int quantity,
+            int got,
+            boolean keep,
+            boolean restDamaged,
+            OffsetDateTime occurredAt,
+            boolean recordedOffline,
+            String usedNote,
+            String damagedNote,
+            UUID actingUserId) {
+        Product product = lockProductOrThrow(productId);
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        branchStockService.holdInArea(product, branchId, fromAreaId, quantity);
+        int rest = quantity - got;
+        UUID used = null;
+        if (got > 0 && keep) {
+            branchStockService.moveBetweenAreas(product, branchId, fromAreaId, toAreaId, got);
+            if (recordedOffline && countedAfter(productId, branchId, toAreaId, at)) {
+                absorbIntoLaterCount(product, branchId, toAreaId, -got, at, actingUserId);
+            }
+        } else if (got > 0) {
+            StockMutationResponse out = stockOut(productId,
+                    new StockOutRequest(got, null, usedNote, null, null, at, recordedOffline, OutReason.USED, null, null,
+                            branchId, fromAreaId),
+                    actingUserId, AreaUse.TAKE, toAreaId, true);
+            used = out.movement().id();
+        }
+        if (rest > 0 && restDamaged) {
+            stockOut(productId,
+                    new StockOutRequest(rest, null, damagedNote, null, null, at, recordedOffline, OutReason.DAMAGED, null,
+                            null, branchId, fromAreaId),
+                    actingUserId, AreaUse.TAKE, null, true);
+        } else if (rest > 0 && recordedOffline && countedAfter(productId, branchId, fromAreaId, at)) {
+            // Back in the sending area before a later count there, which already saw it.
+            absorbIntoLaterCount(product, branchId, fromAreaId, -rest, at, actingUserId);
+        }
+        return new SettledLine(used);
     }
 
     /** Undo of a move's line between two areas that keep stock: back where it came from. The caller checked it may. */

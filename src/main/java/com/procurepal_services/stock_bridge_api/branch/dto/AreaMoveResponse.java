@@ -10,8 +10,16 @@ import java.util.UUID;
  *
  * @param toKeepsStock false for a give to an area that uses what it's given: each line was recorded as Used
  *     there.
- * @param status {@code DONE}, or {@code VOIDED} once undone.
+ * @param status {@code DONE}, or {@code VOIDED} once undone; for a move to an area that confirms (Part 4)
+ *     {@code WAITING} until it does, then {@code DONE} (got everything) or {@code CONFIRMED_SHORT}, or
+ *     {@code CANCELLED} if it was taken back while waiting.
  * @param undoUntil until when its mover may undo it; absent once that is past or not possible.
+ * @param waits it went to an area that confirms, so its lines waited (Part 4).
+ * @param confirmedByName who confirmed it, and when; absent until then.
+ * @param canConfirm the person asking may confirm it: it waits for an area they work in, and they can record
+ *     stock in.
+ * @param canCancel the person asking may take it back while it waits: they moved it, or work where it was moved
+ *     from.
  */
 public record AreaMoveResponse(
         UUID id,
@@ -27,11 +35,20 @@ public record AreaMoveResponse(
         OffsetDateTime movedAt,
         String note,
         OffsetDateTime undoUntil,
-        List<Line> lines) {
+        List<Line> lines,
+        boolean waits,
+        String confirmedByName,
+        OffsetDateTime confirmedAt,
+        boolean canConfirm,
+        boolean canCancel) {
 
-    /** @param quantity in the product's stock unit; {@code enteredQuantity}/{@code enteredUnit} as typed. */
+    /**
+     * @param quantity in the product's stock unit; {@code enteredQuantity}/{@code enteredUnit} as typed.
+     * @param got what arrived, once a move that waited is confirmed (Part 4); absent before.
+     * @param damaged of what didn't arrive, what was recorded as damaged.
+     */
     public record Line(
             UUID productId, String productName, int quantity, BigDecimal enteredQuantity, String enteredUnit,
-            boolean used) {
+            boolean used, Integer got, int damaged) {
     }
 }

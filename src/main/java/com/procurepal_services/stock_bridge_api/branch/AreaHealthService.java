@@ -50,8 +50,15 @@ public class AreaHealthService {
                 """);
         long sumMismatch = count("WITH " + AREA_MODE + """
                 , sums AS (
-                    SELECT branch_id, product_id, SUM(quantity_on_hand) AS total FROM area_stock
-                    WHERE branch_id IN (SELECT branch_id FROM area_mode)
+                    -- What the areas hold, plus what waits for an area to confirm it (Part 4, D-E6).
+                    SELECT branch_id, product_id, SUM(quantity) AS total FROM (
+                        SELECT branch_id, product_id, quantity_on_hand AS quantity FROM area_stock
+                        WHERE branch_id IN (SELECT branch_id FROM area_mode)
+                        UNION ALL
+                        SELECT m.branch_id, l.product_id, l.quantity FROM area_moves m
+                        JOIN area_move_lines l ON l.move_id = m.id
+                        WHERE m.status = 'WAITING' AND m.branch_id IN (SELECT branch_id FROM area_mode)
+                    ) held
                     GROUP BY branch_id, product_id
                 ), figures AS (
                     SELECT branch_id, product_id, quantity_on_hand FROM branch_stock

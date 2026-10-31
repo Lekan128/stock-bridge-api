@@ -59,7 +59,7 @@ public class AreaService {
     /** One area as this service reads it. */
     private record AreaRow(
             UUID id, UUID branchId, String name, boolean keepsStock, boolean delivery, boolean original,
-            boolean active, OffsetDateTime closedAt, boolean shortIsUsed) {
+            boolean active, OffsetDateTime closedAt, boolean shortIsUsed, boolean confirms) {
     }
 
     // ---------------------------------------------------------------------------------------- reading
@@ -151,8 +151,8 @@ public class AreaService {
             boolean keepsStock = wanted.keepsStock() == null || wanted.keepsStock();
             boolean shortIsUsed = keepsStock && Boolean.TRUE.equals(wanted.shortIsUsed());
             UUID id = jdbc.queryForObject("""
-                    INSERT INTO areas (client_id, branch_id, name, keeps_stock, short_is_used, sort_order)
-                    VALUES (:clientId, :branchId, :name, :keepsStock, :shortIsUsed, :order)
+                    INSERT INTO areas (client_id, branch_id, name, keeps_stock, short_is_used, confirms, sort_order)
+                    VALUES (:clientId, :branchId, :name, :keepsStock, :shortIsUsed, :confirms, :order)
                     RETURNING id
                     """, new MapSqlParameterSource()
                             .addValue("clientId", clientId)
@@ -160,6 +160,7 @@ public class AreaService {
                             .addValue("name", names.get(i))
                             .addValue("keepsStock", keepsStock)
                             .addValue("shortIsUsed", shortIsUsed)
+                            .addValue("confirms", Boolean.TRUE.equals(wanted.confirms()))
                             .addValue("order", order++), UUID.class);
             added.add(toResponse(requireArea(id, clientId), keepsStock ? 0L : null));
         }
@@ -208,6 +209,12 @@ public class AreaService {
         if (shortIsUsed != area.shortIsUsed()) {
             jdbc.update("UPDATE areas SET short_is_used = :shortIsUsed WHERE id = :id",
                     new MapSqlParameterSource("id", areaId).addValue("shortIsUsed", shortIsUsed));
+        }
+
+        // Confirms what arrives (Part 4): any time. Moves already waiting still wait for it (§5.8).
+        if (request.confirms() != null && request.confirms() != area.confirms()) {
+            jdbc.update("UPDATE areas SET confirms = :confirms WHERE id = :id",
+                    new MapSqlParameterSource("id", areaId).addValue("confirms", request.confirms()));
         }
 
         if (Boolean.TRUE.equals(request.delivery()) && !area.delivery()) {
@@ -265,6 +272,14 @@ public class AreaService {
             throw new BranchChangeRefusedException(area.name() + " still has " + held + " "
                     + (held == 1 ? "item" : "items") + ". " + wayOut);
         }
+        // A move waiting to be confirmed there, or that left from there, still has somewhere to settle (§5.8).
+        Long waiting = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM area_moves WHERE status = 'WAITING' AND (to_area_id = :id OR from_area_id = :id)
+                """, new MapSqlParameterSource("id", area.id()), Long.class);
+        if (waiting != null && waiting > 0) {
+            throw new BranchChangeRefusedException(area.name() + " has " + (waiting == 1 ? "a move" : waiting + " moves")
+                    + " waiting to be confirmed. Confirm or cancel " + (waiting == 1 ? "it" : "them") + " first.");
+        }
     }
 
     /** The branch, if it is this company's and this person works there; its name and whether it's open. */
@@ -299,7 +314,7 @@ public class AreaService {
     private List<AreaRow> rows(String where, MapSqlParameterSource params) {
         return jdbc.query("""
                 SELECT a.id, a.branch_id, a.name, a.keeps_stock, a.is_delivery, a.is_original, a.is_active, a.closed_at,
-                       a.short_is_used
+                       a.short_is_used, a.confirms
                 FROM areas a
                 """ + where + " ORDER BY a.is_active DESC, a.sort_order, a.created_at", params,
                 (rs, n) -> new AreaRow(
@@ -311,12 +326,13 @@ public class AreaService {
                         rs.getBoolean("is_original"),
                         rs.getBoolean("is_active"),
                         rs.getObject("closed_at", OffsetDateTime.class),
-                        rs.getBoolean("short_is_used")));
+                        rs.getBoolean("short_is_used"),
+                        rs.getBoolean("confirms")));
     }
 
     private static AreaResponse toResponse(AreaRow area, Long productsInStock) {
         return new AreaResponse(area.id(), area.name(), area.keepsStock(), area.delivery(), area.active(),
-                area.closedAt(), productsInStock, null, area.shortIsUsed());
+                area.closedAt(), productsInStock, null, area.shortIsUsed(), area.confirms());
     }
 
     private static String requireName(String raw) {

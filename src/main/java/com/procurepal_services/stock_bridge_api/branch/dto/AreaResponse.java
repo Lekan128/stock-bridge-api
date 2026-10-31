@@ -15,6 +15,7 @@ import java.util.UUID;
  *     used, not what's missing (Part 3.5, D-A12). False where it's stored, and where it keeps no stock.
  * @param worksHere whether the signed-in person works in it (V64, STOCK_AREAS_PART_3.md): the branch list
  *     says so for each area; absent on the answer to a change.
+ * @param confirms moves to it wait until someone there confirms what arrived (Part 4, D-A2).
  */
 public record AreaResponse(
         UUID id,
@@ -25,9 +26,11 @@ public record AreaResponse(
         OffsetDateTime closedAt,
         Long productsInStock,
         Boolean worksHere,
-        boolean shortIsUsed) {
+        boolean shortIsUsed,
+        boolean confirms) {
 
     public AreaResponse withWorksHere(boolean works) {
-        return new AreaResponse(id, name, keepsStock, delivery, active, closedAt, productsInStock, works, shortIsUsed);
+        return new AreaResponse(id, name, keepsStock, delivery, active, closedAt, productsInStock, works, shortIsUsed,
+                confirms);
     }
 }

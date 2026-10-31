@@ -1,9 +1,11 @@
 package com.procurepal_services.stock_bridge_api.branch;
 
+import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveConfirmRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveResponse;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -41,6 +43,31 @@ public class AreaMoveController {
     @PreAuthorize("hasAuthority('STOCK_OUT')")
     public AreaMoveResponse undo(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return areaMoveService.undo(id, principal.getUserId());
+    }
+
+    /** Confirms what arrived of a move waiting for an area that confirms (Part 4): recording stock in, in that area. */
+    @PostMapping("/api/area-moves/{id}/confirm")
+    @PreAuthorize("hasAuthority('STOCK_IN')")
+    public AreaMoveResponse confirm(
+            @PathVariable UUID id,
+            @Valid @RequestBody(required = false) AreaMoveConfirmRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return areaMoveService.confirm(id, request == null ? AreaMoveConfirmRequest.everything() : request,
+                principal.getUserId());
+    }
+
+    /** Takes back a move still waiting (Part 4): its mover, or someone where it left from - checked by the service. */
+    @PostMapping("/api/area-moves/{id}/cancel")
+    @PreAuthorize("hasAnyAuthority('STOCK_OUT', 'MANAGE_INVENTORY')")
+    public AreaMoveResponse cancel(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return areaMoveService.cancel(id, principal.getUserId());
+    }
+
+    /** The moves waiting for this person to confirm (Part 4), at one branch or every one they see. */
+    @GetMapping("/api/area-moves/waiting")
+    public List<AreaMoveResponse> waiting(
+            @RequestParam(required = false) UUID branchId, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return areaMoveService.waitingFor(principal.getUserId(), branchId);
     }
 
     @GetMapping("/api/area-moves/{id}")

@@ -12,11 +12,16 @@ public record AreaRequest(@NotEmpty @Size(max = 20) List<@Valid NewArea> areas) 
      * @param keepsStock absent means it keeps stock - the answer the setup suggests when unsure.
      * @param shortIsUsed where it keeps stock, whether stock is worked with there (Kitchen, Bar: a count that
      *     comes up short is what was used) rather than stored (absent: stored) - Part 3.5, D-A12.
+     * @param confirms moves to it wait until someone there confirms them (Part 4, D-A2); absent: they don't.
      */
-    public record NewArea(@Size(max = 80) String name, Boolean keepsStock, Boolean shortIsUsed) {
+    public record NewArea(@Size(max = 80) String name, Boolean keepsStock, Boolean shortIsUsed, Boolean confirms) {
 
         public NewArea(String name, Boolean keepsStock) {
-            this(name, keepsStock, null);
+            this(name, keepsStock, null, null);
+        }
+
+        public NewArea(String name, Boolean keepsStock, Boolean shortIsUsed) {
+            this(name, keepsStock, shortIsUsed, null);
         }
     }
 }

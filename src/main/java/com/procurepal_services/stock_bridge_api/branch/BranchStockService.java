@@ -379,12 +379,25 @@ public class BranchStockService {
                     held.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
                             .put(rs.getObject("area_id", UUID.class), rs.getInt("quantity_on_hand"));
                 });
+        // Moved there and not confirmed yet (Part 4): on its way in, in neither area's figure.
+        Map<UUID, Map<UUID, Integer>> waiting = new HashMap<>();
+        jdbc.query("""
+                SELECT l.product_id, m.to_area_id, SUM(l.quantity) AS waiting
+                FROM area_moves m JOIN area_move_lines l ON l.move_id = m.id
+                WHERE m.status = 'WAITING' AND l.product_id = ANY(:productIds) AND m.to_area_id = ANY(:areaIds)
+                GROUP BY l.product_id, m.to_area_id
+                """, params, rs -> {
+                    waiting.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
+                            .put(rs.getObject("to_area_id", UUID.class), rs.getInt("waiting"));
+                });
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> figures = new HashMap<>();
         for (UUID product : productIds) {
             Map<UUID, Integer> at = held.getOrDefault(product, Map.of());
+            Map<UUID, Integer> coming = waiting.getOrDefault(product, Map.of());
             figures.put(product, areas.stream()
                     .map(area -> new com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure(
-                            area[0], area[1], at.getOrDefault(area[0], 0), at.containsKey(area[0])))
+                            area[0], area[1], at.getOrDefault(area[0], 0), at.containsKey(area[0]),
+                            coming.getOrDefault(area[0], 0)))
                     .toList());
         }
         return figures;
@@ -478,17 +491,54 @@ public class BranchStockService {
     }
 
     /**
+     * One area's figure up or down by {@code delta} and nothing else (Part 4): a move to an area that confirms
+     * holds its lines here - off the sending area, in no area, still in the branch's figure - and gives them
+     * back when it is settled. The caller holds the product's lock and has checked the area has it.
+     */
+    public void holdInArea(Product product, UUID branchId, UUID areaId, int delta) {
+        jdbc.update("""
+                INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand)
+                VALUES (:clientId, :areaId, :branchId, :productId, :delta)
+                ON CONFLICT (area_id, product_id)
+                DO UPDATE SET quantity_on_hand = area_stock.quantity_on_hand + :delta
+                """, new MapSqlParameterSource()
+                        .addValue("clientId", product.getClientId())
+                        .addValue("areaId", areaId)
+                        .addValue("branchId", branchId)
+                        .addValue("productId", product.getId())
+                        .addValue("delta", delta));
+    }
+
+    /**
      * The net of {@code productId}'s moves into and out of {@code areaId} after {@code after} - what a count
      * of the area taken then is carried forward by, beside its stock movements. Gives to an area that uses
      * what it's given are left out: each is a stock-out row, already in the ledger's share.
+     *
+     * <p>A move that waited for its area to confirm (Part 4) left the sending area when it was moved; when it
+     * was settled, what went on arrived in the receiving area and the rest came back (what was used there or
+     * damaged then left again as stock-out rows, in the ledger's share). An undone one changed nothing.
      */
     public long moveNetAfter(UUID productId, UUID branchId, UUID areaId, java.time.OffsetDateTime after) {
         Long net = jdbc.queryForObject("""
-                SELECT COALESCE(SUM(CASE WHEN m.to_area_id = :areaId THEN l.quantity ELSE -l.quantity END), 0)
-                FROM area_moves m JOIN area_move_lines l ON l.move_id = m.id
-                WHERE m.branch_id = :branchId AND l.product_id = :productId AND m.status = 'DONE'
-                  AND l.used_movement_id IS NULL AND m.moved_at > :after
-                  AND (m.from_area_id = :areaId OR m.to_area_id = :areaId)
+                WITH lines AS (
+                    SELECT m.from_area_id, m.to_area_id, m.status, m.waits, m.moved_at,
+                           COALESCE(m.confirmed_at, m.cancelled_at) AS settled_at, l.quantity, l.used_movement_id,
+                           CASE WHEN ta.keeps_stock AND NOT l.used_now THEN COALESCE(l.quantity_confirmed, 0) ELSE 0 END
+                               AS kept
+                    FROM area_moves m JOIN area_move_lines l ON l.move_id = m.id JOIN areas ta ON ta.id = m.to_area_id
+                    WHERE m.branch_id = :branchId AND l.product_id = :productId AND m.status <> 'VOIDED'
+                      AND (m.from_area_id = :areaId OR m.to_area_id = :areaId)
+                )
+                SELECT COALESCE(SUM(piece), 0) FROM (
+                    SELECT CASE WHEN to_area_id = :areaId THEN quantity ELSE -quantity END AS piece FROM lines
+                    WHERE NOT waits AND status = 'DONE' AND used_movement_id IS NULL AND moved_at > :after
+                    UNION ALL
+                    SELECT -quantity FROM lines WHERE waits AND from_area_id = :areaId AND moved_at > :after
+                    UNION ALL
+                    SELECT quantity - kept FROM lines WHERE waits AND from_area_id = :areaId AND settled_at > :after
+                    UNION ALL
+                    SELECT kept FROM lines WHERE waits AND to_area_id = :areaId AND settled_at > :after
+                ) pieces
                 """, new MapSqlParameterSource()
                         .addValue("productId", productId)
                         .addValue("branchId", branchId)

@@ -17,7 +17,8 @@ import org.springframework.stereotype.Component;
  * (STOCK_AREAS_PART_2.md, owner's test): one row per line, type {@link MovementType#MOVE}, from
  * {@code areaId} to {@code toAreaId}. Only moves that are done and went to an area that keeps stock: a
  * give to an area that uses what it's given is already a Used stock-out in the ledger, and an undone
- * move changed nothing (the Moves list still shows it, as undone).
+ * move changed nothing (the Moves list still shows it, as undone). A move that waited for its area to confirm
+ * (Part 4) is a row once confirmed, for what arrived; while it waits, the Moves list shows it.
  */
 @Component
 @RequiredArgsConstructor
@@ -47,9 +48,11 @@ class MoveRows {
         }
         MapSqlParameterSource params = new MapSqlParameterSource("clientId", clientId).addValue("limit", limit);
         StringBuilder where = new StringBuilder(
-                "m.client_id = :clientId AND m.status = 'DONE' AND ta.keeps_stock = TRUE"
+                "m.client_id = :clientId AND ta.keeps_stock = TRUE"
+                        + " AND ((NOT m.waits AND m.status = 'DONE')"
+                        + " OR (m.waits AND m.status IN ('DONE', 'CONFIRMED_SHORT') AND l.quantity_confirmed > 0))"
                         // A line used straight away (Part 3.5) is a Used stock-out row already.
-                        + " AND l.used_movement_id IS NULL");
+                        + " AND l.used_movement_id IS NULL AND NOT l.used_now");
         if (branchIds != null) {
             where.append(" AND m.branch_id = ANY(:branchIds)");
             params.addValue("branchIds", branchIds.toArray(UUID[]::new));
@@ -81,8 +84,14 @@ class MoveRows {
         }
         String order = byCreatedAt ? "m.created_at DESC, m.moved_at DESC" : "m.moved_at DESC, m.created_at DESC";
         List<StockMovementResponse> rows = jdbc.query("""
-                SELECT l.move_id, l.product_id, p.name, p.sku, p.unit_of_measure, l.quantity, l.entered_unit,
-                       l.entered_quantity, m.note, m.moved_by, m.moved_at, m.created_at, m.branch_id,
+                SELECT l.move_id, l.product_id, p.name, p.sku, p.unit_of_measure,
+                       CASE WHEN m.waits THEN l.quantity_confirmed ELSE l.quantity END AS quantity,
+                       -- As typed, unless less arrived than was typed.
+                       CASE WHEN m.waits AND l.quantity_confirmed <> l.quantity THEN NULL ELSE l.entered_unit END
+                           AS entered_unit,
+                       CASE WHEN m.waits AND l.quantity_confirmed <> l.quantity THEN NULL ELSE l.entered_quantity END
+                           AS entered_quantity,
+                       m.note, m.moved_by, m.moved_at, m.created_at, m.branch_id,
                        m.from_area_id, fa.name AS from_name, m.to_area_id, ta.name AS to_name,
                        NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), '') AS full_name,
                        u.username
