@@ -223,7 +223,7 @@ public class AreaService {
                 throw new BranchChangeRefusedException("Reopen " + now.name() + " before deliveries can arrive there.");
             }
             if (!now.keepsStock()) {
-                throw new BranchChangeRefusedException(now.name() + " uses what it's given, so deliveries can't arrive there.");
+                throw new BranchChangeRefusedException(now.name() + " uses stock up as soon as it arrives, so it can't be where deliveries come in.");
             }
             // The old one first: one delivery area per branch is a unique index.
             jdbc.update("UPDATE areas SET is_delivery = FALSE WHERE branch_id = :branchId AND is_delivery",

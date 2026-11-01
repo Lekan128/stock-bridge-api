@@ -165,7 +165,7 @@ class AreaStockIntegrationTest {
         ResponseEntity<String> foreign = write(s, "stock-in", in(body(3), theirs), String.class);
 
         assertThat(used.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(used.getBody()).contains("Housekeeping uses what it's given");
+        assertThat(used.getBody()).contains("Housekeeping uses stock up as soon as it arrives");
         assertThat(foreign.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(foreign.getBody()).contains("That area was not found");
         assertThat(product(s).quantityOnHand()).isZero();

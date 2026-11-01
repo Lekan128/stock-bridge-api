@@ -8,6 +8,6 @@ package com.procurepal_services.stock_bridge_api.branch;
 public class AreaKeepsNoStockException extends RuntimeException {
 
     public AreaKeepsNoStockException(String areaName) {
-        super(areaName + " uses what it's given, so it has no stock to record against.");
+        super(areaName + " uses stock up as soon as it arrives, so it has no stock to record against.");
     }
 }

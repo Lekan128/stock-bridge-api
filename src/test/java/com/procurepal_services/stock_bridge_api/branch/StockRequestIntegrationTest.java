@@ -302,7 +302,7 @@ class StockRequestIntegrationTest {
 
         assertThat(raw(cook, a.store(), bar).getStatusCode()).as("for the Bar, which the cook isn't in")
                 .isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(raw(cook, housekeeping, a.other()).getBody()).contains("Housekeeping uses what it's given");
+        assertThat(raw(cook, housekeeping, a.other()).getBody()).contains("Housekeeping uses stock up as soon as it arrives");
         assertThat(raw(cook, a.other(), a.other()).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         UUID id = UUID.randomUUID();
         ask(cook, id, a.store(), a.other(), List.of(askLine(s.productId(), 2)));

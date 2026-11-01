@@ -192,7 +192,7 @@ class AreaManagementIntegrationTest {
         ResponseEntity<String> toKitchen = patch(s, kitchen, Map.of("delivery", true, "name", "Main kitchen"));
         stockIn(s, body(5));
 
-        assertThat(toUsed.getBody()).contains("Housekeeping uses what it's given, so deliveries can't arrive there.");
+        assertThat(toUsed.getBody()).contains("Housekeeping uses stock up as soon as it arrives, so it can't be where deliveries come in.");
         assertThat(toKitchen.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(areaFigure(kitchen, s)).isEqualTo(5);
         assertThat(areaFigure(store, s)).isZero();

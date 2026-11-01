@@ -133,7 +133,7 @@ class AreaMoveIntegrationTest {
         assertThat(tooMuch.getBody().availableQuantity()).isEqualTo(5);
         assertThat(same.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(same.getBody()).contains("Choose two different areas");
-        assertThat(fromUsed.getBody()).contains("Housekeeping uses what it's given");
+        assertThat(fromUsed.getBody()).contains("Housekeeping uses stock up as soon as it arrives");
         assertThat(toClosed.getBody()).contains("Bar is closed.");
         assertThat(toTheirs.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(areaFigure(a.store(), s)).isEqualTo(5);
