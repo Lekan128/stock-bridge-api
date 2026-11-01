@@ -66,8 +66,8 @@ public class AreaMoveController {
     }
 
     /**
-     * Gives back, or reports, part of a give to an area that uses stock up (Part 6): someone who works there and can
-     * record stock in or out - checked by the service.
+     * Gives back, or reports, part of what an area received (Part 6): someone who works there and can record stock
+     * in or out - checked by the service.
      */
     @PostMapping("/api/area-moves/{id}/returns")
     @PreAuthorize("hasAnyAuthority('STOCK_IN', 'STOCK_OUT')")
@@ -78,11 +78,11 @@ public class AreaMoveController {
         return areaReturnService.record(id, request, principal.getUserId());
     }
 
-    /** What was given lately to the areas that use stock up where this person works (Part 6). */
-    @GetMapping("/api/area-moves/given")
-    public List<AreaMoveResponse> given(
+    /** What arrived lately in the areas this person works in, to give back or report (Part 6). */
+    @GetMapping("/api/area-moves/received")
+    public List<AreaMoveResponse> received(
             @RequestParam(required = false) UUID branchId, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return areaMoveService.givenTo(principal.getUserId(), branchId);
+        return areaMoveService.receivedBy(principal.getUserId(), branchId);
     }
 
     /** The moves waiting for this person to confirm (Part 4), at one branch or every one they see. */

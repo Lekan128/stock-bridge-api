@@ -296,18 +296,18 @@ public class AreaMoveService {
     }
 
     /**
-     * What was given in the last {@link AreaReturns#WINDOW} to the areas that use stock up where this person works
-     * (Part 6), newest first - what they may give back or report part of.
+     * What arrived in the last {@link AreaReturns#WINDOW} in the areas this person works in (Part 6), newest first -
+     * what they may give back or report part of. Moves that were themselves a give back aren't offered again.
      */
     @Transactional(readOnly = true)
-    public List<AreaMoveResponse> givenTo(UUID userId, UUID branchId) {
+    public List<AreaMoveResponse> receivedBy(UUID userId, UUID branchId) {
         UUID clientId = requireTenantId();
         List<UUID> branches = branchAccessService.reportScope(userId, branchId);
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("clientId", clientId)
                 .addValue("branchIds", branches.toArray(UUID[]::new))
                 .addValue("since", OffsetDateTime.now().minus(AreaReturns.WINDOW));
-        return read("m.client_id = :clientId AND m.branch_id = ANY(:branchIds) AND NOT ta.keeps_stock"
+        return read("m.client_id = :clientId AND m.branch_id = ANY(:branchIds) AND m.gives_back_move_id IS NULL"
                 + " AND m.status IN ('DONE', 'CONFIRMED_SHORT') AND m.moved_at > :since", params, userId, 0, 100)
                 .stream().filter(AreaMoveResponse::canReturn).toList();
     }
@@ -489,7 +489,7 @@ public class AreaMoveService {
         List<Map<String, Object>> moves = jdbc.queryForList("""
                 SELECT m.id, m.branch_id, m.from_area_id, fa.name AS from_name, m.to_area_id, ta.name AS to_name,
                        ta.keeps_stock AS to_keeps_stock, m.status, m.waits, m.moved_by, m.moved_at, m.note, m.created_at,
-                       m.recorded_offline, m.confirmed_at, m.confirm_note,
+                       m.recorded_offline, m.confirmed_at, m.confirm_note, m.gives_back_move_id,
                        NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), '') AS full_name,
                        u.username,
                        NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), '') AS confirmed_full_name,
@@ -532,8 +532,7 @@ public class AreaMoveService {
                 });
         Map<UUID, Map<UUID, List<AreaMoveResponse.Return>>> returns = areaReturns.byMove(
                 moves.stream().map(m -> (UUID) m.get("id")).toList());
-        boolean anyGive = moves.stream().anyMatch(m -> !Boolean.TRUE.equals(m.get("to_keeps_stock")));
-        AreaAccessService.Limits returnLimits = anyGive && userId != null && areaReturns.mayRecord(userId)
+        AreaAccessService.Limits returnLimits = userId != null && areaReturns.mayRecord(userId)
                 ? areaAccessService.limits(userId) : null;
         // What this person may do with a move that waits: worked out once, not per move.
         boolean anyWaiting = moves.stream().anyMatch(m -> "WAITING".equals(m.get("status")));
@@ -578,7 +577,7 @@ public class AreaMoveService {
                             .map(line -> {
                                 List<AreaMoveResponse.Return> back = returns.getOrDefault(id, Map.of())
                                         .getOrDefault(line.productId(), List.of());
-                                int used = toKeepsStock ? 0 : (line.got() != null ? line.got() : line.quantity());
+                                int used = line.got() != null ? line.got() : line.quantity();
                                 return new AreaMoveResponse.Line(line.productId(), line.productName(), line.quantity(),
                                         line.enteredQuantity(), line.enteredUnit(), !toKeepsStock || line.used(), line.got(),
                                         line.damaged(), line.unitOfMeasure(), line.restReason(), back,
@@ -591,7 +590,7 @@ public class AreaMoveService {
                     canConfirm,
                     canCancel,
                     (String) m.get("confirm_note"),
-                    !toKeepsStock && returnLimits != null
+                    returnLimits != null && m.get("gives_back_move_id") == null
                             && ("DONE".equals(m.get("status")) || "CONFIRMED_SHORT".equals(m.get("status")))
                             && timestamp(m.get("moved_at")).isAfter(OffsetDateTime.now().minus(AreaReturns.WINDOW))
                             && returnLimits.worksIn(branchId, (UUID) m.get("to_area_id"))

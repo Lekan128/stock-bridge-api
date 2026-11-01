@@ -21,8 +21,8 @@ import java.util.UUID;
  * @param canCancel the person asking may take it back while it waits: they moved it, or work where it was moved
  *     from.
  * @param confirmNote the confirmer's words about what didn't arrive (Part 6).
- * @param canReturn the person asking may give back or report part of it (Part 6): a give to an area that uses
- *     stock up, they work there, within {@code AreaReturns.WINDOW}.
+ * @param canReturn the person asking may give back or report part of it (Part 6): it arrived in an area they work
+ *     in, within {@code AreaReturns.WINDOW}, and wasn't itself a give back.
  */
 public record AreaMoveResponse(
         UUID id,

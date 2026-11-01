@@ -144,7 +144,7 @@ class AreaReturnIntegrationTest {
         assertHealthy();
     }
 
-    /** Only its people, only an area that uses stock up, only within 7 days. */
+    /** Only its people, only within 7 days. */
     @Test
     void whoMayGiveBackAndWhen() {
         Session s = session("Return Who");
@@ -159,10 +159,10 @@ class AreaReturnIntegrationTest {
         assertThat(post(cook, "/api/area-moves/" + given.id() + "/returns",
                 returnBody(UUID.randomUUID(), s, "GIVE_BACK", 1, null, null), String.class).getStatusCode())
                 .as("the cook isn't in Housekeeping").isEqualTo(HttpStatus.FORBIDDEN);
-        assertThat(given(cook)).isEmpty();
-        assertThat(post(s, "/api/area-moves/" + toKitchen.id() + "/returns",
-                returnBody(UUID.randomUUID(), s, "REPORT", 1, "SPOILT", null), String.class).getBody())
-                .contains("The Kitchen keeps its stock");
+        assertThat(given(cook)).singleElement().satisfies(move -> assertThat(move.id()).isEqualTo(toKitchen.id()));
+        assertThat(post(maid, "/api/area-moves/" + toKitchen.id() + "/returns",
+                returnBody(UUID.randomUUID(), s, "GIVE_BACK", 1, null, null), String.class).getStatusCode())
+                .as("the maid isn't in the Kitchen").isEqualTo(HttpStatus.FORBIDDEN);
         jdbc.update("UPDATE area_moves SET moved_at = now() - interval '8 days' WHERE id = :id",
                 new MapSqlParameterSource("id", given.id()));
         assertThat(post(maid, "/api/area-moves/" + given.id() + "/returns",
@@ -214,6 +214,54 @@ class AreaReturnIntegrationTest {
         assertHealthy();
     }
 
+    /**
+     * The Kitchen keeps its stock (owner, 2026-11-01: "the kitchen might accept the can and want to give it back on
+     * inspection that it has expired"): a give back is a move back to the Store, linked to this one, saying why - not
+     * offered to be given back itself; a report is a stock-out at the Kitchen; never more than the Kitchen has.
+     */
+    @Test
+    void theKitchenGivesBackAnExpiredTinAndReportsASpoiltOne() {
+        Session s = session("Return Kitchen");
+        stockIn(s, 10);
+        Areas a = areas(s, "Kitchen", true, false);
+        Session cook = person(s, "cook", List.of(a.other()));
+        AreaMoveResponse moved = move(s, a.store(), a.other(), 4);
+
+        UUID backId = UUID.randomUUID();
+        AreaMoveResponse back = giveBackOrReport(cook, moved.id(), returnBody(backId, s, "GIVE_BACK", 1, "EXPIRED", "Dented and puffed"));
+
+        assertThat(areaFigure(a.store(), s)).isEqualTo(7);
+        assertThat(areaFigure(a.other(), s)).isEqualTo(3);
+        assertThat(branchFigure(s)).isEqualTo(10);
+        assertThat(back.lines().getFirst().returns()).singleElement().satisfies(r -> assertThat(r.reason()).isEqualTo("EXPIRED"));
+        AreaMoveResponse moveBack = get(cook, "/api/area-moves/" + backId, AreaMoveResponse.class);
+        assertThat(moveBack.fromAreaName()).isEqualTo("Kitchen");
+        assertThat(moveBack.toAreaName()).isEqualTo("Store");
+        assertThat(moveBack.note()).isEqualTo("Given back, expired: Dented and puffed");
+        assertThat(moveBack.canReturn()).as("a give back isn't given back again").isFalse();
+        assertThat(jdbc.queryForObject("SELECT title FROM notifications WHERE user_id = :u AND type = 'AREA_RETURN'",
+                new MapSqlParameterSource("u", s.login().user().id()), String.class))
+                .isEqualTo("The Kitchen gave back 1 unit of " + product(s).name() + ": expired");
+
+        giveBackOrReport(cook, moved.id(), returnBody(UUID.randomUUID(), s, "REPORT", 1, "SPOILT", "Mould"));
+        assertThat(areaFigure(a.other(), s)).isEqualTo(2);
+        assertThat(branchFigure(s)).isEqualTo(9);
+        Map<String, Object> out = jdbc.queryForMap(
+                "SELECT out_reason, area_id, note FROM stock_movements WHERE product_id = :p AND movement_type = 'OUT'",
+                new MapSqlParameterSource("p", s.productId()));
+        assertThat(out).containsEntry("out_reason", "DAMAGED").containsEntry("area_id", a.other())
+                .containsEntry("note", "Spoilt in the Kitchen: Mould");
+
+        // The Kitchen used the other 2: there's nothing there to give back, whatever the move said.
+        ResponseEntity<String> used = post(s, "/api/products/" + s.productId() + "/stock/stock-out",
+                Map.of("quantity", 2, "areaId", a.other().toString()), String.class);
+        assertThat(used.getStatusCode()).as(used.getBody()).isEqualTo(HttpStatus.OK);
+        assertThat(post(cook, "/api/area-moves/" + moved.id() + "/returns",
+                returnBody(UUID.randomUUID(), s, "GIVE_BACK", 1, null, null), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.CONFLICT);
+        assertHealthy();
+    }
+
     private static Map<String, Object> returnBody(UUID id, Session s, String kind, int quantity, String reason, String note) {
         Map<String, Object> body = new HashMap<>();
         body.put("id", id.toString());
@@ -236,7 +284,7 @@ class AreaReturnIntegrationTest {
     }
 
     private List<AreaMoveResponse> given(Session who) {
-        return restTemplate.exchange("/api/area-moves/given", HttpMethod.GET, new HttpEntity<>(auth(who)),
+        return restTemplate.exchange("/api/area-moves/received", HttpMethod.GET, new HttpEntity<>(auth(who)),
                 new ParameterizedTypeReference<List<AreaMoveResponse>>() {}).getBody();
     }
 

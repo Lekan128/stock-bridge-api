@@ -1,13 +1,16 @@
 package com.procurepal_services.stock_bridge_api.branch;
 
+import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveResponse;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaReturnRequest;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
+import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.notification.NotificationService;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
 import com.procurepal_services.stock_bridge_api.settlement.PayoutCadence;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
 import com.procurepal_services.stock_bridge_api.stock.StockWritePermissionGuard;
+import com.procurepal_services.stock_bridge_api.stock.dto.StockOutRequest;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -26,12 +29,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Giving back and reporting from an area that uses stock up as soon as it arrives (STOCK_AREAS_PART_6.md,
- * STOCK_AREAS_PLAN.md §5.6, D-A6): Housekeeping got 3 bags of rice and used 2 - it gives 1 back to the Store, or
- * reports tomatoes spoilt. Picked from a give of the last {@link AreaReturns#WINDOW}; never more than was used of
- * the line, less what's come back or been reported already. A give back is a partial reversal of the Used
- * stock-out at the Store ({@link StockManagementService#giveBack}); a report changes no figure. Either way the
- * area it came from and the owner hear about it, once each.
+ * Giving back and reporting what an area received (STOCK_AREAS_PART_6.md, STOCK_AREAS_PLAN.md §5.6, D-A6; owner,
+ * 2026-11-01: "the kitchen might accept the can and want to give it back on inspection that it has expired").
+ * Picked from a move of the last {@link AreaReturns#WINDOW}; never more than arrived of the line, less what's come
+ * back or been reported already.
+ * <ul>
+ *   <li>From an area that keeps stock (the Kitchen): a give back is a move back to where it came from, linked to
+ *       this one, saying why; a report is a stock-out there with its reason.</li>
+ *   <li>From an area that uses stock up (Housekeeping), or a line used straight away: a give back is a partial
+ *       reversal of the Used stock-out ({@link StockManagementService#giveBack}); a report changes no figure.</li>
+ * </ul>
+ * Either way the area it came from and the owner hear about it, once each.
  *
  * <p>Who may (D-E9, from the database on every call): someone who works in that area and can record stock in or out.
  */
@@ -63,7 +71,7 @@ public class AreaReturnService {
             return areaMoveService.get(moveId, userId);
         }
         List<Map<String, Object>> found = jdbc.queryForList("""
-                SELECT m.id, m.branch_id, m.from_area_id, m.to_area_id, m.status, m.moved_at, m.moved_by,
+                SELECT m.id, m.branch_id, m.from_area_id, m.to_area_id, m.status, m.moved_at, m.moved_by, m.waits,
                        fa.name AS from_name, ta.name AS to_name, ta.keeps_stock AS to_keeps_stock
                 FROM area_moves m JOIN areas fa ON fa.id = m.from_area_id JOIN areas ta ON ta.id = m.to_area_id
                 WHERE m.id = :id AND m.client_id = :clientId
@@ -73,10 +81,6 @@ public class AreaReturnService {
         }
         Map<String, Object> move = found.getFirst();
         String toName = (String) move.get("to_name");
-        if (Boolean.TRUE.equals(move.get("to_keeps_stock"))) {
-            throw new BranchChangeRefusedException("The " + toName + " keeps its stock: record what's spoilt there as a "
-                    + "stock-out, or move it back.");
-        }
         String status = (String) move.get("status");
         if (!"DONE".equals(status) && !"CONFIRMED_SHORT".equals(status)) {
             throw new BranchChangeRefusedException("WAITING".equals(status)
@@ -110,6 +114,7 @@ public class AreaReturnService {
             throw new BranchChangeRefusedException("That product isn't on this move.");
         }
         Map<String, Object> line = lines.getFirst();
+        // What arrived of it (Part 4: what was confirmed, when it waited).
         int used = line.get("quantity_confirmed") != null ? ((Number) line.get("quantity_confirmed")).intValue()
                 : ((Number) line.get("quantity")).intValue();
         int already = jdbc.queryForObject("""
@@ -128,21 +133,39 @@ public class AreaReturnService {
         }
 
         String note = blankToNull(request.note());
+        boolean late = Boolean.TRUE.equals(request.recordedOffline());
+        UUID usedMovementId = (UUID) line.get("used_movement_id");
+        // Used up there (Housekeeping, or a line used straight away): nothing in the area's figure to take it from.
+        boolean usedUp = !Boolean.TRUE.equals(move.get("to_keeps_stock")) || usedMovementId != null;
+        String why = request.reason() == null ? null : reasonWord(request.reason());
         UUID movementId = null;
-        if (request.kind() == AreaReturnRequest.Kind.GIVE_BACK) {
-            UUID usedMovementId = (UUID) line.get("used_movement_id");
+        UUID backMoveId = null;
+        if (request.kind() == AreaReturnRequest.Kind.GIVE_BACK && usedUp) {
             if (usedMovementId == null) {
                 throw new BranchChangeRefusedException("This give can't be taken back here. Move it back instead.");
             }
             movementId = stockManagementService.giveBack(usedMovementId, quantity,
-                    "Given back by the " + toName + (note != null ? ": " + note : ""), at,
-                    Boolean.TRUE.equals(request.recordedOffline()), userId).getId();
+                    "Given back by the " + toName + (why != null ? ", " + why : "") + (note != null ? ": " + note : ""),
+                    at, late, userId).getId();
+        } else if (request.kind() == AreaReturnRequest.Kind.GIVE_BACK) {
+            // A move back to where it came from, its own id the give back's (a resend is one), linked to this move.
+            backMoveId = request.id();
+            areaMoveService.move(new AreaMoveRequest(backMoveId, branchId, toAreaId, (UUID) move.get("from_area_id"), at,
+                    late, "Given back" + (why != null ? ", " + why : "") + (note != null ? ": " + note : ""),
+                    List.of(new AreaMoveRequest.Line(request.productId(), quantity, null))), userId);
+            jdbc.update("UPDATE area_moves SET gives_back_move_id = :moveId WHERE id = :id",
+                    new MapSqlParameterSource().addValue("moveId", moveId).addValue("id", backMoveId));
+        } else if (!usedUp) {
+            // Reported from an area that keeps stock: written off there, for its reason.
+            movementId = stockManagementService.stockOut(request.productId(), new StockOutRequest(quantity, null,
+                    capitalise(why) + " in the " + toName + (note != null ? ": " + note : ""), null, null, at, late,
+                    outReason(request.reason()), null, null, branchId, toAreaId), userId).movement().id();
         }
         jdbc.update("""
                 INSERT INTO area_move_returns (id, client_id, branch_id, move_id, product_id, kind, quantity, reason, note,
-                                               movement_id, created_by, occurred_at)
+                                               movement_id, back_move_id, created_by, occurred_at)
                 VALUES (:id, :clientId, :branchId, :moveId, :productId, :kind, :quantity, :reason, :note, :movementId,
-                        :userId, :at)
+                        :backMoveId, :userId, :at)
                 """, new MapSqlParameterSource()
                         .addValue("id", request.id())
                         .addValue("clientId", clientId)
@@ -154,6 +177,7 @@ public class AreaReturnService {
                         .addValue("reason", request.reason() == null ? null : request.reason().name())
                         .addValue("note", note)
                         .addValue("movementId", movementId)
+                        .addValue("backMoveId", backMoveId)
                         .addValue("userId", userId)
                         .addValue("at", at));
         log.info("Area move {}: {} {} of product {} by {}", moveId, request.kind(), quantity, request.productId(), userId);
@@ -177,7 +201,7 @@ public class AreaReturnService {
         String toName = (String) move.get("to_name");
         String what = amount(quantity, unit) + " of " + product;
         String title = request.kind() == AreaReturnRequest.Kind.GIVE_BACK
-                ? "The " + toName + " gave back " + what
+                ? "The " + toName + " gave back " + what + (request.reason() != null ? ": " + reasonWord(request.reason()) : "")
                 : "The " + toName + " reported " + what + " " + reasonWord(request.reason());
         String mover = areaPeople.name((UUID) move.get("moved_by"));
         String body = "Moved " + DAY.format(timestamp(move.get("moved_at"))) + (mover != null ? " by " + mover : "")
@@ -186,6 +210,19 @@ public class AreaReturnService {
             notificationService.notifyClient(clientId, person, NotificationType.AREA_RETURN, title, body,
                     "/app?move=" + move.get("id"), null);
         }
+    }
+
+    /** The stock-out a report from an area that keeps stock is written off as: spoilt is damaged. */
+    private static OutReason outReason(AreaReturnRequest.Reason reason) {
+        return switch (reason) {
+            case SPOILT, DAMAGED -> OutReason.DAMAGED;
+            case EXPIRED -> OutReason.EXPIRED;
+            case OTHER -> OutReason.OTHER;
+        };
+    }
+
+    private static String capitalise(String text) {
+        return text.isEmpty() ? text : Character.toUpperCase(text.charAt(0)) + text.substring(1);
     }
 
     private static String reasonWord(AreaReturnRequest.Reason reason) {
