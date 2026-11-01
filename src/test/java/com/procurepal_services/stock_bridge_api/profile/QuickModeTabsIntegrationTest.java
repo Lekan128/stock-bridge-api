@@ -38,10 +38,10 @@ class QuickModeTabsIntegrationTest {
         TenantLoginResponse login = signup();
         assertThat(me(login).quickModeTabs()).as("nobody has chosen yet").isNull();
 
-        ResponseEntity<ProfileResponse> chosen = put(login, List.of("count", "move", "out"), ProfileResponse.class);
+        ResponseEntity<ProfileResponse> chosen = put(login, List.of("count", "ask", "out"), ProfileResponse.class);
         assertThat(chosen.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(chosen.getBody().quickModeTabs()).as("kept in quick mode's own order").containsExactly("out", "move", "count");
-        assertThat(me(login).quickModeTabs()).containsExactly("out", "move", "count");
+        assertThat(chosen.getBody().quickModeTabs()).as("kept in quick mode's own order").containsExactly("out", "ask", "count");
+        assertThat(me(login).quickModeTabs()).containsExactly("out", "ask", "count");
 
         assertThat(put(login, List.of("sell"), ProfileResponse.class).getBody().quickModeTabs()).containsExactly("sell");
         assertThat(put(login, List.of(), ProfileResponse.class).getBody().quickModeTabs()).as("back to the app's").isNull();

@@ -50,7 +50,7 @@ public class ProfileService {
     }
 
     /** The buttons quick mode may show, in the order it shows them. */
-    private static final List<String> QUICK_MODE_TABS = List.of("sell", "in", "out", "move", "count");
+    private static final List<String> QUICK_MODE_TABS = List.of("sell", "in", "out", "move", "ask", "count");
 
     /**
      * Quick mode's buttons as this person wants them (owner, 2026-11-01): one to four, kept in quick mode's own
@@ -72,7 +72,7 @@ public class ProfileService {
             throw new QuickModeTabsInvalidException("Quick mode has room for 4 buttons.");
         }
         if (!QUICK_MODE_TABS.containsAll(chosen)) {
-            throw new QuickModeTabsInvalidException("Choose from Sell, Stock in, Stock out, Move and Count.");
+            throw new QuickModeTabsInvalidException("Choose from Sell, Stock in, Stock out, Move, Ask and Count.");
         }
         user.setQuickModeTabs(String.join(",", QUICK_MODE_TABS.stream().filter(chosen::contains).toList()));
         return ProfileResponse.from(user, findClientOrThrow(user));
