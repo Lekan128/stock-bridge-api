@@ -13,6 +13,12 @@ public class AuthExceptionHandler {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new ApiError(ex.getMessage()));
     }
 
+    /** 429 with the wait in words; no Retry-After header (see LoginThrottledException). */
+    @ExceptionHandler(LoginThrottledException.class)
+    public ResponseEntity<ApiError> handleThrottled(LoginThrottledException ex) {
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(ClientSuspendedException.class)
     public ResponseEntity<ApiError> handleClientSuspended(ClientSuspendedException ex) {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));

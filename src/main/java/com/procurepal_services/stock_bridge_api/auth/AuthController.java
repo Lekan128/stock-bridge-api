@@ -5,6 +5,7 @@ import com.procurepal_services.stock_bridge_api.auth.dto.LoginRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.LogoutRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.RefreshRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -21,8 +22,8 @@ public class AuthController {
     private final AuthService authService;
 
     @PostMapping("/login")
-    public TenantLoginResponse login(@Valid @RequestBody LoginRequest request) {
-        return authService.login(request);
+    public TenantLoginResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
+        return authService.login(request, httpRequest.getRemoteAddr());
     }
 
     @PostMapping("/refresh")

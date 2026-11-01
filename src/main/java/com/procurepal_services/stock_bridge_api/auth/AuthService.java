@@ -13,6 +13,7 @@ import com.procurepal_services.stock_bridge_api.jwt.JwtService;
 import com.procurepal_services.stock_bridge_api.jwt.RefreshTokenService;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,9 +40,31 @@ public class AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final RefreshTokenService refreshTokenService;
+    private final LoginRateLimiter loginRateLimiter;
 
     @Transactional
     public TenantLoginResponse login(LoginRequest request) {
+        return login(request, null);
+    }
+
+    /** @param address where the attempt came from, for the limit on wrong passwords; null where unknown. */
+    @Transactional(noRollbackFor = InvalidCredentialsException.class)
+    public TenantLoginResponse login(LoginRequest request, String address) {
+        Duration wait = loginRateLimiter.waitFor(request.clientIdentifier(), request.username(), address);
+        if (!wait.isZero()) {
+            throw new LoginThrottledException(wait);
+        }
+        try {
+            TenantLoginResponse response = verify(request);
+            loginRateLimiter.succeeded(request.clientIdentifier(), request.username());
+            return response;
+        } catch (InvalidCredentialsException wrong) {
+            loginRateLimiter.failed(request.clientIdentifier(), request.username(), address);
+            throw wrong;
+        }
+    }
+
+    private TenantLoginResponse verify(LoginRequest request) {
         Client client = clientRepository.findBySlug(request.clientIdentifier())
                 .orElseThrow(InvalidCredentialsException::new);
         if (!client.isActive()) {

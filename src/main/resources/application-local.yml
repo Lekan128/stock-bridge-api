@@ -36,6 +36,10 @@ spring:
     import: optional:file:.env[.properties]
 
 app:
+  # Everything local signs in from 127.0.0.1 - the test suites too - so the per-address limit on wrong passwords
+  # is out of the way here; the per-login one still applies.
+  login:
+    failures-per-address: 100000
   # Local development and the test suites see the launched feature (Phase 7); deploys stay
   # pilot unless SELLING_ROLLOUT=open.
   selling:
