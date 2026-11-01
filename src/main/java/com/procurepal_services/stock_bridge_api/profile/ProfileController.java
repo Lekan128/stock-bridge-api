@@ -2,6 +2,7 @@ package com.procurepal_services.stock_bridge_api.profile;
 
 import com.procurepal_services.stock_bridge_api.profile.dto.ChangePasswordRequest;
 import com.procurepal_services.stock_bridge_api.profile.dto.ProfileResponse;
+import com.procurepal_services.stock_bridge_api.profile.dto.QuickModeTabsRequest;
 import com.procurepal_services.stock_bridge_api.profile.dto.UpdateProfileRequest;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import jakarta.validation.Valid;
@@ -43,6 +44,14 @@ public class ProfileController {
             @Valid @RequestBody UpdateProfileRequest request,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return profileService.update(principal.getUserId(), request);
+    }
+
+    /** Quick mode's buttons (owner, 2026-11-01): the person's own choice, kept on their account. */
+    @PutMapping("/quick-mode")
+    public ProfileResponse quickMode(
+            @RequestBody QuickModeTabsRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return profileService.setQuickModeTabs(principal.getUserId(), request.tabs());
     }
 
     @PostMapping("/password")
