@@ -6,6 +6,8 @@ import com.procurepal_services.stock_bridge_api.branch.dto.StockRequestResponse;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
 import com.procurepal_services.stock_bridge_api.founding.WhatsAppNumbers;
 import com.procurepal_services.stock_bridge_api.notification.NotificationService;
+import com.procurepal_services.stock_bridge_api.push.PushMessage;
+import com.procurepal_services.stock_bridge_api.push.PushService;
 import com.procurepal_services.stock_bridge_api.settlement.PayoutCadence;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
 import com.procurepal_services.stock_bridge_api.stock.StockWriteNotUndoableException;
@@ -63,6 +65,7 @@ public class StockRequestService {
     private final StockWritePermissionGuard stockWritePermissionGuard;
     private final NotificationService notificationService;
     private final AreaPeople areaPeople;
+    private final PushService pushService;
 
     /** One area as a request needs it. */
     private record AreaRow(UUID id, String name, boolean keepsStock, boolean active) {
@@ -134,6 +137,15 @@ public class StockRequestService {
                     "The " + to.name() + " asked for " + itemsWord(items),
                     (asker != null ? asker + " at " : "At ") + TIME.format(askedAt), link(request.id()), null);
         }
+        // On the phones of those who can move it, even with the app closed (owner, 2026-11-01).
+        List<String> products = jdbc.queryForList("""
+                SELECT p.name FROM stock_request_lines rl JOIN products p ON p.id = rl.product_id
+                WHERE rl.request_id = :id ORDER BY p.name
+                """, new MapSqlParameterSource("id", request.id()), String.class);
+        pushService.notify(moverIds(from.id(), branchId, userId), new PushMessage(
+                "The " + to.name() + " asked for " + itemsWord(items),
+                String.join(", ", products) + " · " + (asker != null ? asker + " at " : "at ") + TIME.format(askedAt),
+                tag(request.id()), link(request.id()), false));
         return get(request.id(), userId);
     }
 
@@ -154,9 +166,13 @@ public class StockRequestService {
                 WHERE rl.request_id = :id
                 """, new MapSqlParameterSource("id", requestId));
         boolean wasOpen = "OPEN".equals(request.get("status"));
-        settle(requestId);
+        String now = settle(requestId);
         if (filledBy != null && wasOpen) {
             tellAskerMoved(request, filledBy);
+        }
+        if (wasOpen && "DONE".equals(now)) {
+            String mover = areaPeople.name(filledBy);
+            pushGone(request, "Moved ✓", mover != null ? "Moved by " + mover : "It's been moved");
         }
     }
 
@@ -193,7 +209,9 @@ public class StockRequestService {
                 """, new MapSqlParameterSource()
                         .addValue("id", requestId)
                         .addValue("products", productIds.toArray(UUID[]::new)));
-        settle(requestId);
+        if ("DONE".equals(settle(requestId))) {
+            pushGone(request, "Answered ✓", "Answered by " + areaPeople.name(userId));
+        }
         if (marked > 0) {
             List<String> names = jdbc.queryForList("""
                     SELECT p.name FROM stock_request_lines rl JOIN products p ON p.id = rl.product_id
@@ -230,6 +248,8 @@ public class StockRequestService {
                 UPDATE stock_requests SET status = 'CANCELLED', cancelled_by = :userId, cancelled_at = now() WHERE id = :id
                 """, new MapSqlParameterSource().addValue("userId", userId).addValue("id", requestId));
         log.info("Stock request {} cancelled by {}", requestId, userId);
+        String by = areaPeople.name(userId);
+        pushGone(request, "Cancelled", by != null ? "Taken back by " + by : "Taken back");
         return get(requestId, userId);
     }
 
@@ -320,8 +340,8 @@ public class StockRequestService {
 
     // ---------------------------------------------------------------------------------------- helpers
 
-    /** Done once every line is moved or none in the store; open again if a filling move was undone. */
-    private void settle(UUID requestId) {
+    /** Done once every line is moved or none in the store; open again if a filling move was undone. Its status now. */
+    private String settle(UUID requestId) {
         jdbc.update("""
                 UPDATE stock_requests SET status = CASE
                     WHEN NOT EXISTS (SELECT 1 FROM stock_request_lines
@@ -329,6 +349,20 @@ public class StockRequestService {
                     THEN 'DONE' ELSE 'OPEN' END
                 WHERE id = :id AND status <> 'CANCELLED'
                 """, new MapSqlParameterSource("id", requestId));
+        return jdbc.queryForObject("SELECT status FROM stock_requests WHERE id = :id", new MapSqlParameterSource("id", requestId),
+                String.class);
+    }
+
+    /**
+     * The request needs nothing more: on the movers' phones, the notification that asked is replaced by a quiet one
+     * that says so and goes by itself ("if it has been moved it goes away").
+     */
+    private void pushGone(Map<String, Object> request, String title, String body) {
+        UUID requestId = (UUID) request.get("id");
+        pushService.notify(moverIds((UUID) request.get("from_area_id"), (UUID) request.get("branch_id"),
+                (UUID) request.get("asked_by")), new PushMessage(
+                        "The " + areaName((UUID) request.get("to_area_id")) + "'s request · " + title, body, tag(requestId),
+                        link(requestId), true));
     }
 
     /** "The Store moved the 2 items you asked for" / "…some of what you asked for", to the asker - not themselves. */
@@ -436,10 +470,7 @@ public class StockRequestService {
      */
     private List<StockRequestResponse.Mover> movers(UUID areaId, UUID branchId, UUID askerId) {
         List<StockRequestResponse.Mover> found = new ArrayList<>();
-        for (UUID person : areaPeople.of(areaId, branchId, askerId)) {
-            if (!stockWritePermissionGuard.has(person, "STOCK_OUT")) {
-                continue;
-            }
+        for (UUID person : moverIds(areaId, branchId, askerId)) {
             String phone = jdbc.queryForObject("SELECT phone FROM users WHERE id = :id", new MapSqlParameterSource("id", person),
                     String.class);
             WhatsAppNumbers.normalise(phone)
@@ -447,6 +478,13 @@ public class StockRequestService {
         }
         found.sort(Comparator.comparing(StockRequestResponse.Mover::name, String.CASE_INSENSITIVE_ORDER));
         return found;
+    }
+
+    /** The people of {@code areaId} (else everywhere-people) who can record a stock-out: who can move what it's asked. */
+    private List<UUID> moverIds(UUID areaId, UUID branchId, UUID except) {
+        return areaPeople.of(areaId, branchId, except).stream()
+                .filter(person -> stockWritePermissionGuard.has(person, "STOCK_OUT"))
+                .toList();
     }
 
     private boolean exists(UUID requestId, UUID clientId) {
@@ -485,6 +523,10 @@ public class StockRequestService {
 
     private static String link(UUID requestId) {
         return "/app?request=" + requestId;
+    }
+
+    private static String tag(UUID requestId) {
+        return "request-" + requestId;
     }
 
     private static String itemsWord(int count) {

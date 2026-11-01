@@ -39,6 +39,10 @@ server:
     min-response-size: 2KB
 
 app:
+  push:
+    # Web Push (STOCK_AREAS_PART_5.md): who push services contact about our messages. The key pair
+    # itself is made on first use and kept in the database (push_vapid); nothing else to set.
+    subject: ${PUSH_SUBJECT:mailto:support@procurepaddy.com}
   selling:
     # SELLING_PRICE_PLAN.md Phase 7. "pilot": only ProcurePal and companies support has turned
     # selling on for are offered it. "open": every company - the launch. Defaults to pilot so a

@@ -11,7 +11,15 @@ import com.procurepal_services.stock_bridge_api.branch.dto.StockRequestResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
+import com.procurepal_services.stock_bridge_api.push.CapturingPushTransport;
+import com.procurepal_services.stock_bridge_api.push.PushTestDevice;
 import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.spec.ECPoint;
+import java.security.spec.ECPublicKeySpec;
 import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
@@ -22,6 +30,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -34,6 +45,8 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 /**
  * Areas, Part 5 (STOCK_AREAS_PART_5.md): one area asking another for stock - asked, resent, filled whole and in
@@ -57,6 +70,19 @@ class StockRequestIntegrationTest {
 
     @Autowired
     private RoleRepository roleRepository;
+
+    @Autowired
+    private CapturingPushTransport pushes;
+
+    /** The push services, kept in memory: what would have reached each phone. */
+    @TestConfiguration
+    static class Pushes {
+        @Bean
+        @Primary
+        CapturingPushTransport capturingPushTransport() {
+            return new CapturingPushTransport();
+        }
+    }
 
     /** The cook asks; the storekeeper is told and moves 3 of 4, then the last 1; the cook hears each time. */
     @Test
@@ -125,6 +151,67 @@ class StockRequestIntegrationTest {
         });
         assertThat(request(s, id).movers()).as("the owner didn't ask").isEmpty();
         assertThat(request(amaka, id).movers()).isEmpty();
+    }
+
+    /**
+     * Notifications (owner, 2026-11-01: "you get a notification … and if it has been moved it goes away"): the
+     * Store's phone is told when the Kitchen asks - readable by that phone alone, signed by us - and, once it's moved,
+     * gets a quiet one in its place. The asker's phone hears nothing; a phone the push service says is gone is dropped.
+     */
+    @Test
+    void theStoresPhoneIsToldAndTheNotificationGoesOnceItsMoved() throws Exception {
+        Session s = session("Request Push");
+        stockIn(s, 10);
+        Areas a = areas(s, "Kitchen", true, false);
+        Session cook = person(s, "cook", List.of(a.other()));
+        Session keeper = person(s, "keeper", List.of(a.store()));
+        Session other = person(s, "other", List.of(a.store()));
+        PushTestDevice keepersPhone = new PushTestDevice();
+        PushTestDevice cooksPhone = new PushTestDevice();
+        Map<String, Object> gone = new HashMap<>(new PushTestDevice().subscription());
+        gone.put("endpoint", "https://push.example.test/gone/" + UUID.randomUUID());
+        assertThat(post(keeper, "/api/push/subscriptions", keepersPhone.subscription(), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.NO_CONTENT);
+        post(cook, "/api/push/subscriptions", cooksPhone.subscription(), String.class);
+        post(other, "/api/push/subscriptions", gone, String.class);
+        UUID id = UUID.randomUUID();
+
+        ask(cook, id, a.store(), a.other(), List.of(askLine(s.productId(), 2)));
+
+        CapturingPushTransport.Sent asked = pushes.to(keepersPhone.endpoint(), 1).getFirst();
+        JsonNode message = JsonMapper.builder().build().readTree(keepersPhone.read(asked.body()));
+        assertThat(message.get("title").asString()).isEqualTo("The Kitchen asked for 1 item");
+        assertThat(message.get("body").asString()).startsWith("Product ").contains("cook at ");
+        assertThat(message.get("tag").asString()).isEqualTo("request-" + id);
+        assertThat(message.get("url").asString()).isEqualTo("/app?request=" + id);
+        assertThat(message.get("quiet").asBoolean()).isFalse();
+        assertThat(asked.headers()).containsEntry("Content-Encoding", "aes128gcm").containsEntry("Urgency", "high")
+                .containsEntry("Topic", id.toString().replace("-", ""));
+        Claims claims = Jwts.parser().verifyWith(vapidKey(keeper)).build()
+                .parseSignedClaims(asked.headers().get("Authorization").replaceFirst("^vapid t=([^,]+),.*$", "$1"))
+                .getPayload();
+        assertThat(claims.getAudience()).containsExactly("https://push.example.test");
+        assertThat(claims.getSubject()).startsWith("mailto:");
+        assertThat(pushes.to(cooksPhone.endpoint(), 0)).as("the asker isn't told of their own").isEmpty();
+        pushes.to((String) gone.get("endpoint"), 1);
+        assertThat(count("SELECT COUNT(*) FROM push_subscriptions WHERE user_id = :id", other.login().user().id()))
+                .as("the push service said that phone is gone").isZero();
+
+        fill(keeper, id, a.store(), a.other(), Map.of(s.productId(), 2));
+
+        CapturingPushTransport.Sent moved = pushes.to(keepersPhone.endpoint(), 2).get(1);
+        JsonNode done = JsonMapper.builder().build().readTree(keepersPhone.read(moved.body()));
+        assertThat(done.get("tag").asString()).as("in the first one's place").isEqualTo("request-" + id);
+        assertThat(done.get("quiet").asBoolean()).isTrue();
+        assertThat(done.get("body").asString()).isEqualTo("Moved by keeper");
+
+        // Turned off on that phone: nothing more reaches it.
+        HttpHeaders headers = auth(keeper);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        assertThat(restTemplate.exchange("/api/push/subscriptions", HttpMethod.DELETE,
+                new HttpEntity<>(Map.of("endpoint", keepersPhone.endpoint()), headers), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(count("SELECT COUNT(*) FROM push_subscriptions WHERE user_id = :id", keeper.login().user().id())).isZero();
     }
 
     /** Undoing the move that filled it asks for it again. */
@@ -412,6 +499,19 @@ class StockRequestIntegrationTest {
                 .exchange("/api/products", HttpMethod.POST, new HttpEntity<>(body, headers), ProductResponse.class)
                 .getBody();
         return new Session(login, product.id());
+    }
+
+    /** The server's public key, as browsers get it, back as a key to check its signature with. */
+    @SuppressWarnings("unchecked")
+    private PublicKey vapidKey(Session s) throws Exception {
+        byte[] raw = java.util.Base64.getUrlDecoder().decode((String) get(s, "/api/push/key", Map.class).get("publicKey"));
+        java.security.KeyPairGenerator generator = java.security.KeyPairGenerator.getInstance("EC");
+        generator.initialize(new java.security.spec.ECGenParameterSpec("secp256r1"));
+        java.security.spec.ECParameterSpec params =
+                ((java.security.interfaces.ECPublicKey) generator.generateKeyPair().getPublic()).getParams();
+        ECPoint point = new ECPoint(new java.math.BigInteger(1, java.util.Arrays.copyOfRange(raw, 1, 33)),
+                new java.math.BigInteger(1, java.util.Arrays.copyOfRange(raw, 33, 65)));
+        return KeyFactory.getInstance("EC").generatePublic(new ECPublicKeySpec(point, params));
     }
 
     private HttpHeaders auth(Session s) {
