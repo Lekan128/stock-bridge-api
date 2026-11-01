@@ -13,6 +13,8 @@ import java.util.UUID;
  * @param canFill the person asking may move it: they work in the area asked and can record a stock-out.
  * @param canCancel the person asking may take it back: they asked, or work in the asking area - while nothing
  *     on it has been moved.
+ * @param movers who can move it and has a WhatsApp number, for "Tell Amaka on WhatsApp" (owner, 2026-11-01) - only
+ *     to the person who asked, while it's open; empty otherwise.
  */
 public record StockRequestResponse(
         UUID id,
@@ -28,7 +30,12 @@ public record StockRequestResponse(
         String note,
         List<Line> lines,
         boolean canFill,
-        boolean canCancel) {
+        boolean canCancel,
+        List<Mover> movers) {
+
+    /** Someone who works in the area asked and can move it: their name and WhatsApp number (+234...). */
+    public record Mover(UUID id, String name, String whatsapp) {
+    }
 
     /**
      * @param quantity asked, in the product's stock unit; {@code enteredQuantity}/{@code enteredUnit} as typed.

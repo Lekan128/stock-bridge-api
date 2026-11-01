@@ -101,6 +101,32 @@ class StockRequestIntegrationTest {
         assertHealthy();
     }
 
+    /**
+     * "Tell Amaka on WhatsApp" (owner, 2026-11-01): the asker sees who can move it - the Store's people who can record
+     * a stock-out and have a number - and nobody else sees those numbers.
+     */
+    @Test
+    void theAskerSeesWhoCanMoveItWithTheirNumbersAndOnlyThey() {
+        Session s = session("Request Movers");
+        stockIn(s, 10);
+        Areas a = areas(s, "Kitchen", true, false);
+        Session cook = person(s, "cook", List.of(a.other()));
+        Session amaka = person(s, "amaka", List.of(a.store()));
+        person(s, "nophone", List.of(a.store()));
+        jdbc.update("UPDATE users SET phone = '0803 123 4567', first_name = 'Amaka' WHERE id = :id",
+                new MapSqlParameterSource("id", amaka.login().user().id()));
+        UUID id = UUID.randomUUID();
+
+        StockRequestResponse asked = ask(cook, id, a.store(), a.other(), List.of(askLine(s.productId(), 2)));
+
+        assertThat(asked.movers()).singleElement().satisfies(mover -> {
+            assertThat(mover.name()).isEqualTo("Amaka");
+            assertThat(mover.whatsapp()).isEqualTo("+2348031234567");
+        });
+        assertThat(request(s, id).movers()).as("the owner didn't ask").isEmpty();
+        assertThat(request(amaka, id).movers()).isEmpty();
+    }
+
     /** Undoing the move that filled it asks for it again. */
     @Test
     void undoingTheFillingMoveReopensTheRequest() {

@@ -4,6 +4,7 @@ import com.procurepal_services.stock_bridge_api.branch.dto.NoneInStoreLine;
 import com.procurepal_services.stock_bridge_api.branch.dto.StockRequestCreateRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.StockRequestResponse;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
+import com.procurepal_services.stock_bridge_api.founding.WhatsAppNumbers;
 import com.procurepal_services.stock_bridge_api.notification.NotificationService;
 import com.procurepal_services.stock_bridge_api.settlement.PayoutCadence;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
@@ -14,6 +15,7 @@ import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -415,12 +417,36 @@ public class StockRequestService {
             boolean canCancel = open && lines.stream().allMatch(line -> line.moved() == 0) && limits != null
                     && (userId.equals(r.get("asked_by")) || limits.worksIn(branchId, (UUID) r.get("to_area_id")));
             String name = r.get("full_name") != null ? (String) r.get("full_name") : (String) r.get("username");
+            // Phone numbers only to the person who asked, and only while there's something to move.
+            List<StockRequestResponse.Mover> movers = open && userId != null && userId.equals(r.get("asked_by"))
+                    ? movers((UUID) r.get("from_area_id"), branchId, userId)
+                    : List.of();
             out.add(new StockRequestResponse(id, branchId, (UUID) r.get("from_area_id"), (String) r.get("from_name"),
                     (UUID) r.get("to_area_id"), (String) r.get("to_name"), (String) r.get("status"),
                     (UUID) r.get("asked_by"), name, timestamp(r.get("asked_at")), (String) r.get("note"), lines, canFill,
-                    canCancel));
+                    canCancel, movers));
         }
         return out;
+    }
+
+    /**
+     * Who can move what's asked of {@code areaId} (owner, 2026-11-01: "pick someone to send it to that has the ability
+     * to move the stock"): the people of that area - else those in every area of the branch - who can record a
+     * stock-out, with a WhatsApp number on their account. Never the asker.
+     */
+    private List<StockRequestResponse.Mover> movers(UUID areaId, UUID branchId, UUID askerId) {
+        List<StockRequestResponse.Mover> found = new ArrayList<>();
+        for (UUID person : areaPeople.of(areaId, branchId, askerId)) {
+            if (!stockWritePermissionGuard.has(person, "STOCK_OUT")) {
+                continue;
+            }
+            String phone = jdbc.queryForObject("SELECT phone FROM users WHERE id = :id", new MapSqlParameterSource("id", person),
+                    String.class);
+            WhatsAppNumbers.normalise(phone)
+                    .ifPresent(number -> found.add(new StockRequestResponse.Mover(person, areaPeople.name(person), number)));
+        }
+        found.sort(Comparator.comparing(StockRequestResponse.Mover::name, String.CASE_INSENSITIVE_ORDER));
+        return found;
     }
 
     private boolean exists(UUID requestId, UUID clientId) {
