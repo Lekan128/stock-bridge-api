@@ -42,7 +42,7 @@ class LoginRateLimitIntegrationTest {
         }
         ResponseEntity<String> stopped = attempt(company, login, PASSWORD);
         assertThat(stopped.getStatusCode()).as("even the right password, for now").isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
-        assertThat(stopped.getBody()).contains("Too many tries. Try again in 15 minutes.");
+        assertThat(stopped.getBody()).contains("Too many tries. Try again in 5 minutes.");
         assertThat(stopped.getHeaders().getFirst("Retry-After")).isNull();
         // The same login in another case is the same login.
         assertThat(attempt(company, login.toUpperCase(), PASSWORD).getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);

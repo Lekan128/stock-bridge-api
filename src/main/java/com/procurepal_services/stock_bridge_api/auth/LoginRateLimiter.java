@@ -12,8 +12,8 @@ import org.springframework.stereotype.Component;
 
 /**
  * Wrong passwords, counted (owner, 2026-11-01): since staff can sign in with their email or phone - easier to
- * guess than a made-up username - too many wrong passwords for one login at one company in a while stop it for
- * the rest of that while, and a looser limit stops one network address trying many logins. Only failures count,
+ * guess than a made-up username - too many wrong passwords for one login at one company in five minutes stop it
+ * until the oldest of them is five minutes old (owner: fifteen was too long to wait), and a looser limit stops one network address trying many logins. Only failures count,
  * and a correct password clears that login's count. In-process, like {@code PasswordResetRateLimiter}: a backstop
  * at today's single instance, not the security of sign-in (that is the password).
  *
@@ -32,7 +32,7 @@ public class LoginRateLimiter {
     public LoginRateLimiter(
             @Value("${app.login.failures-per-login:10}") int perLogin,
             @Value("${app.login.failures-per-address:50}") int perAddress,
-            @Value("${app.login.window:PT15M}") Duration window) {
+            @Value("${app.login.window:PT5M}") Duration window) {
         this.perLogin = perLogin;
         this.perAddress = perAddress;
         this.window = window;
