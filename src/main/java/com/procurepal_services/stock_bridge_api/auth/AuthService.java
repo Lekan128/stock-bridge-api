@@ -15,6 +15,8 @@ import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
+import java.util.function.Predicate;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -47,20 +49,19 @@ public class AuthService {
         }
 
         // The exact username first, so no existing username (an email, "warehouse-lead", digits a
-        // sub-user was given) changes meaning. Then, for the account holder only, the phone or the
-        // email they signed up with, however the phone is typed (0803 123 4567, +234...): since the
-        // landing page's step 4 an owner may have either as the username, and shouldn't have to
-        // remember which.
+        // sub-user was given) changes meaning; then the phone typed as the username, however it's
+        // written (0803 123 4567, +234...). Then, for anyone (owner, 2026-11-01: staff were refused
+        // with their own email and number, and "barman" for "Barman"): the username in any case, the
+        // email on their account, or their phone - each only when it points at exactly one active
+        // person here, the account holder first where two share an email or a number.
         String typed = request.username().trim();
         Optional<String> typedNumber = WhatsAppNumbers.normalise(typed);
         User user = userRepository.findByClientIdAndUsername(client.getId(), typed)
                 .or(() -> typedNumber
                         .filter(number -> !number.equals(typed))
                         .flatMap(number -> userRepository.findByClientIdAndUsername(client.getId(), number)))
-                .or(() -> userRepository.findFirstByClientIdAndRootTrue(client.getId())
-                        .filter(owner -> typed.equalsIgnoreCase(owner.getEmail())
-                                || (owner.getPhone() != null && typedNumber.map(owner.getPhone()::equals).orElse(false))))
                 .filter(User::isActive)
+                .or(() -> byAnyName(client.getId(), typed, typedNumber))
                 .orElseThrow(InvalidCredentialsException::new);
 
         if (!passwordEncoder.matches(request.password(), user.getPasswordHash())) {
@@ -68,6 +69,32 @@ public class AuthService {
         }
 
         return issueLoginResponse(user, client);
+    }
+
+    /**
+     * Who {@code typed} names among the company's active people when it isn't an exact username: the username in
+     * any case, then the email on someone's account, then their phone (however written). Each counts only when
+     * exactly one person matches - or the account holder is one of them - so a shared email or number never
+     * guesses between two people.
+     */
+    private Optional<User> byAnyName(UUID clientId, String typed, Optional<String> typedNumber) {
+        List<User> people = userRepository.findByClientIdAndActiveTrue(clientId);
+        List<Predicate<User>> ways = List.of(
+                person -> typed.equalsIgnoreCase(person.getUsername()),
+                person -> person.getEmail() != null && typed.equalsIgnoreCase(person.getEmail().trim()),
+                person -> person.getPhone() != null && typedNumber.isPresent()
+                        && typedNumber.equals(WhatsAppNumbers.normalise(person.getPhone())));
+        for (Predicate<User> way : ways) {
+            List<User> matched = people.stream().filter(way).toList();
+            if (matched.size() == 1) {
+                return Optional.of(matched.getFirst());
+            }
+            Optional<User> owner = matched.stream().filter(User::isRoot).findFirst();
+            if (owner.isPresent()) {
+                return owner;
+            }
+        }
+        return Optional.empty();
     }
 
     /**

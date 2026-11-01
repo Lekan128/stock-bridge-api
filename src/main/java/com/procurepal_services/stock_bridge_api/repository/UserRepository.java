@@ -18,6 +18,9 @@ public interface UserRepository extends TenantScopedRepository<User, UUID> {
      */
     Optional<User> findFirstByClientIdAndRootTrue(UUID clientId);
 
+    /** The company's active people, for login (no tenant context yet): a few dozen at most. */
+    List<User> findByClientIdAndActiveTrue(UUID clientId);
+
     long countByClientIdAndRole_NameAndActiveTrue(UUID clientId, String roleName);
 
     /** Whether any user (active or not) still holds this role - the guard on RoleManagementService.delete. */

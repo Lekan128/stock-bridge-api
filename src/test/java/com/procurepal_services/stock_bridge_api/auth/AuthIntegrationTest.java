@@ -16,6 +16,7 @@ import com.procurepal_services.stock_bridge_api.repository.RoleRepository;
 import com.procurepal_services.stock_bridge_api.repository.SuperAdminRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -118,6 +119,49 @@ class AuthIntegrationTest {
         assertThat(body.user().platformOwner()).isFalse();
     }
 
+    /**
+     * Owner, 2026-11-01: a barman set up as "Barman" couldn't sign in as "barman", nor with the email and phone on
+     * his account - those worked for the account holder only. Now anyone can, when it points at one person.
+     */
+    @Test
+    void staffSignInWithTheirUsernameInAnyCaseTheirEmailOrTheirPhone() {
+        withTenant(() -> {
+            User alice = userRepository.findByClientIdAndUsername(client.getId(), "alice").orElseThrow();
+            alice.setEmail("Alice@Shop.example");
+            alice.setPhone("08060000001");
+            userRepository.save(alice);
+        });
+
+        for (String typed : List.of("ALICE", "Alice", "alice@shop.example", "0806 000 0001", "+2348060000001")) {
+            ResponseEntity<TenantLoginResponse> response = restTemplate.postForEntity("/api/auth/login",
+                    new LoginRequest(client.getSlug(), typed, RAW_PASSWORD), TenantLoginResponse.class);
+            assertThat(response.getStatusCode()).as(typed).isEqualTo(HttpStatus.OK);
+            assertThat(response.getBody().user().username()).isEqualTo("alice");
+        }
+    }
+
+    /** Two people with the same email (or number): it doesn't guess between them. */
+    @Test
+    void aSharedEmailIsNotGuessedBetweenTwoPeople() {
+        withTenant(() -> {
+            User alice = userRepository.findByClientIdAndUsername(client.getId(), "alice").orElseThrow();
+            alice.setEmail("front@shop.example");
+            userRepository.save(alice);
+            userRepository.save(User.builder()
+                    .username("bob")
+                    .email("front@shop.example")
+                    .passwordHash(passwordEncoder.encode(RAW_PASSWORD))
+                    .role(alice.getRole())
+                    .active(true)
+                    .build());
+        });
+
+        ResponseEntity<String> response = restTemplate.postForEntity("/api/auth/login",
+                new LoginRequest(client.getSlug(), "front@shop.example", RAW_PASSWORD), String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+    }
+
     @Test
     void loginWithWrongPasswordFailsWithGenericMessage() {
         LoginRequest request = new LoginRequest(client.getSlug(), "alice", "wrong-password");
@@ -181,6 +225,15 @@ class AuthIntegrationTest {
                 "/api/auth/logout", superAdminAccessToken, new LogoutRequest("irrelevant"));
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    private void withTenant(Runnable work) {
+        TenantContext.set(client.getId());
+        try {
+            work.run();
+        } finally {
+            TenantContext.clear();
+        }
     }
 
     private TenantLoginResponse login() {
