@@ -5,6 +5,7 @@ import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveConfirmReques
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveResponse;
 import com.procurepal_services.stock_bridge_api.entity.NotificationType;
+import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.notification.NotificationService;
 import com.procurepal_services.stock_bridge_api.settlement.PayoutCadence;
 import com.procurepal_services.stock_bridge_api.stock.StockManagementService;
@@ -69,6 +70,7 @@ public class AreaMoveService {
     private final AreaAccessService areaAccessService;
     private final NotificationService notificationService;
     private final AreaPeople areaPeople;
+    private final AreaReturns areaReturns;
     private final StockRequestService stockRequestService;
 
     /** One area as a move needs it. */
@@ -191,12 +193,18 @@ public class AreaMoveService {
         String fromName = requireArea(fromAreaId, branchId).name();
 
         Map<UUID, Integer> got = new HashMap<>();
+        Map<UUID, AreaMoveConfirmRequest.Rest> restOf = new HashMap<>();
         for (AreaMoveConfirmRequest.Line line : request.lines() == null ? List.<AreaMoveConfirmRequest.Line>of() : request.lines()) {
             if (got.put(line.productId(), line.got()) != null) {
                 throw new BranchChangeRefusedException("Each product is confirmed once.");
             }
+            if (line.rest() != null) {
+                restOf.put(line.productId(), line.rest());
+            }
         }
-        boolean damaged = request.rest() == AreaMoveConfirmRequest.Rest.DAMAGED;
+        // What happened to each short line (Part 6): its own answer, else the move's, else still where it was.
+        AreaMoveConfirmRequest.Rest moveRest = request.rest() != null ? request.rest() : AreaMoveConfirmRequest.Rest.BACK;
+        String note = blankToNull(request.note());
         OffsetDateTime at = request.occurredAt() != null ? request.occurredAt() : OffsetDateTime.now();
         boolean late = Boolean.TRUE.equals(request.recordedOffline());
         List<Map<String, Object>> lines = jdbc.queryForList("""
@@ -208,7 +216,7 @@ public class AreaMoveService {
             }
         }
         int short_ = 0;
-        int damagedTotal = 0;
+        Map<AreaMoveConfirmRequest.Rest, Integer> restTotals = new java.util.EnumMap<>(AreaMoveConfirmRequest.Rest.class);
         for (Map<String, Object> line : lines) {
             UUID productId = (UUID) line.get("product_id");
             int quantity = ((Number) line.get("quantity")).intValue();
@@ -217,33 +225,40 @@ public class AreaMoveService {
                 throw new BranchChangeRefusedException("More can't arrive than was moved: " + quantity + " were moved.");
             }
             boolean keep = to.keepsStock() && !Boolean.TRUE.equals(line.get("used_now"));
-            StockManagementService.SettledLine settled = stockManagementService.settleWaitingLine(
-                    productId, branchId, fromAreaId, to.id(), quantity, arrived, keep, damaged, at, late,
-                    "Given to " + to.name(), "Damaged on the way to " + to.name(), userId);
             int rest = quantity - arrived;
+            AreaMoveConfirmRequest.Rest why = rest > 0 ? restOf.getOrDefault(productId, moveRest) : null;
+            OutReason writtenOff = why == null ? null : why.outReason();
+            StockManagementService.SettledLine settled = stockManagementService.settleWaitingLine(
+                    productId, branchId, fromAreaId, to.id(), quantity, arrived, keep, writtenOff, at, late,
+                    "Given to " + to.name(), restNote(why, to.name(), note), userId);
             short_ += rest;
-            damagedTotal += damaged ? rest : 0;
+            if (why != null) {
+                restTotals.merge(why, rest, Integer::sum);
+            }
             jdbc.update("""
                     UPDATE area_move_lines SET quantity_confirmed = :got, quantity_damaged = :damaged,
-                                               used_movement_id = :used
+                                               used_movement_id = :used, rest_reason = :why
                     WHERE move_id = :id AND product_id = :productId
                     """, new MapSqlParameterSource()
                             .addValue("got", arrived)
-                            .addValue("damaged", damaged ? rest : 0)
+                            .addValue("damaged", writtenOff != null ? rest : 0)
+                            .addValue("why", why == null ? null : why.name())
                             .addValue("used", settled.usedMovementId())
                             .addValue("id", moveId)
                             .addValue("productId", productId));
         }
         jdbc.update("""
-                UPDATE area_moves SET status = :status, confirmed_by = :userId, confirmed_at = :at WHERE id = :id
+                UPDATE area_moves SET status = :status, confirmed_by = :userId, confirmed_at = :at, confirm_note = :note
+                WHERE id = :id
                 """, new MapSqlParameterSource()
+                        .addValue("note", note)
                         .addValue("status", short_ > 0 ? "CONFIRMED_SHORT" : "DONE")
                         .addValue("userId", userId)
                         .addValue("at", at)
                         .addValue("id", moveId));
-        log.info("Area move {} confirmed by {}: {} short ({} damaged)", moveId, userId, short_, damagedTotal);
+        log.info("Area move {} confirmed by {}: {} short ({})", moveId, userId, short_, restTotals);
         if (short_ > 0) {
-            notifyShort(clientId, moveId, fromName, to.name(), lines, got, damagedTotal, (UUID) move.get("moved_by"),
+            notifyShort(clientId, moveId, fromName, to.name(), lines, got, restTotals, note, (UUID) move.get("moved_by"),
                     userId);
         }
         return get(moveId, userId);
@@ -278,6 +293,23 @@ public class AreaMoveService {
         recountRequest(move);
         log.info("Area move {} cancelled by {}", moveId, userId);
         return get(moveId, userId);
+    }
+
+    /**
+     * What was given in the last {@link AreaReturns#WINDOW} to the areas that use stock up where this person works
+     * (Part 6), newest first - what they may give back or report part of.
+     */
+    @Transactional(readOnly = true)
+    public List<AreaMoveResponse> givenTo(UUID userId, UUID branchId) {
+        UUID clientId = requireTenantId();
+        List<UUID> branches = branchAccessService.reportScope(userId, branchId);
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("clientId", clientId)
+                .addValue("branchIds", branches.toArray(UUID[]::new))
+                .addValue("since", OffsetDateTime.now().minus(AreaReturns.WINDOW));
+        return read("m.client_id = :clientId AND m.branch_id = ANY(:branchIds) AND NOT ta.keeps_stock"
+                + " AND m.status IN ('DONE', 'CONFIRMED_SHORT') AND m.moved_at > :since", params, userId, 0, 100)
+                .stream().filter(AreaMoveResponse::canReturn).toList();
     }
 
     /** The moves waiting for this person to confirm (Part 4): to areas they work in, at the branches they see. */
@@ -401,7 +433,7 @@ public class AreaMoveService {
                 new MapSqlParameterSource("id", moveId));
         for (Map<String, Object> line : lines) {
             stockManagementService.settleWaitingLine((UUID) line.get("product_id"), branchId, fromAreaId, toAreaId,
-                    ((Number) line.get("quantity")).intValue(), 0, false, false, null, false, null, null, userId);
+                    ((Number) line.get("quantity")).intValue(), 0, false, null, null, false, null, null, userId);
         }
     }
 
@@ -425,7 +457,8 @@ public class AreaMoveService {
 
     /** "Kitchen got 2 of 3 from the Store", to the mover and the account holders - not the person who confirmed. */
     private void notifyShort(UUID clientId, UUID moveId, String fromName, String toName, List<Map<String, Object>> lines,
-            Map<UUID, Integer> got, int damaged, UUID moverId, UUID confirmerId) {
+            Map<UUID, Integer> got, Map<AreaMoveConfirmRequest.Rest, Integer> restTotals, String note, UUID moverId,
+            UUID confirmerId) {
         Set<UUID> people = new HashSet<>(jdbc.queryForList(
                 "SELECT id FROM users WHERE client_id = :clientId AND is_root AND is_active",
                 new MapSqlParameterSource("clientId", clientId), UUID.class));
@@ -437,9 +470,14 @@ public class AreaMoveService {
         int arrived = lines.stream()
                 .mapToInt(line -> got.getOrDefault((UUID) line.get("product_id"), ((Number) line.get("quantity")).intValue()))
                 .sum();
-        int rest = moved - arrived;
         String title = "The " + toName + " got " + arrived + " of " + moved + " from the " + fromName;
-        String body = damaged > 0 ? damaged + " recorded as damaged" : rest + " still in the " + fromName;
+        // "1 still in the Store · 1 damaged or spoilt · Two bags torn on the stairs" (Part 6).
+        List<String> parts = new ArrayList<>();
+        restTotals.forEach((why, count) -> parts.add(count + " " + restWords(why, fromName)));
+        if (note != null) {
+            parts.add(note);
+        }
+        String body = String.join(" · ", parts);
         for (UUID person : people) {
             notificationService.notifyClient(clientId, person, NotificationType.AREA_MOVE_SHORT, title, body,
                     "/app?move=" + moveId, null);
@@ -451,7 +489,7 @@ public class AreaMoveService {
         List<Map<String, Object>> moves = jdbc.queryForList("""
                 SELECT m.id, m.branch_id, m.from_area_id, fa.name AS from_name, m.to_area_id, ta.name AS to_name,
                        ta.keeps_stock AS to_keeps_stock, m.status, m.waits, m.moved_by, m.moved_at, m.note, m.created_at,
-                       m.recorded_offline, m.confirmed_at,
+                       m.recorded_offline, m.confirmed_at, m.confirm_note,
                        NULLIF(TRIM(COALESCE(u.first_name, '') || ' ' || COALESCE(u.last_name, '')), '') AS full_name,
                        u.username,
                        NULLIF(TRIM(COALESCE(c.first_name, '') || ' ' || COALESCE(c.last_name, '')), '') AS confirmed_full_name,
@@ -472,7 +510,7 @@ public class AreaMoveService {
         jdbc.query("""
                 SELECT l.move_id, l.product_id, p.name, l.quantity, l.entered_quantity, l.entered_unit,
                        l.used_movement_id IS NOT NULL OR l.used_now AS used, l.quantity_confirmed, l.quantity_damaged,
-                       p.unit_of_measure
+                       p.unit_of_measure, l.rest_reason
                 FROM area_move_lines l JOIN products p ON p.id = l.product_id
                 WHERE l.move_id = ANY(:ids) ORDER BY p.name
                 """, new MapSqlParameterSource("ids", moves.stream().map(m -> (UUID) m.get("id")).toArray(UUID[]::new)),
@@ -487,8 +525,16 @@ public class AreaMoveService {
                                     rs.getBoolean("used"),
                                     rs.getObject("quantity_confirmed", Integer.class),
                                     rs.getInt("quantity_damaged"),
-                                    rs.getString("unit_of_measure")));
+                                    rs.getString("unit_of_measure"),
+                                    rs.getString("rest_reason"),
+                                    List.of(),
+                                    0));
                 });
+        Map<UUID, Map<UUID, List<AreaMoveResponse.Return>>> returns = areaReturns.byMove(
+                moves.stream().map(m -> (UUID) m.get("id")).toList());
+        boolean anyGive = moves.stream().anyMatch(m -> !Boolean.TRUE.equals(m.get("to_keeps_stock")));
+        AreaAccessService.Limits returnLimits = anyGive && userId != null && areaReturns.mayRecord(userId)
+                ? areaAccessService.limits(userId) : null;
         // What this person may do with a move that waits: worked out once, not per move.
         boolean anyWaiting = moves.stream().anyMatch(m -> "WAITING".equals(m.get("status")));
         boolean mayStockIn = anyWaiting && userId != null && stockWritePermissionGuard.has(userId, "STOCK_IN");
@@ -529,15 +575,27 @@ public class AreaMoveService {
                     // A give's lines were Used there (D-E7): said by the area it went to, or by the line when it
                     // was used straight away (Part 3.5).
                     linesByMove.getOrDefault(id, List.of()).stream()
-                            .map(line -> new AreaMoveResponse.Line(line.productId(), line.productName(), line.quantity(),
-                                    line.enteredQuantity(), line.enteredUnit(), !toKeepsStock || line.used(), line.got(),
-                                    line.damaged(), line.unitOfMeasure()))
+                            .map(line -> {
+                                List<AreaMoveResponse.Return> back = returns.getOrDefault(id, Map.of())
+                                        .getOrDefault(line.productId(), List.of());
+                                int used = toKeepsStock ? 0 : (line.got() != null ? line.got() : line.quantity());
+                                return new AreaMoveResponse.Line(line.productId(), line.productName(), line.quantity(),
+                                        line.enteredQuantity(), line.enteredUnit(), !toKeepsStock || line.used(), line.got(),
+                                        line.damaged(), line.unitOfMeasure(), line.restReason(), back,
+                                        Math.max(0, used - back.stream().mapToInt(AreaMoveResponse.Return::quantity).sum()));
+                            })
                             .toList(),
                     waits,
                     confirmedBy,
                     m.get("confirmed_at") == null ? null : timestamp(m.get("confirmed_at")),
                     canConfirm,
-                    canCancel));
+                    canCancel,
+                    (String) m.get("confirm_note"),
+                    !toKeepsStock && returnLimits != null
+                            && ("DONE".equals(m.get("status")) || "CONFIRMED_SHORT".equals(m.get("status")))
+                            && timestamp(m.get("moved_at")).isAfter(OffsetDateTime.now().minus(AreaReturns.WINDOW))
+                            && returnLimits.worksIn(branchId, (UUID) m.get("to_area_id"))
+                            && branchAccessService.mayRecordAt(userId, branchId)));
         }
         return out;
     }
@@ -599,6 +657,31 @@ public class AreaMoveService {
             return offset;
         }
         return ((java.sql.Timestamp) value).toInstant().atOffset(java.time.ZoneOffset.UTC);
+    }
+
+    /** What happened to a short line, said after its count: "still in the Store", "damaged or spoilt", "missing". */
+    static String restWords(AreaMoveConfirmRequest.Rest why, String fromName) {
+        return switch (why) {
+            case BACK -> "still in the " + fromName;
+            case DAMAGED -> "damaged or spoilt";
+            case EXPIRED -> "expired";
+            case LOST -> "missing";
+            case OTHER -> "not arrived, for another reason";
+        };
+    }
+
+    /** The note on the stock-out a short line is written off as: why, where it was going, and the confirmer's words. */
+    private static String restNote(AreaMoveConfirmRequest.Rest why, String toName, String note) {
+        if (why == null || why.outReason() == null) {
+            return null;
+        }
+        String said = switch (why) {
+            case DAMAGED -> "Damaged or spoilt on the way to " + toName;
+            case EXPIRED -> "Expired, on the way to " + toName;
+            case LOST -> "Missing on the way to " + toName;
+            default -> "Didn't reach " + toName;
+        };
+        return note == null ? said : said + ": " + note;
     }
 
     private static String blankToNull(String value) {

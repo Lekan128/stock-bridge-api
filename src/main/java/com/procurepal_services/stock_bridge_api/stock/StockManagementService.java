@@ -825,11 +825,11 @@ public class StockManagementService {
             int quantity,
             int got,
             boolean keep,
-            boolean restDamaged,
+            OutReason restOut,
             OffsetDateTime occurredAt,
             boolean recordedOffline,
             String usedNote,
-            String damagedNote,
+            String restNote,
             UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
         OffsetDateTime at = resolveOccurredAt(occurredAt);
@@ -848,9 +848,10 @@ public class StockManagementService {
                     actingUserId, AreaUse.TAKE, toAreaId, true);
             used = out.movement().id();
         }
-        if (rest > 0 && restDamaged) {
+        if (rest > 0 && restOut != null) {
+            // Written off where it was moved from, for the reason the area gave (Part 6), the note on it.
             stockOut(productId,
-                    new StockOutRequest(rest, null, damagedNote, null, null, at, recordedOffline, OutReason.DAMAGED, null,
+                    new StockOutRequest(rest, null, restNote, null, null, at, recordedOffline, restOut, null,
                             null, branchId, fromAreaId),
                     actingUserId, AreaUse.TAKE, null, true);
         } else if (rest > 0 && recordedOffline && countedAfter(productId, branchId, fromAreaId, at)) {
@@ -1330,6 +1331,93 @@ public class StockManagementService {
         log.info("Sale line cancelled: line={} sale={} product={} client={} by={}",
                 line.getId(), line.getSaleId(), product.getId(), tenantId, actingUserId);
         return cancellation;
+    }
+
+    /**
+     * Part of a Used stock-out given back by the area it was given to (STOCK_AREAS_PART_6.md, D-A6): Housekeeping
+     * got 3 bags and gives 1 back. Written as {@link #cancelSaleLine} writes a cancelled sale, for part of it: an
+     * ADJUSTMENT of +quantity at the area the stock left (the Store) that {@code reverses} the Used row and carries
+     * its area, its cost netted pro rata, and the delivery lots it drew on restored - latest drawn first, after
+     * any earlier give back - so FIFO draws on them again in their place. The caller has checked it may, and that
+     * no more comes back than was used. Sent late behind a later count of that area: absorbed, like a late move.
+     */
+    @Transactional
+    public StockMovement giveBack(
+            UUID usedMovementId, int quantity, String note, OffsetDateTime occurredAt, boolean recordedOffline,
+            UUID actingUserId) {
+        StockMovement used = stockMovementRepository.findById(usedMovementId)
+                .orElseThrow(() -> new IllegalStateException("No such stock-out: " + usedMovementId));
+        Product product = lockProductOrThrow(used.getProduct().getId());
+        UUID tenantId = requireTenantId();
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        UUID areaId = branchStockService.areaOf(used);
+
+        // What each lot still has drawn by this stock-out, after earlier give backs.
+        Map<UUID, Integer> drawn = new LinkedHashMap<>();
+        Map<UUID, StockMovement> lots = new HashMap<>();
+        for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(used.getId())) {
+            drawn.merge(draw.getInMovement().getId(), draw.getQuantity(), Integer::sum);
+            lots.put(draw.getInMovement().getId(), draw.getInMovement());
+        }
+        for (StockMovement earlier : stockMovementRepository.findAllByReversesMovementIdOrderByCreatedAtAsc(used.getId())) {
+            for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(earlier.getId())) {
+                drawn.merge(draw.getInMovement().getId(), draw.getQuantity(), Integer::sum);
+            }
+        }
+
+        branchStockService.apply(product, used.getBranchId(), areaId, quantity);
+        BigDecimal cost = used.getCostAmount() == null ? null
+                : used.getCostAmount().multiply(BigDecimal.valueOf(quantity))
+                        .divide(BigDecimal.valueOf(used.getQuantity()), 2, java.math.RoundingMode.HALF_UP).negate();
+        StockMovement back = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(used.getBranchId())
+                .areaId(areaId)
+                .movementType(MovementType.ADJUSTMENT)
+                .occurredAt(at)
+                .quantity(quantity)
+                .note(note)
+                .createdBy(reference(actingUserId))
+                .usedAreaId(used.getUsedAreaId())
+                .costAmount(cost)
+                .costBasis(used.getCostBasis())
+                .reversesMovementId(used.getId())
+                .build());
+
+        List<UUID> latestFirst = new ArrayList<>(drawn.keySet());
+        java.util.Collections.reverse(latestFirst);
+        int left = quantity;
+        for (UUID lotId : latestFirst) {
+            int take = Math.min(left, drawn.get(lotId));
+            if (take <= 0) {
+                continue;
+            }
+            StockMovement lot = lots.get(lotId);
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(back)
+                    .inMovement(lot)
+                    .quantity(-take)
+                    .build());
+            CompanyVendor lotVendor = lot.getCompanyVendor();
+            if (lotVendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), lotVendor.getId())
+                        .ifPresent(vendorLine -> vendorLine.setQuantityOnHandFromVendor(
+                                vendorLine.getQuantityOnHandFromVendor() + take));
+            }
+            left -= take;
+            if (left == 0) {
+                break;
+            }
+        }
+        if (recordedOffline && countedAfter(product.getId(), used.getBranchId(), areaId, at)) {
+            absorbIntoLaterCount(product, used.getBranchId(), areaId, -quantity, at, actingUserId);
+        }
+        // Written now: the caller records the give back against this row with plain SQL, in the same transaction.
+        stockMovementRepository.flush();
+        log.info("Given back: {} of stock-out {} product={} client={} by={}", quantity, used.getId(), product.getId(),
+                tenantId, actingUserId);
+        return back;
     }
 
     // ------------------------------------------------------------------------------ transfers (V53)

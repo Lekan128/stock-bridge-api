@@ -20,6 +20,9 @@ import java.util.UUID;
  *     stock in.
  * @param canCancel the person asking may take it back while it waits: they moved it, or work where it was moved
  *     from.
+ * @param confirmNote the confirmer's words about what didn't arrive (Part 6).
+ * @param canReturn the person asking may give back or report part of it (Part 6): a give to an area that uses
+ *     stock up, they work there, within {@code AreaReturns.WINDOW}.
  */
 public record AreaMoveResponse(
         UUID id,
@@ -40,16 +43,26 @@ public record AreaMoveResponse(
         String confirmedByName,
         OffsetDateTime confirmedAt,
         boolean canConfirm,
-        boolean canCancel) {
+        boolean canCancel,
+        String confirmNote,
+        boolean canReturn) {
 
     /**
      * @param quantity in the product's stock unit; {@code enteredQuantity}/{@code enteredUnit} as typed.
      * @param got what arrived, once a move that waited is confirmed (Part 4); absent before.
      * @param damaged of what didn't arrive, what was recorded as damaged.
      * @param unitOfMeasure the product's stock unit, which {@code quantity} and {@code got} are in.
+     * @param restReason what happened to what didn't arrive (Part 6): BACK, DAMAGED, EXPIRED, LOST, OTHER.
+     * @param returns what an area that uses stock up gave back of it, or reported (Part 6), oldest first.
+     * @param returnable what's left of it to give back or report: what was used, less those.
      */
     public record Line(
             UUID productId, String productName, int quantity, BigDecimal enteredQuantity, String enteredUnit,
-            boolean used, Integer got, int damaged, String unitOfMeasure) {
+            boolean used, Integer got, int damaged, String unitOfMeasure, String restReason, List<Return> returns,
+            int returnable) {
+    }
+
+    /** Given back, or reported spoilt / expired / damaged / other (Part 6). {@code quantity} in the stock unit. */
+    public record Return(String kind, int quantity, String reason, String note, String byName, OffsetDateTime at) {
     }
 }
