@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product;
 
+import com.procurepal_services.stock_bridge_api.selling.SellingPricePermission;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.Product;
@@ -77,9 +78,16 @@ public class ProductManagementService {
      * "stock that came in from a spreadsheet rather than a delivery" will match on.
      */
 
+    /** Where a new product's opening stock lands (V52). */
+    /** Who may set a selling price (V52). */
+    private final SellingPricePermission sellingPricePermission;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
     private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
+    private final EveryBranchStockQuery everyBranchStockQuery;
+    private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
     private final S3ImageService s3ImageService;
     private final ProductExcelService productExcelService;
     private final SellerDirectory sellerDirectory;
@@ -154,8 +162,104 @@ public class ProductManagementService {
                 .withExpectedQuantity(expected.get(product.getId())));
     }
 
+    /**
+     * The list for a person at a multi-branch company (Phase 4, MULTI_BRANCH_BUILD_PLAN.md section 6):
+     * at {@code branchId}, the stock filter and each row's figure are that branch's; with no branch,
+     * the company's, LOW meaning low somewhere they see. Every row carries the branches' figures, as
+     * the phone's catalogue rows do. A one-branch company gets exactly the list it always had.
+     */
+    @Transactional(readOnly = true)
+    public Page<ProductResponse> list(
+            String search, Boolean active, UUID categoryId, StockStatus stockStatus, Boolean hasSellingPrice,
+            Pageable pageable, UUID userId, UUID branchId) {
+        UUID tenantId = requireTenantId();
+        if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
+            return withAreaStock(list(search, active, categoryId, stockStatus, hasSellingPrice, pageable), userId);
+        }
+        List<UUID> scope = branchAccessService.stockScope(userId, branchId);
+        Page<Product> page = branchId != null
+                ? productRepository.findAll(
+                        ProductSpecifications.atBranch(tenantId, search, active, categoryId, stockStatus, hasSellingPrice, branchId),
+                        pageable)
+                : stockStatus == StockStatus.LOW || stockStatus == StockStatus.OK
+                        ? everyBranchStockQuery.page(tenantId, search, active, categoryId, stockStatus, hasSellingPrice, scope, pageable)
+                        : productRepository.findAll(
+                                ProductSpecifications.forTenant(tenantId, search, active, categoryId, stockStatus, hasSellingPrice),
+                                pageable);
+        Map<UUID, String> preferredVendorNames = preferredVendorNamesFor(tenantId, page.getContent());
+        Map<UUID, Boolean> hasMultiplePacks = hasMultiplePacksFor(page.getContent());
+        Map<UUID, BigDecimal> expected = expectedDeliveryService.outstandingByProduct(
+                tenantId, page.getContent().stream().map(Product::getId).toList());
+        Map<UUID, Integer> thresholds = new java.util.HashMap<>();
+        page.getContent().forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
+                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.openViewBranchIds(userId), thresholds);
+        return withAreaStock(page.map(product -> {
+            ProductResponse response = ProductResponse.from(
+                            product, preferredVendorNames.get(product.getId()), null,
+                            hasMultiplePacks.getOrDefault(product.getId(), false))
+                    .withExpectedQuantity(expected.get(product.getId()));
+            List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure> rows =
+                    figures == null ? null : figures.get(product.getId());
+            if (rows == null) {
+                return response;
+            }
+            response = response.withBranchStock(rows);
+            if (branchId != null) {
+                for (var figure : rows) {
+                    if (figure.branchId().equals(branchId)) {
+                        return response.atBranch(figure);
+                    }
+                }
+            }
+            return response;
+        }), userId);
+    }
+
+    /**
+     * Each product of {@code page} with its figure in each area (V60, STOCK_AREAS_PART_1.md) of the
+     * branches {@code userId} sees that have more than one. The page as it is when none has.
+     */
+    private Page<ProductResponse> withAreaStock(Page<ProductResponse> page, UUID userId) {
+        if (userId == null || page.isEmpty()) {
+            return page;
+        }
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> figures =
+                branchStockService.areaFigures(
+                        page.getContent().stream().map(ProductResponse::id).toList(),
+                        branchAccessService.openViewBranchIds(userId));
+        return figures == null ? page : page.map(response -> response.withAreaStock(figures.get(response.id())));
+    }
+
     @Transactional(readOnly = true)
     public ProductResponse get(UUID id) {
+        return get(id, null);
+    }
+
+    /** Low-stock levels per branch (V52), for branches this person sees, at a multi-branch company. */
+    @Transactional
+    public void setBranchThresholds(UUID id, List<ProductController.BranchThreshold> thresholds, UUID userId) {
+        UUID tenantId = requireTenantId();
+        Product product = findTenantProductOrThrow(id);
+        if (!branchStockService.isMultiBranch(tenantId)) {
+            throw new com.procurepal_services.stock_bridge_api.branch.BranchChangeRefusedException(
+                    "Your company has one branch: set the product's own low-stock level instead.");
+        }
+        List<UUID> visible = branchAccessService.viewBranchIds(userId);
+        for (ProductController.BranchThreshold threshold : thresholds) {
+            if (threshold.branchId() == null || !visible.contains(threshold.branchId())) {
+                throw new com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException();
+            }
+            branchStockService.setThreshold(tenantId, product.getId(), threshold.branchId(), threshold.lowStockThreshold());
+        }
+    }
+
+    /**
+     * The product page: {@link #get(UUID)} plus the product at each branch {@code userId} sees (V52,
+     * MULTI_BRANCH_UX_PLAN.md section 5.9), at a company with more than one.
+     */
+    @Transactional(readOnly = true)
+    public ProductResponse get(UUID id, UUID userId) {
         UUID tenantId = requireTenantId();
         Product product = findTenantProductOrThrow(id);
         String preferredVendorName = productVendorRepository
@@ -163,9 +267,46 @@ public class ProductManagementService {
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
         boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
-        return ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
+        ProductResponse response = ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
                 .withExpectedQuantity(
                         expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id));
+        if (userId == null) {
+            return response;
+        }
+        java.util.Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> areas =
+                branchStockService.areaFigures(List.of(id), branchAccessService.openViewBranchIds(userId));
+        if (areas != null) {
+            response = response.withAreaStock(branchStockService.withLastCounted(id, areas.get(id)));
+        }
+        java.util.Map<UUID, Integer> threshold = new java.util.HashMap<>();
+        threshold.put(id, product.getLowStockThreshold());
+        java.util.Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
+                branchStockService.figures(tenantId, List.of(id), branchAccessService.openViewBranchIds(userId), threshold);
+        if (figures == null) {
+            return response;
+        }
+        // The product page's extras (section 6): when each branch last counted it, and its own level.
+        java.util.Map<UUID, java.time.OffsetDateTime> lastCounted = new java.util.HashMap<>();
+        java.util.Map<UUID, Integer> ownLevels = new java.util.HashMap<>();
+        jdbc.query("""
+                SELECT branch_id, MAX(occurred_at) AS counted FROM stock_movements
+                WHERE client_id = :clientId AND product_id = :productId AND is_count GROUP BY branch_id
+                """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                        .addValue("clientId", tenantId).addValue("productId", id),
+                rs -> {
+                    lastCounted.put(rs.getObject("branch_id", UUID.class),
+                            rs.getTimestamp("counted").toInstant().atOffset(java.time.ZoneOffset.UTC));
+                });
+        jdbc.query("""
+                SELECT branch_id, low_stock_threshold FROM branch_stock
+                WHERE product_id = :productId AND low_stock_threshold IS NOT NULL
+                """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("productId", id),
+                rs -> {
+                    ownLevels.put(rs.getObject("branch_id", UUID.class), rs.getInt("low_stock_threshold"));
+                });
+        return response.withBranchStock(figures.get(id).stream()
+                .map(figure -> figure.withDetail(lastCounted.get(figure.branchId()), ownLevels.get(figure.branchId())))
+                .toList());
     }
 
     /**
@@ -246,6 +387,60 @@ public class ProductManagementService {
                 .toList();
     }
 
+    /**
+     * The low-stock products by id, as {@link #lowStock(UUID, UUID)} judges them (low here at a branch, low
+     * anywhere in All branches) - for the stock sheet's and Record a delivery's "Low stock" choice. Null
+     * at a one-branch company, where the old company-wide rule is the same thing.
+     */
+    @Transactional(readOnly = true)
+    public List<UUID> lowStockIds(UUID userId, UUID branchId) {
+        UUID tenantId = requireTenantId();
+        if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
+            return null;
+        }
+        return everyBranchStockQuery.lowAt(tenantId, branchAccessService.stockScope(userId, branchId), LOW_STOCK_LIMIT)
+                .stream().map(Product::getId).toList();
+    }
+
+    /** How many alerts the Low stock page lists at most at a chain; past this it says to filter Inventory. */
+    static final int LOW_STOCK_LIMIT = 2000;
+
+    /**
+     * Low stock at a multi-branch company (Phase 4 gap): at a branch, what is low there, with that
+     * branch's figures; in All branches, what is low at any branch the person sees, each with its
+     * per-branch figures so the page can group by branch. Elsewhere, {@link #lowStock()} as before.
+     */
+    @Transactional(readOnly = true)
+    public List<ProductResponse> lowStock(UUID userId, UUID branchId) {
+        UUID tenantId = requireTenantId();
+        if (userId == null || !branchStockService.isMultiBranch(tenantId)) {
+            return lowStock();
+        }
+        List<Product> products = everyBranchStockQuery.lowAt(
+                tenantId, branchAccessService.stockScope(userId, branchId), LOW_STOCK_LIMIT);
+        Map<UUID, Integer> thresholds = new java.util.HashMap<>();
+        products.forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
+                branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.openViewBranchIds(userId), thresholds);
+        return products.stream().map(product -> {
+            ProductResponse response = ProductResponse.from(product);
+            List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure> rows =
+                    figures == null ? null : figures.get(product.getId());
+            if (rows == null) {
+                return response;
+            }
+            response = response.withBranchStock(rows);
+            if (branchId != null) {
+                for (var figure : rows) {
+                    if (figure.branchId().equals(branchId)) {
+                        return response.atBranch(figure);
+                    }
+                }
+            }
+            return response;
+        }).toList();
+    }
+
     /** Delegates to {@link #create(CreateProductRequest, MultipartFile, UUID)} with no acting user. */
     @Transactional
     public ProductResponse create(CreateProductRequest request, MultipartFile image) {
@@ -322,7 +517,9 @@ public class ProductManagementService {
                 .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
         // After the units are set: a price typed per carton is converted by this product's own pack.
-        if (keepsSellingPrice) {
+        // Without CHANGE_SELLING_PRICES (V52) the product is created without a price - "No price yet",
+        // which selling already allows - rather than refused: the rest of what was typed is still wanted.
+        if (keepsSellingPrice && sellingPricePermission.allows(actingUserId)) {
             sellingPriceService.apply(product, request.unitPrice(), request.unitPriceUnit());
         }
 
@@ -358,6 +555,10 @@ public class ProductManagementService {
             // exactly that purpose. Defaulting to false here would mean a pack typed on the
             // create-product screen vanished on save - a different broken promise, in the
             // opposite direction.
+            // Where the opening stock is (V52): named, or the person's only branch - and they must
+            // work there, as for any stock-in they record.
+            UUID openingBranchId = branchStockService.resolveForWrite(initialVendor.branchId(), actingUserId);
+            branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
             stockManagementService.stockIn(
                     product.getId(),
                     new StockInRequest(
@@ -369,7 +570,7 @@ public class ProductManagementService {
                             initialVendor.packagingUnit(),
                             initialVendor.packagingSize(),
                             null,
-                            true),
+                            true).withBranchId(openingBranchId),
                     actingUserId);
             preferredVendorName = productVendorRepository
                     .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, product.getId())
@@ -472,6 +673,14 @@ public class ProductManagementService {
         // now stands, and a pack that changed size re-derives the per-piece price from what was
         // typed (SellingPriceService.reconcile). A tenant with no selling price at all has a stale
         // client still sending one silently ignored rather than applied or rejected.
+        // A change of price - not the current one sent back with the rest of the form - needs
+        // CHANGE_SELLING_PRICES (V52, UX section 5.14). A pack resize re-deriving it is not one.
+        boolean changesPrice = Boolean.TRUE.equals(request.clearUnitPrice())
+                || (request.unitPrice() != null
+                        && !SellingPricePermission.isCurrent(product, request.unitPrice(), request.unitPriceUnit()));
+        if (keepsSellingPrice && changesPrice) {
+            sellingPricePermission.require(principal == null ? null : principal.getUserId());
+        }
         if (keepsSellingPrice) {
             if (Boolean.TRUE.equals(request.clearUnitPrice()) && !requiresSellingPrice) {
                 sellingPriceService.apply(product, null, null);
@@ -588,14 +797,39 @@ public class ProductManagementService {
      */
     @Transactional(readOnly = true)
     public byte[] exportActiveProducts() {
+        return exportActiveProducts(null, null);
+    }
+
+    /**
+     * At a multi-branch company the stock column is the branch's figure (or, in All branches, what the
+     * branches this person sees hold together) - the figure the Inventory screen shows them, and never
+     * the company's total for somebody who sees one branch (D-U3).
+     */
+    @Transactional(readOnly = true)
+    public byte[] exportActiveProducts(UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         List<Product> products = productRepository.findAll(ProductSpecifications.forTenant(tenantId, null, true));
+        Map<UUID, Integer> quantities = null;
+        if (userId != null && branchStockService.isMultiBranch(tenantId)) {
+            List<UUID> scope = branchAccessService.stockScope(userId, branchId);
+            Map<UUID, Integer> held = new java.util.HashMap<>();
+            jdbc.query("""
+                    SELECT product_id, SUM(quantity_on_hand) AS held FROM branch_stock
+                    WHERE client_id = :clientId AND branch_id = ANY(:scope) GROUP BY product_id
+                    """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                            .addValue("clientId", tenantId)
+                            .addValue("scope", scope.toArray(UUID[]::new)),
+                    rs -> {
+                        held.put(rs.getObject("product_id", UUID.class), rs.getInt("held"));
+                    });
+            quantities = held;
+        }
         // The seller flag is resolved here rather than inside ProductExcelService for the reason
         // generateTemplate states, and for the same reason the two files must agree on it: the
         // export IS the template once it has your products in it.
         return productExcelService.exportProducts(
                 products, preferredVendorSnapshotsFor(tenantId, products), sellingPolicy.showsSellingPrice(tenantId),
-                sellingPolicy.sheetSellingPricePerPack(tenantId));
+                sellingPolicy.sheetSellingPricePerPack(tenantId), quantities);
     }
 
     /**

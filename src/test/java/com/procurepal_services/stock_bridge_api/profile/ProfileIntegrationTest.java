@@ -110,6 +110,8 @@ class ProfileIntegrationTest {
                         "BROWSE_MARKETPLACE",
                         "MANAGE_INVENTORY",
                         "RECEIVE_DELIVERIES",
+                        // V53: every role that can issue stock can send it to another branch.
+                        "SEND_STOCK",
                         "STOCK_IN",
                         "STOCK_OUT",
                         "VIEW_PRODUCTS");

@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService.AreaUse;
 import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
@@ -114,6 +116,12 @@ public class StockManagementService {
     private final ProductVendorPackRepository productVendorPackRepository;
     private final com.procurepal_services.stock_bridge_api.selling.SellingPolicy sellingPolicy;
     private final com.procurepal_services.stock_bridge_api.selling.SalesReportService salesReportService;
+    /**
+     * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
+     * class for why a one-branch company's figure is still {@code Product.quantityOnHand}.
+     */
+    private final BranchStockService branchStockService;
+    private final MoveRows moveRows;
 
     /**
      * Records a delivery. Weighted-average cost is recalculated unconditionally (guarding the
@@ -196,6 +204,8 @@ public class StockManagementService {
             UUID productId, StockInRequest request, UUID actingUserId, UUID importBatchId) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.RECEIVE, actingUserId);
         OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
 
         ResolvedEntry entry = resolveEntry(
@@ -206,7 +216,7 @@ public class StockManagementService {
                 request.packagingUnit(),
                 request.packagingSize());
         int quantityBaseUnits = entry.baseQuantity();
-        boolean absorbed = request.isRecordedOffline() && stockMovementRepository.existsCountAfter(productId, occurredAt);
+        boolean absorbed = request.isRecordedOffline() && countedAfter(productId, branchId, areaId, occurredAt);
 
         if (request.companyVendorId() == null
                 && productVendorRepository.countByClientIdAndProductId(tenantId, productId) > 0) {
@@ -250,13 +260,16 @@ public class StockManagementService {
         }
 
         BigDecimal priorCostPrice = product.getCostPrice();
+        // Company-wide, before the figure moves (D-B6): one product, one average, whichever branch.
         product.setCostPrice(recomputeWeightedAverageCost(product, quantityBaseUnits, entry.basePrice()));
         if (!absorbed) {
-            product.setQuantityOnHand(product.getQuantityOnHand() + quantityBaseUnits);
+            branchStockService.apply(product, branchId, areaId, quantityBaseUnits);
         }
 
         StockMovement movement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
                 .movementType(MovementType.IN)
                 .quantity(quantityBaseUnits)
                 .unitPriceAtTime(entry.basePrice())
@@ -272,7 +285,7 @@ public class StockManagementService {
                 .enteredUnitPrice(entry.enteredUnitPrice())
                 .build());
         if (absorbed) {
-            recordAbsorbedByLaterCount(product, -quantityBaseUnits, occurredAt, actingUserId);
+            recordAbsorbedByLaterCount(product, branchId, areaId, -quantityBaseUnits, occurredAt, actingUserId);
         } else if (importBatchId == null) {
             // Undoable for two minutes (D8) - unless undoing it would also have to unpick a
             // supplier set up, or a pack saved, by this very delivery.
@@ -394,8 +407,38 @@ public class StockManagementService {
      */
     @Transactional
     public StockMutationResponse stockOut(UUID productId, StockOutRequest request, UUID actingUserId) {
+        return stockOut(productId, request, actingUserId, AreaUse.TAKE);
+    }
+
+    /**
+     * {@link #stockOut(UUID, StockOutRequest, UUID)} for a stock-out the system makes rather than a
+     * person - a marketplace dispatch - which leaves from the delivery area when it names none (D-E10).
+     */
+    @Transactional
+    public StockMutationResponse stockOut(UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse) {
+        return stockOut(productId, request, actingUserId, areaUse, null);
+    }
+
+    /**
+     * @param usedAreaId the area this stock was given to, when it uses what it's given (V63, D-E7): the row
+     *     says "Used at Housekeeping". Set only by a move ({@code AreaMoveService}), never from a request.
+     */
+    private StockMutationResponse stockOut(
+            UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse, UUID usedAreaId) {
+        return stockOut(productId, request, actingUserId, areaUse, usedAreaId, false);
+    }
+
+    /**
+     * @param forMove written by settling a move (Part 4) at its sending area, which the person confirming
+     *     needn't work in - the move was checked when it was made, and the confirmation against its own area.
+     */
+    private StockMutationResponse stockOut(
+            UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse, UUID usedAreaId, boolean forMove) {
         Product product = lockProductOrThrow(productId);
         UUID tenantId = requireTenantId();
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse,
+                forMove ? null : actingUserId);
 
         ResolvedEntry entry = resolveEntry(
                 product, BigDecimal.valueOf(request.quantity()), SaleFacts.enteredPrice(request), request.unit(), null, null);
@@ -404,16 +447,21 @@ public class StockManagementService {
         // A sale from before a later stock count, arriving late from an offline phone: the count
         // already saw the shelf without these goods, so the shelf figure must not move again - and
         // the ceiling below, which guards today's figure, does not apply to it.
-        boolean absorbed = request.isRecordedOffline() && stockMovementRepository.existsCountAfter(productId, occurredAt);
+        boolean absorbed = request.isRecordedOffline() && countedAfter(productId, branchId, areaId, occurredAt);
 
-        // The authoritative ceiling is still Product.quantityOnHand - see the class javadoc's
-        // "cached counter, lot ledger is the source of truth underneath it, not a replacement"
-        // and the reasoning below for why the ledger alone cannot be trusted as the ceiling yet.
-        if (!absorbed && quantityBaseUnits > product.getQuantityOnHand()) {
-            throw new InsufficientStockException(product.getQuantityOnHand(), quantityBaseUnits, unitSymbol(product));
+        // The authoritative ceiling is still the cached figure, not the lot ledger - see the class
+        // javadoc's "cached counter, lot ledger is the source of truth underneath it, not a
+        // replacement" and the reasoning below for why the ledger alone cannot be trusted as the
+        // ceiling yet. Since V51 it is this branch's figure: a one-branch company's is
+        // Product.quantityOnHand itself, exactly as before (BranchStockService). Since V60 it is this
+        // area's, at a branch that has several - the Kitchen can't sell what is in the Store.
+        int available = branchStockService.quantityAt(product, branchId, areaId);
+        if (!absorbed && quantityBaseUnits > available) {
+            throw new InsufficientStockException(available, quantityBaseUnits, unitSymbol(product));
         }
 
-        List<StockMovement> lockedLotsOldestFirst = stockMovementRepository.findInMovementsForUpdate(productId, tenantId);
+        List<StockMovement> lockedLotsOldestFirst =
+                stockMovementRepository.findInMovementsForUpdate(productId, tenantId, branchId);
 
         List<LotDraw> draws = (request.allocations() == null || request.allocations().isEmpty())
                 ? resolveFifoAllocations(lockedLotsOldestFirst, quantityBaseUnits)
@@ -431,11 +479,13 @@ public class StockManagementService {
         boolean sale = reason == OutReason.SALE;
 
         if (!absorbed) {
-            product.setQuantityOnHand(product.getQuantityOnHand() - quantityBaseUnits);
+            branchStockService.apply(product, branchId, areaId, -quantityBaseUnits);
         }
 
         StockMovement outMovement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
                 .movementType(MovementType.OUT)
                 .occurredAt(occurredAt)
                 .quantity(quantityBaseUnits)
@@ -446,6 +496,7 @@ public class StockManagementService {
                 .enteredQuantity(entry.enteredQuantity())
                 .enteredUnitPrice(entry.enteredUnitPrice())
                 .outReason(reason)
+                .usedAreaId(usedAreaId)
                 // A sale sent without an id is a sale of its own; one sent with it joins its basket.
                 .saleId(sale ? (request.saleId() != null ? request.saleId() : UUID.randomUUID()) : null)
                 .saleAmount(sale ? SaleFacts.saleAmount(request) : null)
@@ -483,7 +534,7 @@ public class StockManagementService {
         }
 
         if (absorbed) {
-            recordAbsorbedByLaterCount(product, quantityBaseUnits, occurredAt, actingUserId);
+            recordAbsorbedByLaterCount(product, branchId, areaId, quantityBaseUnits, occurredAt, actingUserId);
         } else {
             // Undoable for two minutes (D8): the lots it drew from are on its allocation rows.
             stockMovementRepository.flush();
@@ -509,24 +560,40 @@ public class StockManagementService {
     @Transactional
     public StockMutationResponse count(UUID productId, StockCountRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
         OffsetDateTime countedAt = resolveOccurredAt(request.countedAt());
-        if (stockMovementRepository.existsCountAfter(productId, countedAt)) {
+        if (countedAfter(productId, branchId, areaId, countedAt)) {
             return StockMutationResponse.of(product, null);
         }
-        long carriedForward = stockMovementRepository.netChangeAfter(productId, countedAt);
+        long carriedForward = netChangeAfter(productId, branchId, areaId, countedAt);
         // Sales recorded after the count can exceed it (the count was wrong, or stock arrived
         // unrecorded); the shelf cannot hold less than nothing.
         int target = (int) Math.max(0, request.countedQuantity() + carriedForward);
-        int delta = target - product.getQuantityOnHand();
-        product.setQuantityOnHand(target);
+        int delta = target - branchStockService.quantityAt(product, branchId, areaId);
+
+        // Where stock is worked with (a kitchen, Part 3.5, D-E13), what a count finds short is what was used:
+        // a Used stock-out, costed off the lots like any other, that is also this count. Elsewhere, or when
+        // the sheet says it went missing this time, the count's adjustment as ever. More is never "used".
+        String note = request.note() == null || request.note().isBlank() ? "Stock count" : request.note();
+        boolean shortUsed = delta < 0 && (request.shortAs() != null
+                ? request.shortAs() == StockCountRequest.ShortAs.USED
+                : branchStockService.isAreaMode(branchId) && branchStockService.isShortUsed(areaId));
+        if (shortUsed) {
+            StockMovement used = recordUsedByCount(product, branchId, areaId, -delta, countedAt, note, actingUserId);
+            return StockMutationResponse.of(product, used);
+        }
+        branchStockService.apply(product, branchId, areaId, delta);
 
         StockMovement movement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
                 .movementType(MovementType.ADJUSTMENT)
                 .quantity(delta)
                 .count(true)
                 .occurredAt(countedAt)
-                .note(request.note() == null || request.note().isBlank() ? "Stock count" : request.note())
+                .note(note)
                 .createdBy(reference(actingUserId))
                 .build());
         // Undoable for two minutes (D8): the difference it made is the movement's own quantity.
@@ -536,21 +603,280 @@ public class StockManagementService {
     }
 
     /**
+     * A count's shortfall where stock is worked with (Part 3.5): {@code quantity} used at the area, drawn off the
+     * branch's oldest lots and costed as a stock-out is, marked as the count it is - so a later count, a late
+     * offline write and the "already counted" check treat it exactly as a count. Undone like any stock-out.
+     */
+    private StockMovement recordUsedByCount(
+            Product product, UUID branchId, UUID areaId, int quantity, OffsetDateTime countedAt, String note,
+            UUID actingUserId) {
+        UUID tenantId = requireTenantId();
+        List<StockMovement> lots = stockMovementRepository.findInMovementsForUpdate(product.getId(), tenantId, branchId);
+        List<LotDraw> draws = resolveFifoAllocations(lots, quantity);
+        SaleFacts.Cost cost = SaleFacts.costOf(
+                draws.stream().map(draw -> new SaleFacts.Draw(draw.lot(), draw.quantity())).toList(),
+                quantity,
+                product.getCostPrice());
+        branchStockService.apply(product, branchId, areaId, -quantity);
+        StockMovement used = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
+                .movementType(MovementType.OUT)
+                .outReason(OutReason.USED)
+                .quantity(quantity)
+                .count(true)
+                .occurredAt(countedAt)
+                .note(note)
+                .createdBy(reference(actingUserId))
+                .costAmount(cost.amount())
+                .costBasis(cost.basis())
+                .build());
+        for (LotDraw draw : draws) {
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(used)
+                    .inMovement(draw.lot())
+                    .quantity(draw.quantity())
+                    .build());
+            CompanyVendor lotVendor = draw.lot().getCompanyVendor();
+            if (lotVendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), lotVendor.getId())
+                        .ifPresent(vendor -> productVendorService.recordAllocationDrawdown(vendor, draw.quantity()));
+            }
+        }
+        stockMovementRepository.flush();
+        stockWriteUndoStore.record(used.getId(), tenantId, actingUserId, null, null, null, null, null);
+        return used;
+    }
+
+    /**
      * Records that a late write from an offline phone was already reflected in a stock count taken
      * after it (A4): the movement itself stays in the ledger - lots, costs and history need it - and
      * this adjustment cancels its effect on the shelf figure, so the ledger still adds up.
      *
      * @param effect the signed change this adjustment makes: minus a late delivery, plus a late sale.
      */
-    private void recordAbsorbedByLaterCount(Product product, int effect, OffsetDateTime occurredAt, UUID actingUserId) {
+    private void recordAbsorbedByLaterCount(
+            Product product, UUID branchId, UUID areaId, int effect, OffsetDateTime occurredAt, UUID actingUserId) {
         stockMovementRepository.save(StockMovement.builder()
                 .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
                 .movementType(MovementType.ADJUSTMENT)
                 .quantity(effect)
                 .occurredAt(occurredAt)
                 .note("Already in a later stock count: recorded on a phone while offline, before that count")
                 .createdBy(reference(actingUserId))
                 .build());
+    }
+
+    /**
+     * Whether the shelf a write happened at was counted after {@code after}: the branch's, or - at a
+     * branch with several areas (V60) - that area's alone, since a count of the Kitchen says nothing
+     * about the Store.
+     */
+    private boolean countedAfter(UUID productId, UUID branchId, UUID areaId, OffsetDateTime after) {
+        if (!branchStockService.isAreaMode(branchId)) {
+            return stockMovementRepository.existsCountAfter(productId, branchId, after);
+        }
+        return stockMovementRepository.existsCountAfterInArea(
+                productId, branchId, areaId, branchStockService.originalAreaId(branchId), after);
+    }
+
+    /** What a count taken at {@code after} is carried forward by: the branch's later writes, or the area's. */
+    private long netChangeAfter(UUID productId, UUID branchId, UUID areaId, OffsetDateTime after) {
+        if (!branchStockService.isAreaMode(branchId)) {
+            return stockMovementRepository.netChangeAfter(productId, branchId, after);
+        }
+        // Moves between areas (V63) are not ledger rows: the area's moves in and out are added beside it.
+        return stockMovementRepository.netChangeAfterInArea(
+                        productId, branchId, areaId, branchStockService.originalAreaId(branchId), after)
+                + branchStockService.moveNetAfter(productId, branchId, areaId, after);
+    }
+
+    // --------------------------------------------------------------------- moves between areas (V63)
+
+    /** What one line of a move between areas came to: in stock units, as typed, and a give's stock-out. */
+    public record AreaMovePiece(int quantity, String enteredUnit, BigDecimal enteredQuantity, UUID usedMovementId) {
+    }
+
+    /**
+     * One line of a move between two areas of a branch (STOCK_AREAS_PART_2.md). To an area that keeps
+     * stock: the sending area's figure down, the receiving one's up, nothing else (lots, costs and the
+     * branch's figure stay). To one that uses what it's given: a stock-out at the sending area, reason
+     * USED, tagged with the area - FIFO, cost and usage reports as for any Used stock-out.
+     *
+     * <p>A late line from an offline phone, at an area counted after it happened: the count already saw
+     * it, so that side gets the same "already in a later stock count" adjustment a late stock-in or
+     * stock-out gets, and every figure still adds up. The caller locks nothing; products are locked here,
+     * one at a time, and the caller passes lines in product-id order so every write takes them in one
+     * order.
+     */
+    @Transactional
+    public AreaMovePiece moveBetweenAreas(
+            UUID productId,
+            UUID branchId,
+            UUID fromAreaId,
+            UUID toAreaId,
+            boolean toKeepsStock,
+            int quantity,
+            String unit,
+            OffsetDateTime occurredAt,
+            boolean recordedOffline,
+            String note,
+            UUID actingUserId) {
+        if (!toKeepsStock) {
+            StockMutationResponse out = stockOut(productId,
+                    new StockOutRequest(quantity, null, note, unit, null, occurredAt, recordedOffline, OutReason.USED,
+                            null, null, branchId, fromAreaId),
+                    actingUserId, AreaUse.TAKE, toAreaId);
+            StockMovement movement = stockMovementRepository.findById(out.movement().id()).orElseThrow();
+            return new AreaMovePiece(movement.getQuantity(), movement.getEnteredUnit(), movement.getEnteredQuantity(),
+                    movement.getId());
+        }
+        Product product = lockProductOrThrow(productId);
+        ResolvedEntry entry = resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, null, null);
+        int base = entry.baseQuantity();
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        boolean late = recordedOffline;
+        boolean fromCounted = late && countedAfter(productId, branchId, fromAreaId, at);
+        // The sending area's figure is the ceiling, as for a stock-out - unless a later count there already
+        // saw this stock gone, in which case today's figure no longer has it to give.
+        int available = branchStockService.quantityAt(product, branchId, fromAreaId);
+        if (!fromCounted && base > available) {
+            throw new InsufficientStockException(available, base, unitSymbol(product)).forProduct(productId);
+        }
+        branchStockService.moveBetweenAreas(product, branchId, fromAreaId, toAreaId, base);
+        if (fromCounted) {
+            absorbIntoLaterCount(product, branchId, fromAreaId, base, at, actingUserId);
+        }
+        if (late && countedAfter(productId, branchId, toAreaId, at)) {
+            absorbIntoLaterCount(product, branchId, toAreaId, -base, at, actingUserId);
+        }
+        return new AreaMovePiece(base, entry.enteredUnit(), entry.enteredQuantity(), null);
+    }
+
+    /**
+     * One line of a move to an area that confirms (Part 4, STOCK_AREAS_PART_4.md): it leaves the sending area
+     * now - handed over - and waits, in no area's figure and still in the branch's, until it is settled. The
+     * sending area's figure is the ceiling, as for any move; a late line a later count there already saw gone
+     * is put back as that count's adjustment, as {@link #moveBetweenAreas} does.
+     */
+    @Transactional
+    public AreaMovePiece holdForMove(
+            UUID productId,
+            UUID branchId,
+            UUID fromAreaId,
+            int quantity,
+            String unit,
+            OffsetDateTime occurredAt,
+            boolean recordedOffline,
+            UUID actingUserId) {
+        Product product = lockProductOrThrow(productId);
+        ResolvedEntry entry = resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, null, null);
+        int base = entry.baseQuantity();
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        boolean fromCounted = recordedOffline && countedAfter(productId, branchId, fromAreaId, at);
+        int available = branchStockService.quantityAt(product, branchId, fromAreaId);
+        if (!fromCounted && base > available) {
+            throw new InsufficientStockException(available, base, unitSymbol(product)).forProduct(productId);
+        }
+        branchStockService.holdInArea(product, branchId, fromAreaId, -base);
+        if (fromCounted) {
+            absorbIntoLaterCount(product, branchId, fromAreaId, base, at, actingUserId);
+        }
+        return new AreaMovePiece(base, entry.enteredUnit(), entry.enteredQuantity(), null);
+    }
+
+    /**
+     * {@code quantity} of {@code productId} in {@code unit} (its stock unit when absent) as the stock unit, and as
+     * typed - for a record that names an amount without moving any stock: a request (Part 5).
+     */
+    @Transactional
+    public AreaMovePiece inStockUnits(UUID productId, int quantity, String unit) {
+        UUID clientId = requireTenantId();
+        Product product = productRepository.findById(productId)
+                .filter(found -> clientId.equals(found.getClientId()))
+                .orElseThrow(ProductNotFoundException::new);
+        ResolvedEntry entry = resolveEntry(product, BigDecimal.valueOf(quantity), null, unit, null, null);
+        return new AreaMovePiece(entry.baseQuantity(), entry.enteredUnit(), entry.enteredQuantity(), null);
+    }
+
+    /** What settling a waiting line wrote: the Used stock-out where what arrived was used there, else null. */
+    public record SettledLine(UUID usedMovementId) {
+    }
+
+    /**
+     * A waiting line settled (Part 4): confirmed - {@code got} arrived, the rest stayed behind or was damaged -
+     * or cancelled ({@code got} 0, nothing damaged). The hold goes back to the sending area first; then what
+     * arrived goes on into the receiving area, or, where it's used there ({@code keep} false: an area that uses
+     * what it's given, or a "used straight away" line), is a Used stock-out at the sending area tagged with the
+     * receiving one, as a give is (D-E7); what was damaged is a Damaged stock-out at the sending area (D-A9).
+     * Late from an offline phone, behind a count that already saw it: that side is put back as the count's
+     * adjustment, as for every late write.
+     */
+    @Transactional
+    public SettledLine settleWaitingLine(
+            UUID productId,
+            UUID branchId,
+            UUID fromAreaId,
+            UUID toAreaId,
+            int quantity,
+            int got,
+            boolean keep,
+            OutReason restOut,
+            OffsetDateTime occurredAt,
+            boolean recordedOffline,
+            String usedNote,
+            String restNote,
+            UUID actingUserId) {
+        Product product = lockProductOrThrow(productId);
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        branchStockService.holdInArea(product, branchId, fromAreaId, quantity);
+        int rest = quantity - got;
+        UUID used = null;
+        if (got > 0 && keep) {
+            branchStockService.moveBetweenAreas(product, branchId, fromAreaId, toAreaId, got);
+            if (recordedOffline && countedAfter(productId, branchId, toAreaId, at)) {
+                absorbIntoLaterCount(product, branchId, toAreaId, -got, at, actingUserId);
+            }
+        } else if (got > 0) {
+            StockMutationResponse out = stockOut(productId,
+                    new StockOutRequest(got, null, usedNote, null, null, at, recordedOffline, OutReason.USED, null, null,
+                            branchId, fromAreaId),
+                    actingUserId, AreaUse.TAKE, toAreaId, true);
+            used = out.movement().id();
+        }
+        if (rest > 0 && restOut != null) {
+            // Written off where it was moved from, for the reason the area gave (Part 6), the note on it.
+            stockOut(productId,
+                    new StockOutRequest(rest, null, restNote, null, null, at, recordedOffline, restOut, null,
+                            null, branchId, fromAreaId),
+                    actingUserId, AreaUse.TAKE, null, true);
+        } else if (rest > 0 && recordedOffline && countedAfter(productId, branchId, fromAreaId, at)) {
+            // Back in the sending area before a later count there, which already saw it.
+            absorbIntoLaterCount(product, branchId, fromAreaId, -rest, at, actingUserId);
+        }
+        return new SettledLine(used);
+    }
+
+    /** Undo of a move's line between two areas that keep stock: back where it came from. The caller checked it may. */
+    @Transactional
+    public void moveAreaLineBack(UUID productId, UUID branchId, UUID fromAreaId, UUID toAreaId, int quantity) {
+        Product product = lockProductOrThrow(productId);
+        branchStockService.moveBetweenAreas(product, branchId, toAreaId, fromAreaId, quantity);
+    }
+
+    /**
+     * A late move's side that a later count already saw (above): the move is applied in full, and this
+     * puts that area back to what the count found - a recorded adjustment, so the ledger and the branch's
+     * figure agree with the areas.
+     */
+    private void absorbIntoLaterCount(
+            Product product, UUID branchId, UUID areaId, int effect, OffsetDateTime occurredAt, UUID actingUserId) {
+        branchStockService.apply(product, branchId, areaId, effect);
+        recordAbsorbedByLaterCount(product, branchId, areaId, effect, occurredAt, actingUserId);
     }
 
     /**
@@ -847,8 +1173,14 @@ public class StockManagementService {
         // remembers it, so a permission removed in the meantime is respected.
         String authority = switch (movement.getMovementType()) {
             case IN -> "STOCK_IN";
-            case OUT -> "STOCK_OUT";
+            // A kitchen count's shortfall is an OUT (Part 3.5), but undoing it undoes a count.
+            case OUT -> movement.isCount() ? "MANAGE_INVENTORY" : "STOCK_OUT";
             case ADJUSTMENT -> "MANAGE_INVENTORY";
+            // Half a waybill is never undone on its own: the whole transfer is cancelled, before it
+            // is received (TransferService.cancel), so both branches' figures move together.
+            case TRANSFER_OUT, TRANSFER_IN -> throw new StockWriteNotUndoableException(
+                    "This is part of a transfer. Cancel the transfer instead, before it is received.");
+            case MOVE -> throw new IllegalStateException("a move is not a stock movement");
         };
         stockWritePermissionGuard.require(actingUserId, authority);
 
@@ -879,7 +1211,9 @@ public class StockManagementService {
         switch (movement.getMovementType()) {
             case IN -> voidStockIn(product, movement, snapshot, tenantId);
             case OUT -> voidStockOut(product, movement, tenantId);
-            case ADJUSTMENT -> product.setQuantityOnHand(product.getQuantityOnHand() - movement.getQuantity());
+            case ADJUSTMENT -> branchStockService.apply(
+                    product, movement.getBranchId(), branchStockService.areaOf(movement), -movement.getQuantity());
+            case TRANSFER_OUT, TRANSFER_IN, MOVE -> throw new IllegalStateException("refused above");
         }
         stockMovementRepository.delete(movement);
         stockMovementRepository.flush();
@@ -896,7 +1230,8 @@ public class StockManagementService {
                     "Some of this delivery has already gone out, so it can't be undone. Record a count to correct the"
                             + " figure.");
         }
-        product.setQuantityOnHand(product.getQuantityOnHand() - movement.getQuantity());
+        branchStockService.apply(
+                product, movement.getBranchId(), branchStockService.areaOf(movement), -movement.getQuantity());
         product.setCostPrice(snapshot.priorCostPrice());
         CompanyVendor vendor = movement.getCompanyVendor();
         if (vendor != null) {
@@ -929,7 +1264,8 @@ public class StockManagementService {
         }
         stockMovementAllocationRepository.deleteAll(draws);
         stockMovementAllocationRepository.flush();
-        product.setQuantityOnHand(product.getQuantityOnHand() + movement.getQuantity());
+        branchStockService.apply(
+                product, movement.getBranchId(), branchStockService.areaOf(movement), movement.getQuantity());
     }
 
     /**
@@ -960,9 +1296,13 @@ public class StockManagementService {
         List<StockMovementAllocation> draws =
                 stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(line.getId());
 
-        product.setQuantityOnHand(product.getQuantityOnHand() + line.getQuantity());
+        // Back to the branch, and the area of it, it was sold from.
+        UUID areaId = branchStockService.areaOf(line);
+        branchStockService.apply(product, line.getBranchId(), areaId, line.getQuantity());
         StockMovement cancellation = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
+                .branchId(line.getBranchId())
+                .areaId(areaId)
                 .movementType(MovementType.ADJUSTMENT)
                 .quantity(line.getQuantity())
                 .note("Sale cancelled")
@@ -994,6 +1334,337 @@ public class StockManagementService {
     }
 
     /**
+     * Part of a Used stock-out given back by the area it was given to (STOCK_AREAS_PART_6.md, D-A6): Housekeeping
+     * got 3 bags and gives 1 back. Written as {@link #cancelSaleLine} writes a cancelled sale, for part of it: an
+     * ADJUSTMENT of +quantity at the area the stock left (the Store) that {@code reverses} the Used row and carries
+     * its area, its cost netted pro rata, and the delivery lots it drew on restored - latest drawn first, after
+     * any earlier give back - so FIFO draws on them again in their place. The caller has checked it may, and that
+     * no more comes back than was used. Sent late behind a later count of that area: absorbed, like a late move.
+     */
+    @Transactional
+    public StockMovement giveBack(
+            UUID usedMovementId, int quantity, String note, OffsetDateTime occurredAt, boolean recordedOffline,
+            UUID actingUserId) {
+        StockMovement used = stockMovementRepository.findById(usedMovementId)
+                .orElseThrow(() -> new IllegalStateException("No such stock-out: " + usedMovementId));
+        Product product = lockProductOrThrow(used.getProduct().getId());
+        UUID tenantId = requireTenantId();
+        OffsetDateTime at = resolveOccurredAt(occurredAt);
+        UUID areaId = branchStockService.areaOf(used);
+
+        // What each lot still has drawn by this stock-out, after earlier give backs.
+        Map<UUID, Integer> drawn = new LinkedHashMap<>();
+        Map<UUID, StockMovement> lots = new HashMap<>();
+        for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(used.getId())) {
+            drawn.merge(draw.getInMovement().getId(), draw.getQuantity(), Integer::sum);
+            lots.put(draw.getInMovement().getId(), draw.getInMovement());
+        }
+        for (StockMovement earlier : stockMovementRepository.findAllByReversesMovementIdOrderByCreatedAtAsc(used.getId())) {
+            for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(earlier.getId())) {
+                drawn.merge(draw.getInMovement().getId(), draw.getQuantity(), Integer::sum);
+            }
+        }
+
+        branchStockService.apply(product, used.getBranchId(), areaId, quantity);
+        BigDecimal cost = used.getCostAmount() == null ? null
+                : used.getCostAmount().multiply(BigDecimal.valueOf(quantity))
+                        .divide(BigDecimal.valueOf(used.getQuantity()), 2, java.math.RoundingMode.HALF_UP).negate();
+        StockMovement back = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(used.getBranchId())
+                .areaId(areaId)
+                .movementType(MovementType.ADJUSTMENT)
+                .occurredAt(at)
+                .quantity(quantity)
+                .note(note)
+                .createdBy(reference(actingUserId))
+                .usedAreaId(used.getUsedAreaId())
+                .costAmount(cost)
+                .costBasis(used.getCostBasis())
+                .reversesMovementId(used.getId())
+                .build());
+
+        List<UUID> latestFirst = new ArrayList<>(drawn.keySet());
+        java.util.Collections.reverse(latestFirst);
+        int left = quantity;
+        for (UUID lotId : latestFirst) {
+            int take = Math.min(left, drawn.get(lotId));
+            if (take <= 0) {
+                continue;
+            }
+            StockMovement lot = lots.get(lotId);
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(back)
+                    .inMovement(lot)
+                    .quantity(-take)
+                    .build());
+            CompanyVendor lotVendor = lot.getCompanyVendor();
+            if (lotVendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), lotVendor.getId())
+                        .ifPresent(vendorLine -> vendorLine.setQuantityOnHandFromVendor(
+                                vendorLine.getQuantityOnHandFromVendor() + take));
+            }
+            left -= take;
+            if (left == 0) {
+                break;
+            }
+        }
+        if (recordedOffline && countedAfter(product.getId(), used.getBranchId(), areaId, at)) {
+            absorbIntoLaterCount(product, used.getBranchId(), areaId, -quantity, at, actingUserId);
+        }
+        // Written now: the caller records the give back against this row with plain SQL, in the same transaction.
+        stockMovementRepository.flush();
+        log.info("Given back: {} of stock-out {} product={} client={} by={}", quantity, used.getId(), product.getId(),
+                tenantId, actingUserId);
+        return back;
+    }
+
+    // ------------------------------------------------------------------------------ transfers (V53)
+
+    /**
+     * One piece of the stock a TRANSFER_OUT took: the lot it came from - null for stock that predates
+     * lots - and how much. A transfer's line is received, or found missing, in the order it was drawn.
+     */
+    public record TransferPiece(StockMovement lot, int quantity) {
+    }
+
+    /**
+     * Takes {@code quantity} off {@code branchId}'s shelf onto a waybill (MULTI_BRANCH_BUILD_PLAN.md
+     * section 5.3): judged against that branch's figure, drawn oldest-lot-first from that branch's lots
+     * like a stock-out, the company total down by the same amount until it arrives. The supplier's
+     * on-hand tally is NOT drawn down (D-B7): the stock is still the company's. The caller holds the
+     * product's lock.
+     */
+    @Transactional
+    public StockMovement transferOut(
+            Product product,
+            UUID branchId,
+            int quantity,
+            UUID transferId,
+            OffsetDateTime occurredAt,
+            String note,
+            String enteredUnit,
+            BigDecimal enteredQuantity,
+            UUID actingUserId) {
+        UUID tenantId = requireTenantId();
+        // From the delivery area (D-E10) until a waybill can name its own (areas, Part 7).
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, null, AreaUse.DISPATCH);
+        int available = branchStockService.quantityAt(product, branchId, areaId);
+        if (quantity > available) {
+            throw new InsufficientStockException(available, quantity, unitSymbol(product)).forProduct(product.getId());
+        }
+        List<LotDraw> draws = resolveFifoAllocations(
+                stockMovementRepository.findInMovementsForUpdate(product.getId(), tenantId, branchId), quantity);
+        branchStockService.apply(product, branchId, areaId, -quantity);
+        StockMovement out = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
+                .transferId(transferId)
+                .movementType(MovementType.TRANSFER_OUT)
+                .quantity(quantity)
+                .occurredAt(occurredAt)
+                .note(note)
+                .createdBy(reference(actingUserId))
+                .enteredUnit(enteredUnit)
+                .enteredQuantity(enteredQuantity)
+                .build());
+        for (LotDraw draw : draws) {
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(out)
+                    .inMovement(draw.lot())
+                    .quantity(draw.quantity())
+                    .build());
+        }
+        return out;
+    }
+
+    /**
+     * The pieces of a TRANSFER_OUT from {@code offset} for {@code quantity}, in the order it drew them:
+     * its lots, then whatever it took that had no lot. A line is consumed in that order by every receipt
+     * and loss, so the first lot sent is the first received (section 5.4).
+     */
+    @Transactional(readOnly = true)
+    public List<TransferPiece> transferPieces(StockMovement out, int offset, int quantity) {
+        List<TransferPiece> sequence = new ArrayList<>();
+        int drawn = 0;
+        for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(out.getId())) {
+            if (draw.getQuantity() > 0) {
+                sequence.add(new TransferPiece(draw.getInMovement(), draw.getQuantity()));
+                drawn += draw.getQuantity();
+            }
+        }
+        if (out.getQuantity() > drawn) {
+            sequence.add(new TransferPiece(null, out.getQuantity() - drawn));
+        }
+        List<TransferPiece> pieces = new ArrayList<>();
+        int skip = offset;
+        int want = quantity;
+        for (TransferPiece piece : sequence) {
+            if (want <= 0) break;
+            int available = piece.quantity();
+            int skipped = Math.min(skip, available);
+            skip -= skipped;
+            available -= skipped;
+            if (available <= 0) continue;
+            int take = Math.min(available, want);
+            pieces.add(new TransferPiece(piece.lot(), take));
+            want -= take;
+        }
+        return pieces;
+    }
+
+    /**
+     * Puts received stock on {@code branchId}'s shelf (D-B5): each piece a lot of its own, with the cost,
+     * supplier and packaging of the delivery it came from and {@code sourceLotId} naming it, so profit at
+     * this branch uses the real cost and the recall trace walks through. Stock that had no lot arrives at
+     * the product's average cost. The supplier's tally is not touched (D-B7). The caller holds the lock.
+     */
+    @Transactional
+    public void transferIn(
+            Product product,
+            UUID branchId,
+            List<TransferPiece> pieces,
+            UUID transferId,
+            OffsetDateTime occurredAt,
+            String note,
+            UUID actingUserId) {
+        // Into the delivery area (D-E10) until a receipt can say where to put it (areas, Part 7).
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, null, AreaUse.RECEIVE);
+        int total = 0;
+        for (TransferPiece piece : pieces) {
+            StockMovement lot = piece.lot();
+            stockMovementRepository.save(StockMovement.builder()
+                    .product(product)
+                    .branchId(branchId)
+                    .areaId(areaId)
+                    .transferId(transferId)
+                    .movementType(MovementType.TRANSFER_IN)
+                    .quantity(piece.quantity())
+                    .unitPriceAtTime(lot != null ? lot.getUnitPriceAtTime() : product.getCostPrice())
+                    .companyVendor(lot != null ? lot.getCompanyVendor() : null)
+                    .packagingUnit(lot != null ? lot.getPackagingUnit() : null)
+                    .packagingSize(lot != null ? lot.getPackagingSize() : null)
+                    .sourceLotId(lot != null ? lot.getId() : null)
+                    .occurredAt(occurredAt)
+                    .note(note)
+                    .createdBy(reference(actingUserId))
+                    .build());
+            total += piece.quantity();
+        }
+        if (total > 0) {
+            branchStockService.apply(product, branchId, areaId, total);
+        }
+    }
+
+    /**
+     * Stock lost on the way - missing or damaged (UX section 5.7). It already left the sending shelf, so
+     * no figure moves; it is gone from the company now, so the supplier tallies it came from go down.
+     */
+    @Transactional
+    public void transferLoss(Product product, List<TransferPiece> pieces) {
+        UUID tenantId = requireTenantId();
+        for (TransferPiece piece : pieces) {
+            CompanyVendor vendor = piece.lot() == null ? null : piece.lot().getCompanyVendor();
+            if (vendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), vendor.getId())
+                        .ifPresent(line -> productVendorService.recordAllocationDrawdown(line, piece.quantity()));
+            }
+        }
+    }
+
+    /**
+     * Missing stock that turned up (V54, UX section 5.7): back on {@code branchId}'s shelf as lots with
+     * their delivery's cost and supplier, and - since {@link #transferLoss} took it off the supplier
+     * tallies - back on those too. The caller holds the lock.
+     */
+    @Transactional
+    public void transferFound(
+            Product product,
+            UUID branchId,
+            List<TransferPiece> pieces,
+            UUID transferId,
+            OffsetDateTime occurredAt,
+            String note,
+            UUID actingUserId) {
+        transferIn(product, branchId, pieces, transferId, occurredAt, note, actingUserId);
+        UUID tenantId = requireTenantId();
+        for (TransferPiece piece : pieces) {
+            CompanyVendor vendor = piece.lot() == null ? null : piece.lot().getCompanyVendor();
+            if (vendor != null) {
+                productVendorRepository
+                        .findByClientIdAndProductIdAndCompanyVendorId(tenantId, product.getId(), vendor.getId())
+                        .ifPresent(line -> productVendorService.recordAllocationDrawdown(line, -piece.quantity()));
+            }
+        }
+    }
+
+    /**
+     * Takes back a TRANSFER_OUT whose waybill was cancelled before anything arrived: an ADJUSTMENT of
+     * +quantity that reverses it, and negative allocations giving each lot back what it gave - exactly
+     * how a sale line is cancelled ({@link #cancelSaleLine}), the ledger untouched.
+     */
+    @Transactional
+    public void cancelTransferOut(Product product, StockMovement out, UUID actingUserId) {
+        List<StockMovementAllocation> draws = stockMovementAllocationRepository.findAllByOutMovementIdOrderByCreatedAtAsc(out.getId());
+        UUID areaId = branchStockService.areaOf(out);
+        branchStockService.apply(product, out.getBranchId(), areaId, out.getQuantity());
+        StockMovement cancellation = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(out.getBranchId())
+                .areaId(areaId)
+                .transferId(out.getTransferId())
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(out.getQuantity())
+                .note("Transfer cancelled")
+                .createdBy(reference(actingUserId))
+                .reversesMovementId(out.getId())
+                .build());
+        for (StockMovementAllocation draw : draws) {
+            stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                    .outMovement(cancellation)
+                    .inMovement(draw.getInMovement())
+                    .quantity(-draw.getQuantity())
+                    .build());
+        }
+    }
+
+    /**
+     * More arrived than the waybill says (UX section 5.5, "Sent too many"): the sending branch had it
+     * without the books knowing, so its figure comes down by an ADJUSTMENT and the receiving branch gets
+     * it as a lot at the product's average cost. The company total doesn't move.
+     */
+    @Transactional
+    public void transferSurplus(
+            Product product,
+            UUID fromBranchId,
+            UUID toBranchId,
+            int extra,
+            UUID transferId,
+            String waybill,
+            OffsetDateTime occurredAt,
+            UUID actingUserId) {
+        // The sending area is the delivery area, the one the waybill left from (transferOut).
+        UUID fromAreaId = branchStockService.resolveAreaForWrite(fromBranchId, null, AreaUse.DISPATCH);
+        branchStockService.apply(product, fromBranchId, fromAreaId, -extra);
+        stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(fromBranchId)
+                .areaId(fromAreaId)
+                .transferId(transferId)
+                .movementType(MovementType.ADJUSTMENT)
+                .quantity(-extra)
+                .occurredAt(occurredAt)
+                .note("Sent more than recorded on " + waybill)
+                .createdBy(reference(actingUserId))
+                .build());
+        transferIn(product, toBranchId, List.of(new TransferPiece(null, extra)), transferId, occurredAt,
+                "More than " + waybill + " said", actingUserId);
+    }
+
+    /**
      * Adds the price to a sale line saved without one (V46, plan decision 7): a zero-quantity
      * ADJUSTMENT carrying only the sale amount, pointing at the line it prices. No stock moves and
      * the original is never touched; the line's cost is already on the line itself.
@@ -1005,6 +1676,8 @@ public class StockManagementService {
                 .orElseThrow(ProductNotFoundException::new);
         return stockMovementRepository.save(StockMovement.builder()
                 .product(product)
+                .branchId(line.getBranchId())
+                .areaId(line.getAreaId())
                 .movementType(MovementType.ADJUSTMENT)
                 .quantity(0)
                 .note("Price added")
@@ -1026,14 +1699,18 @@ public class StockManagementService {
     @Transactional
     public StockMutationResponse adjust(UUID productId, StockAdjustmentRequest request, UUID actingUserId) {
         Product product = lockProductOrThrow(productId);
-        int delta = request.newQuantity() - product.getQuantityOnHand();
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
+        int delta = request.newQuantity() - branchStockService.quantityAt(product, branchId, areaId);
         if (delta == 0) {
             return StockMutationResponse.of(product, null);
         }
-        product.setQuantityOnHand(request.newQuantity());
+        branchStockService.apply(product, branchId, areaId, delta);
 
         StockMovement movement = stockMovementRepository.save(StockMovement.builder()
                 .product(product)
+                .branchId(branchId)
+                .areaId(areaId)
                 .movementType(MovementType.ADJUSTMENT)
                 .quantity(delta)
                 .note(request.note())
@@ -1045,13 +1722,22 @@ public class StockManagementService {
 
     @Transactional(readOnly = true)
     public Page<StockMovementResponse> history(UUID productId, Pageable pageable) {
+        return history(productId, pageable, null);
+    }
+
+    /** @param branchIds only these branches' movements (V51); null for every branch. */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> history(UUID productId, Pageable pageable, java.util.Collection<UUID> branchIds) {
         UUID tenantId = requireTenantId();
         if (productRepository.findByIdAndClientId(productId, tenantId).isEmpty()) {
             throw new ProductNotFoundException();
         }
-        return stockMovementRepository
-                .findAll(StockMovementSpecifications.forTenant(tenantId, productId, null, null, null, null), pageable)
-                .map(StockMovementResponse::from);
+        org.springframework.data.jpa.domain.Specification<StockMovement> spec =
+                StockMovementSpecifications.forTenant(tenantId, productId, null, null, null, null);
+        if (branchIds != null) {
+            spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
+        }
+        return withMoves(spec, pageable, tenantId, branchIds, null, productId, null, null);
     }
 
     /**
@@ -1086,12 +1772,130 @@ public class StockManagementService {
             OutReason outReason,
             boolean noReason,
             Pageable pageable) {
-        return stockMovementRepository
-                .findAll(
-                        StockMovementSpecifications.forTenant(
-                                requireTenantId(), productId, companyVendorId, from, to, movementType, outReason, noReason),
-                        pageable)
+        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, false, null, pageable);
+    }
+
+    /**
+     * @param adjustments only stock adjustments - see {@code StockMovementSpecifications.forTenant}.
+     * @param branchIds only these branches' movements (V51); null for every branch.
+     */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> allMovements(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds,
+            Pageable pageable) {
+        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments, branchIds,
+                false, pageable);
+    }
+
+    /**
+     * @param includeMoves moves between areas among the rows (V63), when nothing filters them out: no type,
+     *     supplier or reason chosen. The list asks for them; the spreadsheet, a ledger, does not.
+     */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> allMovements(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds,
+            boolean includeMoves,
+            Pageable pageable) {
+        return allMovements(from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments, branchIds,
+                null, includeMoves, pageable);
+    }
+
+    /** @param areas only these areas' rows and moves (Part 3.6); null is every area. */
+    @Transactional(readOnly = true)
+    public Page<StockMovementResponse> allMovements(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds,
+            com.procurepal_services.stock_bridge_api.branch.AreaScope areas,
+            boolean includeMoves,
+            Pageable pageable) {
+        UUID tenantId = requireTenantId();
+        org.springframework.data.jpa.domain.Specification<StockMovement> spec = StockMovementSpecifications.forTenant(
+                tenantId, productId, companyVendorId, from, to, movementType, outReason, noReason, adjustments);
+        if (branchIds != null) {
+            spec = spec.and(StockMovementSpecifications.atBranches(branchIds));
+        }
+        if (areas != null) {
+            spec = spec.and(StockMovementSpecifications.inAreas(areas));
+        }
+        boolean movesFit = includeMoves && movementType == null && companyVendorId == null && outReason == null
+                && !noReason && !adjustments;
+        if (!movesFit) {
+            return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        }
+        return withMoves(spec, pageable, tenantId, branchIds, areas, productId, from, to);
+    }
+
+    /** Past this many rows from the top, a page is the ledger alone - nobody pages that far back. */
+    private static final int MOVES_MERGE_DEPTH = 5_000;
+
+    /**
+     * The ledger's page with the moves between areas (V63) in among it, newest first - two lists, each
+     * sorted the same way, merged. Both are read from the top down to the end of the page asked for, so a
+     * deep page costs more; past {@link #MOVES_MERGE_DEPTH}, or sorted any other way, it is the ledger alone.
+     */
+    private Page<StockMovementResponse> withMoves(
+            org.springframework.data.jpa.domain.Specification<StockMovement> spec,
+            Pageable pageable,
+            UUID tenantId,
+            java.util.Collection<UUID> branchIds,
+            com.procurepal_services.stock_bridge_api.branch.AreaScope areas,
+            UUID productId,
+            OffsetDateTime from,
+            OffsetDateTime to) {
+        List<Sort.Order> orders = pageable.getSort().toList();
+        String sortedBy = orders.size() == 1 && orders.getFirst().isDescending() ? orders.getFirst().getProperty() : "";
+        boolean byCreatedAt = "createdAt".equals(sortedBy);
+        long depth = pageable.isPaged() ? pageable.getOffset() + pageable.getPageSize() : Long.MAX_VALUE;
+        if (!(byCreatedAt || "occurredAt".equals(sortedBy)) || depth > MOVES_MERGE_DEPTH) {
+            return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        }
+        MoveRows.Window moves = moveRows.newest(tenantId, branchIds, areas, productId, from, to, byCreatedAt, (int) depth);
+        if (moves.total() == 0) {
+            return stockMovementRepository.findAll(spec, pageable).map(StockMovementResponse::from);
+        }
+        Page<StockMovementResponse> ledger = stockMovementRepository
+                .findAll(spec, org.springframework.data.domain.PageRequest.of(0, (int) depth, pageable.getSort()))
                 .map(StockMovementResponse::from);
+        java.util.function.Function<StockMovementResponse, OffsetDateTime> key =
+                byCreatedAt ? StockMovementResponse::createdAt : StockMovementResponse::occurredAt;
+        List<StockMovementResponse> merged = new ArrayList<>(ledger.getNumberOfElements() + moves.rows().size());
+        int a = 0;
+        int b = 0;
+        List<StockMovementResponse> left = ledger.getContent();
+        List<StockMovementResponse> right = moves.rows();
+        while (a < left.size() || b < right.size()) {
+            // Newest first; on the same moment the ledger's row comes first.
+            boolean takeLeft = b >= right.size()
+                    || (a < left.size() && !key.apply(left.get(a)).isBefore(key.apply(right.get(b))));
+            merged.add(takeLeft ? left.get(a++) : right.get(b++));
+        }
+        int start = (int) Math.min(pageable.getOffset(), merged.size());
+        int end = (int) Math.min(depth, merged.size());
+        return new org.springframework.data.domain.PageImpl<>(
+                merged.subList(start, end), pageable, ledger.getTotalElements() + moves.total());
     }
 
     /**
@@ -1122,33 +1926,78 @@ public class StockManagementService {
             UUID companyVendorId,
             OutReason outReason,
             boolean noReason) {
+        return movementSummary(from, to, movementType, productId, companyVendorId, outReason, noReason, false, null);
+    }
+
+    /**
+     * @param adjustments only stock adjustments - see {@code StockMovementSpecifications.forTenant}.
+     * @param branchIds only these branches' movements (V51); null for every branch.
+     */
+    @Transactional(readOnly = true)
+    public StockMovementSummaryResponse movementSummary(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds) {
+        return movementSummary(from, to, movementType, productId, companyVendorId, outReason, noReason, adjustments, branchIds,
+                null);
+    }
+
+    /** @param areas only these areas' rows (Part 3.6); null is every area. */
+    @Transactional(readOnly = true)
+    public StockMovementSummaryResponse movementSummary(
+            OffsetDateTime from,
+            OffsetDateTime to,
+            MovementType movementType,
+            UUID productId,
+            UUID companyVendorId,
+            OutReason outReason,
+            boolean noReason,
+            boolean adjustments,
+            java.util.Collection<UUID> branchIds,
+            com.procurepal_services.stock_bridge_api.branch.AreaScope areas) {
+        UUID tenantId = requireTenantId();
+        java.util.Collection<UUID> scope = branchIds != null ? branchIds : branchStockService.allBranchIds(tenantId);
+        if (scope.isEmpty()) {
+            return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
+                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0, BigDecimal.ZERO.setScale(2), 0, 0);
+        }
         List<Object[]> rows = stockMovementRepository.summarise(
-                requireTenantId(),
+                tenantId,
                 productId,
                 companyVendorId,
                 movementType == null ? null : movementType.name(),
                 from,
                 to,
                 outReason == null ? null : outReason.name(),
-                noReason);
+                noReason,
+                adjustments,
+                scope,
+                areas);
         // A conditional aggregate with no GROUP BY always returns exactly one row, zeroes
         // included, so an empty list here would mean the query stopped being an aggregate.
         // Answered as an all-zero summary rather than an exception: a report footer is not
         // worth a 500, and every branch below would read zero anyway.
         if (rows.isEmpty()) {
             return new StockMovementSummaryResponse(BigDecimal.ZERO, BigDecimal.ZERO, 0, 0, 0, 0, 0, 0, 0,
-                    null, null, BigDecimal.ZERO, 0);
+                    null, null, BigDecimal.ZERO, 0, 0, 0, 0, 0, BigDecimal.ZERO.setScale(2), 0, 0);
         }
         Object[] row = rows.getFirst();
         // Sales, from the Sales report's own query so the two pages cannot disagree - only where
         // the rows here include sales at all and the report can answer for the same lines.
-        boolean salesApply = from != null && to != null && companyVendorId == null && !noReason
+        boolean salesApply = from != null && to != null && companyVendorId == null && !noReason && !adjustments
                 && (movementType == null || movementType == MovementType.OUT)
                 && (outReason == null || outReason == OutReason.SALE)
                 && sellingPolicy.showsSellingPrice(requireTenantId());
         com.procurepal_services.stock_bridge_api.selling.dto.SalesTotals sales = salesApply
                 ? salesReportService.totals(requireTenantId(), from, to,
-                        new com.procurepal_services.stock_bridge_api.selling.SalesReportService.Filters(productId, null, false, false, false))
+                        new com.procurepal_services.stock_bridge_api.selling.SalesReportService.Filters(productId, null, false, false, false)
+                                .atBranches(branchIds))
                 : null;
         return new StockMovementSummaryResponse(
                 (BigDecimal) row[0],
@@ -1163,7 +2012,14 @@ public class StockManagementService {
                 sales == null ? null : sales.salesAmount(),
                 sales == null ? null : sales.unpricedLineCount(),
                 outReason == OutReason.SALE ? BigDecimal.ZERO : ((BigDecimal) row[9]).setScale(2, java.math.RoundingMode.HALF_UP),
-                outReason == OutReason.SALE ? 0 : ((Number) row[10]).longValue());
+                outReason == OutReason.SALE ? 0 : ((Number) row[10]).longValue(),
+                ((Number) row[11]).longValue(),
+                ((Number) row[12]).longValue(),
+                ((Number) row[13]).longValue(),
+                ((Number) row[14]).longValue(),
+                ((BigDecimal) row[15]).setScale(2, java.math.RoundingMode.HALF_UP),
+                ((Number) row[16]).longValue(),
+                ((Number) row[17]).longValue());
     }
 
     /**
@@ -1178,11 +2034,34 @@ public class StockManagementService {
     public List<AllocationResponse> allocationsForInMovement(UUID inMovementId) {
         StockMovement inMovement = stockMovementRepository
                 .findByIdAndClientId(inMovementId, requireTenantId())
-                .filter(movement -> movement.getMovementType() == MovementType.IN)
+                // V53: stock that arrived on a waybill is a lot too, traced forward the same way; a lot drawn
+                // on by a TRANSFER_OUT shows that draw, and its stock continues as the TRANSFER_IN lot that
+                // names it as source_lot_id.
+                .filter(movement -> movement.getMovementType() == MovementType.IN
+                        || movement.getMovementType() == MovementType.TRANSFER_IN)
                 .orElseThrow(StockMovementNotFoundException::new);
-        return stockMovementAllocationRepository.findAllByInMovementIdOrderByCreatedAtAsc(inMovement.getId()).stream()
-                .map(AllocationResponse::from)
-                .toList();
+        List<AllocationResponse> trace = new ArrayList<>();
+        traceLot(inMovement, null, trace, 0);
+        return trace;
+    }
+
+    /**
+     * One lot's draws, and - for each draw that sent stock to another branch - the lot it became there,
+     * recursively (MULTI_BRANCH_BUILD_PLAN.md section 4.3). A lot is only ever sourced from an earlier
+     * one, so this ends; the depth cap is a guard, not a limit anyone meets.
+     */
+    private void traceLot(StockMovement lot, UUID throughLotId, List<AllocationResponse> trace, int depth) {
+        for (StockMovementAllocation draw : stockMovementAllocationRepository.findAllByInMovementIdOrderByCreatedAtAsc(lot.getId())) {
+            trace.add(AllocationResponse.from(draw, throughLotId));
+            StockMovement out = draw.getOutMovement();
+            if (out.getMovementType() != MovementType.TRANSFER_OUT || out.getTransferId() == null || depth >= 20) {
+                continue;
+            }
+            for (StockMovement arrived : stockMovementRepository.findAllByClientIdAndTransferIdAndSourceLotIdAndMovementType(
+                    lot.getClientId(), out.getTransferId(), lot.getId(), MovementType.TRANSFER_IN)) {
+                traceLot(arrived, arrived.getId(), trace, depth + 1);
+            }
+        }
     }
 
     /**
@@ -1240,13 +2119,19 @@ public class StockManagementService {
      */
     @Transactional(readOnly = true)
     public List<ProductLotResponse> lots(UUID productId, boolean openOnly) {
+        return lots(productId, openOnly, null);
+    }
+
+    /** @param branchId one branch's shelf (V51) - the stock-out sheet's own branch; null for every branch. */
+    @Transactional(readOnly = true)
+    public List<ProductLotResponse> lots(UUID productId, boolean openOnly, UUID branchId) {
         UUID tenantId = requireTenantId();
         if (productRepository.findByIdAndClientId(productId, tenantId).isEmpty()) {
             throw new ProductNotFoundException();
         }
 
         List<StockMovement> lotsOldestFirst = stockMovementRepository.findAll(
-                StockMovementSpecifications.lotsForProduct(tenantId, productId),
+                StockMovementSpecifications.lotsForProduct(tenantId, productId, branchId),
                 Sort.by(Sort.Direction.ASC, "occurredAt", "createdAt"));
         if (lotsOldestFirst.isEmpty()) {
             return List.of();

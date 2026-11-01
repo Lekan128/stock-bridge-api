@@ -288,6 +288,9 @@ class VendorFoundationIntegrationTest {
 
         assertThat(codes)
                 .containsExactly(
+                        // V52 split selling prices out of MANAGE_PRODUCTS and gave it to every
+                        // role holding that, a vendor's included: a vendor sets its own prices.
+                        "CHANGE_SELLING_PRICES",
                         // A vendor's single user IS its account holder, and V7 exists so
                         // an account holder can fix their own details without a ticket.
                         "MANAGE_COMPANY_PROFILE",
@@ -307,6 +310,9 @@ class VendorFoundationIntegrationTest {
                         // rather than by this grant.
                         "MANAGE_MARKETPLACE_ORDERS",
                         "MANAGE_PRODUCTS",
+                        // V53 gave it to every role holding STOCK_OUT. A seller can't add a
+                        // second branch in v1, so it has nowhere to send to yet.
+                        "SEND_STOCK",
                         // V27. Split out of MANAGE_INVENTORY, which this role already held -
                         // see StockController.
                         "STOCK_IN",

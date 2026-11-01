@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports.handler;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.imports.NameSimilarity;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductRefs;
 import com.procurepal_services.stock_bridge_api.product.quality.ProductSetupChecks;
@@ -129,10 +130,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     /** The note on the ledger row an opening balance writes. Matches the pre-V20 wording exactly. */
     private static final String OPENING_BALANCE_NOTE = "Opening balance (imported)";
 
+    /** Whether this import's person may set selling prices (V52). */
+    private final com.procurepal_services.stock_bridge_api.selling.SellingPricePermission sellingPricePermission;
     private final ProductRepository productRepository;
     private final ProductVendorRepository productVendorRepository;
     private final com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository importSessionRowRepository;
     private final StockMovementRepository stockMovementRepository;
+    /** Undo puts stock back at the branch the import put it at (V51). */
+    private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final StockManagementService stockManagementService;
     private final ProductVendorService productVendorService;
@@ -1187,6 +1193,14 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                     "Opening balance of %s recorded across %s"
                             .formatted(quantityPhrase(tally), ImportCopy.products(tally.openingProducts)));
         }
+        // Multi-branch (UX section 5.14): a price set here is the price at every branch - said before
+        // the import, not discovered after. Only when the person's prices will actually be applied.
+        int branches = branchCount(ctx.tenantId());
+        if (tally.priced > 0 && branches > 1 && sellingPricePermission.allows(ctx.actingUserId())) {
+            preview.always("prices", "Prices", tally.priced,
+                    "%s, at all %d branches".formatted(
+                            tally.priced == 1 ? "1 price is set" : tally.priced + " prices are set", branches));
+        }
         if (total == 0) {
             preview.blockedReason("There is nothing left to import - every row is either skipped or still has "
                     + "something to fix.");
@@ -1220,6 +1234,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return ImportCopy.quantityTotals(tally.openingByStockUnit);
     }
 
+    private int branchCount(java.util.UUID clientId) {
+        return (int) branchRepository.findAllByClientId(clientId).stream().filter(branch -> branch.isActive()).count();
+    }
+
     private static final class Tally {
         int creates;
         int updates;
@@ -1227,6 +1245,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         int vendorsToCreate;
         int categoriesToCreate;
         int openingProducts;
+        /** Rows that set a selling price: one price serves every branch (multi-branch section 5.14). */
+        int priced;
         /** Stock-unit symbol to the opening stock counted in it. Insertion-ordered by file order. */
         final Map<String, Long> openingByStockUnit = new LinkedHashMap<>();
     }
@@ -1240,6 +1260,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             }
             if (!state.isCommittable() || state.getContinuationOf() != null) {
                 continue;
+            }
+            if (state.text(ImportFields.UNIT_PRICE) != null) {
+                tally.priced++;
             }
             if (state.getResolvedEntityId() == null) {
                 tally.creates++;
@@ -1475,7 +1498,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private Product createProduct(BatchContext ctx, ImportRowState state, UUID batchId) {
         // One lookup, two questions: the price (SellingPolicy) and the moderation status below.
         Client owner = sellerDirectory.findSellerOfRecord(ctx.tenantId()).orElse(null);
-        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
+        // A sheet's selling prices need CHANGE_SELLING_PRICES (V52, UX section 5.14); without it the row
+        // still imports, without its price.
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner)
+                && sellingPricePermission.allows(ctx.actingUserId());
         boolean perPack = keepsSellingPrice && sellingPricePerPack(ctx.tenantId(), ctx.cache());
         Product created = productRepository.save(Product.builder()
                 .name(state.text(ImportFields.NAME))
@@ -1587,7 +1613,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         // After the pack, so a price per carton is converted by the carton this row describes.
         SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
-        if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
+        if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null
+                && sellingPricePermission.allows(ctx.actingUserId())) {
             // Through the one writer, so the typed price and the change log stay in step (V47).
             sellingPriceService.apply(product, decimalOf(state, ImportFields.UNIT_PRICE),
                     sellingPricePerPack(ctx.tenantId(), ctx.cache()) ? sellingPriceUnitOf(state) : null);
@@ -1777,7 +1804,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                         vendor == null ? null : vendor.getId(),
                         null,
                         null,
-                        OffsetDateTime.now()),
+                        OffsetDateTime.now())
+                        // Opening quantities land at the branch the sheet was uploaded for (V52).
+                        .withBranchId(ctx.session().getBranchId()),
                 ctx.actingUserId(),
                 batchId);
         return true;
@@ -1876,9 +1905,11 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             if (product == null) {
                 continue;
             }
-            product.setQuantityOnHand(product.getQuantityOnHand() - movement.getQuantity());
+            branchStockService.apply(
+                    product, movement.getBranchId(), branchStockService.areaOf(movement), -movement.getQuantity());
             stockMovementRepository.save(StockMovement.builder()
                     .product(product)
+                    .branchId(movement.getBranchId())
                     .movementType(MovementType.ADJUSTMENT)
                     .quantity(-movement.getQuantity())
                     .note("Reversing an import that was undone")

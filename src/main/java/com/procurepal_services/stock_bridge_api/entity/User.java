@@ -130,6 +130,13 @@ public class User extends TenantAwareEntity {
     @Column(name = "receive_promotional_email", nullable = false)
     private boolean receivePromotionalEmail = true;
 
+    /**
+     * Quick mode's buttons as this person chose them (V68): up to 4 of sell, in, out, move, ask, count, comma-separated.
+     * Null means the app's own choice for what they can do and where they work - most people never change it.
+     */
+    @Column(name = "quick_mode_tabs", length = 100)
+    private String quickModeTabs;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

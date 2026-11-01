@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product.sync;
 
+import com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.product.ProductManagementService;
@@ -38,6 +39,9 @@ public class ProductSyncService {
     /** The oldest transaction still running; everything older has finished, one way or another. */
     private static final String HORIZON = "pg_snapshot_xmin(pg_current_snapshot())::text::bigint";
 
+    /** Each row's figures at the person's branches (V52). */
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final NamedParameterJdbcTemplate jdbc;
     private final ProductRepository productRepository;
     private final ProductManagementService productManagementService;
@@ -53,6 +57,21 @@ public class ProductSyncService {
      */
     @Transactional(readOnly = true)
     public ProductSnapshotPage snapshot(UUID afterId, int limit) {
+        return snapshot(afterId, limit, null);
+    }
+
+    /** @param userId whose branches each row carries figures for (V52); null for none. */
+    @Transactional(readOnly = true)
+    public ProductSnapshotPage snapshot(UUID afterId, int limit, UUID userId) {
+        return snapshot(afterId, limit, userId, null);
+    }
+
+    /**
+     * @param branchId the phone's working branch: at a company where the person sees more than
+     *     {@link #WIDE} branches, the only branch rows carry a figure for (section 6.1); else unused.
+     */
+    @Transactional(readOnly = true)
+    public ProductSnapshotPage snapshot(UUID afterId, int limit, UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         useCustomPlans();
         String cursor = afterId == null
@@ -71,7 +90,7 @@ public class ProductSyncService {
 
         boolean hasMore = ids.size() > limit;
         List<UUID> pageIds = hasMore ? ids.subList(0, limit) : ids;
-        List<ProductSyncRow> rows = toRows(tenantId, pageIds);
+        List<ProductSyncRow> rows = toRows(tenantId, pageIds, userId, branchId);
         UUID nextAfterId = hasMore ? pageIds.get(pageIds.size() - 1) : null;
         Long total = afterId == null
                 ? jdbc.queryForObject("SELECT count(*) FROM products WHERE client_id = :clientId",
@@ -86,6 +105,18 @@ public class ProductSyncService {
      */
     @Transactional(readOnly = true)
     public ProductChangesPage changes(String cursorText, int limit) {
+        return changes(cursorText, limit, null);
+    }
+
+    /** @param userId whose branches each row carries figures for (V52); null for none. */
+    @Transactional(readOnly = true)
+    public ProductChangesPage changes(String cursorText, int limit, UUID userId) {
+        return changes(cursorText, limit, userId, null);
+    }
+
+    /** @param branchId as {@link #snapshot(UUID, int, UUID, UUID)}. */
+    @Transactional(readOnly = true)
+    public ProductChangesPage changes(String cursorText, int limit, UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         useCustomPlans();
         SyncCursor cursor = SyncCursor.decode(cursorText);
@@ -109,7 +140,7 @@ public class ProductSyncService {
 
         Set<UUID> changedIds = new LinkedHashSet<>();
         page.forEach(change -> changedIds.add(change.productId()));
-        List<ProductSyncRow> rows = toRows(tenantId, new ArrayList<>(changedIds));
+        List<ProductSyncRow> rows = toRows(tenantId, new ArrayList<>(changedIds), userId, branchId);
         Set<UUID> stillThere = new java.util.HashSet<>();
         rows.forEach(row -> stillThere.add(row.id()));
         List<UUID> removed = changedIds.stream().filter(id -> !stillThere.contains(id)).toList();
@@ -124,7 +155,14 @@ public class ProductSyncService {
      * {@link ExpectedDeliveryService#outstandingByProduct} - so a row on the phone and a row from
      * {@code GET /api/products} can never disagree.
      */
-    private List<ProductSyncRow> toRows(UUID tenantId, List<UUID> ids) {
+    /**
+     * Past this many branches (Avatar C, a chain) rows carry one branch's figure, the phone's working
+     * branch, instead of every branch's: 26 branches x 20k products would be half a million figures
+     * on a phone. Switching branch there downloads the catalogue again (MULTI_BRANCH_BUILD_PLAN.md 6.1).
+     */
+    public static final int WIDE = 10;
+
+    private List<ProductSyncRow> toRows(UUID tenantId, List<UUID> ids, UUID userId, UUID branchId) {
         if (ids.isEmpty()) {
             return List.of();
         }
@@ -133,6 +171,21 @@ public class ProductSyncService {
         Map<UUID, Boolean> multiplePacks = productManagementService.hasMultiplePacksFor(products);
         Map<UUID, BigDecimal> expected = expectedDeliveryService.outstandingByProduct(
                 tenantId, products.stream().map(Product::getId).toList());
+        // Only branches this person may see: what reaches a phone can be read off it, so another
+        // branch's figures are left out here, not hidden there (D-U3).
+        Map<UUID, Integer> thresholds = new java.util.HashMap<>();
+        products.forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
+        // Open branches only: a closed one holds nothing, and would read as out of everything.
+        List<UUID> visible = userId == null ? List.of() : branchAccessService.openViewBranchIds(userId);
+        List<UUID> carried = visible.size() <= WIDE ? visible
+                : branchId != null && visible.contains(branchId) ? List.of(branchId) : List.of();
+        Map<UUID, List<BranchFigure>> branchStock = userId == null
+                ? null
+                : branchStockService.figures(tenantId, thresholds.keySet(), carried, thresholds, visible.size() > 1);
+        // The same branches' areas, where they have more than one (V60): a one-branch company's too.
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> areaStock = userId == null
+                ? null
+                : branchStockService.areaFigures(thresholds.keySet(), carried);
 
         return products.stream()
                 .map(product -> new ProductSyncRow(
@@ -156,7 +209,9 @@ public class ProductSyncService {
                         StockStatus.isLowStock(product.getQuantityOnHand(), product.getLowStockThreshold()),
                         StockStatus.of(product.getQuantityOnHand(), product.getLowStockThreshold()),
                         product.getUnitPriceEntered(),
-                        product.getUnitPriceEnteredUnit()))
+                        product.getUnitPriceEnteredUnit(),
+                        branchStock == null ? null : branchStock.get(product.getId()),
+                        areaStock == null ? null : areaStock.get(product.getId())))
                 .toList();
     }
 

@@ -20,5 +20,7 @@ public record SalesReportRow(
         String unitOfMeasure,
         OffsetDateTime occurredAt,
         SalesTotals totals,
-        String detail) {
+        String detail,
+        /** The branch a sale was recorded at (V51): on the "sale" grouping, at a multi-branch company. */
+        String branch) {
 }

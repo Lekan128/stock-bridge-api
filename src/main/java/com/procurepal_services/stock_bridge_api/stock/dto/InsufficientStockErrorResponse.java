@@ -9,5 +9,10 @@ package com.procurepal_services.stock_bridge_api.stock.dto;
  * expects exactly this shape (a {@code message} plus two optional numeric fields) alongside the
  * plain {@code {message}} envelope everything else returns.
  */
-public record InsufficientStockErrorResponse(int status, String message, int availableQuantity, int requestedQuantity) {
+public record InsufficientStockErrorResponse(
+        int status, String message, int availableQuantity, int requestedQuantity, java.util.UUID productId) {
+
+    public InsufficientStockErrorResponse(int status, String message, int availableQuantity, int requestedQuantity) {
+        this(status, message, availableQuantity, requestedQuantity, null);
+    }
 }

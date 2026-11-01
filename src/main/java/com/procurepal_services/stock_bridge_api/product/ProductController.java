@@ -61,8 +61,12 @@ public class ProductController {
 
     @GetMapping("/export")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public ResponseEntity<byte[]> export() {
-        return xlsxResponse(productManagementService.exportActiveProducts(), "products-export.xlsx");
+    public ResponseEntity<byte[]> export(
+            // Multiple branches: that branch's figures; absent is the branches the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return xlsxResponse(productManagementService.exportActiveProducts(principal == null ? null : principal.getUserId(), branchId),
+                "products-export.xlsx");
     }
 
     /** "Add prices in a sheet" - products with no selling price (or {@code all=true}: every active one). */
@@ -114,8 +118,13 @@ public class ProductController {
             @RequestParam(required = false) StockStatus stockStatus,
             // "Has a price" / "No selling price" (SELLING_PRICE_PLAN.md section 6.5).
             @RequestParam(required = false) Boolean hasSellingPrice,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return productManagementService.list(search, active, categoryId, stockStatus, hasSellingPrice, pageable);
+            // Multiple branches (Phase 4): one branch's figures; absent is every branch the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @PageableDefault(size = 20) Pageable pageable,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return productManagementService.list(search, active, categoryId, stockStatus, hasSellingPrice, pageable,
+                principal == null ? null : principal.getUserId(), branchId);
     }
 
     /**
@@ -136,8 +145,12 @@ public class ProductController {
 
     @GetMapping("/low-stock")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public List<ProductResponse> lowStock() {
-        return productManagementService.lowStock();
+    public List<ProductResponse> lowStock(
+            // Multiple branches: low at this branch; absent is low at any branch the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return productManagementService.lowStock(principal == null ? null : principal.getUserId(), branchId);
     }
 
     /** BULK_IMPORT_CX_PLAN.md task 1.8 - products whose setup needs a one-time fix. */
@@ -158,8 +171,27 @@ public class ProductController {
 
     @GetMapping("/{id}")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public ProductResponse get(@PathVariable UUID id) {
-        return productManagementService.get(id);
+    public ProductResponse get(
+            @PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return productManagementService.get(id, principal.getUserId());
+    }
+
+    /**
+     * A product's low-stock level at each branch (V52, MULTI_BRANCH_UX_PLAN.md section 5.9); null goes
+     * back to the product's own. A shared-record edit, so online only in the app.
+     */
+    @PutMapping("/{id}/branch-thresholds")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public ProductResponse setBranchThresholds(
+            @PathVariable UUID id,
+            @RequestBody List<BranchThreshold> thresholds,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        productManagementService.setBranchThresholds(id, thresholds, principal.getUserId());
+        return productManagementService.get(id, principal.getUserId());
+    }
+
+    /** One branch's low-stock level for a product; {@code lowStockThreshold} null means the product's own. */
+    public record BranchThreshold(UUID branchId, @jakarta.validation.constraints.Min(0) Integer lowStockThreshold) {
     }
 
     /**

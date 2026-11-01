@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.expected;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
 import com.procurepal_services.stock_bridge_api.entity.ExpectedDelivery;
 import com.procurepal_services.stock_bridge_api.entity.ExpectedDeliveryLine;
@@ -54,6 +55,9 @@ public class ExpectedDeliveryService {
     private final CompanyVendorRepository companyVendorRepository;
     private final ProductRepository productRepository;
     private final StockInTemplateService stockInTemplateService;
+    /** Which branch it is going to (V52): named, or the company's only one, or the person's only one. */
+    private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
 
     @Transactional
     public ExpectedDeliveryResponse create(ExpectedDeliveryRequest request, UUID actingUserId) {
@@ -76,6 +80,7 @@ public class ExpectedDeliveryService {
                 .note(blankToNull(request.note()))
                 .status(ExpectedDeliveryStatus.OPEN)
                 .createdBy(actingUserId)
+                .branchId(goingTo(request.branchId(), actingUserId))
                 .build();
 
         for (ExpectedDeliveryRequest.Line line : request.lines()) {
@@ -102,10 +107,39 @@ public class ExpectedDeliveryService {
         return respond(expectedDeliveryRepository.saveAndFlush(expected));
     }
 
+    /**
+     * Where it is going: named, or the only branch. A person files it only at a branch they may record at
+     * - it lands on that branch's Needs you, and receiving it there is theirs to do.
+     */
+    private UUID goingTo(UUID requested, UUID actingUserId) {
+        UUID branchId = branchStockService.resolveForWrite(requested, actingUserId);
+        if (actingUserId != null && branchStockService.isMultiBranch(requireTenantId())) {
+            branchAccessService.requireMayRecordAt(actingUserId, branchId);
+        }
+        return branchId;
+    }
+
     @Transactional(readOnly = true)
     public Page<ExpectedDeliveryResponse> list(ExpectedDeliveryStatus status, Pageable pageable) {
+        return list(status, pageable, null, null);
+    }
+
+    /**
+     * At a multi-branch company (MULTI_BRANCH_UX_PLAN.md section 5.1): at a branch, the deliveries going
+     * there; in All branches, every one going to a branch the person sees.
+     */
+    @Transactional(readOnly = true)
+    public Page<ExpectedDeliveryResponse> list(ExpectedDeliveryStatus status, Pageable pageable, UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
-        Page<ExpectedDelivery> page = status == null
+        List<UUID> scope = userId != null && branchStockService.isMultiBranch(tenantId)
+                ? branchAccessService.reportScope(userId, branchId)
+                : null;
+        Page<ExpectedDelivery> page = scope != null
+                ? status == null
+                        ? expectedDeliveryRepository.findAllByClientIdAndBranchIdInOrderByCreatedAtDesc(tenantId, scope, pageable)
+                        : expectedDeliveryRepository.findAllByClientIdAndStatusAndBranchIdInOrderByCreatedAtDesc(
+                                tenantId, status, scope, pageable)
+                : status == null
                 ? expectedDeliveryRepository.findAllByClientIdOrderByCreatedAtDesc(tenantId, pageable)
                 : expectedDeliveryRepository.findAllByClientIdAndStatusOrderByCreatedAtDesc(tenantId, status, pageable);
         // One lookup for every product on the page rather than one per line.
@@ -119,12 +153,31 @@ public class ExpectedDeliveryService {
 
     @Transactional(readOnly = true)
     public ExpectedDeliveryResponse get(UUID id) {
-        return respond(require(id));
+        return get(id, null);
     }
 
-    @Transactional
-    public ExpectedDeliveryResponse cancel(UUID id) {
+    /** One going to a branch this person sees (D-U3); another branch's is not found, as in the list. */
+    @Transactional(readOnly = true)
+    public ExpectedDeliveryResponse get(UUID id, UUID userId) {
         ExpectedDelivery expected = require(id);
+        if (userId != null && branchStockService.isMultiBranch(requireTenantId())
+                && !branchAccessService.viewBranchIds(userId).contains(expected.getBranchId())) {
+            throw ExpectedDeliveryException.notFound();
+        }
+        return respond(expected);
+    }
+
+    public ExpectedDeliveryResponse cancel(UUID id) {
+        return cancel(id, null);
+    }
+
+    /** Called off by somebody who records at the branch it is going to - it is on that branch's Needs you. */
+    @Transactional
+    public ExpectedDeliveryResponse cancel(UUID id, UUID userId) {
+        ExpectedDelivery expected = require(id);
+        if (userId != null && branchStockService.isMultiBranch(requireTenantId())) {
+            branchAccessService.requireMayRecordAt(userId, expected.getBranchId());
+        }
         if (expected.getStatus() == ExpectedDeliveryStatus.RECEIVED) {
             throw ExpectedDeliveryException.alreadyClosed("received");
         }
@@ -297,7 +350,8 @@ public class ExpectedDeliveryService {
                 outstandingLines,
                 total.signum() == 0 ? null : total,
                 expected.getStatus() == ExpectedDeliveryStatus.OPEN && outstandingLines > 0,
-                expected.getCreatedAt());
+                expected.getCreatedAt(),
+                expected.getBranchId());
     }
 
     /** "Tony Stores, due 22 Sep" - or just the supplier, or just the date, or "Expected delivery". */

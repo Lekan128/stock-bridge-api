@@ -91,6 +91,9 @@ class MarketplaceOrderIntegrationTest {
     private static final String PASSWORD = "correct-horse-battery-staple";
 
     @Autowired
+    private com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+
+    @Autowired
     private TestRestTemplate restTemplate;
 
     @Autowired
@@ -388,6 +391,43 @@ class MarketplaceOrderIntegrationTest {
         // The seller's own code for this item lands on the ProductVendor pairing's default
         // pack - never on the buyer's own Product.sku, which this receipt must not touch.
         assertThat(defaultPackVendorSku(buyer, afterReceipt.getId())).isEqualTo(catalogProduct.getSku());
+    }
+
+    /**
+     * Multiple branches: an order going to a branch that closes before it arrives is received at the
+     * main branch - a closed branch takes no stock, and the order must not be stuck.
+     */
+    @Test
+    void anOrderForABranchClosedSinceItWasPlacedIsReceivedAtTheMainBranch() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Closed Branch Order Co");
+        UUID main = branchStockService.allBranchIds(buyer.clientId()).getFirst();
+        UUID oshodi = (UUID) java.util.Objects.requireNonNull(restTemplate.exchange("/api/branches", HttpMethod.POST,
+                new HttpEntity<>(java.util.Map.of("name", "Oshodi"), buyer.headers()),
+                com.procurepal_services.stock_bridge_api.branch.dto.BranchResponse.class).getBody()).id();
+        Product catalogProduct = plantCatalogProduct(40, 1);
+        int quantity = catalogProduct.getMinOrderQuantity();
+        addToCart(buyer, catalogProduct, quantity);
+        DeliveryAddressRequest atOshodi = addressRequest("Oshodi store");
+        DeliveryAddressResponse address = restTemplate.exchange("/api/delivery-addresses", HttpMethod.POST,
+                new HttpEntity<>(new DeliveryAddressRequest(atOshodi.label(), atOshodi.contactName(), atOshodi.contactPhone(),
+                        atOshodi.addressLine1(), atOshodi.addressLine2(), atOshodi.city(), atOshodi.state(),
+                        atOshodi.landmark(), atOshodi.deliveryNotes(), oshodi, null), buyer.headers()),
+                DeliveryAddressResponse.class).getBody();
+        OrderResponse order = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, address.id());
+        assertThat(restTemplate.exchange("/api/branches/" + oshodi + "/close", HttpMethod.POST,
+                new HttpEntity<>(buyer.headers()), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+
+        Buyer operator = loginAsPlatformOwner();
+        advance(operator, order.id(), OrderStatus.CONFIRMED);
+        advance(operator, order.id(), OrderStatus.PROCESSING);
+        advance(operator, order.id(), OrderStatus.OUT_FOR_DELIVERY);
+        advance(operator, order.id(), OrderStatus.DELIVERED);
+        OrderResponse received = receive(buyer, order.id(), null);
+
+        assertThat(received.status()).isEqualTo(OrderStatus.RECEIVED);
+        Product buyerProduct = buyerProductFor(buyer, catalogProduct);
+        assertThat(branchStockService.quantityAt(buyerProduct, main)).isEqualTo(quantity);
+        assertThat(branchStockService.quantityAt(buyerProduct, oshodi)).isZero();
     }
 
     /** 8 of 10 bags today, 2 tomorrow: the order stays DELIVERED and the remainder stays incoming. */
@@ -1916,7 +1956,9 @@ class MarketplaceOrderIntegrationTest {
                 buyer.clientId(),
                 MovementType.IN,
                 OffsetDateTime.now().minusDays(1),
-                OffsetDateTime.now().plusDays(1));
+                OffsetDateTime.now().plusDays(1),
+                // Every branch the buyer has (V51): this counts the company's stock-ins.
+                branchStockService.allBranchIds(buyer.clientId()));
     }
 
     private CartResponse addToCart(Buyer buyer, Product product, int quantity) {

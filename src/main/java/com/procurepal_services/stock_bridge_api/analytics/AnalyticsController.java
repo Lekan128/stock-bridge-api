@@ -22,20 +22,66 @@ import org.springframework.web.bind.annotation.RestController;
 public class AnalyticsController {
 
     private final AnalyticsService analyticsService;
+    private final BranchTableService branchTableService;
+    private final BranchDigestService branchDigestService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.branch.AreaAccessService areaAccessService;
 
     @GetMapping("/summary")
     public AnalyticsSummaryResponse summary(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
-            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to) {
-        return analyticsService.summary(from, to);
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            // V51: one branch, or (absent) every branch this person sees.
+            @RequestParam(required = false) java.util.UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<java.util.UUID> areaIds,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        java.util.List<java.util.UUID> branches = branchAccessService.reportScope(principal.getUserId(), branchId);
+        return analyticsService.summaryForClient(principal.getClientId(), from, to, branches,
+                areaAccessService.scope(principal.getUserId(), branches, areaIds));
+    }
+
+    /**
+     * The owner's branch table (Phase 3, MULTI_BRANCH_UX_PLAN.md section 5.8): one row per branch the
+     * person sees. A one-branch company never asks: the screen only exists in "All branches".
+     */
+    @GetMapping("/branches")
+    public com.procurepal_services.stock_bridge_api.analytics.dto.BranchTableResponse branches(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return branchTableService.table(principal.getClientId(), principal.getUserId());
+    }
+
+    /** The daily digest switch for this person (UX section 5.13), shown under the branch table. */
+    @org.springframework.web.bind.annotation.PutMapping("/branches/digest")
+    public java.util.Map<String, Boolean> setDigest(
+            @org.springframework.web.bind.annotation.RequestBody java.util.Map<String, Boolean> body,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return java.util.Map.of("enabled", branchDigestService.set(principal.getUserId(), Boolean.TRUE.equals(body.get("enabled"))));
+    }
+
+    @GetMapping("/branches/digest")
+    public java.util.Map<String, Boolean> digest(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return java.util.Map.of("enabled", branchDigestService.isOn(principal.getUserId()));
     }
 
     @GetMapping("/movements-over-time")
     public List<MovementsOverTimePoint> movementsOverTime(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
-            @RequestParam(defaultValue = "day") String granularity) {
-        return analyticsService.movementsOverTime(from, to, granularity);
+            @RequestParam(defaultValue = "day") String granularity,
+            @RequestParam(required = false) java.util.UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<java.util.UUID> areaIds,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        java.util.List<java.util.UUID> branches = branchAccessService.reportScope(principal.getUserId(), branchId);
+        return analyticsService.movementsOverTimeForClient(principal.getClientId(), from, to, granularity, branches,
+                areaAccessService.scope(principal.getUserId(), branches, areaIds));
     }
 
     @GetMapping("/top-products")
@@ -44,8 +90,15 @@ public class AnalyticsController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
             @RequestParam(defaultValue = "quantity") String by,
             @RequestParam(defaultValue = "in") String direction,
-            @RequestParam(defaultValue = "10") int limit) {
-        return analyticsService.topProducts(from, to, by, direction, limit);
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(required = false) java.util.UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<java.util.UUID> areaIds,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        java.util.List<java.util.UUID> branches = branchAccessService.reportScope(principal.getUserId(), branchId);
+        return analyticsService.topProductsForClient(principal.getClientId(), from, to, by, direction, limit, branches,
+                areaAccessService.scope(principal.getUserId(), branches, areaIds));
     }
 
     @GetMapping("/low-stock-summary")

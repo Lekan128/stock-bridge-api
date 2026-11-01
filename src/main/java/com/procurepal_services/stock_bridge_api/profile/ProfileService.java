@@ -11,8 +11,11 @@ import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
 import com.procurepal_services.stock_bridge_api.repository.UserRepository;
 import com.procurepal_services.stock_bridge_api.user.UserNotFoundException;
 import java.time.OffsetDateTime;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -43,6 +46,35 @@ public class ProfileService {
     @Transactional(readOnly = true)
     public ProfileResponse get(UUID callerId) {
         User user = findSelfOrThrow(callerId);
+        return ProfileResponse.from(user, findClientOrThrow(user));
+    }
+
+    /** The buttons quick mode may show, in the order it shows them. */
+    private static final List<String> QUICK_MODE_TABS = List.of("sell", "in", "out", "move", "ask", "count");
+
+    /**
+     * Quick mode's buttons as this person wants them (owner, 2026-11-01): one to four, kept in quick mode's own
+     * order. Empty or absent puts the app's own choice back. What they're allowed to do isn't checked here - quick
+     * mode leaves out any button their role doesn't give them, now or later.
+     */
+    @Transactional
+    public ProfileResponse setQuickModeTabs(UUID callerId, List<String> tabs) {
+        User user = findSelfOrThrow(callerId);
+        if (tabs == null || tabs.isEmpty()) {
+            user.setQuickModeTabs(null);
+            return ProfileResponse.from(user, findClientOrThrow(user));
+        }
+        Set<String> chosen = new LinkedHashSet<>(tabs);
+        if (chosen.size() != tabs.size()) {
+            throw new QuickModeTabsInvalidException("Each button can be chosen once.");
+        }
+        if (chosen.size() > 4) {
+            throw new QuickModeTabsInvalidException("Quick mode has room for 4 buttons.");
+        }
+        if (!QUICK_MODE_TABS.containsAll(chosen)) {
+            throw new QuickModeTabsInvalidException("Choose from Sell, Stock in, Stock out, Move, Ask and Count.");
+        }
+        user.setQuickModeTabs(String.join(",", QUICK_MODE_TABS.stream().filter(chosen::contains).toList()));
         return ProfileResponse.from(user, findClientOrThrow(user));
     }
 

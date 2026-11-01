@@ -59,7 +59,9 @@ public record ProfileResponse(
         String clientName,
         String clientIdentifier,
         boolean platformOwner,
-        ClientType clientType) {
+        ClientType clientType,
+        // Quick mode's buttons as this person chose them (V68); absent: the app's own choice.
+        List<String> quickModeTabs) {
 
     public static ProfileResponse from(User user, Client client) {
         return new ProfileResponse(
@@ -81,6 +83,9 @@ public record ProfileResponse(
                 client.getName(),
                 client.getSlug(),
                 client.isPlatformOwner(),
-                ClientType.orDefault(client.getClientType()));
+                ClientType.orDefault(client.getClientType()),
+                user.getQuickModeTabs() == null || user.getQuickModeTabs().isBlank()
+                        ? null
+                        : List.of(user.getQuickModeTabs().split(",")));
     }
 }

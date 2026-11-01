@@ -39,11 +39,24 @@ server:
     min-response-size: 2KB
 
 app:
+  push:
+    # Web Push (STOCK_AREAS_PART_5.md): who push services contact about our messages. The key pair
+    # itself is made on first use and kept in the database (push_vapid); nothing else to set.
+    subject: ${PUSH_SUBJECT:mailto:support@procurepaddy.com}
   selling:
     # SELLING_PRICE_PLAN.md Phase 7. "pilot": only ProcurePal and companies support has turned
     # selling on for are offered it. "open": every company - the launch. Defaults to pilot so a
     # deploy that forgets it launches nothing.
     rollout: ${SELLING_ROLLOUT:pilot}
+  branches:
+    # MULTI_BRANCH_BUILD_PLAN.md D-B12. "pilot": only companies support has enabled may add a second
+    # branch. "open": every company. Defaults to pilot, like selling.
+    rollout: ${MULTI_BRANCH_ROLLOUT:pilot}
+  areas:
+    # STOCK_AREAS_BUILD_PLAN.md D-E12. "open" (default): every company may add areas inside a branch -
+    # they are free. "off": nobody may; the switch for hiding the feature without a deploy. Gates adding
+    # only, never a stock write.
+    rollout: ${AREAS_ROLLOUT:open}
   jwt:
     secret: ${JWT_SECRET}
     access-token-expiration-ms: ${JWT_ACCESS_TOKEN_EXPIRATION_MS:900000}

@@ -165,6 +165,20 @@ public record CreateProductRequest(
             @NotNull @DecimalMin(value = "0", inclusive = true) BigDecimal cost,
             @NotNull @Positive Integer quantity,
             String packagingUnit,
-            @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
+            @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
+            // Multiple branches (V52): where the opening stock is. Absent means the company's only
+            // branch, or the one branch the person works at.
+            UUID branchId) {
+
+        /** The shape before {@code branchId} (multiple branches, Phase 1). */
+        public InitialVendor(
+                UUID companyVendorId,
+                String vendorSku,
+                BigDecimal cost,
+                Integer quantity,
+                String packagingUnit,
+                BigDecimal packagingSize) {
+            this(companyVendorId, vendorSku, cost, quantity, packagingUnit, packagingSize, null);
+        }
     }
 }

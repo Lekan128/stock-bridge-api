@@ -53,6 +53,7 @@ public class SuperAdminClientController {
     private final AnalyticsService analyticsService;
     private final ClientCatalogResetService clientCatalogResetService;
     private final SellingSettingsService sellingSettingsService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchService branchService;
 
     @GetMapping
     public Page<SuperAdminClientSummary> list(
@@ -73,6 +74,19 @@ public class SuperAdminClientController {
             @Valid @RequestBody SupportSellingSettingsRequest request,
             @AuthenticationPrincipal SuperAdminPrincipal principal) {
         return sellingSettingsService.updateBySupport(id, request.sellsStock(), request.reason(), principal.getSuperAdminId());
+    }
+
+    /**
+     * Support letting a company into the multiple-branches pilot (MULTI_BRANCH_BUILD_PLAN.md D-B12), or
+     * out of it. Only gates adding a branch: a company that already has two keeps them.
+     */
+    @PutMapping("/{id}/branches")
+    public void updateBranches(@PathVariable UUID id, @RequestBody BranchesPilotRequest request) {
+        branchService.setEnabledBySupport(id, request.enabled());
+    }
+
+    /** {@code enabled}: whether this company may add branches while they are in pilot. */
+    public record BranchesPilotRequest(boolean enabled) {
     }
 
     @GetMapping("/{id}")

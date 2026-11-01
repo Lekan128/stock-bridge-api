@@ -113,6 +113,7 @@ public class ImportController {
             @RequestPart(value = "deliveryDate", required = false) String deliveryDate,
             @RequestPart(value = "invoiceNo", required = false) String invoiceNo,
             @RequestPart(value = "vendorId", required = false) String vendorId,
+            @RequestPart(value = "branchId", required = false) String branchId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         ImportKind importKind = parseKind(kind);
         ImportMode importMode = parseMode(mode);
@@ -124,7 +125,8 @@ public class ImportController {
                 ? importSessionService.deliveryDetails(deliveryDate, invoiceNo, vendorId)
                 : null;
         return ResponseEntity.status(HttpStatus.CREATED)
-                .body(importSessionService.create(file, importKind, importMode, principal.getUserId(), delivery));
+                .body(importSessionService.create(
+                        file, importKind, importMode, principal.getUserId(), delivery, parseBranchId(branchId)));
     }
 
     @GetMapping("/{id}")
@@ -325,7 +327,7 @@ public class ImportController {
                 : null;
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(importSessionService.createFromPaste(
-                        request.text(), importKind, importMode, principal.getUserId(), delivery));
+                        request.text(), importKind, importMode, principal.getUserId(), delivery, request.branchId()));
     }
 
     @GetMapping("/delivery-lines")
@@ -334,8 +336,15 @@ public class ImportController {
             @RequestParam(required = false) String productIds,
             @RequestParam(required = false) StockInTemplateFilter filter,
             @RequestParam(required = false) UUID vendorId,
-            @RequestParam(required = false) UUID categoryId) {
+            @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         List<UUID> ids = parseIds(productIds);
+        List<UUID> low = ids.isEmpty() ? lowAtBranch(filter, branchId, principal) : null;
+        if (low != null) {
+            ids = low;
+            filter = null;
+        }
         return stockInTemplateService.rows(ids, ids.isEmpty() ? filter : null, vendorId, categoryId).stream()
                 .map(row -> new DeliveryLineResponse(
                         row.productId(),
@@ -361,7 +370,7 @@ public class ImportController {
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public List<DeliveryLineResponse> deliveryLinesByBarcode(@PathVariable String barcode) {
         UUID productId = productManagementService.requireByBarcode(barcode).getId();
-        return deliveryLines(productId.toString(), null, null, null);
+        return deliveryLines(productId.toString(), null, null, null, null, null);
     }
 
     /**
@@ -394,7 +403,7 @@ public class ImportController {
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(importSessionService.createDelivery(
                         lines, deliveryTitle(delivery), principal.getUserId(), delivery,
-                        request.expectedDeliveryId()));
+                        request.expectedDeliveryId(), request.branchId()));
     }
 
     /**
@@ -431,8 +440,15 @@ public class ImportController {
             @RequestParam(required = false) String productIds,
             @RequestParam(required = false) StockInTemplateFilter filter,
             @RequestParam(required = false) UUID vendorId,
-            @RequestParam(required = false) UUID categoryId) {
+            @RequestParam(required = false) UUID categoryId,
+            @RequestParam(required = false) UUID branchId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         List<UUID> ids = parseIds(productIds);
+        List<UUID> low = ids.isEmpty() ? lowAtBranch(filter, branchId, principal) : null;
+        if (low != null) {
+            ids = low;
+            filter = null;
+        }
         return xlsx(
                 stockInTemplateService.generate(ids, ids.isEmpty() ? filter : null, vendorId, categoryId),
                 "stock-sheet.xlsx");
@@ -445,6 +461,20 @@ public class ImportController {
      * answer to that is the sheet for the products we did recognise - not an error page in place
      * of a download.
      */
+    /**
+     * "Low stock" at a multi-branch company: what is low at this branch (or anywhere, in All branches),
+     * as the Low stock page lists it - the company-wide rule would miss a branch that has run low while
+     * the company total looks fine. Null where that rule already applies. Nothing low is one id that
+     * matches no product, never an empty list (which would mean "every product").
+     */
+    private List<UUID> lowAtBranch(StockInTemplateFilter filter, UUID branchId, AuthenticatedUserPrincipal principal) {
+        if (filter != StockInTemplateFilter.LOW_STOCK || principal == null) {
+            return null;
+        }
+        List<UUID> low = productManagementService.lowStockIds(principal.getUserId(), branchId);
+        return low == null ? null : low.isEmpty() ? List.of(new UUID(0, 0)) : low;
+    }
+
     private List<UUID> parseIds(String productIds) {
         if (productIds == null || productIds.isBlank()) {
             return List.of();
@@ -489,5 +519,17 @@ public class ImportController {
                 .contentType(MediaType.parseMediaType(XLSX_MEDIA_TYPE))
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
                 .body(bytes);
+    }
+
+    /** A multipart part is text; a malformed id is the same "not found" as a foreign one. */
+    private static UUID parseBranchId(String branchId) {
+        if (branchId == null || branchId.isBlank()) {
+            return null;
+        }
+        try {
+            return UUID.fromString(branchId.trim());
+        } catch (IllegalArgumentException e) {
+            throw new com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException();
+        }
     }
 }

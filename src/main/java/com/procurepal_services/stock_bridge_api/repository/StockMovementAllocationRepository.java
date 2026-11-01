@@ -74,4 +74,8 @@ public interface StockMovementAllocationRepository extends JpaRepository<StockMo
     @Query("SELECT a.inMovement.id, COALESCE(SUM(a.quantity), 0) FROM StockMovementAllocation a "
             + "WHERE a.inMovement.id IN :inMovementIds GROUP BY a.inMovement.id")
     List<Object[]> sumQuantityByInMovementIds(@Param("inMovementIds") Collection<UUID> inMovementIds);
+
+    /** Whether any of this lot went to another branch (V53) - import undo says so rather than "sold from". */
+    boolean existsByInMovementIdAndOutMovementMovementType(
+            UUID inMovementId, com.procurepal_services.stock_bridge_api.entity.MovementType movementType);
 }

@@ -535,6 +535,48 @@ class BulkImportSessionIntegrationTest {
         assertThat(productBySku(tenant, "UNDOBLK-1").quantityOnHand()).isEqualTo(35);
     }
 
+    /**
+     * Multiple branches, Phase 2 (MULTI_BRANCH_BUILD_PLAN.md section 4.3): a delivery sent on to another
+     * branch can't be un-received either, and the refusal says that is what happened to it.
+     */
+    @Test
+    void undoingAStockInImportIsRefusedOnceSomeOfItWasSentToAnotherBranch() {
+        TenantLoginResponse tenant = signup("Undo Sent Co");
+        commitCatalog(tenant, "CREATE_ONLY", CATALOG_HEADERS + "Rice 50kg,UNDOSENT-1,,42000,,,KG,,,,,\n");
+        ProductResponse product = productBySku(tenant, "UNDOSENT-1");
+        ImportSessionResponse session = upload(
+                tenant,
+                STOCK_IN_HEADERS + "UNDOSENT-1,Rice 50kg,,40,KG,42000,,,WB-1\n",
+                "STOCK_IN",
+                null);
+        commit(tenant, session.id());
+
+        HttpHeaders json = authHeaders(tenant);
+        json.setContentType(MediaType.APPLICATION_JSON);
+        Object main = ((Map<?, ?>) ((List<?>) restTemplate.exchange("/api/branches", HttpMethod.GET,
+                new HttpEntity<>(authHeaders(tenant)), new ParameterizedTypeReference<Map<String, Object>>() {})
+                .getBody().get("branches")).getFirst()).get("id");
+        Object oshodi = restTemplate.exchange("/api/branches", HttpMethod.POST,
+                new HttpEntity<>(Map.of("name", "Oshodi"), json), new ParameterizedTypeReference<Map<String, Object>>() {})
+                .getBody().get("id");
+        ResponseEntity<String> sent = restTemplate.exchange("/api/stock-transfers", HttpMethod.POST, new HttpEntity<>(Map.of(
+                "id", UUID.randomUUID().toString(), "fromBranchId", main, "toBranchId", oshodi,
+                "lines", List.of(Map.of("productId", product.id().toString(), "quantity", 5))), json), String.class);
+        assertThat(sent.getStatusCode()).as(sent.getBody()).isEqualTo(HttpStatus.CREATED);
+
+        ResponseEntity<UndoBlockedBody> refused = restTemplate.exchange(
+                "/api/imports/" + session.id() + "/undo",
+                HttpMethod.POST,
+                new HttpEntity<>(authHeaders(tenant)),
+                UndoBlockedBody.class);
+
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(refused.getBody().message())
+                .isEqualTo("This delivery has already been sent to another branch, so this import can't be undone all at once.");
+        assertThat(refused.getBody().blockers()).singleElement()
+                .satisfies(blocker -> assertThat(blocker.reason()).isEqualTo("Already sent to another branch"));
+    }
+
     // ----------------------------------------------------------------- stock-in
 
     /**

@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.repository;
 
+import com.procurepal_services.stock_bridge_api.branch.AreaScope;
+
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import jakarta.persistence.LockModeType;
@@ -16,19 +18,71 @@ import org.springframework.data.repository.query.Param;
 
 public interface StockMovementRepository extends TenantScopedRepository<StockMovement, UUID>, JpaSpecificationExecutor<StockMovement> {
 
-    /** Whether this product was counted after {@code after} (A4) - see {@code StockMovement.count}. */
-    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.count = true AND m.occurredAt > :after")
-    boolean existsCountAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
+    /**
+     * Whether this product's shelf at this branch was counted after {@code after} (A4) - see
+     * {@code StockMovement.count}. A count is of one branch's shelf (V51), so another branch's count
+     * says nothing about this one.
+     */
+    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId "
+            + "AND m.count = true AND m.occurredAt > :after")
+    boolean existsCountAfter(
+            @Param("productId") UUID productId, @Param("branchId") UUID branchId, @Param("after") OffsetDateTime after);
 
     /**
-     * The net effect on the shelf of everything recorded as happening after {@code after}: IN adds,
-     * OUT takes away, an ADJUSTMENT is already a signed difference. What a count taken at
-     * {@code after} has to be carried forward by to be today's figure.
+     * The net effect on this branch's shelf of everything recorded as happening there after
+     * {@code after}: IN adds, OUT takes away, an ADJUSTMENT is already a signed difference. What a
+     * count taken at {@code after} has to be carried forward by to be today's figure.
+     *
+     * <p>Every type is named, and anything else counts for nothing. This used to read "OUT takes away,
+     * everything else adds", which was right while there were three types and would have ADDED the
+     * transfers of Phase 2 (MULTI_BRANCH_BUILD_PLAN.md section 4.3): a new type must be given a sign
+     * here on purpose, never inherit one.
      */
-    @Query("SELECT COALESCE(SUM(CASE WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT "
-            + "THEN -m.quantity ELSE m.quantity END), 0) "
-            + "FROM StockMovement m WHERE m.product.id = :productId AND m.occurredAt > :after")
-    long netChangeAfter(@Param("productId") UUID productId, @Param("after") OffsetDateTime after);
+    @Query("SELECT COALESCE(SUM(CASE "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT THEN -m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.ADJUSTMENT THEN m.quantity "
+            // V53: stock that arrived on a waybill is on the shelf; stock sent away is not.
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_OUT THEN -m.quantity "
+            + "ELSE 0 END), 0) "
+            + "FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId AND m.occurredAt > :after")
+    long netChangeAfter(
+            @Param("productId") UUID productId, @Param("branchId") UUID branchId, @Param("after") OffsetDateTime after);
+
+    /**
+     * {@link #existsCountAfter} for one area of a branch that has several (V60): a count of the Kitchen
+     * says nothing about the Store. A row with no area is the branch's original area's (D-E3).
+     */
+    @Query("SELECT COUNT(m) > 0 FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId "
+            + "AND COALESCE(m.areaId, :originalAreaId) = :areaId AND m.count = true AND m.occurredAt > :after")
+    boolean existsCountAfterInArea(
+            @Param("productId") UUID productId,
+            @Param("branchId") UUID branchId,
+            @Param("areaId") UUID areaId,
+            @Param("originalAreaId") UUID originalAreaId,
+            @Param("after") OffsetDateTime after);
+
+    /**
+     * {@link #netChangeAfter} for one area of a branch that has several (V60), every type signed on
+     * purpose exactly as there. Moves between areas (Part 2) live outside this table and are added by
+     * the caller.
+     */
+    @Query("SELECT COALESCE(SUM(CASE "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.OUT THEN -m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.ADJUSTMENT THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_IN THEN m.quantity "
+            + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_OUT THEN -m.quantity "
+            + "ELSE 0 END), 0) "
+            + "FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId "
+            + "AND COALESCE(m.areaId, :originalAreaId) = :areaId AND m.occurredAt > :after")
+    long netChangeAfterInArea(
+            @Param("productId") UUID productId,
+            @Param("branchId") UUID branchId,
+            @Param("areaId") UUID areaId,
+            @Param("originalAreaId") UUID originalAreaId,
+            @Param("after") OffsetDateTime after);
 
     /**
      * Whether this product has ever had a movement recorded. Backs the V19 rule that {@code
@@ -71,13 +125,20 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      * order among tied lots is whatever the plan happens to produce, which makes FIFO
      * non-deterministic between two reads of identical data - and "the order they were entered
      * in" is both stable and defensible to a user asking why one same-day lot went first.
-     * {@code idx_stock_movements_product_id_type_occurred_at} covers this query end to end.
+     *
+     * <h2>V51: one branch's lots</h2>
+     * A sale at Oshodi draws on what is on Oshodi's shelf, so only that branch's lots are candidates.
+     * {@code idx_stock_movements_lots} covers this query end to end.
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT m FROM StockMovement m WHERE m.product.id = :productId AND m.clientId = :clientId "
-            + "AND m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN "
+            + "AND m.branchId = :branchId "
+            // V53: stock that arrived on a waybill is a lot of its own at this branch.
+            + "AND m.movementType IN (com.procurepal_services.stock_bridge_api.entity.MovementType.IN, "
+            + "com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_IN) "
             + "ORDER BY m.occurredAt ASC, m.createdAt ASC")
-    List<StockMovement> findInMovementsForUpdate(@Param("productId") UUID productId, @Param("clientId") UUID clientId);
+    List<StockMovement> findInMovementsForUpdate(
+            @Param("productId") UUID productId, @Param("clientId") UUID clientId, @Param("branchId") UUID branchId);
 
     /**
      * Everything one import's commit wrote to the ledger - BULK_IMPORT_DESIGN.md section 6.5's
@@ -149,7 +210,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      *
      * <p>Returns a one-element list holding {@code [inValue(numeric), outValue(numeric), inQuantity(bigint),
      * outQuantity(bigint), inCount(bigint), outCount(bigint), unpricedInCount(bigint),
-     * unpricedOutCount(bigint), adjustmentCount(bigint), otherOutCost(numeric), otherOutCount(bigint)]}. One pass over the filtered set with
+     * unpricedOutCount(bigint), adjustmentCount(bigint), otherOutCost(numeric), otherOutCount(bigint),
+     * the four moved-between-branches figures, writtenOffCost(numeric), writtenOffQuantity(bigint),
+     * writtenOffUnpricedCount(bigint)]}. One pass over the filtered set with
      * nine conditional aggregates, rather than nine round trips or - worse - paging the whole
      * range into the application to add it up there.
      *
@@ -182,7 +245,22 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     // SELLING_PRICE_PLAN.md 6.9: every stock-out that is not a sale - used, spoilt, sent
                     // away - at what the stock cost (V45 snapshots cost on every stock-out).
                     + "COALESCE(SUM(cost_amount) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL), 0) AS other_out_cost, "
-                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL) AS other_out_count "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'OUT' AND sale_id IS NULL) AS other_out_count, "
+                    // V53: stock moved between branches, never folded into stock in / stock out (section 4.3).
+                    + "COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'TRANSFER_IN'), 0) AS moved_in_quantity, "
+                    + "COALESCE(SUM(quantity) FILTER (WHERE movement_type = 'TRANSFER_OUT'), 0) AS moved_out_quantity, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'TRANSFER_IN') AS moved_in_count, "
+                    + "COUNT(*) FILTER (WHERE movement_type = 'TRANSFER_OUT') AS moved_out_count, "
+                    // Stock adjustments (StockMovementSpecifications.WRITE_OFF_REASONS): what was written off,
+                    // net. A stock-out at its snapshot cost; a count at the product's cost, short as a loss
+                    // and over as a gain taken off it.
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN cost_amount "
+                    + "ELSE -quantity * (SELECT p.cost_price FROM products p WHERE p.id = product_id) END) "
+                    + "FILTER (WHERE " + WRITE_OFF + "), 0) AS written_off_cost, "
+                    + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE -quantity END) "
+                    + "FILTER (WHERE " + WRITE_OFF + "), 0) AS written_off_quantity, "
+                    + "COUNT(*) FILTER (WHERE " + WRITE_OFF + " AND CASE WHEN movement_type = 'OUT' THEN cost_amount IS NULL "
+                    + "ELSE (SELECT p.cost_price FROM products p WHERE p.id = product_id) IS NULL END) AS written_off_unpriced "
                     + "FROM stock_movements "
                     + "WHERE client_id = :clientId "
                     + "AND (CAST(:productId AS uuid) IS NULL OR product_id = CAST(:productId AS uuid)) "
@@ -192,9 +270,13 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "AND (CAST(:to AS timestamptz) IS NULL OR occurred_at <= CAST(:to AS timestamptz)) "
                     // V46: why it went out - the same two narrowings as StockMovementSpecifications.forTenant.
                     + "AND (CAST(:outReason AS text) IS NULL OR out_reason = CAST(:outReason AS text)) "
-                    + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL))",
+                    + "AND (:noReason = FALSE OR (movement_type = 'OUT' AND out_reason IS NULL)) "
+                    + "AND (:adjustments = FALSE OR " + WRITE_OFF + ") "
+                    // V51: the branches the person sees, as the rows above it are (atBranches).
+                    + "AND branch_id IN (:branchIds)"
+                    + " AND (CAST(:allAreas AS boolean) OR area_id IN (:areaIds) OR (area_id IS NULL AND branch_id IN (:origBranches)))",
             nativeQuery = true)
-    List<Object[]> summarise(
+    List<Object[]> summariseInAreas(
             @Param("clientId") UUID clientId,
             @Param("productId") UUID productId,
             @Param("companyVendorId") UUID companyVendorId,
@@ -202,7 +284,25 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
             @Param("outReason") String outReason,
-            @Param("noReason") boolean noReason);
+            @Param("noReason") boolean noReason,
+            @Param("adjustments") boolean adjustments,
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> summarise(UUID clientId, UUID productId, UUID companyVendorId, String movementType, OffsetDateTime from, OffsetDateTime to, String outReason, boolean noReason, boolean adjustments, java.util.Collection<UUID> branchIds) {
+        return summariseInAreas(clientId, productId, companyVendorId, movementType, from, to, outReason, noReason, adjustments, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #summarise} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> summarise(UUID clientId, UUID productId, UUID companyVendorId, String movementType, OffsetDateTime from, OffsetDateTime to, String outReason, boolean noReason, boolean adjustments, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return summariseInAreas(clientId, productId, companyVendorId, movementType, from, to, outReason, noReason, adjustments, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
+
+    /** A stock adjustment, as {@code StockMovementSpecifications.forTenant}'s {@code adjustments} filter keeps them. */
+    String WRITE_OFF = "((movement_type = 'ADJUSTMENT' AND is_count AND quantity <> 0) "
+            + "OR (movement_type = 'OUT' AND out_reason IN ('DAMAGED', 'EXPIRED', 'LOST')))";
 
     /**
      * <h2>V28: these five reporting queries bracket occurred_at, not created_at</h2>
@@ -225,21 +325,49 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      */
     @Query("SELECT COALESCE(SUM(m.quantity * m.unitPriceAtTime), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType AND m.unitPriceAtTime IS NOT NULL "
-            + "AND m.occurredAt BETWEEN :from AND :to")
-    BigDecimal sumValue(
+            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds"
+            + " AND (:allAreas = true OR m.areaId IN :areaIds OR (m.areaId IS NULL AND m.branchId IN :origBranches))")
+    BigDecimal sumValueInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default BigDecimal sumValue(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+        return sumValueInAreas(clientId, movementType, from, to, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #sumValue} over these areas only (Part 3.6); null is every area. */
+    default BigDecimal sumValue(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return sumValueInAreas(clientId, movementType, from, to, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     @Query("SELECT COALESCE(SUM(m.quantity), 0) FROM StockMovement m "
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType "
-            + "AND m.occurredAt BETWEEN :from AND :to")
-    long sumQuantity(
+            + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds"
+            + " AND (:allAreas = true OR m.areaId IN :areaIds OR (m.areaId IS NULL AND m.branchId IN :origBranches))")
+    long sumQuantityInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default long sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+        return sumQuantityInAreas(clientId, movementType, from, to, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #sumQuantity} over these areas only (Part 3.6); null is every area. */
+    default long sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return sumQuantityInAreas(clientId, movementType, from, to, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     /**
      * Native (Postgres-specific date_trunc/to_char) rather than JPQL - portable
@@ -262,15 +390,29 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(CASE WHEN movement_type = 'IN' THEN quantity ELSE 0 END), 0) AS in_quantity, "
                     + "COALESCE(SUM(CASE WHEN movement_type = 'OUT' THEN quantity ELSE 0 END), 0) AS out_quantity "
                     + "FROM stock_movements "
-                    + "WHERE client_id = :clientId AND occurred_at BETWEEN :from AND :to "
+                    + "WHERE client_id = :clientId AND occurred_at BETWEEN :from AND :to AND branch_id IN (:branchIds) "
+                    + " AND (CAST(:allAreas AS boolean) OR area_id IN (:areaIds) OR (area_id IS NULL AND branch_id IN (:origBranches))) "
                     + "GROUP BY period "
                     + "ORDER BY period",
             nativeQuery = true)
-    List<Object[]> movementsOverTime(
+    List<Object[]> movementsOverTimeInAreas(
             @Param("clientId") UUID clientId,
             @Param("granularity") String granularity,
             @Param("from") OffsetDateTime from,
-            @Param("to") OffsetDateTime to);
+            @Param("to") OffsetDateTime to,
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> movementsOverTime(UUID clientId, String granularity, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+        return movementsOverTimeInAreas(clientId, granularity, from, to, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #movementsOverTime} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> movementsOverTime(UUID clientId, String granularity, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return movementsOverTimeInAreas(clientId, granularity, from, to, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     /** Each row: [productId(uuid), name(text), sku(text), totalValue(numeric), totalQuantity(bigint)]. */
     @Query(
@@ -279,16 +421,31 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(m.quantity), 0) AS total_quantity "
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
                     + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
+                    + "AND m.branch_id IN (:branchIds) "
+                    + " AND (CAST(:allAreas AS boolean) OR m.area_id IN (:areaIds) OR (m.area_id IS NULL AND m.branch_id IN (:origBranches))) "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_value DESC "
                     + "LIMIT :limit",
             nativeQuery = true)
-    List<Object[]> topProductsByValue(
+    List<Object[]> topProductsByValueInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
-            @Param("limit") int limit);
+            @Param("limit") int limit,
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> topProductsByValue(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds) {
+        return topProductsByValueInAreas(clientId, movementType, from, to, limit, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #topProductsByValue} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> topProductsByValue(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return topProductsByValueInAreas(clientId, movementType, from, to, limit, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     @Query(
             value = "SELECT p.id, p.name, p.sku, "
@@ -296,16 +453,31 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
                     + "COALESCE(SUM(m.quantity), 0) AS total_quantity "
                     + "FROM stock_movements m JOIN products p ON p.id = m.product_id "
                     + "WHERE m.client_id = :clientId AND m.movement_type = :movementType AND m.occurred_at BETWEEN :from AND :to "
+                    + "AND m.branch_id IN (:branchIds) "
+                    + " AND (CAST(:allAreas AS boolean) OR m.area_id IN (:areaIds) OR (m.area_id IS NULL AND m.branch_id IN (:origBranches))) "
                     + "GROUP BY p.id, p.name, p.sku "
                     + "ORDER BY total_quantity DESC "
                     + "LIMIT :limit",
             nativeQuery = true)
-    List<Object[]> topProductsByQuantity(
+    List<Object[]> topProductsByQuantityInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") String movementType,
             @Param("from") OffsetDateTime from,
             @Param("to") OffsetDateTime to,
-            @Param("limit") int limit);
+            @Param("limit") int limit,
+            @Param("branchIds") java.util.Collection<UUID> branchIds,
+            @Param("allAreas") boolean allAreas,
+            @Param("areaIds") java.util.Collection<UUID> areaIds,
+            @Param("origBranches") java.util.Collection<UUID> origBranches);
+
+    default List<Object[]> topProductsByQuantity(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds) {
+        return topProductsByQuantityInAreas(clientId, movementType, from, to, limit, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
+    }
+
+    /** {@link #topProductsByQuantity} over these areas only (Part 3.6); null is every area. */
+    default List<Object[]> topProductsByQuantity(UUID clientId, String movementType, OffsetDateTime from, OffsetDateTime to, int limit, java.util.Collection<UUID> branchIds, AreaScope areas) {
+        return topProductsByQuantityInAreas(clientId, movementType, from, to, limit, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
+    }
 
     /** The most recent write on a product - a void (D8) is only exact while its write is still this. */
     Optional<StockMovement> findFirstByProductIdOrderByCreatedAtDescIdDesc(UUID productId);
@@ -317,4 +489,11 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
      */
     @EntityGraph(attributePaths = {"product", "createdBy"})
     List<StockMovement> findAllByClientIdAndSaleIdOrderByCreatedAtAscIdAsc(UUID clientId, UUID saleId);
+
+    /** The rows that reverse part or all of {@code movementId}: a cancelled sale, a give back (Part 6). */
+    List<StockMovement> findAllByReversesMovementIdOrderByCreatedAtAsc(UUID movementId);
+
+    /** The lots a waybill put on the receiving shelf from this source lot (V53): the recall trace's next step. */
+    List<StockMovement> findAllByClientIdAndTransferIdAndSourceLotIdAndMovementType(
+            UUID clientId, UUID transferId, UUID sourceLotId, MovementType movementType);
 }

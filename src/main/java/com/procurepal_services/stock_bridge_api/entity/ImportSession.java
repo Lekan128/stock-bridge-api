@@ -183,6 +183,14 @@ public class ImportSession extends TenantAwareEntity {
     private UUID expectedDeliveryId;
 
     /**
+     * The branch a stock sheet's deliveries are recorded at (V52), and a product sheet's opening
+     * quantities. Null on a catalogue-only sheet and on sessions from before V52, which then record at
+     * the company's only branch.
+     */
+    @Column(name = "branch_id")
+    private UUID branchId;
+
+    /**
      * The question this product sheet raises about a price column, when it raises one (V50,
      * SELLING_PRICE_PLAN.md section 6.8): {@code PRICE_MEANING} for a bare "Price" column a company
      * has to say the meaning of, {@code KEEP_SELLING_PRICES} for selling prices on a sheet from a

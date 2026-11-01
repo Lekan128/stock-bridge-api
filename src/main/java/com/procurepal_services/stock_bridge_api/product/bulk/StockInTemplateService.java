@@ -51,6 +51,7 @@ public class StockInTemplateService {
     private final ProductVendorRepository productVendorRepository;
     private final ProductVendorPackRepository productVendorPackRepository;
     private final StockInExcelService stockInExcelService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
 
     /**
      * @param productIds an explicit selection, which wins over {@code filter} when non-empty -
@@ -64,7 +65,9 @@ public class StockInTemplateService {
     @Transactional(readOnly = true)
     public byte[] generate(
             List<UUID> productIds, StockInTemplateFilter filter, UUID vendorId, UUID categoryId) {
-        return stockInExcelService.generateTemplate(rows(productIds, filter, vendorId, categoryId));
+        java.util.UUID clientId = com.procurepal_services.stock_bridge_api.tenant.TenantContext.get();
+        return stockInExcelService.generateTemplate(rows(productIds, filter, vendorId, categoryId),
+                clientId != null && branchStockService.isMultiBranch(clientId));
     }
 
     /**

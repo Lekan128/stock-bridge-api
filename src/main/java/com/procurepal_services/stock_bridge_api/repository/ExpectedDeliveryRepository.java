@@ -17,6 +17,13 @@ public interface ExpectedDeliveryRepository extends JpaRepository<ExpectedDelive
     Page<ExpectedDelivery> findAllByClientIdAndStatusOrderByCreatedAtDesc(
             UUID clientId, ExpectedDeliveryStatus status, Pageable pageable);
 
+    /** Multiple branches: the ones going to these branches (the person's scope). */
+    Page<ExpectedDelivery> findAllByClientIdAndBranchIdInOrderByCreatedAtDesc(
+            UUID clientId, java.util.Collection<UUID> branchIds, Pageable pageable);
+
+    Page<ExpectedDelivery> findAllByClientIdAndStatusAndBranchIdInOrderByCreatedAtDesc(
+            UUID clientId, ExpectedDeliveryStatus status, java.util.Collection<UUID> branchIds, Pageable pageable);
+
     /**
      * Read by id AND client, never by id alone: layer 2 of the tenant isolation
      * {@code TenantAwareEntity} documents, which holds even if the Hibernate filter is ever left

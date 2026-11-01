@@ -95,6 +95,46 @@ public class StockMovement extends TenantAwareEntity {
     private User createdBy;
 
     /**
+     * The branch this change happened at (V51, MULTI_BRANCH_BUILD_PLAN.md D-B3). Every movement has
+     * one; a company with one branch has them all there. Lots, FIFO, counts and undo are per branch
+     * by filtering on it. Set only by {@code StockManagementService} and the import undo, from
+     * {@code BranchStockService.resolveForWrite} or the movement being reversed, never defaulted
+     * by the database.
+     *
+     * <p>A raw UUID like {@link #importBatchId}, for the same reason: this row is read in bulk and
+     * wants no association hanging off it.
+     */
+    @Column(name = "branch_id", nullable = false, updatable = false)
+    private UUID branchId;
+
+    /**
+     * The area of the branch this change happened in (V60, STOCK_AREAS_BUILD_PLAN.md D-E3): its Store
+     * at a branch with one area. Null on rows from before V60, which belong to the branch's original
+     * area - {@code BranchStockService.areaOf} reads it that way. Raw, like branchId.
+     */
+    @Column(name = "area_id", updatable = false)
+    private UUID areaId;
+
+    /**
+     * On a stock-out that gave stock to an area that uses what it's given (V63, D-E7): that area - "Used at
+     * Housekeeping". The stock left {@link #areaId}. Null on every other row. Raw, like branchId.
+     */
+    @Column(name = "used_area_id", updatable = false)
+    private UUID usedAreaId;
+
+    /** The waybill this row is part of (V53) - TRANSFER_OUT and TRANSFER_IN only. Raw, like branchId. */
+    @Column(name = "transfer_id", updatable = false)
+    private UUID transferId;
+
+    /**
+     * On a TRANSFER_IN: the lot at the sending branch its stock came from (V53, D-B5). The new lot copies
+     * that lot's cost, supplier and packaging, and the recall trace walks back through it. Null for
+     * stock sent from before lots existed, which arrives at the product's average cost.
+     */
+    @Column(name = "source_lot_id", updatable = false)
+    private UUID sourceLotId;
+
+    /**
      * Which supplier this delivery came from - IN movements only, added V19. Required by
      * {@code StockManagementService.stockIn} once the product already has any {@link
      * ProductVendor} row on file; a schema CHECK cannot express that (it would need a join).

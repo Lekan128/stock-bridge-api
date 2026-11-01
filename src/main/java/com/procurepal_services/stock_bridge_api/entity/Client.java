@@ -152,6 +152,14 @@ public class Client {
     private boolean sellsStock;
 
     /**
+     * Support has let this company add a second branch while multiple branches are in pilot (V52,
+     * {@code app.branches.rollout}). Read through {@code BranchService.mayAddBranch}; a company that
+     * already has two keeps them whatever this says.
+     */
+    @Column(name = "branches_enabled", nullable = false)
+    private boolean branchesEnabled;
+
+    /**
      * The answer to the first-week question "What happens to your stock?" (V49): USE, SELL or BOTH,
      * null until answered. Kept so it is asked once on any phone. See {@code SellingSettingsService}.
      */

@@ -119,7 +119,50 @@ public record StockInRequest(
         // A4: this delivery was recorded on a phone while offline and is arriving late. Only such
         // a write is checked against stock counts taken since - see StockManagementService. Absent
         // and false both mean "recorded now", which is every caller before A4.
-        Boolean recordedOffline) {
+        Boolean recordedOffline,
+        // Multiple branches (V51): where this was recorded. Absent means the company's only branch;
+        // refused at a company with several (BranchStockService.resolveForWrite). Left out of the
+        // idempotency hash when absent, so a write queued before this field existed replays as before.
+        UUID branchId,
+        // Areas inside a branch (V60): the area this happened in. Absent means the branch's only area that
+        // keeps stock, else its delivery area for a delivery, else refused (BranchStockService
+        // .resolveAreaForWrite). Left out of the idempotency hash when absent, like branchId.
+        UUID areaId) {
+
+    /** The shape before {@code areaId} (areas, Part 0). */
+    public StockInRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt,
+            Boolean saveAsSupplierDefault,
+            String vendorSku,
+            Boolean recordedOffline,
+            UUID branchId) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+                saveAsSupplierDefault, vendorSku, recordedOffline, branchId, null);
+    }
+
+    /** The shape before {@code branchId} (multiple branches, Phase 0). */
+    public StockInRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt,
+            Boolean saveAsSupplierDefault,
+            String vendorSku,
+            Boolean recordedOffline) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+                saveAsSupplierDefault, vendorSku, recordedOffline, null, null);
+    }
 
     /** The shape before {@code recordedOffline} (A4); every server-side caller still uses it. */
     public StockInRequest(
@@ -139,6 +182,18 @@ public record StockInRequest(
 
     public boolean isRecordedOffline() {
         return Boolean.TRUE.equals(recordedOffline);
+    }
+
+    /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
+    public StockInRequest withBranchId(UUID branch) {
+        return new StockInRequest(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize,
+                occurredAt, saveAsSupplierDefault, vendorSku, recordedOffline, branch, areaId);
+    }
+
+    /** This request, recorded in {@code area} - how a caller states the area it has resolved. */
+    public StockInRequest withAreaId(UUID area) {
+        return new StockInRequest(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize,
+                occurredAt, saveAsSupplierDefault, vendorSku, recordedOffline, branchId, area);
     }
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */

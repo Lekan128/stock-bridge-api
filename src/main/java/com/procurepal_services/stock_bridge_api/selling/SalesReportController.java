@@ -23,10 +23,14 @@ public class SalesReportController {
 
     private final SalesReportService salesReportService;
     private final SalesExportService salesExportService;
+    /** One branch, or (absent) every branch the person sees (V51) - as the other reports. */
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.branch.AreaAccessService areaAccessService;
 
     /**
      * @param groupBy {@code sale} (default - today's sales as a list), {@code product}, {@code day},
-     *     {@code user} or {@code category}.
+     *     {@code user}, {@code category} or {@code branch}.
+     * @param branchId one branch; absent is every branch the person sees.
      * @param from start of the range; with {@code to}, both absent means today in Lagos.
      */
     @GetMapping("/api/analytics/sales")
@@ -41,10 +45,18 @@ public class SalesReportController {
             @RequestParam(defaultValue = "false") boolean cancelled,
             @RequestParam(defaultValue = "false") boolean unpriced,
             @RequestParam(defaultValue = "false") boolean noCost,
-            @RequestParam(required = false) Integer limit) {
+            @RequestParam(required = false) Integer limit,
+            @RequestParam(required = false) UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<UUID> areaIds,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
         return salesReportService.report(
                 requireTenantId(), from, to, groupBy,
-                new SalesReportService.Filters(productId, userId, belowUsualPrice, belowCost, cancelled, unpriced, noCost), limit);
+                new SalesReportService.Filters(productId, userId, belowUsualPrice, belowCost, cancelled, unpriced, noCost)
+                        .atBranches(branchAccessService.reportScope(principal.getUserId(), branchId))
+                        .atAreas(areaScope(principal, branchId, areaIds)),
+                limit);
     }
 
     /** The same report as a spreadsheet - same rows, same footer (plan section 6.11). */
@@ -59,10 +71,17 @@ public class SalesReportController {
             @RequestParam(defaultValue = "false") boolean belowCost,
             @RequestParam(defaultValue = "false") boolean cancelled,
             @RequestParam(defaultValue = "false") boolean unpriced,
-            @RequestParam(defaultValue = "false") boolean noCost) {
+            @RequestParam(defaultValue = "false") boolean noCost,
+            @RequestParam(required = false) UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<UUID> areaIds,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
         byte[] bytes = salesExportService.export(salesReportService.report(
                 requireTenantId(), from, to, groupBy,
-                new SalesReportService.Filters(productId, userId, belowUsualPrice, belowCost, cancelled, unpriced, noCost),
+                new SalesReportService.Filters(productId, userId, belowUsualPrice, belowCost, cancelled, unpriced, noCost)
+                        .atBranches(branchAccessService.reportScope(principal.getUserId(), branchId))
+                        .atAreas(areaScope(principal, branchId, areaIds)),
                 SalesReportService.MAX_ROWS));
         return org.springframework.http.ResponseEntity.ok()
                 .contentType(org.springframework.http.MediaType.parseMediaType(
@@ -71,9 +90,25 @@ public class SalesReportController {
                 .body(bytes);
     }
 
+    /** At one branch with {@code branchId} (V51); absent, the company's. */
     @GetMapping("/api/analytics/stock-worth")
-    public StockWorthResponse stockWorth() {
-        return salesReportService.stockWorth(requireTenantId());
+    public StockWorthResponse stockWorth(
+            @RequestParam(required = false) UUID branchId,
+            // Part 3.6: the areas the top bar names; absent is the whole of the branches.
+            @RequestParam(required = false) java.util.List<UUID> areaIds,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return salesReportService.stockWorth(requireTenantId(),
+                branchId == null ? null : branchAccessService.reportScope(principal.getUserId(), branchId),
+                areaScope(principal, branchId, areaIds));
+    }
+
+    /** The areas asked for, checked against the branches the person sees and the areas they work in. */
+    private com.procurepal_services.stock_bridge_api.branch.AreaScope areaScope(
+            com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal, UUID branchId,
+            java.util.List<UUID> areaIds) {
+        return areaAccessService.scope(principal.getUserId(),
+                branchAccessService.reportScope(principal.getUserId(), branchId), areaIds);
     }
 
     private static UUID requireTenantId() {

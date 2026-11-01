@@ -47,14 +47,21 @@ public class ExpectedDeliveryController {
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
     public Page<ExpectedDeliveryResponse> list(
             @RequestParam(required = false) ExpectedDeliveryStatus status,
-            @PageableDefault(size = 20) Pageable pageable) {
-        return expectedDeliveryService.list(status, pageable);
+            // Multiple branches: going to this branch; absent is every branch the person sees.
+            @RequestParam(required = false) UUID branchId,
+            @PageableDefault(size = 20) Pageable pageable,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return expectedDeliveryService.list(status, pageable, principal == null ? null : principal.getUserId(), branchId);
     }
 
     @GetMapping("/{id}")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public ExpectedDeliveryResponse get(@PathVariable UUID id) {
-        return expectedDeliveryService.get(id);
+    public ExpectedDeliveryResponse get(
+            @PathVariable UUID id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return expectedDeliveryService.get(id, principal == null ? null : principal.getUserId());
     }
 
     @PostMapping
@@ -73,8 +80,11 @@ public class ExpectedDeliveryController {
      */
     @PostMapping("/{id}/cancel")
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
-    public ExpectedDeliveryResponse cancel(@PathVariable UUID id) {
-        return expectedDeliveryService.cancel(id);
+    public ExpectedDeliveryResponse cancel(
+            @PathVariable UUID id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return expectedDeliveryService.cancel(id, principal == null ? null : principal.getUserId());
     }
 
     @ExceptionHandler(ExpectedDeliveryException.class)
