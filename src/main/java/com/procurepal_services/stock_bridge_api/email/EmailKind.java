@@ -86,7 +86,17 @@ public enum EmailKind {
      * withholding it does not protect the recipient from anything, and the case
      * where it is most needed is the case where it would be suppressed.
      */
-    SECURITY;
+    SECURITY,
+
+    /**
+     * A document a buyer sends to one of their suppliers - a purchase order
+     * (PURCHASE_ORDER_PLAN.md phase 3). The recipient is a third party with no user row, so
+     * "has this address been verified" cannot be asked of them: the thing that was verified is
+     * the SENDER (checked by the caller before it gets here), and the thing that still applies to
+     * the recipient is the suppression list, which {@link EmailEligibility} consults before it
+     * looks at the kind. Never promotional, never bulk: one buyer, one supplier, on request.
+     */
+    SUPPLIER_DOCUMENT;
 
     /**
      * True for the kinds that may reach an address nobody has verified.
@@ -96,7 +106,7 @@ public enum EmailKind {
      * today and both would drift.
      */
     public boolean bypassesVerification() {
-        return this == VERIFICATION || this == SECURITY;
+        return this == VERIFICATION || this == SECURITY || this == SUPPLIER_DOCUMENT;
     }
 
     /** True only for the kind that must additionally honour an unsubscribe. */

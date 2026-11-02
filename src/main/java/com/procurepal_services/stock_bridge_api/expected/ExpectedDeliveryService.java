@@ -63,6 +63,7 @@ public class ExpectedDeliveryService {
     private final com.procurepal_services.stock_bridge_api.repository.ClientRepository clientRepository;
     private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
     private final tools.jackson.databind.json.JsonMapper jsonMapper;
+    private final com.procurepal_services.stock_bridge_api.repository.PurchaseOrderEmailRepository purchaseOrderEmailRepository;
 
     @Transactional
     public ExpectedDeliveryResponse create(ExpectedDeliveryRequest request, UUID actingUserId) {
@@ -241,7 +242,9 @@ public class ExpectedDeliveryService {
                 .map(line -> line.getProduct().getId())
                 .distinct()
                 .toList());
-        return page.map(expected -> respond(expected, waysToBuy));
+        Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latestEmails =
+                latestEmails(page.getContent().stream().map(ExpectedDelivery::getId).toList());
+        return page.map(expected -> respond(expected, waysToBuy, latestEmails));
     }
 
     @Transactional(readOnly = true)
@@ -272,6 +275,23 @@ public class ExpectedDeliveryService {
             throw ExpectedDeliveryException.notAPurchaseOrder();
         }
         return jsonMapper.readValue(expected.getSnapshot(), PurchaseOrderSnapshot.class);
+    }
+
+    /** What emailing a purchase order needs to know, read in one transaction. */
+    public record PurchaseOrderTarget(
+            UUID orderId, UUID vendorId, int revision, boolean calledOff, PurchaseOrderSnapshot snapshot) {
+    }
+
+    @Transactional(readOnly = true)
+    public PurchaseOrderTarget purchaseOrderTarget(UUID id, UUID userId) {
+        PurchaseOrderSnapshot snapshot = snapshotOf(id, userId);
+        ExpectedDelivery expected = require(id);
+        return new PurchaseOrderTarget(
+                expected.getId(),
+                expected.getVendor() == null ? null : expected.getVendor().getId(),
+                expected.getRevision(),
+                expected.getStatus() == ExpectedDeliveryStatus.CANCELLED,
+                snapshot);
     }
 
     public ExpectedDeliveryResponse cancel(UUID id) {
@@ -406,11 +426,26 @@ public class ExpectedDeliveryService {
         return respond(expected, waysToBuy(expected.getLines().stream()
                 .map(line -> line.getProduct().getId())
                 .distinct()
-                .toList()));
+                .toList()), latestEmails(List.of(expected.getId())));
+    }
+
+    /** The newest attempt to email each of these orders, in one query. */
+    private Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latestEmails(List<UUID> ids) {
+        Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latest = new HashMap<>();
+        if (ids.isEmpty()) {
+            return latest;
+        }
+        // Newest first, so the first one seen per order is the latest.
+        for (var email : purchaseOrderEmailRepository.findAllByExpectedDeliveryIdInOrderByCreatedAtDesc(ids)) {
+            latest.putIfAbsent(email.getExpectedDeliveryId(), email);
+        }
+        return latest;
     }
 
     private ExpectedDeliveryResponse respond(
-            ExpectedDelivery expected, Map<UUID, Map<String, StockInTemplateRow>> waysToBuy) {
+            ExpectedDelivery expected,
+            Map<UUID, Map<String, StockInTemplateRow>> waysToBuy,
+            Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latestEmails) {
         List<ExpectedDeliveryResponse.Line> lines = new ArrayList<>();
         BigDecimal total = BigDecimal.ZERO;
         int outstandingLines = 0;
@@ -460,7 +495,16 @@ public class ExpectedDeliveryService {
                 expected.getCreatedAt(),
                 expected.getBranchId(),
                 expected.getPoNumber(),
-                expected.getRevision());
+                expected.getRevision(),
+                emailOf(latestEmails.get(expected.getId())));
+    }
+
+    private static ExpectedDeliveryResponse.Email emailOf(
+            com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail email) {
+        return email == null
+                ? null
+                : new ExpectedDeliveryResponse.Email(
+                        email.getStatus(), email.getToAddress(), email.getCreatedAt(), email.getProblem());
     }
 
     /** A purchase order leads with its number: "PO-0007, Tony Stores, due 12 Nov". */

@@ -63,6 +63,12 @@ public class SesEmailTransport implements EmailTransport {
      *     order receipts out of the blast radius of this change.
      */
     private SendEmailRequest buildRequest(EmailMessage message, String unsubscribeUrl) {
+        if (!message.attachments().isEmpty()) {
+            // SES's simple message cannot carry a file (that needs a raw MIME message, and SES was
+            // shelved on 2026-10-06 in favour of Resend). Refuse loudly instead of sending a
+            // purchase order without its PDF.
+            throw new UnsupportedOperationException("The SES transport cannot send attachments; use EMAIL_PROVIDER=resend.");
+        }
         Message.Builder simple = Message.builder()
                 .subject(utf8(message.subject()))
                 .body(buildBody(message));

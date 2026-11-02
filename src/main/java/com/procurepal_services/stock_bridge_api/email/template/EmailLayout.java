@@ -62,6 +62,18 @@ public final class EmailLayout {
      * footer agree with the body instead of naming a different product.
      */
     public static String page(String brand, String heading, String preheader, String bodyHtml) {
+        return page(brand, heading, preheader, bodyHtml,
+                "You are receiving this because your company has a " + escape(brand) + " account. "
+                        + "This is an automated message - replies to it are not monitored unless a "
+                        + "reply-to address is configured.");
+    }
+
+    /**
+     * The shell with its own footer line, for mail that goes to someone who has no account here
+     * (a supplier receiving a purchase order). {@code footerHtml} is trusted markup: escape what
+     * you put in it.
+     */
+    public static String page(String brand, String heading, String preheader, String bodyHtml, String footerHtml) {
         return """
                 <!doctype html>
                 <html lang="en">
@@ -84,9 +96,7 @@ public final class EmailLayout {
                         </td></tr>
                         <tr><td style="padding:18px 28px; border-top:1px solid %s; background:#fafafa;">
                           <p style="margin:0; font-size:12px; line-height:1.6; color:%s;">
-                            You are receiving this because your company has a %s account.
-                            This is an automated message - replies to it are not monitored unless a
-                            reply-to address is configured.
+                            %s
                           </p>
                         </td></tr>
                       </table>
@@ -97,7 +107,7 @@ public final class EmailLayout {
                 """
                 .formatted(
                         escape(heading), CANVAS, escape(preheader), CANVAS, BORDER, BRAND, escape(brand),
-                        TEXT, escape(heading), bodyHtml, BORDER, MUTED, escape(brand));
+                        TEXT, escape(heading), bodyHtml, BORDER, MUTED, footerHtml);
     }
 
     public static String paragraph(String text) {

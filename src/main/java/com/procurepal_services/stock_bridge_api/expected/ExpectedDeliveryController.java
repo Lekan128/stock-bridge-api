@@ -41,6 +41,7 @@ public class ExpectedDeliveryController {
     private final ExpectedDeliveryService expectedDeliveryService;
     private final PurchaseOrderPdf purchaseOrderPdf;
     private final LogoFetcher logoFetcher;
+    private final PurchaseOrderEmailService purchaseOrderEmailService;
 
     /**
      * @param status defaults to nothing, meaning all of them. The screen asks for OPEN.
@@ -93,8 +94,25 @@ public class ExpectedDeliveryController {
     public ResponseEntity<ExpectedDeliveryResponse> create(
             @Valid @RequestBody ExpectedDeliveryRequest request,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(expectedDeliveryService.create(request, principal.getUserId()));
+        ExpectedDeliveryResponse created = expectedDeliveryService.create(request, principal.getUserId());
+        if (request.isPurchaseOrder() && request.isEmailRequested()) {
+            // The order is already saved. Whether the email went is written on it either way.
+            purchaseOrderEmailService.send(created.id(), principal.getUserId());
+            created = expectedDeliveryService.get(created.id(), principal.getUserId());
+        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
+    }
+
+    /**
+     * Emails a purchase order to its supplier - the "Send email" on the order, and the resend. One
+     * press, one email. Answers with the order so the screen can read the outcome off it.
+     */
+    @PostMapping("/{id}/email")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public ExpectedDeliveryResponse email(
+            @PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        purchaseOrderEmailService.send(id, principal.getUserId());
+        return expectedDeliveryService.get(id, principal.getUserId());
     }
 
     /**

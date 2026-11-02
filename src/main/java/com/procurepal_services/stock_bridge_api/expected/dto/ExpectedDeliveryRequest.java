@@ -20,6 +20,8 @@ import java.util.UUID;
  *     what the supplier is shown. Needs a supplier, and ignores any price on the lines - a
  *     purchase order says what is wanted, not what it costs. Absent or false is the old
  *     "write down what I ordered by phone".
+ * @param emailRequested on a purchase order: also email it to the supplier now (the switch on the
+ *     form). The order is made first either way; whether the email went is reported on the order.
  */
 public record ExpectedDeliveryRequest(
         UUID vendorId,
@@ -30,17 +32,29 @@ public record ExpectedDeliveryRequest(
         // Multiple branches (V52): the branch it is going to. Absent means the company's only branch,
         // or the one branch the person works at.
         UUID branchId,
-        Boolean purchaseOrder) {
+        Boolean purchaseOrder,
+        Boolean emailRequested) {
 
     /** The shape before {@code branchId} (multiple branches, Phase 1). */
     public ExpectedDeliveryRequest(UUID vendorId, String expectedDate, String reference, String note, List<Line> lines) {
-        this(vendorId, expectedDate, reference, note, lines, null, null);
+        this(vendorId, expectedDate, reference, note, lines, null, null, null);
     }
 
     /** The shape before purchase orders. */
     public ExpectedDeliveryRequest(
             UUID vendorId, String expectedDate, String reference, String note, List<Line> lines, UUID branchId) {
-        this(vendorId, expectedDate, reference, note, lines, branchId, null);
+        this(vendorId, expectedDate, reference, note, lines, branchId, null, null);
+    }
+
+    /** The shape before the email switch. */
+    public ExpectedDeliveryRequest(
+            UUID vendorId, String expectedDate, String reference, String note, List<Line> lines, UUID branchId,
+            Boolean purchaseOrder) {
+        this(vendorId, expectedDate, reference, note, lines, branchId, purchaseOrder, null);
+    }
+
+    public boolean isEmailRequested() {
+        return Boolean.TRUE.equals(emailRequested);
     }
 
     public boolean isPurchaseOrder() {

@@ -17,6 +17,8 @@ import java.util.UUID;
  * @param poNumber "PO-0007" when this is a purchase order; absent for one that was only written
  *     down. A screen decides "is this a purchase order?" by whether it is there.
  * @param revision 1 for the order as first made.
+ * @param email what became of the latest attempt to email it to the supplier; absent when none was
+ *     made.
  * @param outstandingLines how many lines still owe something. What "partly arrived" means, said
  *     as a number rather than as a fourth status.
  */
@@ -37,7 +39,19 @@ public record ExpectedDeliveryResponse(
         // Multiple branches (V52): where it is going.
         UUID branchId,
         String poNumber,
-        int revision) {
+        int revision,
+        Email email) {
+
+    /**
+     * @param status SENT ("Emailed"), FAILED, BOUNCED or COMPLAINED - see PurchaseOrderEmailStatus.
+     * @param problem a plain sentence for the order page when it did not go through; absent when it did.
+     */
+    public record Email(
+            com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmailStatus status,
+            String toAddress,
+            OffsetDateTime sentAt,
+            String problem) {
+    }
 
     /**
      * @param unit the {@code UnitOptions.key} it was ordered in, sent back unchanged when

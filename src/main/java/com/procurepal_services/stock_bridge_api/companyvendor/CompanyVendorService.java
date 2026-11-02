@@ -142,7 +142,13 @@ public class CompanyVendorService {
 
         vendor.setName(request.name().trim());
         vendor.setContactPhone(request.contactPhone().trim());
-        vendor.setEmail(blankToNull(request.email()));
+        String newEmail = blankToNull(request.email());
+        if (!java.util.Objects.equals(
+                newEmail == null ? null : newEmail.toLowerCase(), vendor.getEmail() == null ? null : vendor.getEmail().toLowerCase())) {
+            // A corrected or new address has not been proven yet: emailing orders to it asks again.
+            vendor.setEmailOrders(false);
+        }
+        vendor.setEmail(newEmail);
         vendor.setAddressLine1(blankToNull(request.addressLine1()));
         vendor.setAddressLine2(blankToNull(request.addressLine2()));
         vendor.setCity(blankToNull(request.city()));

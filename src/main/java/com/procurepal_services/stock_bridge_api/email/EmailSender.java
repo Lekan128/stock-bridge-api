@@ -227,6 +227,42 @@ public class EmailSender {
      * exception could learn to escape - see the class doc on why nothing may
      * propagate.
      */
+    /**
+     * What happened to one message sent right now, for the callers that must tell a person the
+     * truth about it (a purchase order shows "Emailed" or "Didn't send").
+     *
+     * @param problem a plain sentence when it did not go; null when it did
+     * @param messageId the provider's id, which a later bounce webhook names
+     */
+    public record SendResult(boolean accepted, String messageId, String problem) {
+    }
+
+    /**
+     * Sends one message now, on the calling thread, and reports the outcome. Unlike
+     * {@link #send}, nothing is swallowed into a boolean: the provider's id comes back, and so does
+     * a sentence about why it did not go.
+     */
+    public SendResult sendNow(EmailMessage message) {
+        if (message == null || !message.hasRecipients()) {
+            return new SendResult(false, null, "There is no email address to send it to.");
+        }
+        if (!isConfigured()) {
+            log.info("Email not configured - would have sent \"{}\" to {}", message.subject(), message.to());
+            return new SendResult(false, null, "Email isn't set up on this server yet.");
+        }
+        if (message.to().stream().allMatch(EmailSender::isReservedDomain)) {
+            return new SendResult(false, null, "That address can't receive email.");
+        }
+        try {
+            String messageId = transport.send(message, null);
+            return new SendResult(true, messageId, null);
+        } catch (Exception e) {
+            log.warn("Failed to send email \"{}\" to {} via {}: {}",
+                    message.subject(), message.to(), transport.name(), e.getMessage());
+            return new SendResult(false, null, "We couldn't send it. Try again in a moment.");
+        }
+    }
+
     private boolean sendOne(EmailMessage message, String unsubscribeUrl) {
         try {
             String messageId = transport.send(message, unsubscribeUrl);
