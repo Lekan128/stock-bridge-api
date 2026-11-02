@@ -116,6 +116,21 @@ public class ExpectedDelivery extends TenantAwareEntity {
     @Column(name = "snapshot", columnDefinition = "TEXT")
     private String snapshot;
 
+    /**
+     * The unguessable part of the public link a supplier opens without logging in. Set once, when
+     * the order is made; never changes, so a link already sent keeps working through revisions.
+     */
+    @Column(name = "share_token", length = 64)
+    private String shareToken;
+
+    /** When the buyer last opened WhatsApp for this order. All we can know - never "delivered". */
+    @Column(name = "whatsapp_opened_at")
+    private OffsetDateTime whatsappOpenedAt;
+
+    /** When the buyer last copied the message. */
+    @Column(name = "message_copied_at")
+    private OffsetDateTime messageCopiedAt;
+
     public boolean isPurchaseOrder() {
         return poNumber != null;
     }

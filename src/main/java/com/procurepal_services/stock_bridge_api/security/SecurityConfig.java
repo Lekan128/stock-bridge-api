@@ -77,6 +77,12 @@ public class SecurityConfig {
         // SetupRequestRateLimiter.
         "/api/public/founding-offer",
         "/api/public/setup-requests",
+        // A supplier opening a purchase order from the link in an email or WhatsApp message. No
+        // account by design; the long random token in the path is the access check, and the
+        // handler looks up by it alone (tenant filter off, as for the rest of this list) and
+        // answers 404 to anything that does not match. Rate limited per address. See
+        // PublicPurchaseOrderService.
+        "/api/public/purchase-orders/**",
         "/api/superadmin/auth/login",
         "/api/superadmin/auth/refresh",
         "/actuator/health",

@@ -32,6 +32,12 @@ public interface ExpectedDeliveryRepository extends JpaRepository<ExpectedDelive
     Optional<ExpectedDelivery> findByIdAndClientId(UUID id, UUID clientId);
 
     /**
+     * The public link's lookup. Runs with no tenant (the supplier has no login), so it is the token
+     * alone that scopes it - which is why the token is a long random string and nothing else.
+     */
+    Optional<ExpectedDelivery> findByShareToken(String shareToken);
+
+    /**
      * Every still-owed line for these products, as rows of {productId, unit, outstanding}.
      * One query for a whole page - the same N+1 the batched preferred-vendor read avoids.
      *

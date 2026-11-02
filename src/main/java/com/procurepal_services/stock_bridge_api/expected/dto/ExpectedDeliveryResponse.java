@@ -17,6 +17,8 @@ import java.util.UUID;
  * @param poNumber "PO-0007" when this is a purchase order; absent for one that was only written
  *     down. A screen decides "is this a purchase order?" by whether it is there.
  * @param revision 1 for the order as first made.
+ * @param share what the buyer needs to send the order themselves - the link, the message and the
+ *     WhatsApp address. Only on a single order (not the list), and only for a purchase order.
  * @param email what became of the latest attempt to email it to the supplier; absent when none was
  *     made.
  * @param outstandingLines how many lines still owe something. What "partly arrived" means, said
@@ -40,7 +42,25 @@ public record ExpectedDeliveryResponse(
         UUID branchId,
         String poNumber,
         int revision,
-        Email email) {
+        Email email,
+        Share share) {
+
+    /**
+     * @param url the public page the supplier opens, when the server knows the app's address.
+     * @param message the message to paste or send, written in the buyer's voice, link included.
+     * @param whatsappUrl opens WhatsApp to the supplier with the message typed; absent when the
+     *     supplier has no phone number WhatsApp could use.
+     * @param whatsappOpenedAt / messageCopiedAt when the buyer last did that. We only ever say
+     *     "you opened WhatsApp" - never that it was delivered or read.
+     */
+    public record Share(
+            String token,
+            String url,
+            String message,
+            String whatsappUrl,
+            OffsetDateTime whatsappOpenedAt,
+            OffsetDateTime messageCopiedAt) {
+    }
 
     /**
      * @param status SENT ("Emailed"), FAILED, BOUNCED or COMPLAINED - see PurchaseOrderEmailStatus.

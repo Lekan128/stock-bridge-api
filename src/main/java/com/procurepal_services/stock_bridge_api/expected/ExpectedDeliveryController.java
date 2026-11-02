@@ -104,6 +104,19 @@ public class ExpectedDeliveryController {
     }
 
     /**
+     * "The buyer opened WhatsApp" or "copied the message" - written on the order so the line still
+     * reads true a week later. All we can know; never "delivered" or "read".
+     */
+    @PostMapping("/{id}/shared")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public ExpectedDeliveryResponse shared(
+            @PathVariable UUID id,
+            @org.springframework.web.bind.annotation.RequestParam ExpectedDeliveryService.ShareChannel channel,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return expectedDeliveryService.markShared(id, principal.getUserId(), channel);
+    }
+
+    /**
      * Emails a purchase order to its supplier - the "Send email" on the order, and the resend. One
      * press, one email. Answers with the order so the screen can read the outcome off it.
      */

@@ -63,6 +63,7 @@ public class ExpectedDeliveryService {
     private final com.procurepal_services.stock_bridge_api.repository.ClientRepository clientRepository;
     private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
     private final tools.jackson.databind.json.JsonMapper jsonMapper;
+    private final PurchaseOrderSharing purchaseOrderSharing;
     private final com.procurepal_services.stock_bridge_api.repository.PurchaseOrderEmailRepository purchaseOrderEmailRepository;
 
     @Transactional
@@ -130,6 +131,7 @@ public class ExpectedDeliveryService {
         int sequence = purchaseOrderNumbers.nextSequence(tenantId);
         expected.setPoSequence(sequence);
         expected.setPoNumber(PurchaseOrderNumbers.format(sequence));
+        expected.setShareToken(PurchaseOrderSharing.newToken());
         expected.setSnapshot(writeSnapshot(buildSnapshot(expected, tenantId, waysToBuy)));
     }
 
@@ -244,7 +246,9 @@ public class ExpectedDeliveryService {
                 .toList());
         Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latestEmails =
                 latestEmails(page.getContent().stream().map(ExpectedDelivery::getId).toList());
-        return page.map(expected -> respond(expected, waysToBuy, latestEmails));
+        // No share block on the list: composing the message needs the order's frozen copy, and a list
+        // of twenty does not need twenty of them.
+        return page.map(expected -> respond(expected, waysToBuy, latestEmails, null));
     }
 
     @Transactional(readOnly = true)
@@ -426,7 +430,36 @@ public class ExpectedDeliveryService {
         return respond(expected, waysToBuy(expected.getLines().stream()
                 .map(line -> line.getProduct().getId())
                 .distinct()
-                .toList()), latestEmails(List.of(expected.getId())));
+                .toList()), latestEmails(List.of(expected.getId())), shareOf(expected));
+    }
+
+    /** The link, message and WhatsApp address for a single purchase order; null for any other. */
+    private ExpectedDeliveryResponse.Share shareOf(ExpectedDelivery expected) {
+        if (expected.getSnapshot() == null || expected.getShareToken() == null) {
+            return null;
+        }
+        PurchaseOrderSnapshot snapshot = jsonMapper.readValue(expected.getSnapshot(), PurchaseOrderSnapshot.class);
+        String livePhone = expected.getVendor() == null ? null : expected.getVendor().getContactPhone();
+        return purchaseOrderSharing.build(expected, snapshot, livePhone);
+    }
+
+    /** Which way the buyer sent it themselves. We record that they did, never that it arrived. */
+    public enum ShareChannel { WHATSAPP, MESSAGE }
+
+    @Transactional
+    public ExpectedDeliveryResponse markShared(UUID id, UUID userId, ShareChannel channel) {
+        get(id, userId);
+        ExpectedDelivery expected = require(id);
+        if (expected.getShareToken() == null) {
+            throw ExpectedDeliveryException.notAPurchaseOrder();
+        }
+        java.time.OffsetDateTime now = java.time.OffsetDateTime.now();
+        if (channel == ShareChannel.WHATSAPP) {
+            expected.setWhatsappOpenedAt(now);
+        } else {
+            expected.setMessageCopiedAt(now);
+        }
+        return respond(expectedDeliveryRepository.saveAndFlush(expected));
     }
 
     /** The newest attempt to email each of these orders, in one query. */
@@ -445,7 +478,8 @@ public class ExpectedDeliveryService {
     private ExpectedDeliveryResponse respond(
             ExpectedDelivery expected,
             Map<UUID, Map<String, StockInTemplateRow>> waysToBuy,
-            Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latestEmails) {
+            Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latestEmails,
+            ExpectedDeliveryResponse.Share share) {
         List<ExpectedDeliveryResponse.Line> lines = new ArrayList<>();
         BigDecimal total = BigDecimal.ZERO;
         int outstandingLines = 0;
@@ -496,7 +530,8 @@ public class ExpectedDeliveryService {
                 expected.getBranchId(),
                 expected.getPoNumber(),
                 expected.getRevision(),
-                emailOf(latestEmails.get(expected.getId())));
+                emailOf(latestEmails.get(expected.getId())),
+                share);
     }
 
     private static ExpectedDeliveryResponse.Email emailOf(
