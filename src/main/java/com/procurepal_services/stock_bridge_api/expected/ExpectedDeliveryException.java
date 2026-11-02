@@ -25,6 +25,10 @@ public class ExpectedDeliveryException extends RuntimeException {
                 HttpStatus.BAD_REQUEST, "One of these products is no longer in your catalog.");
     }
 
+    static ExpectedDeliveryException needsSupplier() {
+        return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST, "Pick who you are ordering from.");
+    }
+
     static ExpectedDeliveryException noSuchSupplier() {
         return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST, "We couldn't find that supplier.");
     }

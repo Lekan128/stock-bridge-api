@@ -14,6 +14,9 @@ import java.util.UUID;
  * @param title what the list calls it - "Tony Stores, due 22 Sep" - composed here rather than in
  *     the frontend, for the reason every other headline in this feature is: one place decides how
  *     it reads, and it stays the same on the list, the page and any future notification.
+ * @param poNumber "PO-0007" when this is a purchase order; absent for one that was only written
+ *     down. A screen decides "is this a purchase order?" by whether it is there.
+ * @param revision 1 for the order as first made.
  * @param outstandingLines how many lines still owe something. What "partly arrived" means, said
  *     as a number rather than as a fourth status.
  */
@@ -32,7 +35,9 @@ public record ExpectedDeliveryResponse(
         boolean receivable,
         OffsetDateTime createdAt,
         // Multiple branches (V52): where it is going.
-        UUID branchId) {
+        UUID branchId,
+        String poNumber,
+        int revision) {
 
     /**
      * @param unit the {@code UnitOptions.key} it was ordered in, sent back unchanged when

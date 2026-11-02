@@ -14,7 +14,12 @@ import java.util.UUID;
  * same date, same {product, unit, quantity, price} lines - because the screen that records an
  * expectation and the screen that records its arrival are the same screen with a different verb.
  *
- * @param expectedDate when the supplier said it would come. Optional; plenty never say.
+ * @param expectedDate when the supplier said it would come - or, on a purchase order, when it is
+ *     needed. Optional.
+ * @param purchaseOrder true to make this a purchase order: it gets a number and a frozen copy of
+ *     what the supplier is shown. Needs a supplier, and ignores any price on the lines - a
+ *     purchase order says what is wanted, not what it costs. Absent or false is the old
+ *     "write down what I ordered by phone".
  */
 public record ExpectedDeliveryRequest(
         UUID vendorId,
@@ -24,11 +29,22 @@ public record ExpectedDeliveryRequest(
         @NotEmpty(message = "Add at least one thing you are expecting.") @Valid List<Line> lines,
         // Multiple branches (V52): the branch it is going to. Absent means the company's only branch,
         // or the one branch the person works at.
-        UUID branchId) {
+        UUID branchId,
+        Boolean purchaseOrder) {
 
     /** The shape before {@code branchId} (multiple branches, Phase 1). */
     public ExpectedDeliveryRequest(UUID vendorId, String expectedDate, String reference, String note, List<Line> lines) {
-        this(vendorId, expectedDate, reference, note, lines, null);
+        this(vendorId, expectedDate, reference, note, lines, null, null);
+    }
+
+    /** The shape before purchase orders. */
+    public ExpectedDeliveryRequest(
+            UUID vendorId, String expectedDate, String reference, String note, List<Line> lines, UUID branchId) {
+        this(vendorId, expectedDate, reference, note, lines, branchId, null);
+    }
+
+    public boolean isPurchaseOrder() {
+        return Boolean.TRUE.equals(purchaseOrder);
     }
 
     public record Line(

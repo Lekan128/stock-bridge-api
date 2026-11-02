@@ -52,4 +52,8 @@ public interface ExpectedDeliveryRepository extends JpaRepository<ExpectedDelive
             + "and l.product.id in :productIds "
             + "group by l.product.id, l.unit")
     List<Object[]> outstandingByProductAndUnit(UUID clientId, List<UUID> productIds);
+
+    /** The highest PO sequence this company has used, or null when it has made none. */
+    @Query("select max(e.poSequence) from ExpectedDelivery e where e.clientId = :clientId")
+    Integer highestPoSequence(UUID clientId);
 }

@@ -32,12 +32,12 @@ import org.hibernate.annotations.UpdateTimestamp;
  * What a company has ordered from an off-platform supplier and is still waiting for
  * (BULK_IMPORT_CX_PLAN.md task 3.1).
  *
- * <h2>What this is not</h2>
- * It is not a purchase order. There is no number, no approval step and no document anyone could
- * send a supplier, because the product has not decided whether it wants a procurement workflow -
- * {@code PROCUREPAL_CLARIFICATION_QUESTIONS.md} still has PO approvals open with the client. This
- * exists for two much smaller jobs: answering "what have we got coming?", and saving the
- * storekeeper from typing the whole delivery again when it turns up.
+ * <h2>Purchase orders are these, with a number</h2>
+ * A purchase order (PURCHASE_ORDER_PLAN.md) is not a second table: it is one of these rows that
+ * also carries {@link #poNumber}, a {@link #revision} and a frozen {@link #snapshot} of what the
+ * supplier was shown. A row recorded the old way - typed from a phone call, never sent - leaves
+ * those empty and behaves exactly as before. One list of what was ordered, one "coming" figure,
+ * one receive path. Approval is deliberately not here; it is a later addition.
  *
  * <h2>Why it leaves {@code Product.incoming_quantity} alone</h2>
  * That column means "paid for through the marketplace and on its way". It is maintained under a
@@ -95,6 +95,30 @@ public class ExpectedDelivery extends TenantAwareEntity {
      */
     @Column(name = "branch_id", nullable = false)
     private UUID branchId;
+
+    /** "PO-0007"; null for an expectation that was only written down, never sent. */
+    @Column(name = "po_number", length = 20)
+    private String poNumber;
+
+    /** The 7 in PO-0007 - per company, allocated by {@code PurchaseOrderNumbers}. */
+    @Column(name = "po_sequence")
+    private Integer poSequence;
+
+    /** 1 for the order as first made; a change to a sent order makes the next one. */
+    @Column(name = "revision", nullable = false)
+    @Builder.Default
+    private int revision = 1;
+
+    /**
+     * What the PDF and the public page show, as JSON ({@code PurchaseOrderSnapshot}), written when
+     * the order is made. The PDF is built from this on the fly and never stored.
+     */
+    @Column(name = "snapshot", columnDefinition = "TEXT")
+    private String snapshot;
+
+    public boolean isPurchaseOrder() {
+        return poNumber != null;
+    }
 
     @OneToMany(mappedBy = "expectedDelivery", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("createdAt ASC")

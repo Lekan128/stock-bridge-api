@@ -58,10 +58,18 @@ public class ExpectedDeliveryService {
     /** Which branch it is going to (V52): named, or the company's only one, or the person's only one. */
     private final BranchStockService branchStockService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
+    /** Purchase orders: the next PO-number, and the buyer / branch details frozen onto the order. */
+    private final PurchaseOrderNumbers purchaseOrderNumbers;
+    private final com.procurepal_services.stock_bridge_api.repository.ClientRepository clientRepository;
+    private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
+    private final tools.jackson.databind.json.JsonMapper jsonMapper;
 
     @Transactional
     public ExpectedDeliveryResponse create(ExpectedDeliveryRequest request, UUID actingUserId) {
         UUID tenantId = requireTenantId();
+        if (request.isPurchaseOrder() && request.vendorId() == null) {
+            throw ExpectedDeliveryException.needsSupplier();
+        }
         CompanyVendor vendor = request.vendorId() == null
                 ? null
                 : companyVendorRepository.findByIdAndClientIdAndActiveTrue(request.vendorId(), tenantId)
@@ -99,12 +107,96 @@ public class ExpectedDeliveryService {
                     .product(product)
                     .unit(line.unit())
                     .quantity(line.quantity())
-                    .price(line.price())
+                    // A purchase order says what is wanted, not what it costs.
+                    .price(request.isPurchaseOrder() ? null : line.price())
                     .receivedQuantity(BigDecimal.ZERO)
                     .build());
         }
 
+        if (request.isPurchaseOrder()) {
+            makePurchaseOrder(expected, tenantId, waysToBuy);
+        }
         return respond(expectedDeliveryRepository.saveAndFlush(expected));
+    }
+
+    /**
+     * Turns the expectation into a purchase order: takes the next number for this company and
+     * freezes what the supplier will be shown. Runs in the transaction that saves the row, so the
+     * number and the order stand or fall together.
+     */
+    private void makePurchaseOrder(
+            ExpectedDelivery expected, UUID tenantId, Map<UUID, Map<String, StockInTemplateRow>> waysToBuy) {
+        int sequence = purchaseOrderNumbers.nextSequence(tenantId);
+        expected.setPoSequence(sequence);
+        expected.setPoNumber(PurchaseOrderNumbers.format(sequence));
+        expected.setSnapshot(writeSnapshot(buildSnapshot(expected, tenantId, waysToBuy)));
+    }
+
+    private PurchaseOrderSnapshot buildSnapshot(
+            ExpectedDelivery expected, UUID tenantId, Map<UUID, Map<String, StockInTemplateRow>> waysToBuy) {
+        var company = clientRepository.findById(tenantId).orElse(null);
+        PurchaseOrderSnapshot.Party buyer = new PurchaseOrderSnapshot.Party(
+                company == null ? null : company.getName(),
+                company == null ? null : blankToNull(company.getPhone()),
+                company == null ? null : blankToNull(company.getAdminContactEmail()),
+                company == null ? null : joinAddress(
+                        company.getAddressLine1(), company.getAddressLine2(), company.getCity(), company.getState()),
+                company == null ? null : blankToNull(company.getLogoUrl()));
+
+        CompanyVendor vendor = expected.getVendor();
+        // A supplier that is on the platform may leave its own phone / email blank in the buyer's
+        // directory; the platform account's details are the better answer than nothing.
+        var platform = vendor.getPlatformClientId() == null
+                ? null
+                : clientRepository.findById(vendor.getPlatformClientId()).orElse(null);
+        PurchaseOrderSnapshot.Party supplier = new PurchaseOrderSnapshot.Party(
+                vendor.getName(),
+                firstNonBlank(vendor.getContactPhone(), platform == null ? null : platform.getPhone()),
+                firstNonBlank(vendor.getEmail(), platform == null ? null : platform.getAdminContactEmail()),
+                joinAddress(vendor.getAddressLine1(), vendor.getAddressLine2(), vendor.getCity(), vendor.getState()),
+                null);
+
+        var branch = branchRepository.findById(expected.getBranchId())
+                .filter(found -> tenantId.equals(found.getClientId()))
+                .orElse(null);
+        PurchaseOrderSnapshot.Delivery deliverTo = branch == null
+                ? null
+                : new PurchaseOrderSnapshot.Delivery(
+                        branch.getName(), blankToNull(branch.getAddress()), blankToNull(branch.getPhone()));
+
+        List<PurchaseOrderSnapshot.Line> lines = new ArrayList<>();
+        for (ExpectedDeliveryLine line : expected.getLines()) {
+            StockInTemplateRow row = Optional.ofNullable(waysToBuy.get(line.getProduct().getId()))
+                    .map(byUnit -> byUnit.get(line.getUnit()))
+                    .orElse(null);
+            lines.add(new PurchaseOrderSnapshot.Line(
+                    row != null ? row.productName() : line.getProduct().getName(),
+                    row != null ? row.sku() : line.getProduct().getSku(),
+                    row != null
+                            ? SheetUnitOptions.comesInLabel(row.option())
+                            : UnitOptions.spokenPhraseOfSubmitted(line.getUnit()),
+                    line.getQuantity()));
+        }
+        return new PurchaseOrderSnapshot(
+                expected.getPoNumber(), expected.getRevision(), buyer, supplier, deliverTo,
+                expected.getExpectedDate(), expected.getNote(), lines);
+    }
+
+    private String writeSnapshot(PurchaseOrderSnapshot snapshot) {
+        return jsonMapper.writeValueAsString(snapshot);
+    }
+
+    /** "12 Marina Rd, Lekki, Lagos" - the parts that are there, in order, comma-separated. */
+    private static String joinAddress(String... parts) {
+        String joined = java.util.Arrays.stream(parts)
+                .filter(part -> part != null && !part.isBlank())
+                .map(String::trim)
+                .collect(java.util.stream.Collectors.joining(", "));
+        return joined.isEmpty() ? null : joined;
+    }
+
+    private static String firstNonBlank(String first, String second) {
+        return blankToNull(first) != null ? first.trim() : blankToNull(second);
     }
 
     /**
@@ -340,7 +432,7 @@ public class ExpectedDeliveryService {
         return new ExpectedDeliveryResponse(
                 expected.getId(),
                 expected.getStatus(),
-                title(vendorName, expected.getExpectedDate()),
+                title(expected.getPoNumber(), vendorName, expected.getExpectedDate()),
                 expected.getVendor() == null ? null : expected.getVendor().getId(),
                 vendorName,
                 expected.getExpectedDate(),
@@ -351,7 +443,15 @@ public class ExpectedDeliveryService {
                 total.signum() == 0 ? null : total,
                 expected.getStatus() == ExpectedDeliveryStatus.OPEN && outstandingLines > 0,
                 expected.getCreatedAt(),
-                expected.getBranchId());
+                expected.getBranchId(),
+                expected.getPoNumber(),
+                expected.getRevision());
+    }
+
+    /** A purchase order leads with its number: "PO-0007, Tony Stores, due 12 Nov". */
+    static String title(String poNumber, String vendorName, LocalDate expectedDate) {
+        String base = title(vendorName, expectedDate);
+        return poNumber == null ? base : poNumber + ", " + base;
     }
 
     /** "Tony Stores, due 22 Sep" - or just the supplier, or just the date, or "Expected delivery". */
