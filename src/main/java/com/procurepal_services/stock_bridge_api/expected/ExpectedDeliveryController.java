@@ -39,6 +39,8 @@ import org.springframework.web.bind.annotation.RestController;
 public class ExpectedDeliveryController {
 
     private final ExpectedDeliveryService expectedDeliveryService;
+    private final PurchaseOrderPdf purchaseOrderPdf;
+    private final LogoFetcher logoFetcher;
 
     /**
      * @param status defaults to nothing, meaning all of them. The screen asks for OPEN.
@@ -62,6 +64,28 @@ public class ExpectedDeliveryController {
             @org.springframework.security.core.annotation.AuthenticationPrincipal
                     com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
         return expectedDeliveryService.get(id, principal == null ? null : principal.getUserId());
+    }
+
+    /**
+     * The purchase order as a PDF, drawn now from what was frozen when it was made - never stored.
+     * {@code inline}, so the browser opens its own viewer (print / download in its toolbar).
+     */
+    @GetMapping("/{id}/pdf")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public ResponseEntity<byte[]> pdf(
+            @PathVariable UUID id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        PurchaseOrderSnapshot order = expectedDeliveryService.snapshotOf(id, principal == null ? null : principal.getUserId());
+        byte[] pdf = purchaseOrderPdf.render(order, logoFetcher.fetch(order.buyer().logoUrl()));
+        return ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.APPLICATION_PDF)
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION,
+                        org.springframework.http.ContentDisposition.inline()
+                                .filename(order.poNumber() + " " + order.supplier().name() + ".pdf",
+                                        java.nio.charset.StandardCharsets.UTF_8)
+                                .build().toString())
+                .body(pdf);
     }
 
     @PostMapping

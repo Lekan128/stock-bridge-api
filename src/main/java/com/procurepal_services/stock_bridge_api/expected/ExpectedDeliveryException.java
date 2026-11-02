@@ -25,6 +25,11 @@ public class ExpectedDeliveryException extends RuntimeException {
                 HttpStatus.BAD_REQUEST, "One of these products is no longer in your catalog.");
     }
 
+    static ExpectedDeliveryException notAPurchaseOrder() {
+        return new ExpectedDeliveryException(
+                HttpStatus.NOT_FOUND, "That one was only written down, so there is no purchase order to show.");
+    }
+
     static ExpectedDeliveryException needsSupplier() {
         return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST, "Pick who you are ordering from.");
     }

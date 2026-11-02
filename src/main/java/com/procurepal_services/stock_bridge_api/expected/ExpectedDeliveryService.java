@@ -178,7 +178,8 @@ public class ExpectedDeliveryService {
                     line.getQuantity()));
         }
         return new PurchaseOrderSnapshot(
-                expected.getPoNumber(), expected.getRevision(), buyer, supplier, deliverTo,
+                expected.getPoNumber(), expected.getRevision(), LocalDate.now(java.time.ZoneId.of("Africa/Lagos")),
+                buyer, supplier, deliverTo,
                 expected.getExpectedDate(), expected.getNote(), lines);
     }
 
@@ -257,6 +258,20 @@ public class ExpectedDeliveryService {
             throw ExpectedDeliveryException.notFound();
         }
         return respond(expected);
+    }
+
+    /**
+     * What the supplier was shown on this purchase order, for the PDF. Visible to the same people
+     * who can see the order itself; an expectation that was only written down has none.
+     */
+    @Transactional(readOnly = true)
+    public PurchaseOrderSnapshot snapshotOf(UUID id, UUID userId) {
+        get(id, userId);
+        ExpectedDelivery expected = require(id);
+        if (expected.getSnapshot() == null) {
+            throw ExpectedDeliveryException.notAPurchaseOrder();
+        }
+        return jsonMapper.readValue(expected.getSnapshot(), PurchaseOrderSnapshot.class);
     }
 
     public ExpectedDeliveryResponse cancel(UUID id) {

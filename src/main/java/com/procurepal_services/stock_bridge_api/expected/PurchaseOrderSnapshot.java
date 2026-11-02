@@ -20,6 +20,7 @@ import java.util.List;
 public record PurchaseOrderSnapshot(
         String poNumber,
         int revision,
+        LocalDate issuedOn,
         Party buyer,
         Party supplier,
         Delivery deliverTo,

@@ -144,6 +144,53 @@ class PurchaseOrderIntegrationTest {
         assertThat(json).doesNotContain("price").doesNotContain("total");
     }
 
+    @Test
+    void thePdfOpensInlineInTheBrowserAndIsDrawnFromTheFrozenOrder() throws Exception {
+        TenantLoginResponse tenant = signup("Pdf Co");
+        CompanyVendorResponse tony = vendor(tenant, "Tony Stores");
+        ProductResponse rice = product(tenant, "Rice", "PO-PDF");
+        ExpectedDeliveryResponse created = order(tenant, tony.id(), rice.id(), "10", "2026-11-12");
+
+        ResponseEntity<byte[]> response = restTemplate.exchange(
+                "/api/expected-deliveries/" + created.id() + "/pdf", HttpMethod.GET,
+                new HttpEntity<>(json(tenant)), byte[].class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PDF);
+        assertThat(response.getHeaders().getContentDisposition().getType()).isEqualTo("inline");
+        assertThat(response.getHeaders().getContentDisposition().getFilename()).isEqualTo("PO-0001 Tony Stores.pdf");
+        assertThat(response.getBody()).startsWith("%PDF".getBytes());
+    }
+
+    @Test
+    void anExpectationThatWasOnlyWrittenDownHasNoPdf() {
+        TenantLoginResponse tenant = signup("No Pdf Co");
+        ProductResponse rice = product(tenant, "Rice", "PO-NOPDF");
+        ExpectedDeliveryResponse oldWay = create(tenant, new ExpectedDeliveryRequest(
+                null, null, null, null,
+                List.of(new ExpectedDeliveryRequest.Line(rice.id(), "KG", BigDecimal.ONE, null))));
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/expected-deliveries/" + oldWay.id() + "/pdf", HttpMethod.GET,
+                new HttpEntity<>(json(tenant)), String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void anotherCompanyCannotOpenYourPdf() {
+        TenantLoginResponse mine = signup("Mine Co");
+        TenantLoginResponse theirs = signup("Theirs Co");
+        ExpectedDeliveryResponse created =
+                order(mine, vendor(mine, "Tony").id(), product(mine, "Rice", "PO-MINE").id(), "1", null);
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/api/expected-deliveries/" + created.id() + "/pdf", HttpMethod.GET,
+                new HttpEntity<>(json(theirs)), String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
     // ----------------------------------------------------------------------------------- helpers ---
 
     private ExpectedDeliveryResponse order(
