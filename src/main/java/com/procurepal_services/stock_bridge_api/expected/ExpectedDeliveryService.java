@@ -246,9 +246,9 @@ public class ExpectedDeliveryService {
                 .toList());
         Map<UUID, com.procurepal_services.stock_bridge_api.entity.PurchaseOrderEmail> latestEmails =
                 latestEmails(page.getContent().stream().map(ExpectedDelivery::getId).toList());
-        // No share block on the list: composing the message needs the order's frozen copy, and a list
-        // of twenty does not need twenty of them.
-        return page.map(expected -> respond(expected, waysToBuy, latestEmails, null));
+        // The list gets the token and when it was shared by hand, but not the message: composing that
+        // needs the order's frozen copy, and a list of twenty does not need twenty of them.
+        return page.map(expected -> respond(expected, waysToBuy, latestEmails, liteShareOf(expected)));
     }
 
     @Transactional(readOnly = true)
@@ -431,6 +431,14 @@ public class ExpectedDeliveryService {
                 .map(line -> line.getProduct().getId())
                 .distinct()
                 .toList()), latestEmails(List.of(expected.getId())), shareOf(expected));
+    }
+
+    private static ExpectedDeliveryResponse.Share liteShareOf(ExpectedDelivery expected) {
+        return expected.getShareToken() == null
+                ? null
+                : new ExpectedDeliveryResponse.Share(
+                        expected.getShareToken(), null, null, null,
+                        expected.getWhatsappOpenedAt(), expected.getMessageCopiedAt());
     }
 
     /** The link, message and WhatsApp address for a single purchase order; null for any other. */

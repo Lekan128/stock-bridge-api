@@ -48,6 +48,7 @@ public record ExpectedDeliveryResponse(
     /**
      * @param url the public page the supplier opens, when the server knows the app's address.
      * @param message the message to paste or send, written in the buyer's voice, link included.
+     *     Absent in the list, which only needs to know whether it was shared.
      * @param whatsappUrl opens WhatsApp to the supplier with the message typed; absent when the
      *     supplier has no phone number WhatsApp could use.
      * @param whatsappOpenedAt / messageCopiedAt when the buyer last did that. We only ever say
