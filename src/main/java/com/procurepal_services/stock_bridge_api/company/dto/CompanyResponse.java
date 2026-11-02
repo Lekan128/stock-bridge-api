@@ -49,7 +49,10 @@ public record CompanyResponse(
         OffsetDateTime updatedAt,
         // The selling switch (SELLING_PRICE_PLAN.md section 4.2). Here, and not in a JWT claim, so a
         // change is seen on the next read rather than at the next token refresh.
-        boolean sellsStock) {
+        boolean sellsStock,
+        // The company's logo, shown on Company settings and on purchase orders. Absent when it has
+        // none (null fields are left off the wire).
+        String logoUrl) {
 
     public static CompanyResponse from(Client client) {
         return new CompanyResponse(
@@ -63,6 +66,7 @@ public record CompanyResponse(
                 client.getPaymentTerms(),
                 client.getCreatedAt(),
                 client.getUpdatedAt(),
-                client.isSellsStock());
+                client.isSellsStock(),
+                client.getLogoUrl());
     }
 }

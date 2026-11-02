@@ -46,6 +46,20 @@ public class CompanyController {
         return companyService.get();
     }
 
+    /** Sets the logo: a multipart upload with one part, {@code file}. */
+    @PutMapping(value = "/logo", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('MANAGE_COMPANY_PROFILE')")
+    public CompanyResponse setLogo(@org.springframework.web.bind.annotation.RequestPart("file")
+            org.springframework.web.multipart.MultipartFile file) {
+        return companyService.setLogo(file);
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/logo")
+    @PreAuthorize("hasAuthority('MANAGE_COMPANY_PROFILE')")
+    public CompanyResponse removeLogo() {
+        return companyService.removeLogo();
+    }
+
     @PutMapping
     @PreAuthorize("hasAuthority('MANAGE_COMPANY_PROFILE')")
     public CompanyResponse update(@Valid @RequestBody UpdateCompanyRequest request) {

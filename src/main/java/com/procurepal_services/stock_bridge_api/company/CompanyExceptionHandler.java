@@ -22,6 +22,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice(assignableTypes = CompanyController.class)
 public class CompanyExceptionHandler {
 
+    @ExceptionHandler(CompanyLogoException.class)
+    public ResponseEntity<ApiError> handleLogo(CompanyLogoException ex) {
+        return ResponseEntity.status(ex.status()).body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiError> handleValidation(MethodArgumentNotValidException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ValidationErrors.describe(ex)));

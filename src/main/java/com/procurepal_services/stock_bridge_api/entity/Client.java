@@ -103,7 +103,8 @@ public class Client {
     private ClientType clientType = ClientType.COMPANY;
 
     /**
-     * The vendor's profile picture / logo. One of only two things a browsing
+     * The logo. A company sets its own from Company settings and it appears on its purchase orders;
+     * a vendor's is also one of only two things a browsing
      * company sees about a vendor - the other is {@link #name} - alongside their
      * products. Everything else on this row is operator-facing.
      *
