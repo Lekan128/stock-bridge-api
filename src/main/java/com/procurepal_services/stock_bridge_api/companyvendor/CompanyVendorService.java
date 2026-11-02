@@ -134,6 +134,19 @@ public class CompanyVendorService {
         return CompanyVendorResponse.from(companyVendorRepository.saveAndFlush(vendor));
     }
 
+    /** Sets the email alone. A different address has not been tried, so "email orders to them" goes back off. */
+    @Transactional
+    public CompanyVendorResponse setEmail(UUID id, String email) {
+        CompanyVendor vendor = companyVendorLookup.require(id);
+        requireEditable(vendor);
+        String next = email.trim();
+        if (vendor.getEmail() == null || !vendor.getEmail().equalsIgnoreCase(next)) {
+            vendor.setEmailOrders(false);
+        }
+        vendor.setEmail(next);
+        return CompanyVendorResponse.from(companyVendorRepository.saveAndFlush(vendor));
+    }
+
     @Transactional
     public CompanyVendorResponse update(UUID id, CompanyVendorRequest request) {
         CompanyVendor vendor = companyVendorLookup.require(id);

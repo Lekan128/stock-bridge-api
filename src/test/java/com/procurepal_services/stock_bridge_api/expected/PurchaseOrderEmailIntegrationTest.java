@@ -232,6 +232,38 @@ class PurchaseOrderEmailIntegrationTest {
     }
 
     @Test
+    void anEmailCanBeAddedToASupplierWhoHasNoPhoneNumber() {
+        TenantLoginResponse tenant = verifiedSignup("No Phone Co");
+        CompanyVendorResponse tony = vendor(tenant, "Tony Stores", null);
+        // Suppliers made by an import or on the fly can have a blank phone; the database allows it.
+        jdbc.update("UPDATE company_vendors SET contact_phone = '' WHERE id = ?", tony.id());
+
+        ResponseEntity<CompanyVendorResponse> saved = restTemplate.exchange(
+                "/api/company-vendors/" + tony.id() + "/email", HttpMethod.PUT,
+                new HttpEntity<>(java.util.Map.of("email", "Tony@Stores.TEST"), json(tenant)),
+                CompanyVendorResponse.class);
+
+        assertThat(saved.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(saved.getBody().email()).isEqualTo("Tony@Stores.TEST");
+        assertThat(saved.getBody().emailOrders()).isFalse();
+        assertThat(vendorById(tenant, tony.id()).email()).isEqualTo("Tony@Stores.TEST");
+    }
+
+    @Test
+    void anAddressThatIsNotAnEmailIsRefusedAndNothingChanges() {
+        TenantLoginResponse tenant = verifiedSignup("Bad Email Co");
+        CompanyVendorResponse tony = vendor(tenant, "Tony Stores", uniqueEmail("tony"));
+
+        for (String bad : new String[] {"", "tony", "tony@", "a b@c.com"}) {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    "/api/company-vendors/" + tony.id() + "/email", HttpMethod.PUT,
+                    new HttpEntity<>(java.util.Map.of("email", bad), json(tenant)), String.class);
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
+        assertThat(vendorById(tenant, tony.id()).email()).isEqualTo(tony.email());
+    }
+
+    @Test
     void aCompanyCannotEmailMoreThanItsDailyLimit() {
         TenantLoginResponse tenant = verifiedSignup("Cap Co");
         CompanyVendorResponse tony = vendor(tenant, "Tony Stores", uniqueEmail("tony"));
