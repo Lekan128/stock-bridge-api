@@ -82,6 +82,41 @@ public class StockInTemplateService {
         return templateRows(tenantId, selectProducts(tenantId, productIds, filter, vendorId, categoryId));
     }
 
+    /** The most products one search or "usual products" lookup will ever return. */
+    public static final int MAX_PICKER_PRODUCTS = 40;
+
+    /**
+     * A bounded lookup for a picker (a purchase order's "what do you want"): the products whose name,
+     * SKU or barcode contains {@code search}, or - with no search - this supplier's own products, at
+     * most {@code limit} of them (never more than {@link #MAX_PICKER_PRODUCTS}), each with every way it
+     * is bought. The unbounded {@link #rows} would hand back the whole catalog, which a screen that
+     * has to work at thirty thousand products cannot use.
+     */
+    @Transactional(readOnly = true)
+    public List<StockInTemplateRow> pickerRows(String search, UUID vendorId, int limit) {
+        UUID tenantId = requireTenantId();
+        int cap = Math.max(1, Math.min(limit, MAX_PICKER_PRODUCTS));
+        List<Product> products;
+        if (search != null && !search.isBlank()) {
+            products = productRepository.searchActive(
+                    tenantId, likePattern(search), org.springframework.data.domain.PageRequest.of(0, cap));
+        } else {
+            products = productsOfVendor(tenantId, vendorId).stream().limit(cap).toList();
+        }
+        return templateRows(tenantId, products);
+    }
+
+    /**
+     * "%rice%", lowercased, with the characters LIKE treats specially made literal. The escape
+     * character is {@code !}, chosen because it needs no escaping of its own anywhere between here
+     * and the database.
+     */
+    static String likePattern(String search) {
+        String escaped = search.trim().toLowerCase(java.util.Locale.ROOT)
+                .replace("!", "!!").replace("%", "!%").replace("_", "!_");
+        return "%" + escaped + "%";
+    }
+
     private List<Product> selectProducts(
             UUID tenantId, List<UUID> productIds, StockInTemplateFilter filter, UUID vendorId, UUID categoryId) {
         if (productIds != null && !productIds.isEmpty()) {

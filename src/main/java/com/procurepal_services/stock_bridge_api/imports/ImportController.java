@@ -338,7 +338,17 @@ public class ImportController {
             @RequestParam(required = false) UUID vendorId,
             @RequestParam(required = false) UUID categoryId,
             @RequestParam(required = false) UUID branchId,
+            // A bounded lookup for a picker: with `search`, the products matching it; with `limit` and a
+            // vendorId and no filter, only that many of the supplier's products. Left out, this is
+            // exactly what it always was.
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) Integer limit,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        if ((search != null && !search.isBlank()) || limit != null) {
+            return stockInTemplateService.pickerRows(search, vendorId, limit == null ? 20 : limit).stream()
+                    .map(this::toDeliveryLine)
+                    .toList();
+        }
         List<UUID> ids = parseIds(productIds);
         List<UUID> low = ids.isEmpty() ? lowAtBranch(filter, branchId, principal) : null;
         if (low != null) {
@@ -346,16 +356,20 @@ public class ImportController {
             filter = null;
         }
         return stockInTemplateService.rows(ids, ids.isEmpty() ? filter : null, vendorId, categoryId).stream()
-                .map(row -> new DeliveryLineResponse(
-                        row.productId(),
-                        row.productName(),
-                        row.sku(),
-                        UnitOptions.key(row.option()),
-                        SheetUnitOptions.comesInLabel(row.option()),
-                        row.option().isPack(),
-                        row.lastPricePerOption(),
-                        row.vendorName()))
+                .map(this::toDeliveryLine)
                 .toList();
+    }
+
+    private DeliveryLineResponse toDeliveryLine(com.procurepal_services.stock_bridge_api.product.bulk.StockInTemplateRow row) {
+        return new DeliveryLineResponse(
+                row.productId(),
+                row.productName(),
+                row.sku(),
+                UnitOptions.key(row.option()),
+                SheetUnitOptions.comesInLabel(row.option()),
+                row.option().isPack(),
+                row.lastPricePerOption(),
+                row.vendorName());
     }
 
     /**
