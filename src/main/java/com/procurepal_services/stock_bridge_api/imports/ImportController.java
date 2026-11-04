@@ -384,7 +384,8 @@ public class ImportController {
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public List<DeliveryLineResponse> deliveryLinesByBarcode(@PathVariable String barcode) {
         UUID productId = productManagementService.requireByBarcode(barcode).getId();
-        return deliveryLines(productId.toString(), null, null, null, null, null);
+        // No filter, supplier, category, branch, search or limit: just this one product's lines.
+        return deliveryLines(productId.toString(), null, null, null, null, null, null, null);
     }
 
     /**
