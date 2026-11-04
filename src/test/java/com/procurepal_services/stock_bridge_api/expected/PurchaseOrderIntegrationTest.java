@@ -54,7 +54,7 @@ class PurchaseOrderIntegrationTest {
         CompanyVendorResponse tony = vendor(tenant, "Tony Stores");
         ProductResponse rice = product(tenant, "Rice", "PO-RICE");
 
-        ExpectedDeliveryResponse first = order(tenant, tony.id(), rice.id(), "10", "2026-11-12");
+        ExpectedDeliveryResponse first = order(tenant, tony.id(), rice.id(), "10", "2099-11-12");
         ExpectedDeliveryResponse second = order(tenant, tony.id(), rice.id(), "5", null);
 
         assertThat(first.poNumber()).isEqualTo("PO-0001");
@@ -127,7 +127,7 @@ class PurchaseOrderIntegrationTest {
         CompanyVendorResponse tony = vendor(tenant, "Tony Stores");
         ProductResponse rice = product(tenant, "Rice", "PO-FZ");
 
-        ExpectedDeliveryResponse created = order(tenant, tony.id(), rice.id(), "10", "2026-11-12");
+        ExpectedDeliveryResponse created = order(tenant, tony.id(), rice.id(), "10", "2099-11-12");
 
         String json = jdbc.queryForObject(
                 "SELECT snapshot FROM expected_deliveries WHERE id = ?", String.class, created.id());
@@ -136,7 +136,7 @@ class PurchaseOrderIntegrationTest {
         assertThat(snapshot.get("supplier").get("name").asText()).isEqualTo("Tony Stores");
         assertThat(snapshot.get("supplier").get("phone").asText()).isEqualTo("08030000000");
         assertThat(snapshot.get("buyer").get("name").asText()).startsWith("Frozen Co");
-        assertThat(snapshot.get("neededBy").asText()).isEqualTo("2026-11-12");
+        assertThat(snapshot.get("neededBy").asText()).isEqualTo("2099-11-12");
         assertThat(snapshot.get("lines")).hasSize(1);
         assertThat(snapshot.get("lines").get(0).get("productName").asText()).isEqualTo("Rice");
         assertThat(snapshot.get("lines").get(0).get("quantity").decimalValue()).isEqualByComparingTo("10");
@@ -149,7 +149,7 @@ class PurchaseOrderIntegrationTest {
         TenantLoginResponse tenant = signup("Pdf Co");
         CompanyVendorResponse tony = vendor(tenant, "Tony Stores");
         ProductResponse rice = product(tenant, "Rice", "PO-PDF");
-        ExpectedDeliveryResponse created = order(tenant, tony.id(), rice.id(), "10", "2026-11-12");
+        ExpectedDeliveryResponse created = order(tenant, tony.id(), rice.id(), "10", "2099-11-12");
 
         ResponseEntity<byte[]> response = restTemplate.exchange(
                 "/api/expected-deliveries/" + created.id() + "/pdf", HttpMethod.GET,
@@ -189,6 +189,40 @@ class PurchaseOrderIntegrationTest {
                 new HttpEntity<>(json(theirs)), String.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void aPurchaseOrderCannotBeNeededOnADayThatHasPassedButTodayIsFine() {
+        TenantLoginResponse tenant = signup("Dates Co");
+        CompanyVendorResponse tony = vendor(tenant, "Tony Stores");
+        ProductResponse rice = product(tenant, "Rice", "PO-DATE");
+        java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneId.of("Africa/Lagos"));
+
+        ResponseEntity<String> past = restTemplate.exchange("/api/expected-deliveries", HttpMethod.POST,
+                new HttpEntity<>(new ExpectedDeliveryRequest(
+                        tony.id(), today.minusDays(1).toString(), null, null,
+                        List.of(new ExpectedDeliveryRequest.Line(rice.id(), "KG", BigDecimal.ONE, null)), null, true),
+                        json(tenant)),
+                String.class);
+        assertThat(past.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(past.getBody()).contains("Pick today or a day after today.");
+
+        ExpectedDeliveryResponse todayOrder = create(tenant, new ExpectedDeliveryRequest(
+                tony.id(), today.toString(), null, null,
+                List.of(new ExpectedDeliveryRequest.Line(rice.id(), "KG", BigDecimal.ONE, null)), null, true));
+        assertThat(todayOrder.poNumber()).isEqualTo("PO-0001");
+    }
+
+    @Test
+    void anExpectationWrittenDownAfterTheFactKeepsItsPastDate() {
+        TenantLoginResponse tenant = signup("Overdue Co");
+        ProductResponse rice = product(tenant, "Rice", "PO-OVER");
+
+        ExpectedDeliveryResponse created = create(tenant, new ExpectedDeliveryRequest(
+                null, "2026-01-05", null, null,
+                List.of(new ExpectedDeliveryRequest.Line(rice.id(), "KG", BigDecimal.ONE, null))));
+
+        assertThat(created.expectedDate()).isEqualTo(java.time.LocalDate.of(2026, 1, 5));
     }
 
     // ----------------------------------------------------------------------------------- helpers ---

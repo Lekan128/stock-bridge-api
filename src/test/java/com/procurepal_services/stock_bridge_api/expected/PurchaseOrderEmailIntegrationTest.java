@@ -272,8 +272,10 @@ class PurchaseOrderEmailIntegrationTest {
         UUID companyId = jdbc.queryForObject(
                 "SELECT client_id FROM expected_deliveries WHERE id = ?", UUID.class, created.id());
         for (int i = 0; i < PurchaseOrderEmailService.DAILY_COMPANY_CAP; i++) {
-            jdbc.update("INSERT INTO purchase_order_emails (client_id, expected_delivery_id, to_address, status) "
-                    + "VALUES (?, ?, ?, 'SENT')", companyId, created.id(), "someone" + i + "@suppliers.test");
+            // An hour ago, not now(): inside the day's window but clearly older than the attempt below, so
+            // a database clock a few seconds ahead of this machine cannot make one of these the "latest".
+            jdbc.update("INSERT INTO purchase_order_emails (client_id, expected_delivery_id, to_address, status, created_at) "
+                    + "VALUES (?, ?, ?, 'SENT', now() - interval '1 hour')", companyId, created.id(), "someone" + i + "@suppliers.test");
         }
 
         ExpectedDeliveryResponse blocked = post(tenant, "/api/expected-deliveries/" + created.id() + "/email");
@@ -318,7 +320,7 @@ class PurchaseOrderEmailIntegrationTest {
     private ExpectedDeliveryResponse order(
             TenantLoginResponse tenant, UUID vendorId, UUID productId, boolean emailIt) {
         return create(tenant, new ExpectedDeliveryRequest(
-                vendorId, "2026-11-12", null, null,
+                vendorId, "2099-11-12", null, null,
                 List.of(new ExpectedDeliveryRequest.Line(productId, "KG", new BigDecimal("10"), null)),
                 null, true, emailIt));
     }

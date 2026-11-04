@@ -72,6 +72,14 @@ public class ExpectedDeliveryService {
         if (request.isPurchaseOrder() && request.vendorId() == null) {
             throw ExpectedDeliveryException.needsSupplier();
         }
+        // A purchase order asks for something still to come. (An expectation written down after the
+        // fact keeps its past dates: a missed promise is exactly what overdue means.)
+        if (request.isPurchaseOrder()) {
+            LocalDate neededBy = parseDate(request.expectedDate());
+            if (neededBy != null && neededBy.isBefore(LocalDate.now(java.time.ZoneId.of("Africa/Lagos")))) {
+                throw ExpectedDeliveryException.neededInThePast();
+            }
+        }
         CompanyVendor vendor = request.vendorId() == null
                 ? null
                 : companyVendorRepository.findByIdAndClientIdAndActiveTrue(request.vendorId(), tenantId)

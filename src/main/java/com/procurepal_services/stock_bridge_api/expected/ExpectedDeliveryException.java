@@ -30,6 +30,10 @@ public class ExpectedDeliveryException extends RuntimeException {
                 HttpStatus.NOT_FOUND, "That one was only written down, so there is no purchase order to show.");
     }
 
+    static ExpectedDeliveryException neededInThePast() {
+        return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST, "Pick today or a day after today.");
+    }
+
     static ExpectedDeliveryException needsSupplier() {
         return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST, "Pick who you are ordering from.");
     }

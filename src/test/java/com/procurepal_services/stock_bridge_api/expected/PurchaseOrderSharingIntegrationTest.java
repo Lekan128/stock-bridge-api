@@ -157,7 +157,7 @@ class PurchaseOrderSharingIntegrationTest {
 
     private ExpectedDeliveryResponse order(TenantLoginResponse tenant, CompanyVendorResponse vendor, ProductResponse product) {
         return create(tenant, new ExpectedDeliveryRequest(
-                vendor.id(), "2026-11-12", null, null,
+                vendor.id(), "2099-11-12", null, null,
                 List.of(new ExpectedDeliveryRequest.Line(product.id(), "KG", new BigDecimal("10"), null)),
                 null, true));
     }
