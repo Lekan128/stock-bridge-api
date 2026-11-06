@@ -34,7 +34,11 @@ public class PriceRequestController {
             LocalDate replyBy, UUID branchId, @Size(max = 500) String note) {
     }
 
-    public record ChooseBody(String kind, UUID supplierId) {
+    /** {@code kind} PICKED with {@code picks} (section 12.2); CHEAPEST or SUPPLIER from an older screen. */
+    public record ChooseBody(String kind, UUID supplierId, List<PriceRequestService.Pick> picks) {
+    }
+
+    public record ReplyByBody(LocalDate replyBy) {
     }
 
     @PostMapping
@@ -87,7 +91,16 @@ public class PriceRequestController {
     public PriceRequestService.ChooseResult choose(
             @PathVariable UUID id, @RequestBody ChooseBody body,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return service.choose(id, body.kind(), body.supplierId(), principal.getUserId());
+        return service.choose(id, body.kind(), body.supplierId(), body.picks(), principal.getUserId());
+    }
+
+    /** "Give more time": a new Reply by, while nothing is decided (section 12.1). */
+    @PostMapping("/{id}/reply-by")
+    @PreAuthorize("hasAnyAuthority('CREATE_PURCHASE_ORDER', 'SEND_PURCHASE_ORDER')")
+    public PriceRequestService.Request giveMoreTime(
+            @PathVariable UUID id, @RequestBody ReplyByBody body,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return service.giveMoreTime(id, body.replyBy(), principal.getUserId());
     }
 
     @PostMapping("/{id}/close")

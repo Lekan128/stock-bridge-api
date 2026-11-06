@@ -137,6 +137,134 @@ class PriceRequestIntegrationTest {
                 .isEqualTo(HttpStatus.NOT_FOUND);
     }
 
+    /**
+     * Replies close at the end of the Reply by day (section 12.1): after it, the supplier's link shows what they sent
+     * and takes no more; the buyer can still type a reply heard on the phone, and Give more time reopens it.
+     */
+    @Test
+    void repliesCloseOnTheReplyByDayAndGiveMoreTimeReopensThem() {
+        TenantLoginResponse owner = signup("Close Co");
+        CompanyVendorResponse tony = vendor(owner, "Tony Stores");
+        ProductResponse rice = product(owner, "Rice", "PC-RICE");
+        String today = java.time.LocalDate.now(java.time.ZoneId.of("Africa/Lagos")).toString();
+        String yesterday = java.time.LocalDate.now(java.time.ZoneId.of("Africa/Lagos")).minusDays(1).toString();
+
+        assertThat(restTemplate.exchange("/api/price-requests", HttpMethod.POST, new HttpEntity<>(Map.of(
+                "lines", List.of(Map.of("productId", rice.id(), "unit", "KG", "quantity", 5)),
+                "vendorIds", List.of(tony.id())), json(owner)), String.class).getBody()).contains("reply by");
+        assertThat(restTemplate.exchange("/api/price-requests", HttpMethod.POST, new HttpEntity<>(Map.of(
+                "lines", List.of(Map.of("productId", rice.id(), "unit", "KG", "quantity", 5)),
+                "vendorIds", List.of(tony.id()), "replyBy", yesterday), json(owner)), String.class).getBody())
+                .contains("can't be in the past");
+        JsonNode request = restTemplate.exchange("/api/price-requests", HttpMethod.POST, new HttpEntity<>(Map.of(
+                "lines", List.of(Map.of("productId", rice.id(), "unit", "KG", "quantity", 5)),
+                "vendorIds", List.of(tony.id()), "replyBy", today), json(owner)), JsonNode.class).getBody();
+        String id = request.get("id").asText();
+        String line = request.get("lines").get(0).get("id").asText();
+        String tonyRow = supplierRow(request, "Tony Stores");
+        assertThat(request.get("repliesClosed").asBoolean()).as("open all of the Reply by day").isFalse();
+        assertThat(supplierOf(request, "Tony Stores").get("message").asText()).contains("Prices can't be changed after that.");
+        String token = jdbc.queryForObject("SELECT token FROM price_request_suppliers WHERE id = ?::uuid", String.class, tonyRow);
+        Map<String, Object> reply = Map.of("lines", List.of(Map.of("lineId", line, "price", 900, "cannotSupply", false)),
+                "declined", false);
+        assertThat(restTemplate.exchange("/api/public/price-requests/" + token + "/reply", HttpMethod.PUT,
+                new HttpEntity<>(reply, jsonOnly()), String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // The day passes.
+        jdbc.update("UPDATE price_requests SET reply_by = ?::date WHERE id = ?::uuid", yesterday, id);
+        JsonNode page = restTemplate.getForObject("/api/public/price-requests/" + token, JsonNode.class);
+        assertThat(page.get("repliesClosed").asBoolean()).isTrue();
+        assertThat(page.get("reply").get("total").decimalValue()).as("what they sent still shows").isEqualByComparingTo("4500");
+        ResponseEntity<String> late = restTemplate.exchange("/api/public/price-requests/" + token + "/reply", HttpMethod.PUT,
+                new HttpEntity<>(reply, jsonOnly()), String.class);
+        assertThat(late.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(late.getBody()).contains("Replies closed on").contains("call Close Co");
+        assertThat(get(owner, "/api/price-requests/" + id).get("repliesClosed").asBoolean()).isTrue();
+        assertThat(get(owner, "/api/price-requests?status=OPEN").get(0).get("repliesClosed").asBoolean()).isTrue();
+        // The buyer can still type what Tony said on the phone.
+        assertThat(restTemplate.exchange("/api/price-requests/" + id + "/suppliers/" + tonyRow + "/reply", HttpMethod.PUT,
+                new HttpEntity<>(reply, json(owner)), String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // Give more time: replies open again until the new day.
+        assertThat(restTemplate.exchange("/api/price-requests/" + id + "/reply-by", HttpMethod.POST,
+                new HttpEntity<>(Map.of("replyBy", yesterday), json(owner)), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+        JsonNode reopened = restTemplate.exchange("/api/price-requests/" + id + "/reply-by", HttpMethod.POST,
+                new HttpEntity<>(Map.of("replyBy", today), json(owner)), JsonNode.class).getBody();
+        assertThat(reopened.get("repliesClosed").asBoolean()).isFalse();
+        assertThat(restTemplate.exchange("/api/public/price-requests/" + token + "/reply", HttpMethod.PUT,
+                new HttpEntity<>(reply, jsonOnly()), String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    /**
+     * The buyer picks the supplier for each item (section 12.2): Tony's dearer rice, Mama's dearer oil, the beans not
+     * now. Two orders at those prices, each with its supplier's delivery charge once; the request says what each item
+     * went to beside the lowest. Picking a supplier who didn't price an item is refused.
+     */
+    @Test
+    void theBuyerPicksTheSupplierForEachItemEvenTheDearerOne() {
+        TenantLoginResponse owner = signup("Pick Co");
+        CompanyVendorResponse tony = vendor(owner, "Tony Stores");
+        CompanyVendorResponse mama = vendor(owner, "Mama Put");
+        ProductResponse rice = product(owner, "Rice", "PK-RICE");
+        ProductResponse oil = product(owner, "Oil", "PK-OIL");
+        ProductResponse beans = product(owner, "Beans", "PK-BEANS");
+        JsonNode request = restTemplate.exchange("/api/price-requests", HttpMethod.POST, new HttpEntity<>(Map.of(
+                "lines", List.of(Map.of("productId", rice.id(), "unit", "KG", "quantity", 20),
+                        Map.of("productId", oil.id(), "unit", "KG", "quantity", 10),
+                        Map.of("productId", beans.id(), "unit", "KG", "quantity", 5)),
+                "vendorIds", List.of(tony.id(), mama.id()), "replyBy", "2099-11-07"), json(owner)), JsonNode.class).getBody();
+        String id = request.get("id").asText();
+        String riceLine = request.get("lines").get(0).get("id").asText();
+        String oilLine = request.get("lines").get(1).get("id").asText();
+        String beansLine = request.get("lines").get(2).get("id").asText();
+        String tonyRow = supplierRow(request, "Tony Stores");
+        String mamaRow = supplierRow(request, "Mama Put");
+        restTemplate.exchange("/api/price-requests/" + id + "/suppliers/" + tonyRow + "/reply", HttpMethod.PUT,
+                new HttpEntity<>(Map.of("lines", List.of(Map.of("lineId", riceLine, "price", 900, "cannotSupply", false),
+                        Map.of("lineId", oilLine, "price", 380, "cannotSupply", false),
+                        Map.of("lineId", beansLine, "cannotSupply", true)), "deliveryCharge", 500, "declined", false),
+                        json(owner)), String.class);
+        restTemplate.exchange("/api/price-requests/" + id + "/suppliers/" + mamaRow + "/reply", HttpMethod.PUT,
+                new HttpEntity<>(Map.of("lines", List.of(Map.of("lineId", riceLine, "price", 880, "cannotSupply", false),
+                        Map.of("lineId", oilLine, "price", 395, "cannotSupply", false),
+                        Map.of("lineId", beansLine, "price", 600, "cannotSupply", false)), "deliveryCharge", 800,
+                        "declined", false), json(owner)), String.class);
+
+        ResponseEntity<String> notPriced = restTemplate.exchange("/api/price-requests/" + id + "/choose", HttpMethod.POST,
+                new HttpEntity<>(Map.of("kind", "PICKED", "picks", List.of(Map.of("lineId", beansLine, "supplierId", tonyRow))),
+                        json(owner)), String.class);
+        assertThat(notPriced.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(notPriced.getBody()).contains("Beans can only be ordered from a supplier who priced it");
+
+        java.util.Map<String, Object> notNow = new java.util.HashMap<>();
+        notNow.put("lineId", beansLine);
+        notNow.put("supplierId", null);
+        ResponseEntity<JsonNode> chosen = restTemplate.exchange("/api/price-requests/" + id + "/choose", HttpMethod.POST,
+                new HttpEntity<>(Map.of("kind", "PICKED", "picks", List.of(
+                        Map.of("lineId", riceLine, "supplierId", tonyRow),
+                        Map.of("lineId", oilLine, "supplierId", mamaRow), notNow)), json(owner)), JsonNode.class);
+        assertThat(chosen.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(chosen.getBody().get("orderIds")).hasSize(2);
+        JsonNode after = get(owner, "/api/price-requests/" + id);
+        JsonNode tonyOrder = get(owner, "/api/expected-deliveries/" + supplierOf(after, "Tony Stores").get("orderId").asText());
+        assertThat(tonyOrder.get("lines")).singleElement().satisfies(orderLine ->
+                assertThat(orderLine.get("price").decimalValue()).isEqualByComparingTo("900"));
+        assertThat(tonyOrder.get("total").decimalValue()).isEqualByComparingTo("18500");
+        JsonNode mamaOrder = get(owner, "/api/expected-deliveries/" + supplierOf(after, "Mama Put").get("orderId").asText());
+        assertThat(mamaOrder.get("lines")).singleElement().satisfies(orderLine ->
+                assertThat(orderLine.get("price").decimalValue()).isEqualByComparingTo("395"));
+        assertThat(mamaOrder.get("total").decimalValue()).isEqualByComparingTo("4750");
+        // What each item went to, beside the lowest: the beans were left out.
+        JsonNode picked = after.get("picked");
+        assertThat(picked).hasSize(2);
+        JsonNode ricePick = picked.get(0).get("lineId").asText().equals(riceLine) ? picked.get(0) : picked.get(1);
+        assertThat(ricePick.get("vendorName").asText()).isEqualTo("Tony Stores");
+        assertThat(ricePick.get("price").decimalValue()).isEqualByComparingTo("900");
+        assertThat(ricePick.get("lowestPrice").decimalValue()).isEqualByComparingTo("880");
+        assertThat(ricePick.get("lowestVendorName").asText()).isEqualTo("Mama Put");
+    }
+
     // ----------------------------------------------------------------------------------- helpers ---
 
     private static JsonNode supplierOf(JsonNode request, String name) {
