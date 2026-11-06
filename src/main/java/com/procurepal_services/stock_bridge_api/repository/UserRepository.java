@@ -9,6 +9,11 @@ import org.springframework.data.repository.query.Param;
 
 public interface UserRepository extends TenantScopedRepository<User, UUID> {
 
+    /** The active people of a company whose role holds {@code code} - who to tell that something waits for them. */
+    @Query("select distinct u.id from User u join u.role r join r.permissions p "
+            + "where u.clientId = :clientId and u.active = true and p.code = :code")
+    List<UUID> activeIdsWithPermission(@Param("clientId") UUID clientId, @Param("code") String code);
+
     Optional<User> findByClientIdAndUsername(UUID clientId, String username);
 
     /**

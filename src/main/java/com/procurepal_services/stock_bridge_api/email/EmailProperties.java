@@ -102,6 +102,20 @@ public record EmailProperties(
      * not allow bare in a display name; "ProcurePal, Ltd" would otherwise parse as
      * two addresses.
      */
+    /**
+     * The same sending address under a different display name - "Dami's Kitchen" for a purchase
+     * order, so the supplier sees who it is from. Only the name changes; the address stays the
+     * verified one. Anything that could break out of the header (quotes, angle brackets, line
+     * breaks) is removed, since the name comes from a company that typed it.
+     */
+    public String formattedFrom(String displayName) {
+        if (!notBlank(displayName)) {
+            return formattedFrom();
+        }
+        String safe = displayName.replaceAll("[\\p{Cntrl}\"<>]", "").trim();
+        return safe.isEmpty() ? formattedFrom() : "\"" + safe + "\" <" + fromAddress + ">";
+    }
+
     public String formattedFrom() {
         if (!notBlank(fromName)) {
             return fromAddress;

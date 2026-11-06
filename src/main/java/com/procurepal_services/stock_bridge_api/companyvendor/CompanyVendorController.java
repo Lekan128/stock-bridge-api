@@ -109,6 +109,18 @@ public class CompanyVendorController {
     }
 
     /**
+     * Sets only the supplier's email. Same rules as a full edit (EXTERNAL only, MANAGE_VENDORS) but
+     * nothing else on the record is read or required - see CompanyVendorEmailRequest.
+     */
+    @PutMapping("/{id}/email")
+    @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
+    public CompanyVendorResponse setEmail(
+            @PathVariable UUID id,
+            @Valid @RequestBody com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorEmailRequest request) {
+        return companyVendorService.setEmail(id, request.email());
+    }
+
+    /**
      * Removes a supplier from the directory. Allowed for BOTH kinds, unlike edit:
      * "stop showing me this supplier" is the company's opinion about its own list,
      * where "this supplier is called something else" is a claim about an account it

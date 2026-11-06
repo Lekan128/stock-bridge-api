@@ -93,6 +93,7 @@ public class ImportController {
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private final ImportSessionService importSessionService;
+    private final com.procurepal_services.stock_bridge_api.expected.DeliverySendBacks deliverySendBacks;
     private final ImportCommitExecutor commitExecutor;
     private final ProductManagementService productManagementService;
     private final StockInTemplateService stockInTemplateService;
@@ -338,7 +339,17 @@ public class ImportController {
             @RequestParam(required = false) UUID vendorId,
             @RequestParam(required = false) UUID categoryId,
             @RequestParam(required = false) UUID branchId,
+            // A bounded lookup for a picker: with `search`, the products matching it; with `limit` and a
+            // vendorId and no filter, only that many of the supplier's products. Left out, this is
+            // exactly what it always was.
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) Integer limit,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        if ((search != null && !search.isBlank()) || limit != null) {
+            return stockInTemplateService.pickerRows(search, vendorId, limit == null ? 20 : limit).stream()
+                    .map(this::toDeliveryLine)
+                    .toList();
+        }
         List<UUID> ids = parseIds(productIds);
         List<UUID> low = ids.isEmpty() ? lowAtBranch(filter, branchId, principal) : null;
         if (low != null) {
@@ -346,16 +357,20 @@ public class ImportController {
             filter = null;
         }
         return stockInTemplateService.rows(ids, ids.isEmpty() ? filter : null, vendorId, categoryId).stream()
-                .map(row -> new DeliveryLineResponse(
-                        row.productId(),
-                        row.productName(),
-                        row.sku(),
-                        UnitOptions.key(row.option()),
-                        SheetUnitOptions.comesInLabel(row.option()),
-                        row.option().isPack(),
-                        row.lastPricePerOption(),
-                        row.vendorName()))
+                .map(this::toDeliveryLine)
                 .toList();
+    }
+
+    private DeliveryLineResponse toDeliveryLine(com.procurepal_services.stock_bridge_api.product.bulk.StockInTemplateRow row) {
+        return new DeliveryLineResponse(
+                row.productId(),
+                row.productName(),
+                row.sku(),
+                UnitOptions.key(row.option()),
+                SheetUnitOptions.comesInLabel(row.option()),
+                row.option().isPack(),
+                row.lastPricePerOption(),
+                row.vendorName());
     }
 
     /**
@@ -370,7 +385,8 @@ public class ImportController {
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public List<DeliveryLineResponse> deliveryLinesByBarcode(@PathVariable String barcode) {
         UUID productId = productManagementService.requireByBarcode(barcode).getId();
-        return deliveryLines(productId.toString(), null, null, null, null, null);
+        // No filter, supplier, category, branch, search or limit: just this one product's lines.
+        return deliveryLines(productId.toString(), null, null, null, null, null, null, null);
     }
 
     /**
@@ -390,7 +406,31 @@ public class ImportController {
         // from another tenant simply has no name here, and lands as a row that cannot find its
         // product rather than one that quietly stocks somebody else's shelf.
         Map<UUID, StockInTemplateRow> named = namesOf(request.lines());
+        // Sent back at the gate (V79): never stock, so only what was taken becomes a line; what went
+        // back is kept beside the delivery. A line must have come at all.
+        for (DeliveryRequest.Line line : request.lines()) {
+            if (line.quantity().signum() == 0 && !line.sendsBack()) {
+                throw new com.procurepal_services.stock_bridge_api.imports.ImportExceptions.BadFile(
+                        "Say how many came, or remove the line.");
+            }
+            if (line.sendsBack() && (line.sentBackReason() == null
+                    || ("OTHER".equals(line.sentBackReason()) && (line.sentBackNote() == null || line.sentBackNote().isBlank())))) {
+                throw new com.procurepal_services.stock_bridge_api.imports.ImportExceptions.BadFile(
+                        "Say why it was sent back.");
+            }
+        }
+        List<com.procurepal_services.stock_bridge_api.expected.DeliverySendBacks.SendBack> sendBacks = request.lines().stream()
+                .filter(DeliveryRequest.Line::sendsBack)
+                .map(line -> new com.procurepal_services.stock_bridge_api.expected.DeliverySendBacks.SendBack(
+                        line.productId(), line.unit(), line.sentBack(), line.sentBackReason(),
+                        line.sentBackNote() == null || line.sentBackNote().isBlank() ? null : line.sentBackNote().trim()))
+                .toList();
+        if (request.lines().stream().noneMatch(line -> line.quantity().signum() > 0)) {
+            throw new com.procurepal_services.stock_bridge_api.imports.ImportExceptions.BadFile(
+                    "Everything was sent back, so nothing goes into stock. Nothing was recorded.");
+        }
         List<ImportSessionService.DeliveryLine> lines = request.lines().stream()
+                .filter(line -> line.quantity().signum() > 0)
                 .map(line -> {
                     StockInTemplateRow product = named.get(line.productId());
                     return new ImportSessionService.DeliveryLine(
@@ -400,10 +440,14 @@ public class ImportController {
                             line.unit(), line.quantity(), line.price());
                 })
                 .toList();
-        return ResponseEntity.status(HttpStatus.CREATED)
-                .body(importSessionService.createDelivery(
-                        lines, deliveryTitle(delivery), principal.getUserId(), delivery,
-                        request.expectedDeliveryId(), request.branchId()));
+        ImportSessionResponse created = importSessionService.createDelivery(
+                lines, deliveryTitle(delivery), principal.getUserId(), delivery,
+                request.expectedDeliveryId(), request.branchId());
+        if (!sendBacks.isEmpty()) {
+            deliverySendBacks.record(com.procurepal_services.stock_bridge_api.tenant.TenantContext.get(),
+                    created.id(), request.expectedDeliveryId(), sendBacks);
+        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
     /**

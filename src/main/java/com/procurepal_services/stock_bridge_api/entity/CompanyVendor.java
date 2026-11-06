@@ -172,6 +172,14 @@ public class CompanyVendor extends TenantAwareEntity {
     @Column(name = "is_active", nullable = false)
     private boolean active;
 
+    /**
+     * "Email the order to this supplier" starts switched on (PURCHASE_ORDER_PLAN.md 4.3a). Off to
+     * begin with; on once an email to them has gone through; off again when it bounces or the
+     * address is changed. A convenience for the buyer, never a permission.
+     */
+    @Column(name = "email_orders", nullable = false)
+    private boolean emailOrders;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

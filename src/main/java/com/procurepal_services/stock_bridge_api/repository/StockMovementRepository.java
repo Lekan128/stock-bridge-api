@@ -19,6 +19,23 @@ import org.springframework.data.repository.query.Param;
 public interface StockMovementRepository extends TenantScopedRepository<StockMovement, UUID>, JpaSpecificationExecutor<StockMovement> {
 
     /**
+     * What these products cost when they last came in from this supplier, newest first: rows of
+     * {productId, price per stock unit, price as typed, when it arrived}. For "last paid" on a
+     * purchase order line (plan section 11.4). Only priced deliveries count: a null is not a zero,
+     * and a zero (opening stock with no cost given, a free sample) is no price to start an order from.
+     */
+    @Query("SELECT m.product.id, m.unitPriceAtTime, m.enteredUnitPrice, m.occurredAt FROM StockMovement m "
+            + "WHERE m.clientId = :clientId AND m.companyVendor.id = :vendorId "
+            + "AND m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.IN "
+            + "AND m.unitPriceAtTime > 0 AND m.product.id IN :productIds "
+            + "ORDER BY m.occurredAt DESC, m.createdAt DESC")
+    List<Object[]> pricesPaidTo(
+            @Param("clientId") UUID clientId,
+            @Param("vendorId") UUID vendorId,
+            @Param("productIds") java.util.Collection<UUID> productIds,
+            org.springframework.data.domain.Pageable page);
+
+    /**
      * Whether this product's shelf at this branch was counted after {@code after} (A4) - see
      * {@code StockMovement.count}. A count is of one branch's shelf (V51), so another branch's count
      * says nothing about this one.

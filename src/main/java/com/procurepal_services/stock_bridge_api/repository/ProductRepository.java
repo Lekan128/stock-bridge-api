@@ -16,6 +16,19 @@ import org.springframework.data.repository.query.Param;
 public interface ProductRepository extends TenantScopedRepository<Product, UUID>, JpaSpecificationExecutor<Product> {
 
     /**
+     * Active products whose name, SKU or barcode contains the text - the picker on a purchase order,
+     * which must work the same with thirty products and thirty thousand, so it is a bounded search and
+     * never "everything". {@code term} must already have its LIKE wildcards escaped (see
+     * {@code StockInTemplateService.likePattern}).
+     */
+    @Query("select p from Product p where p.clientId = :clientId and p.active = true and ("
+            + "lower(p.name) like :pattern escape '!' or lower(p.sku) like :pattern escape '!' "
+            + "or lower(coalesce(p.barcode, '')) like :pattern escape '!') order by p.name asc")
+    List<Product> searchActive(
+            @Param("clientId") UUID clientId, @Param("pattern") String pattern, Pageable pageable);
+
+
+    /**
      * Products for the sync feed (A3), with the company category each row names fetched in the
      * same query. Order is the caller's: the feed sorts by id or by change order itself.
      */

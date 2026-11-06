@@ -149,6 +149,29 @@ class ResendEmailTransportTest {
         assertThat(keys.get(0)).isEqualTo(keys.get(1));
     }
 
+    /** A purchase order: its PDF travels with it, the reply goes to the buyer, and the From names the buyer. */
+    @Test
+    void carriesAnAttachmentAReplyToAndTheBuyersNameOnAPurchaseOrder() throws Exception {
+        ResendEmailTransport transport = transport(EMAIL, RESEND);
+        byte[] pdf = "%PDF-1.4 test".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        EmailMessage order = new EmailMessage(
+                List.of("tony@stores.test"), "Purchase order PO-0007 from Dami's Kitchen", "<p>hi</p>", "hi",
+                EmailKind.SUPPLIER_DOCUMENT,
+                List.of(new EmailMessage.Attachment("PO-0007 Tony Stores.pdf", "application/pdf", pdf)),
+                "owner@damis.test", "Dami's \"Kitchen\" <evil> via Procure Paddy");
+        server.expect(once(), requestTo(BASE_URL + "/emails"))
+                .andExpect(jsonPath("$.from").value("\"Dami's Kitchen evil via Procure Paddy\" <no-reply@send.procurepaddy.test>"))
+                .andExpect(jsonPath("$.reply_to").value("owner@damis.test"))
+                .andExpect(jsonPath("$.attachments[0].filename").value("PO-0007 Tony Stores.pdf"))
+                .andExpect(jsonPath("$.attachments[0].content")
+                        .value(java.util.Base64.getEncoder().encodeToString(pdf)))
+                .andExpect(jsonPath("$.tags[0].value").value("supplier_document"))
+                .andRespond(withSuccess("{\"id\":\"po-email-1\"}", MediaType.APPLICATION_JSON));
+
+        assertThat(transport.send(order, null)).isEqualTo("po-email-1");
+        server.verify();
+    }
+
     /** An unverified domain does not become verified by asking again. */
     @Test
     void doesNotRetryAClientErrorAndReportsResendsMessage() {

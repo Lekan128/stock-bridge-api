@@ -45,6 +45,19 @@ public class S3ImageService {
     }
 
     public UploadResult uploadProductImage(MultipartFile file) {
+        return upload(file, "products");
+    }
+
+    /**
+     * A company's own logo (PURCHASE_ORDER_PLAN.md section 3.6). Same checks as a product picture
+     * (JPG / PNG / WebP, 5 MB), kept under its own folder. A replaced logo is never deleted: an
+     * order that was already sent points at the file it was sent with.
+     */
+    public UploadResult uploadCompanyLogo(MultipartFile file) {
+        return upload(file, "company-logos");
+    }
+
+    private UploadResult upload(MultipartFile file, String folder) {
         if (!isConfigured()) {
             return UploadResult.failure("S3 is not configured");
         }
@@ -59,7 +72,7 @@ public class S3ImageService {
             return UploadResult.failure("No tenant context set");
         }
 
-        String key = buildObjectKey(tenantId, file.getOriginalFilename());
+        String key = buildObjectKey(tenantId, folder, file.getOriginalFilename());
         try {
             s3Client.putObject(
                     PutObjectRequest.builder()
@@ -108,8 +121,8 @@ public class S3ImageService {
      * A blank prefix is allowed and simply writes at the root - that is the
      * unconfigured-but-working case, not an error.
      */
-    private String buildObjectKey(UUID tenantId, String originalFilename) {
-        return normalizedKeyPrefix() + tenantId + "/products/" + UUID.randomUUID() + "-"
+    private String buildObjectKey(UUID tenantId, String folder, String originalFilename) {
+        return normalizedKeyPrefix() + tenantId + "/" + folder + "/" + UUID.randomUUID() + "-"
                 + sanitizeFilename(originalFilename);
     }
 
