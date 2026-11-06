@@ -124,14 +124,29 @@ public class PriceRequestService {
             int linesCovered) {
     }
 
+    /**
+     * @param repliesClosed the Reply by day has passed (section 12.1): suppliers' links take no more prices.
+     * @param picked once it became orders: which supplier each item went to, at what price, and the lowest
+     *     offered then - so a dearer pick can be explained later (section 12.2).
+     */
     public record Request(UUID id, String rfqNumber, String status, LocalDate neededBy, LocalDate replyBy,
             UUID branchId, String note, String createdByName, OffsetDateTime createdAt, List<Line> lines,
-            List<Supplier> suppliers, Map<UUID, UUID> lowestByLine, List<Option> options) {
+            List<Supplier> suppliers, Map<UUID, UUID> lowestByLine, List<Option> options, boolean repliesClosed,
+            List<Picked> picked) {
+    }
+
+    /** One item of a request that became orders: who it went to, at what price, and the lowest price offered. */
+    public record Picked(UUID lineId, UUID supplierId, String vendorName, BigDecimal price, BigDecimal lowestPrice,
+            String lowestVendorName, String orderNumber) {
+    }
+
+    /** One item's choice when making orders (section 12.2): a supplier who priced it, or null for "Not now". */
+    public record Pick(UUID lineId, UUID supplierId) {
     }
 
     /** A row on the Purchase orders list's "Asking for prices" chip. */
     public record Row(UUID id, String rfqNumber, String status, OffsetDateTime createdAt, List<String> products,
-            int suppliers, int replied, List<String> orderNumbers) {
+            int suppliers, int replied, List<String> orderNumbers, LocalDate replyBy, boolean repliesClosed) {
     }
 
     public record ChooseResult(List<UUID> orderIds) {
@@ -153,6 +168,13 @@ public class PriceRequestService {
         }
         if (vendorIds.size() > 10) {
             throw bad("Ask at most 10 suppliers at once.");
+        }
+        // Replies close at the end of this day (section 12.1), so it's always set.
+        if (request.replyBy() == null) {
+            throw bad("Say when suppliers should reply by.");
+        }
+        if (request.replyBy().isBefore(today())) {
+            throw bad("Reply by can't be in the past.");
         }
         Integer known = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM company_vendors WHERE client_id = :clientId AND is_active = TRUE AND id IN (:ids)",
@@ -220,7 +242,7 @@ public class PriceRequestService {
     public List<Row> list(String status, int limit) {
         UUID tenantId = requireTenantId();
         List<Map<String, Object>> requests = jdbc.queryForList("""
-                SELECT r.id, r.rfq_number, r.status, r.created_at,
+                SELECT r.id, r.rfq_number, r.status, r.created_at, r.reply_by,
                        (SELECT COUNT(*) FROM price_request_suppliers s WHERE s.request_id = r.id) AS suppliers,
                        (SELECT COUNT(*) FROM price_request_suppliers s WHERE s.request_id = r.id
                          AND (s.replied_at IS NOT NULL OR s.declined)) AS replied
@@ -240,7 +262,8 @@ public class PriceRequestService {
                     new MapSqlParameterSource().addValue("id", id).addValue("clientId", tenantId), String.class);
             rows.add(new Row(id, (String) request.get("rfq_number"), (String) request.get("status"),
                     offset(request.get("created_at")), products, ((Number) request.get("suppliers")).intValue(),
-                    ((Number) request.get("replied")).intValue(), orders));
+                    ((Number) request.get("replied")).intValue(), orders, date(request.get("reply_by")),
+                    repliesClosed(date(request.get("reply_by")))));
         }
         return rows;
     }
@@ -307,7 +330,8 @@ public class PriceRequestService {
         return new Request(id, rfq, (String) request.get("status"), date(request.get("needed_by")), replyBy,
                 (UUID) request.get("branch_id"), (String) request.get("note"),
                 personName(request), offset(request.get("created_at")), lines, suppliers, lowest,
-                options(lines, suppliers, lowest));
+                options(lines, suppliers, lowest), repliesClosed(replyBy),
+                "DONE".equals(request.get("status")) ? picked(id, lines, suppliers, lowest) : List.of());
     }
 
     // ------------------------------------------------------------------------------ sending ----
@@ -410,12 +434,14 @@ public class PriceRequestService {
     // ------------------------------------------------------------------------------ choosing ---
 
     /**
-     * "Make 2 purchase orders": the cheapest supplier for each item, or everything from one supplier.
-     * Each becomes an ordinary purchase order at the prices they gave, with their delivery charge -
-     * made as the person choosing, so it waits for approval when they can only create orders.
+     * "Make 2 purchase orders": the supplier the buyer picked for each item (section 12.2, PICKED - it starts on the
+     * cheapest, and any supplier who priced the item can be picked, or none for "Not now"), or the older two ways: the
+     * cheapest for each item, or everything from one supplier. Each becomes an ordinary purchase order at the prices
+     * they gave, with their delivery charge once - made as the person choosing, so it waits for approval when they
+     * can only create orders.
      */
     @Transactional
-    public ChooseResult choose(UUID id, String kind, UUID supplierRowId, UUID userId) {
+    public ChooseResult choose(UUID id, String kind, UUID supplierRowId, List<Pick> picks, UUID userId) {
         requireMayOrder(userId);
         Request request = get(id);
         if (!"OPEN".equals(request.status())) {
@@ -424,7 +450,31 @@ public class PriceRequestService {
         Map<UUID, Supplier> byRow = new HashMap<>();
         request.suppliers().forEach(supplier -> byRow.put(supplier.id(), supplier));
         Map<UUID, List<Line>> linesBySupplier = new LinkedHashMap<>();
-        if ("SUPPLIER".equals(kind)) {
+        if ("PICKED".equals(kind)) {
+            Map<UUID, Line> lineById = new LinkedHashMap<>();
+            request.lines().forEach(line -> lineById.put(line.id(), line));
+            Set<UUID> seen = new java.util.HashSet<>();
+            for (Pick pick : picks == null ? List.<Pick>of() : picks) {
+                Line line = lineById.get(pick.lineId());
+                if (line == null || !seen.add(pick.lineId())) {
+                    throw bad("Each item is picked once, from this request.");
+                }
+                if (pick.supplierId() == null) {
+                    continue;
+                }
+                Supplier chosen = byRow.get(pick.supplierId());
+                if (chosen == null || !"REPLIED".equals(chosen.status()) || priceFrom(chosen, line.id()) == null) {
+                    throw bad(line.productName() + " can only be ordered from a supplier who priced it.");
+                }
+                linesBySupplier.computeIfAbsent(chosen.id(), key -> new ArrayList<>()).add(line);
+            }
+            // Kept in the request's order, so each purchase order lists items as they were asked.
+            linesBySupplier.replaceAll((supplierId, chosenLines) -> chosenLines.stream()
+                    .sorted(Comparator.comparing(request.lines()::indexOf)).toList());
+            if (linesBySupplier.isEmpty()) {
+                throw bad("Pick a supplier for at least one item.");
+            }
+        } else if ("SUPPLIER".equals(kind)) {
             Supplier chosen = byRow.get(supplierRowId);
             if (chosen == null || !"REPLIED".equals(chosen.status())) {
                 throw bad("Pick a supplier who sent prices.");
@@ -477,12 +527,29 @@ public class PriceRequestService {
         return get(id);
     }
 
+    /**
+     * "Give more time" (section 12.1): a new Reply by, today or later, while nothing is decided. Suppliers' links take
+     * prices again until then; nothing is sent to them by itself.
+     */
+    @Transactional
+    public Request giveMoreTime(UUID id, LocalDate replyBy, UUID userId) {
+        requireMayOrder(userId);
+        requireOpen(id);
+        if (replyBy == null || replyBy.isBefore(today())) {
+            throw bad("Pick a day from today on.");
+        }
+        jdbc.update("UPDATE price_requests SET reply_by = :replyBy, updated_at = now() WHERE id = :id",
+                new MapSqlParameterSource().addValue("replyBy", Date.valueOf(replyBy)).addValue("id", id));
+        return get(id);
+    }
+
     // ---------------------------------------------------------------------------- public link --
 
     /** What the supplier's page shows. {@code state} OPEN, ORDERED (they were chosen) or CLOSED. */
+    /** @param repliesClosed the Reply by day has passed: the page shows what they sent, and takes no more. */
     public record PublicView(String buyerName, String buyerPhone, String buyerLogoUrl, String rfqNumber,
             String supplierName, LocalDate neededBy, LocalDate replyBy, String deliverTo, List<PublicLine> lines,
-            String state, String orderNumber, String orderUrl, PublicReply reply) {
+            String state, String orderNumber, String orderUrl, PublicReply reply, boolean repliesClosed) {
     }
 
     public record PublicLine(UUID id, String productName, String comesIn, BigDecimal quantity) {
@@ -515,7 +582,8 @@ public class PriceRequestService {
                 "ORDERED".equals(state) && orderToken != null && !base.isEmpty() ? base + "/o/" + orderToken : null,
                 replied ? new PublicReply(offset(row.get("replied_at")), lines.stream().map(line -> theirs.get(line.id()))
                         .filter(Objects::nonNull).toList(), charge, date(row.get("can_deliver_on")),
-                        (String) row.get("remark"), declined, declined ? null : totalOf(theirs.values(), charge)) : null);
+                        (String) row.get("remark"), declined, declined ? null : totalOf(theirs.values(), charge)) : null,
+                repliesClosed(date(row.get("reply_by"))));
     }
 
     /** The page's script ran on their phone: "Opened the link" (a WhatsApp preview never runs it). */
@@ -532,6 +600,11 @@ public class PriceRequestService {
         Map<String, Object> row = byToken(token);
         if (!"OPEN".equals(row.get("status"))) {
             throw new ExpectedDeliveryException(HttpStatus.CONFLICT, "This request is closed, so prices can't be changed.");
+        }
+        LocalDate replyBy = date(row.get("reply_by"));
+        if (repliesClosed(replyBy)) {
+            throw new ExpectedDeliveryException(HttpStatus.CONFLICT, "Replies closed on " + replyBy.format(DAY)
+                    + ". To change your prices, call " + row.get("company_name") + ".");
         }
         UUID requestId = (UUID) row.get("request_id");
         UUID clientId = (UUID) row.get("client_id");
@@ -714,7 +787,7 @@ public class PriceRequestService {
         }
         text.append('\n');
         if (replyBy != null) {
-            text.append("Please reply by ").append(replyBy.format(DAY)).append(". ");
+            text.append("Please reply by ").append(replyBy.format(DAY)).append(". Prices can't be changed after that. ");
         }
         if (url != null) {
             text.append("Type your prices here, it takes a minute:\n").append(url);
@@ -783,8 +856,41 @@ public class PriceRequestService {
         return tenantId;
     }
 
-    @SuppressWarnings("unused")
     private static LocalDate today() {
         return LocalDate.now(LAGOS);
+    }
+
+    /** Replies close at the end of the Reply by day, where the business is (owner's pick, 2026-11-06). */
+    static boolean repliesClosed(LocalDate replyBy) {
+        return replyBy != null && today().isAfter(replyBy);
+    }
+
+    /**
+     * What each item went to, from the orders the request became, beside the lowest offered - read back, not stored:
+     * the orders hold the prices, and the replies hold the rest.
+     */
+    private List<Picked> picked(UUID requestId, List<Line> lines, List<Supplier> suppliers, Map<UUID, UUID> lowest) {
+        Map<UUID, Supplier> byRow = new HashMap<>();
+        suppliers.forEach(supplier -> byRow.put(supplier.id(), supplier));
+        List<Picked> picked = new ArrayList<>();
+        for (Line line : lines) {
+            Supplier lowestSupplier = lowest.get(line.id()) == null ? null : byRow.get(lowest.get(line.id()));
+            for (Supplier supplier : suppliers) {
+                if (supplier.orderId() == null || priceFrom(supplier, line.id()) == null) {
+                    continue;
+                }
+                Boolean onOrder = jdbc.queryForObject("""
+                        SELECT EXISTS (SELECT 1 FROM expected_delivery_lines WHERE expected_delivery_id = :orderId
+                                         AND product_id = :productId)
+                        """, new MapSqlParameterSource().addValue("orderId", supplier.orderId())
+                        .addValue("productId", line.productId()), Boolean.class);
+                if (Boolean.TRUE.equals(onOrder)) {
+                    picked.add(new Picked(line.id(), supplier.id(), supplier.vendorName(), priceFrom(supplier, line.id()),
+                            lowestSupplier == null ? null : priceFrom(lowestSupplier, line.id()),
+                            lowestSupplier == null ? null : lowestSupplier.vendorName(), supplier.orderNumber()));
+                }
+            }
+        }
+        return picked;
     }
 }
