@@ -83,6 +83,11 @@ public class SecurityConfig {
         // answers 404 to anything that does not match. Rate limited per address. See
         // PublicPurchaseOrderService.
         "/api/public/purchase-orders/**",
+        // A supplier typing their prices into a price request, from the link in the buyer's message
+        // (PURCHASE_ORDER_PLAN.md section 11.3). Same model as the order link: the token is the access
+        // check, the handler looks up by it alone and can touch only that supplier's reply; limited per
+        // address. See PublicPriceRequestController.
+        "/api/public/price-requests/**",
         "/api/superadmin/auth/login",
         "/api/superadmin/auth/refresh",
         "/actuator/health",

@@ -76,8 +76,9 @@ class PurchaseOrderIntegrationTest {
     }
 
     @Test
-    void aPurchaseOrderAsksForNoPricesAndShowsNoTotal() {
-        TenantLoginResponse tenant = signup("No Prices Co");
+    void aPurchaseOrderKeepsItsPricesAndTotalsThem() {
+        // Reversed 2026-11-06 (plan section 11.4): a purchase order comes with a price.
+        TenantLoginResponse tenant = signup("Priced Co");
         CompanyVendorResponse tony = vendor(tenant, "Tony Stores");
         ProductResponse rice = product(tenant, "Rice", "PO-NP");
 
@@ -86,8 +87,8 @@ class PurchaseOrderIntegrationTest {
                 List.of(new ExpectedDeliveryRequest.Line(rice.id(), "KG", new BigDecimal("20"), new BigDecimal("999"))),
                 null, true));
 
-        assertThat(created.total()).isNull();
-        assertThat(created.lines()).allSatisfy(line -> assertThat(line.price()).isNull());
+        assertThat(created.total()).isEqualByComparingTo("19980");
+        assertThat(created.lines()).allSatisfy(line -> assertThat(line.price()).isEqualByComparingTo("999"));
     }
 
     @Test
@@ -117,7 +118,7 @@ class PurchaseOrderIntegrationTest {
 
         assertThat(created.poNumber()).isNull();
         assertThat(created.title()).isEqualTo("Expected delivery");
-        // The old path keeps its price - only a purchase order drops it.
+        // The old path keeps its price too.
         assertThat(created.total()).isEqualByComparingTo("300");
     }
 

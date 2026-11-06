@@ -29,5 +29,11 @@ public enum NotificationType {
     /** To the asker: what they asked for was moved, or there's none in the store (V67). */
     STOCK_REQUEST_ANSWERED,
     /** To the area a give came from and the owners: an area that uses stock up gave some back or reported it (V70). */
-    AREA_RETURN
+    AREA_RETURN,
+    /** To the people who can approve: a purchase order is waiting for them (V78, plan section 11.5). */
+    PO_APPROVAL_WAITING,
+    /** To whoever sent it for approval: approved, or a change was asked for (V78). */
+    PO_APPROVAL_ANSWERED,
+    /** To whoever asked and those who can send: a supplier sent, changed or declined their prices (V80). */
+    PRICE_REPLY
 }

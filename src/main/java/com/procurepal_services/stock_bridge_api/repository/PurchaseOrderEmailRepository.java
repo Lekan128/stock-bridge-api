@@ -53,4 +53,15 @@ public interface PurchaseOrderEmailRepository extends TenantScopedRepository<Pur
             + "on p.expected_delivery_id = e.id where p.provider_message_id = :providerMessageId)",
             nativeQuery = true)
     int switchOffEmailingForSupplierOf(String providerMessageId);
+
+    /**
+     * An email that bounced was the way the supplier "had" the order, so they don't have it after all:
+     * the order goes back to To send (V76). Left alone when it reached them another way since.
+     */
+    @Modifying
+    @Query(value = "update expected_deliveries set sent_revision = null, sent_at = null, sent_via = null "
+            + "where sent_via = 'EMAIL' and id in (select p.expected_delivery_id from purchase_order_emails p "
+            + "where p.provider_message_id = :providerMessageId)",
+            nativeQuery = true)
+    int unsendOrderOf(String providerMessageId);
 }

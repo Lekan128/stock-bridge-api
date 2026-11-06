@@ -15,6 +15,7 @@ import jakarta.persistence.ManyToOne;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.OrderBy;
 import jakarta.persistence.Table;
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
@@ -117,6 +118,13 @@ public class ExpectedDelivery extends TenantAwareEntity {
     private String snapshot;
 
     /**
+     * What the supplier charges to bring it, for the whole order (V77). Null is "not said", zero is
+     * free delivery. Added to the order's total.
+     */
+    @Column(name = "delivery_charge", precision = 18, scale = 2)
+    private BigDecimal deliveryCharge;
+
+    /**
      * The unguessable part of the public link a supplier opens without logging in. Set once, when
      * the order is made; never changes, so a link already sent keeps working through revisions.
      */
@@ -131,8 +139,77 @@ public class ExpectedDelivery extends TenantAwareEntity {
     @Column(name = "message_copied_at")
     private OffsetDateTime messageCopiedAt;
 
+    /**
+     * The revision the supplier has been given (V76), or null when they have none. Below
+     * {@link #revision} means a change has not gone out yet.
+     */
+    @Column(name = "sent_revision")
+    private Integer sentRevision;
+
+    /** When the supplier was last given it. */
+    @Column(name = "sent_at")
+    private OffsetDateTime sentAt;
+
+    /** How: EMAIL, WHATSAPP, MESSAGE (copied) or PHONE (ordered by phone, nothing sent). */
+    @Column(name = "sent_via", length = 16)
+    private String sentVia;
+
+    /**
+     * Approval (V78, plan section 11.5): null when none is involved; WAITING, CHANGE_ASKED or APPROVED
+     * for an order made by someone who can only create one.
+     */
+    @Column(name = "approval", length = 16)
+    private String approval;
+
+    @Column(name = "approval_asked_by")
+    private UUID approvalAskedBy;
+
+    @Column(name = "approval_asked_at")
+    private OffsetDateTime approvalAskedAt;
+
+    /** What the person asking wrote for the approver ("Tony is ₦500 up on rice this week"). */
+    @Column(name = "approval_note", length = 500)
+    private String approvalNote;
+
+    @Column(name = "approved_by")
+    private UUID approvedBy;
+
+    @Column(name = "approved_at")
+    private OffsetDateTime approvedAt;
+
+    @Column(name = "change_asked_by")
+    private UUID changeAskedBy;
+
+    @Column(name = "change_asked_at")
+    private OffsetDateTime changeAskedAt;
+
+    /** What the approver asked to be changed. */
+    @Column(name = "change_note", length = 500)
+    private String changeNote;
+
+    public static final String APPROVAL_WAITING = "WAITING";
+    public static final String APPROVAL_CHANGE_ASKED = "CHANGE_ASKED";
+    public static final String APPROVAL_APPROVED = "APPROVED";
+
+    /** Waiting for an approver, or back with whoever made it for a change: either way, not to be sent yet. */
+    public boolean isAwaitingApproval() {
+        return APPROVAL_WAITING.equals(approval) || APPROVAL_CHANGE_ASKED.equals(approval);
+    }
+
     public boolean isPurchaseOrder() {
         return poNumber != null;
+    }
+
+    /** Write down that the supplier now has the current revision, and how they got it. */
+    public void markSent(String via, OffsetDateTime at) {
+        this.sentRevision = revision;
+        this.sentAt = at;
+        this.sentVia = via;
+    }
+
+    /** A purchase order whose current revision the supplier doesn't have yet. */
+    public boolean isWaitingToBeSent() {
+        return poNumber != null && !isAwaitingApproval() && (sentRevision == null || sentRevision < revision);
     }
 
     @OneToMany(mappedBy = "expectedDelivery", cascade = CascadeType.ALL, orphanRemoval = true)

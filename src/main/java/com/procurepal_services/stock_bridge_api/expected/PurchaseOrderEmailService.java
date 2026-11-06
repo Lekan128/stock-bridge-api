@@ -63,6 +63,8 @@ public class PurchaseOrderEmailService {
      */
     public void send(UUID orderId, UUID userId) {
         ExpectedDeliveryService.PurchaseOrderTarget target = expectedDeliveryService.purchaseOrderTarget(orderId, userId);
+        // Held for approval (V78): nothing goes to the supplier until it is approved.
+        expectedDeliveryService.requireMaySend(orderId);
         PurchaseOrderSnapshot order = target.snapshot();
         String supplierName = order.supplier().name();
 
@@ -117,6 +119,7 @@ public class PurchaseOrderEmailService {
             return;
         }
         record(target, address, PurchaseOrderEmailStatus.SENT, null, result.messageId(), userId);
+        expectedDeliveryService.recordSent(target.orderId(), "EMAIL");
         if (vendor != null && !vendor.isEmailOrders()) {
             // It went through, so next time "email the order to Tony" starts on (plan 4.3a).
             UUID vendorId = vendor.getId();

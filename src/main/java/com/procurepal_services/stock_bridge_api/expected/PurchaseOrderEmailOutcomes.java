@@ -45,6 +45,7 @@ public class PurchaseOrderEmailOutcomes {
             log.info("A purchase order email was reported {} by the provider.", status);
             if (switchOff) {
                 repository.switchOffEmailingForSupplierOf(providerMessageId);
+                repository.unsendOrderOf(providerMessageId);
             }
         }
     }

@@ -6,8 +6,11 @@ import java.util.List;
 
 /**
  * What a supplier sees when they open the link from an email or a WhatsApp message - no account,
- * no login. Only what is already on the PDF: who is asking, what for, where and when. No prices,
- * no email addresses, nothing about the buyer's other business.
+ * no login. Only what is already on the PDF: who is asking, what for, where and when, and - on an
+ * order made since 2026-11-06 - its prices, delivery charge and total. No email addresses, nothing
+ * about the buyer's other business.
+ *
+ * @param deliveryCharge / total only on a priced order; absent otherwise.
  *
  * @param calledOff the buyer called this order off; the page says so instead of showing a request
  *     that is no longer wanted.
@@ -23,7 +26,9 @@ public record PublicPurchaseOrderResponse(
         Buyer buyer,
         Delivery deliverTo,
         List<Line> lines,
-        String pdfPath) {
+        String pdfPath,
+        java.math.BigDecimal deliveryCharge,
+        java.math.BigDecimal total) {
 
     public record Buyer(String name, String phone, String address, String logoUrl) {
     }
@@ -31,10 +36,14 @@ public record PublicPurchaseOrderResponse(
     public record Delivery(String name, String address, String phone) {
     }
 
-    public record Line(String productName, String comesIn, java.math.BigDecimal quantity) {
+    /** @param price / amount only on a priced order. */
+    public record Line(
+            String productName, String comesIn, java.math.BigDecimal quantity,
+            java.math.BigDecimal price, java.math.BigDecimal amount) {
     }
 
     public static PublicPurchaseOrderResponse of(PurchaseOrderSnapshot order, boolean calledOff, String pdfPath) {
+        boolean priced = order.isPriced();
         return new PublicPurchaseOrderResponse(
                 order.poNumber(),
                 order.revision(),
@@ -47,8 +56,12 @@ public record PublicPurchaseOrderResponse(
                         ? null
                         : new Delivery(order.deliverTo().name(), order.deliverTo().address(), order.deliverTo().phone()),
                 order.lines().stream()
-                        .map(line -> new Line(line.productName(), line.comesIn(), line.quantity()))
+                        .map(line -> priced
+                                ? new Line(line.productName(), line.comesIn(), line.quantity(), line.price(), line.amount())
+                                : new Line(line.productName(), line.comesIn(), line.quantity(), null, null))
                         .toList(),
-                pdfPath);
+                pdfPath,
+                priced ? order.deliveryCharge() : null,
+                priced ? order.grandTotal() : null);
     }
 }

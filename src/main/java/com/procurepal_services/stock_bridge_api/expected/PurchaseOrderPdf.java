@@ -32,8 +32,10 @@ import org.springframework.stereotype.Component;
  * download, email attachment and public-link view builds it again, which costs a few tens of
  * milliseconds for a page or two of text.
  *
- * <p>What it says is "we want this and that" - items and quantities, where to deliver, when, and
- * a line asking the supplier to reply with their price. There are no prices, totals or tax.
+ * <p>What it says is "we want this and that" - items and quantities, where to deliver, when. Since
+ * 2026-11-06 (plan section 11.4) a priced order also shows each line's price and amount, the
+ * delivery charge and the total, and asks the supplier to confirm; one frozen before prices still
+ * asks them to reply with their price. No tax.
  *
  * <p>Set in Noto Sans, embedded, so product and supplier names with accents or dots-below
  * (Yoruba, for one) draw properly instead of as boxes.
@@ -79,7 +81,7 @@ public class PurchaseOrderPdf {
             document.add(space(12));
             document.add(delivery(order, f));
             document.add(space(14));
-            document.add(lines(order.lines(), f));
+            document.add(order.isPriced() ? pricedLines(order, f) : lines(order.lines(), f));
             if (order.note() != null && !order.note().isBlank()) {
                 document.add(space(12));
                 document.add(new Paragraph("Note", f.smallBold));
@@ -217,8 +219,58 @@ public class PurchaseOrderPdf {
         return table;
     }
 
+    private PdfPTable pricedLines(PurchaseOrderSnapshot order, Fonts f) throws DocumentException {
+        PdfPTable table = new PdfPTable(new float[] {0.6f, 4.2f, 2.2f, 1.3f, 1.9f, 2.1f});
+        table.setWidthPercentage(100);
+        table.setHeaderRows(1);
+        table.setSplitLate(false);
+        String[] headings = {"#", "Item", "Comes in", "Quantity", "Price", "Amount"};
+        for (int i = 0; i < headings.length; i++) {
+            PdfPCell cell = new PdfPCell(new Phrase(headings[i], f.bold));
+            cell.setBackgroundColor(SHADE);
+            cell.setBorderColor(RULE);
+            cell.setPadding(6);
+            cell.setHorizontalAlignment(i >= 3 ? Element.ALIGN_RIGHT : Element.ALIGN_LEFT);
+            table.addCell(cell);
+        }
+        int number = 1;
+        for (PurchaseOrderSnapshot.Line line : order.lines()) {
+            table.addCell(bodyCell(String.valueOf(number++), f.small, Element.ALIGN_LEFT));
+            PdfPCell item = new PdfPCell();
+            item.setBorderColor(RULE);
+            item.setPadding(6);
+            item.addElement(new Paragraph(line.productName(), f.bold));
+            if (line.sku() != null && !line.sku().isBlank()) {
+                item.addElement(new Paragraph(line.sku(), f.small));
+            }
+            table.addCell(item);
+            table.addCell(bodyCell(line.comesIn(), f.body, Element.ALIGN_LEFT));
+            table.addCell(bodyCell(quantity(line.quantity()), f.bold, Element.ALIGN_RIGHT));
+            table.addCell(bodyCell(PurchaseOrderSnapshot.naira(line.price()), f.body, Element.ALIGN_RIGHT));
+            table.addCell(bodyCell(PurchaseOrderSnapshot.naira(line.amount()), f.bold, Element.ALIGN_RIGHT));
+        }
+        if (order.deliveryCharge() != null) {
+            table.addCell(sumLabel("Delivery", f.body, headings.length - 1));
+            table.addCell(bodyCell(order.deliveryCharge().signum() == 0
+                    ? "Free" : PurchaseOrderSnapshot.naira(order.deliveryCharge()), f.body, Element.ALIGN_RIGHT));
+        }
+        table.addCell(sumLabel("Total", f.bold, headings.length - 1));
+        PdfPCell total = bodyCell(PurchaseOrderSnapshot.naira(order.grandTotal()), f.heading, Element.ALIGN_RIGHT);
+        total.setBackgroundColor(SHADE);
+        table.addCell(total);
+        return table;
+    }
+
+    private static PdfPCell sumLabel(String text, Font font, int span) {
+        PdfPCell cell = bodyCell(text, font, Element.ALIGN_RIGHT);
+        cell.setColspan(span);
+        return cell;
+    }
+
     private Paragraph footer(PurchaseOrderSnapshot order, Fonts f) {
-        String ask = "Please reply with your price and when we can expect delivery.";
+        String ask = order.isPriced()
+                ? "Please confirm this order and tell us when to expect delivery."
+                : "Please reply with your price and when we can expect delivery.";
         String phone = order.buyer().phone();
         Paragraph paragraph = new Paragraph(phone == null ? ask : ask + " Questions: " + phone + ".", f.body);
         paragraph.setAlignment(Element.ALIGN_LEFT);

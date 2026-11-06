@@ -46,6 +46,25 @@ class PurchaseOrderPdfTest {
     }
 
     @Test
+    void aPricedOrderShowsEachLinesAmountTheDeliveryAndTheTotalInNaira() throws Exception {
+        PurchaseOrderSnapshot order = new PurchaseOrderSnapshot(
+                "PO-0012", 1, LocalDate.of(2026, 11, 6),
+                new PurchaseOrderSnapshot.Party("Lekki Foods", "08032221100", null, null, null),
+                new PurchaseOrderSnapshot.Party("Tony Stores", null, null, null, null),
+                null, null, null,
+                List.of(new PurchaseOrderSnapshot.Line("Rice", "R-1", "Bag · 50 kg", new BigDecimal("20"), new BigDecimal("45000")),
+                        new PurchaseOrderSnapshot.Line("Vegetable oil", "O-1", "Jerrycan · 25 L", BigDecimal.TEN, new BigDecimal("38000"))),
+                new BigDecimal("5000"));
+        byte[] bytes = pdf.render(order, null);
+        keep("priced", bytes);
+
+        String text = text(bytes);
+        assertThat(text).contains("₦45,000", "₦900,000", "₦380,000", "Delivery", "₦5,000", "Total", "₦1,285,000",
+                "Please confirm this order");
+        assertThat(text).doesNotContain("reply with your price").doesNotContain("VAT");
+    }
+
+    @Test
     void aRevisionIsMarkedAsOne() throws Exception {
         String text = text(pdf.render(order(2, "PO-0007", 2, "Co", true), null));
 

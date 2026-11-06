@@ -16,6 +16,19 @@ public class ExpectedDeliveryException extends RuntimeException {
         return status;
     }
 
+    static ExpectedDeliveryException notWaitingForApproval() {
+        return new ExpectedDeliveryException(HttpStatus.CONFLICT, "This order isn't waiting for approval.");
+    }
+
+    static ExpectedDeliveryException waitingForApproval() {
+        return new ExpectedDeliveryException(
+                HttpStatus.CONFLICT, "This order is waiting for approval, so it can't be sent yet.");
+    }
+
+    static ExpectedDeliveryException sayWhatToChange() {
+        return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST, "Say what should be changed.");
+    }
+
     static ExpectedDeliveryException notFound() {
         return new ExpectedDeliveryException(HttpStatus.NOT_FOUND, "We couldn't find that expected delivery.");
     }
@@ -52,6 +65,19 @@ public class ExpectedDeliveryException extends RuntimeException {
     static ExpectedDeliveryException alreadyClosed(String what) {
         return new ExpectedDeliveryException(
                 HttpStatus.CONFLICT, "This expected delivery is already " + what + ".");
+    }
+
+    /** Changing an order: a quantity cannot go below what has already arrived. */
+    static ExpectedDeliveryException belowReceived(String productName, java.math.BigDecimal received) {
+        return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST,
+                productName + ": " + received.stripTrailingZeros().toPlainString()
+                        + " have already arrived, so you can't ask for fewer than that.");
+    }
+
+    /** Changing an order: a line that has had something delivered stays on it. */
+    static ExpectedDeliveryException cannotRemoveReceived(String productName) {
+        return new ExpectedDeliveryException(HttpStatus.BAD_REQUEST,
+                "Some " + productName + " has already arrived, so it stays on the order.");
     }
 
     // There is deliberately no "that date is in the past" rule. A delivery that should have come

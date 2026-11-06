@@ -1286,9 +1286,9 @@ public class StockInRowHandler implements ImportRowHandler {
         String quantityPhrase = quantityPhrase(stockUnitTotals, enteredTotals, enteredOptions);
 
         CommitPreview.Builder preview = CommitPreview.builder()
-                .headline("Record %s from %s".formatted(ImportCopy.deliveries(deliveries),
-                        ctx.session().getOriginalFilename()))
-                .confirmLabel("Record " + ImportCopy.deliveries(deliveries))
+                .headline(previewHeadline(deliveries, ctx.session().getOriginalFilename()))
+                .confirmLabel("Record " + (isTyped(ctx.session().getOriginalFilename())
+                        ? items(deliveries) : ImportCopy.deliveries(deliveries)))
                 .line("stock", "Stock", deliveries,
                         "%s across %s".formatted(quantityPhrase, ImportCopy.products(productCount)))
                 .line("vendors", "Suppliers", vendorsToCreate,
@@ -2212,5 +2212,30 @@ public class StockInRowHandler implements ImportRowHandler {
             return "Not recorded: you no longer work at %s.".formatted(branch.getName());
         }
         return null;
+    }
+
+    /**
+     * "Record 3 deliveries from stock-sheet.xlsx" for a file, where each row is a delivery. A delivery
+     * typed on Record a delivery is one delivery of several items, already named "Delivery from Tony
+     * Stores, 5 Nov 2026" (ImportController.deliveryTitle), so it reads "Record 2 items from Tony
+     * Stores, 5 Nov 2026" - never "2 deliveries from Delivery from".
+     */
+    static String previewHeadline(long rows, String sessionName) {
+        if (sessionName != null && sessionName.startsWith("Delivery from ")) {
+            return "Record " + items(rows) + " from " + sessionName.substring("Delivery from ".length());
+        }
+        if (sessionName != null && sessionName.startsWith("Delivery, ")) {
+            return "Record " + items(rows) + ", " + sessionName.substring("Delivery, ".length());
+        }
+        return "Record %s from %s".formatted(ImportCopy.deliveries(rows), sessionName);
+    }
+
+    /** A delivery typed into the app, rather than a spreadsheet: see {@link #previewHeadline}. */
+    static boolean isTyped(String sessionName) {
+        return sessionName != null && (sessionName.startsWith("Delivery from ") || sessionName.startsWith("Delivery, "));
+    }
+
+    private static String items(long count) {
+        return count == 1 ? "1 item" : count + " items";
     }
 }

@@ -61,10 +61,22 @@ public class PurchaseOrderSharing {
         text.append("Hello ").append(order.supplier().name()).append(", this is purchase order ")
                 .append(order.poNumber()).append(" from ").append(order.buyer().name()).append(".\n\n");
         text.append(order.revision() > 1 ? "We have changed it. We would now like:\n" : "We would like:\n");
+        boolean priced = order.isPriced();
         for (PurchaseOrderSnapshot.Line line : order.lines()) {
             text.append("• ").append(line.productName()).append(": ")
-                    .append(line.quantity().stripTrailingZeros().toPlainString()).append(" × ").append(line.comesIn())
-                    .append('\n');
+                    .append(line.quantity().stripTrailingZeros().toPlainString()).append(" × ").append(line.comesIn());
+            if (priced) {
+                text.append(" at ").append(PurchaseOrderSnapshot.naira(line.price()))
+                        .append(" = ").append(PurchaseOrderSnapshot.naira(line.amount()));
+            }
+            text.append('\n');
+        }
+        if (priced) {
+            if (order.deliveryCharge() != null) {
+                text.append("Delivery: ").append(order.deliveryCharge().signum() == 0
+                        ? "free" : PurchaseOrderSnapshot.naira(order.deliveryCharge())).append('\n');
+            }
+            text.append("Total: ").append(PurchaseOrderSnapshot.naira(order.grandTotal())).append('\n');
         }
         text.append('\n');
         StringBuilder when = new StringBuilder();
@@ -77,7 +89,8 @@ public class PurchaseOrderSharing {
         if (!when.isEmpty()) {
             text.append(when.toString().trim()).append('\n');
         }
-        text.append("Please reply with your price.");
+        // A priced order asks only for a yes and a day; one made before prices still asks for them.
+        text.append(priced ? "Please confirm and tell us when to expect delivery." : "Please reply with your price.");
         if (order.note() != null && !order.note().isBlank()) {
             text.append("\n\nNote: ").append(order.note().trim());
         }
