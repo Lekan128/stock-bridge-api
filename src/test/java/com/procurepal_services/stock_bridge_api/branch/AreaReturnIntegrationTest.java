@@ -83,17 +83,17 @@ class AreaReturnIntegrationTest {
         assertThat(back.lines()).singleElement().satisfies(line -> {
             assertThat(line.returns()).singleElement().satisfies(r -> {
                 assertThat(r.kind()).isEqualTo("GIVE_BACK");
-                assertThat(r.quantity()).isEqualTo(1);
+                assertThat(r.quantity()).isEqualByComparingTo("1");
                 assertThat(r.note()).isEqualTo("Not needed");
                 assertThat(r.byName()).isEqualTo("maid");
             });
-            assertThat(line.returnable()).isEqualTo(2);
+            assertThat(line.returnable()).isEqualByComparingTo("2");
         });
         Map<String, Object> row = jdbc.queryForMap("""
                 SELECT movement_type, quantity, area_id, used_area_id, cost_amount, note FROM stock_movements
                 WHERE reverses_movement_id = :used
                 """, new MapSqlParameterSource("used", used));
-        assertThat(row).containsEntry("movement_type", "ADJUSTMENT").containsEntry("quantity", 1)
+        assertThat(row).containsEntry("movement_type", "ADJUSTMENT").containsEntry("quantity", new java.math.BigDecimal("1.000"))
                 .containsEntry("area_id", a.store()).containsEntry("used_area_id", a.other());
         assertThat((BigDecimal) row.get("cost_amount")).isEqualByComparingTo("-250.00");
         assertThat((String) row.get("note")).isEqualTo("Given back by the Housekeeping: Not needed");
@@ -108,7 +108,7 @@ class AreaReturnIntegrationTest {
         // Another, later: a second give back of the same give.
         giveBackOrReport(maid, given.id(), returnBody(UUID.randomUUID(), s, "GIVE_BACK", 1, null, null));
         assertThat(areaFigure(a.store(), s)).isEqualTo(9);
-        assertThat(get(maid, "/api/area-moves/" + given.id(), AreaMoveResponse.class).lines().getFirst().returnable()).isEqualTo(1);
+        assertThat(get(maid, "/api/area-moves/" + given.id(), AreaMoveResponse.class).lines().getFirst().returnable()).isEqualByComparingTo("1");
         assertHealthy();
     }
 
@@ -131,7 +131,7 @@ class AreaReturnIntegrationTest {
                 assertThat(r.kind()).isEqualTo("REPORT");
                 assertThat(r.reason()).isEqualTo("SPOILT");
             });
-            assertThat(line.returnable()).isEqualTo(1);
+            assertThat(line.returnable()).isEqualByComparingTo("1");
         });
         ResponseEntity<String> tooMany = post(maid, "/api/area-moves/" + given.id() + "/returns",
                 returnBody(UUID.randomUUID(), s, "GIVE_BACK", 2, null, null), String.class);
@@ -191,12 +191,12 @@ class AreaReturnIntegrationTest {
         assertThat(confirmed.confirmNote()).isEqualTo("The van was too hot");
         assertThat(confirmed.lines()).singleElement().satisfies(line -> {
             assertThat(line.restReason()).isEqualTo("EXPIRED");
-            assertThat(line.damaged()).isEqualTo(3);
+            assertThat(line.damaged()).isEqualByComparingTo("3");
         });
         Map<String, Object> out = jdbc.queryForMap("""
                 SELECT out_reason, area_id, quantity, note FROM stock_movements WHERE product_id = :p AND movement_type = 'OUT'
                 """, new MapSqlParameterSource("p", s.productId()));
-        assertThat(out).containsEntry("out_reason", "EXPIRED").containsEntry("area_id", a.store()).containsEntry("quantity", 3)
+        assertThat(out).containsEntry("out_reason", "EXPIRED").containsEntry("area_id", a.store()).containsEntry("quantity", new java.math.BigDecimal("3.000"))
                 .containsEntry("note", "Expired, on the way to Kitchen: The van was too hot");
         assertThat(jdbc.queryForObject("""
                 SELECT body FROM notifications WHERE user_id = :u AND type = 'AREA_MOVE_SHORT'

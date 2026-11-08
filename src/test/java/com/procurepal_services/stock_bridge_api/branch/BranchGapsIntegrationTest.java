@@ -136,9 +136,9 @@ class BranchGapsIntegrationTest {
 
         assertThat(atMain).isEmpty();
         assertThat(atOshodi).extracting(ProductResponse::id).containsExactly(rice);
-        assertThat(atOshodi.getFirst().quantityOnHand()).as("that branch's figure").isEqualTo(2);
+        assertThat(atOshodi.getFirst().quantityOnHand()).as("that branch's figure").isEqualByComparingTo("2");
         assertThat(anywhere).extracting(ProductResponse::id).containsExactly(rice);
-        assertThat(anywhere.getFirst().quantityOnHand()).as("the company's figure").isEqualTo(52);
+        assertThat(anywhere.getFirst().quantityOnHand()).as("the company's figure").isEqualByComparingTo("52");
         assertThat(at(anywhere.getFirst().branchStock(), oshodi).isLowStock()).isTrue();
         assertThat(at(anywhere.getFirst().branchStock(), main).isLowStock()).isFalse();
     }
@@ -237,8 +237,8 @@ class BranchGapsIntegrationTest {
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(refused.getBody()).containsEntry("productId", beans.toString())
-                .containsEntry("availableQuantity", 3)
-                .containsEntry("requestedQuantity", 8);
+                .containsEntry("availableQuantity", 3.0)
+                .containsEntry("requestedQuantity", 8.0);
     }
 
     // ------------------------------------------------------------------ evening digest (5.13)
@@ -482,7 +482,7 @@ class BranchGapsIntegrationTest {
         BranchListResponse list = branches(sup);
         assertThat(list.branches()).extracting(BranchResponse::id).contains(main, oshodi);
         assertThat(list.seesEverywhere()).isTrue();
-        assertThat(at(productOf(sup, product).branchStock(), oshodi).quantityOnHand()).isEqualTo(7);
+        assertThat(at(productOf(sup, product).branchStock(), oshodi).quantityOnHand()).isEqualByComparingTo("7");
         assertThat(get(sup, "/api/stock/movements?branchId=" + oshodi).getStatusCode()).isEqualTo(HttpStatus.OK);
 
         assertThat(stockRaw(sup, product, "stock-in", Map.of("quantity", 1, "branchId", oshodi.toString())).getStatusCode())

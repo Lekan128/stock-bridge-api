@@ -83,7 +83,7 @@ class StockTransferIntegrationTest {
         assertThat(sent.waybill()).matches("WB-HEA-\\d{4}");
         assertThat(figure(c.main(), c.product())).isEqualTo(6);
         assertThat(figure(c.oshodi(), c.product())).isZero();
-        assertThat(branchFigures(c.owner(), c.product()).get(c.oshodi()).onTheWay()).isEqualTo(4);
+        assertThat(branchFigures(c.owner(), c.product()).get(c.oshodi()).onTheWay()).isEqualByComparingTo("4");
         assertThat(sent.shareText()).contains("Waybill " + sent.waybill()).contains("From Head Office to Oshodi")
                 .contains("Carried by Musa").contains("Received by:");
         assertThat(sent.lines().getFirst().sentText()).isEqualTo("4");
@@ -93,7 +93,7 @@ class StockTransferIntegrationTest {
         assertThat(received.status()).isEqualTo(StockTransferStatus.RECEIVED);
         assertThat(figure(c.main(), c.product())).isEqualTo(6);
         assertThat(figure(c.oshodi(), c.product())).isEqualTo(4);
-        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).as("the company total").isEqualTo(10);
+        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).as("the company total").isEqualByComparingTo("10");
         assertThat(branchFigures(c.owner(), c.product()).get(c.oshodi()).onTheWay()).isZero();
         assertLedgerMatchesFigures(c);
     }
@@ -114,7 +114,7 @@ class StockTransferIntegrationTest {
                 WHERE m.transfer_id = :t AND m.movement_type = 'TRANSFER_IN' ORDER BY m.unit_price_at_time
                 """, new MapSqlParameterSource("t", sent.id()));
         assertThat(lots).hasSize(2);
-        assertThat(lots.get(0)).containsEntry("quantity", 3);
+        assertThat(lots.get(0)).containsEntry("quantity", new java.math.BigDecimal("3.000"));
         assertThat((BigDecimal) lots.get(0).get("unit_price_at_time")).isEqualByComparingTo("100");
         assertThat(lots.get(1)).containsEntry("quantity", 2);
         assertThat((BigDecimal) lots.get(1).get("unit_price_at_time")).isEqualByComparingTo("180");
@@ -162,10 +162,10 @@ class StockTransferIntegrationTest {
         TransferResponse received = receive(ade, sent.id(), lineOf(c.product(), 4, 1, 1)).getBody();
 
         assertThat(received.status()).isEqualTo(StockTransferStatus.RECEIVED_SHORT);
-        assertThat(received.missing()).isEqualTo(2);
+        assertThat(received.missing()).isEqualByComparingTo("2");
         assertThat(received.receivedByName()).isNotBlank();
         assertThat(figure(c.oshodi(), c.product())).isEqualTo(4);
-        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).as("two are gone from the company").isEqualTo(8);
+        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).as("two are gone from the company").isEqualByComparingTo("8");
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM notifications WHERE user_id = :owner AND type = 'TRANSFER_RECEIVED_SHORT'
                 """, new MapSqlParameterSource("owner", c.owner().user().id()), Long.class)).isEqualTo(1);
@@ -184,7 +184,7 @@ class StockTransferIntegrationTest {
         post(c.owner(), "/api/stock-transfers/" + sent.id() + "/receipts", firstReceipt, TransferResponse.class);
 
         assertThat(part.status()).isEqualTo(StockTransferStatus.PARTLY_RECEIVED);
-        assertThat(part.lines().getFirst().onTheWay()).isEqualTo(4);
+        assertThat(part.lines().getFirst().onTheWay()).isEqualByComparingTo("4");
         assertThat(figure(c.oshodi(), c.product())).as("the resent receipt adds nothing").isEqualTo(2);
 
         TransferResponse rest = receive(c.owner(), sent.id(), lineOf(c.product(), 4, 0, 0)).getBody();
@@ -203,10 +203,10 @@ class StockTransferIntegrationTest {
         TransferResponse received = receive(c.owner(), sent.id(), lineOf(c.product(), 5, 0, 0)).getBody();
 
         assertThat(received.status()).isEqualTo(StockTransferStatus.RECEIVED);
-        assertThat(received.lines().getFirst().quantitySent()).isEqualTo(5);
+        assertThat(received.lines().getFirst().quantitySent()).isEqualByComparingTo("5");
         assertThat(figure(c.main(), c.product())).isEqualTo(5);
         assertThat(figure(c.oshodi(), c.product())).isEqualTo(5);
-        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).isEqualTo(10);
+        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).isEqualByComparingTo("10");
         assertLedgerMatchesFigures(c);
     }
 
@@ -236,7 +236,7 @@ class StockTransferIntegrationTest {
                 TransferResponse.class).getBody();
 
         assertThat(closed.status()).isEqualTo(StockTransferStatus.RECEIVED_SHORT);
-        assertThat(closed.missing()).isEqualTo(3);
+        assertThat(closed.missing()).isEqualByComparingTo("3");
         assertThat(branchFigures(c.owner(), c.product()).get(c.oshodi()).onTheWay()).isZero();
 
         ResponseEntity<String> noNote = post(c.owner(), "/api/stock-transfers/" + sent.id() + "/missing-checked",
@@ -310,8 +310,8 @@ class StockTransferIntegrationTest {
                 "id", UUID.randomUUID().toString(), "productId", c.product().toString(), "quantity", 1,
                 "branchId", c.oshodi().toString()), TransferResponse.class).getBody();
 
-        assertThat(found.missing()).isEqualTo(1);
-        assertThat(found.lines().getFirst().quantityFound()).isEqualTo(1);
+        assertThat(found.missing()).isEqualByComparingTo("1");
+        assertThat(found.lines().getFirst().quantityFound()).isEqualByComparingTo("1");
         assertThat(supplierTally(c)).isEqualTo(9);
         assertThat(figure(c.oshodi(), c.product())).isEqualTo(5);
         assertThat(jdbc.queryForObject("""
@@ -346,7 +346,7 @@ class StockTransferIntegrationTest {
         List<Map<String, Object>> trace = restTemplate.exchange("/api/stock-movements/" + lot + "/allocations", HttpMethod.GET,
                 new HttpEntity<>(auth(c.owner())), new ParameterizedTypeReference<List<Map<String, Object>>>() {}).getBody();
         assertThat(trace).hasSize(2);
-        assertThat(trace.get(0)).containsEntry("outMovementType", "TRANSFER_OUT").containsEntry("quantity", 5);
+        assertThat(trace.get(0)).containsEntry("outMovementType", "TRANSFER_OUT").containsEntry("quantity", 5.0);
         assertThat(trace.get(1)).containsEntry("outMovementType", "OUT").containsEntry("quantity", 2)
                 .containsEntry("outMovementId", sale.movement().id().toString())
                 .containsEntry("branchId", c.oshodi().toString());
@@ -394,7 +394,7 @@ class StockTransferIntegrationTest {
             assertThat(analyticsAfter.get(field)).as(field).isEqualTo(analyticsBefore.get(field));
         }
         assertThat(summaryAfter.get("movedInQuantity")).isEqualTo(summaryAfter.get("movedOutQuantity"));
-        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).isEqualTo(10);
+        assertThat(productOf(c.owner(), c.product()).quantityOnHand()).isEqualByComparingTo("10");
 
         Map<String, Object> atOshodi = getMap(c, "/api/stock/movements/summary" + range + "&branchId=" + c.oshodi());
         assertThat(atOshodi).containsEntry("movedInQuantity", 4).containsEntry("movedOutQuantity", 0)

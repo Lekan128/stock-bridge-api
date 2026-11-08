@@ -23,7 +23,9 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.experimental.SuperBuilder;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.UpdateTimestamp;
+import org.hibernate.type.SqlTypes;
 
 /**
  * A tenant's catalog/inventory item. Extends TenantAwareEntity for client_id
@@ -256,6 +258,23 @@ public class Product extends TenantAwareEntity {
      */
     @Column(name = "packaging_size", precision = 14, scale = 2)
     private BigDecimal packagingSize;
+
+    /**
+     * The product's own units (UNITS_PLAN.md Part 1, V82): "1 Derica = 0.6 kg" of this rice. Set once on the
+     * product, unlike a pack, and offered by every quantity box beside the stock unit and the packs. Hidden ones
+     * were used and stay so the past still reads; see {@code ProductMeasures}.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "measures", nullable = false)
+    @Builder.Default
+    private List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures = new java.util.ArrayList<>();
+
+    /**
+     * Where a stock-out, count, move or quick mode starts for this product (Part 2): a measure's name, a unit code or
+     * a pack key ("BAG:50"). Null: the stock unit, as before. Deliveries still start in the pack.
+     */
+    @Column(name = "used_in_unit", length = 40)
+    private String usedInUnit;
 
     /**
      * Minimum purchasable quantity, mirroring the column default of 1 so an

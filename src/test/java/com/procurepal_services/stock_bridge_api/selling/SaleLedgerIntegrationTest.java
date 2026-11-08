@@ -154,7 +154,7 @@ class SaleLedgerIntegrationTest {
 
         assertThat(line.saleAmount()).isEqualByComparingTo("450.00");
         assertThat(line.costAmount()).isEqualByComparingTo("300.00");
-        assertThat(product(shop, oil).quantityOnHand()).isEqualTo(7);
+        assertThat(product(shop, oil).quantityOnHand()).isEqualByComparingTo("7");
     }
 
     @Test
@@ -192,8 +192,8 @@ class SaleLedgerIntegrationTest {
 
         assertThat(undo.undoneCount()).isEqualTo(2);
         assertThat(undo.notUndoneCount()).isZero();
-        assertThat(product(shop, a).quantityOnHand()).isEqualTo(10);
-        assertThat(product(shop, b).quantityOnHand()).isEqualTo(10);
+        assertThat(product(shop, a).quantityOnHand()).isEqualByComparingTo("10");
+        assertThat(product(shop, b).quantityOnHand()).isEqualByComparingTo("10");
         assertThat(get(shop, "/api/sales/" + saleId, String.class).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
     }
 
@@ -225,16 +225,16 @@ class SaleLedgerIntegrationTest {
         UUID rice = pieceProduct(shop, "Rice");
         stockIn(shop, rice, 10, null, "100");
         StockMovementResponse line = stockOut(shop, rice, body(4, null, "150", null, null, null)).movement();
-        assertThat(lots(shop, rice)).singleElement().satisfies(lot -> assertThat(lot.remaining()).isEqualTo(6));
+        assertThat(lots(shop, rice)).singleElement().satisfies(lot -> assertThat(lot.remaining()).isEqualByComparingTo("6"));
 
         SaleResponse cancelled = post(shop, "/api/sales/" + line.saleId() + "/cancel", null, SaleResponse.class).getBody();
 
         assertThat(cancelled.cancelledLineCount()).isEqualTo(1);
         assertThat(cancelled.total()).isEqualByComparingTo("0");
         assertThat(cancelled.lines().get(0).cancelled()).isTrue();
-        assertThat(product(shop, rice).quantityOnHand()).isEqualTo(10);
+        assertThat(product(shop, rice).quantityOnHand()).isEqualByComparingTo("10");
         // The delivery has its 4 back - FIFO draws on it again in its proper place.
-        assertThat(lots(shop, rice)).singleElement().satisfies(lot -> assertThat(lot.remaining()).isEqualTo(10));
+        assertThat(lots(shop, rice)).singleElement().satisfies(lot -> assertThat(lot.remaining()).isEqualByComparingTo("10"));
         // Every report that sums the sale's rows sees nothing left of it.
         assertThat(saleSum(shop, line.saleId(), "sale_amount")).isEqualByComparingTo("0");
         assertThat(saleSum(shop, line.saleId(), "cost_amount")).isEqualByComparingTo("0");
@@ -245,7 +245,7 @@ class SaleLedgerIntegrationTest {
                 .singleElement()
                 .satisfies(row -> {
                     assertThat(row.movementType()).isEqualTo(MovementType.ADJUSTMENT);
-                    assertThat(row.quantity()).isEqualTo(4);
+                    assertThat(row.quantity()).isEqualByComparingTo("4");
                     assertThat(row.saleAmount()).isEqualByComparingTo("-600.00");
                 });
     }
@@ -261,7 +261,7 @@ class SaleLedgerIntegrationTest {
         ResponseEntity<SaleResponse> again = post(shop, "/api/sales/" + line.saleId() + "/cancel", null, SaleResponse.class);
 
         assertThat(again.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(product(shop, rice).quantityOnHand()).isEqualTo(10);
+        assertThat(product(shop, rice).quantityOnHand()).isEqualByComparingTo("10");
 
         // Even past the service: a line can be cancelled once, by constraint.
         UUID clientId = clientIdOf(shop);
@@ -271,7 +271,7 @@ class SaleLedgerIntegrationTest {
             assertThatThrownBy(() -> stockMovementRepository.saveAndFlush(StockMovement.builder()
                             .product(productRepository.findByIdAndClientId(rice, clientId).orElseThrow())
                             .movementType(MovementType.ADJUSTMENT)
-                            .quantity(4)
+                            .quantity(BigDecimal.valueOf(4))
                             .saleId(original.getSaleId())
                             .reversesMovementId(original.getId())
                             .build()))
@@ -316,7 +316,7 @@ class SaleLedgerIntegrationTest {
         assertThat(priced.unpricedLineCount()).isZero();
         assertThat(priced.lines().get(0).priceAdded()).isTrue();
         // No stock moved.
-        assertThat(product(shop, oil).quantityOnHand()).isEqualTo(7);
+        assertThat(product(shop, oil).quantityOnHand()).isEqualByComparingTo("7");
 
         // The same price again is harmless; a different one is refused.
         assertThat(post(shop, "/api/sales/lines/" + line.id() + "/price", Map.of("lineTotal", 720), String.class).getStatusCode())

@@ -42,6 +42,8 @@ import java.math.RoundingMode;
  * @param isStockUnit whether this option IS the product's stock unit (factor 1, the unit every
  *     stored quantity is counted in).
  * @param isDefault whether a form should preselect this option. Exactly one per set.
+ * @param isPack from a product's or supplier's pack.
+ * @param isMeasure one of the product's own units, a derica or a cup ({@link ProductMeasure}).
  */
 public record UnitOption(
         String code,
@@ -49,7 +51,22 @@ public record UnitOption(
         BigDecimal factorToStockUnit,
         boolean isStockUnit,
         boolean isDefault,
-        boolean isPack) {
+        boolean isPack,
+        boolean isMeasure) {
+
+    /** A stock unit, pack or standard unit: everything but a product's own measure. */
+    public UnitOption(String code, String label, BigDecimal factorToStockUnit, boolean isStockUnit, boolean isDefault,
+            boolean isPack) {
+        this(code, label, factorToStockUnit, isStockUnit, isDefault, isPack, false);
+    }
+
+    /**
+     * True for one of the product's own units (UNITS_PLAN.md Part 1): a derica, a cup. Set once on the product, the
+     * same every time, so unlike a pack it has no size in its key: {@code "Derica"} names it alone.
+     */
+    public boolean isMeasure() {
+        return isMeasure;
+    }
 
     /**
      * True when this option came from a product's or supplier's PACK (section 2.1 steps 2 and 3),

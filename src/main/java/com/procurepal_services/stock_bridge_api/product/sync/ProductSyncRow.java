@@ -45,5 +45,9 @@ public record ProductSyncRow(
         List<BranchFigure> branchStock,
         // Areas inside a branch (V60, STOCK_AREAS_PART_1.md): this product in each area of the branches
         // carried above that have more than one. Absent otherwise.
-        List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> areaStock) {
+        List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> areaStock,
+        // UNITS_PLAN.md Part 1-2 (V82): the product's own units and where its stock-outs and counts start, so the
+        // phone offers "Derica" offline.
+        List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+        String usedInUnit) {
 }

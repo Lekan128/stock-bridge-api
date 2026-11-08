@@ -1068,10 +1068,11 @@ public class StockManagementService {
                 requestPackagingUnit != null ? requestPackagingUnit : product.getPackagingUnit();
         BigDecimal overridePackagingSize =
                 requestPackagingSize != null ? requestPackagingSize : product.getPackagingSize();
+        // Hidden measures too (UNITS_PLAN.md Part 3): an entry saved offline before one was hidden still records.
         List<UnitOption> options = requestPackagingUnit == null && requestPackagingSize == null
-                ? UnitOptions.forProduct(product)
+                ? UnitOptions.forRecording(product)
                 : UnitOptions.extendedWith(
-                        UnitOptions.forProduct(product),
+                        UnitOptions.forRecording(product),
                         overridePackagingUnit,
                         overridePackagingSize,
                         product.getUnitOfMeasure());

@@ -44,7 +44,7 @@ class SaleFactsTest {
     @Test
     void costIsEachDeliverysOwnPriceWhenEveryUnitIsAccountedFor() {
         SaleFacts.Cost cost = SaleFacts.costOf(
-                List.of(draw("100.00", 10), draw("120.00", 5)), 15, new BigDecimal("106.67"));
+                List.of(draw("100.00", 10), draw("120.00", 5)), BigDecimal.valueOf(15), new BigDecimal("106.67"));
 
         assertThat(cost.amount()).isEqualByComparingTo("1600.00");
         assertThat(cost.basis()).isEqualTo(CostBasis.FIFO);
@@ -52,25 +52,25 @@ class SaleFactsTest {
 
     @Test
     void aDeliveryWithNoPriceOrStockOlderThanTheLedgerIsCostedAtTheAverage() {
-        SaleFacts.Cost unpricedLot = SaleFacts.costOf(List.of(draw("100.00", 10), draw(null, 5)), 15, new BigDecimal("100.00"));
+        SaleFacts.Cost unpricedLot = SaleFacts.costOf(List.of(draw("100.00", 10), draw(null, 5)), BigDecimal.valueOf(15), new BigDecimal("100.00"));
         assertThat(unpricedLot.amount()).isEqualByComparingTo("1500.00");
         assertThat(unpricedLot.basis()).isEqualTo(CostBasis.AVERAGE);
 
-        SaleFacts.Cost shortfall = SaleFacts.costOf(List.of(draw("100.00", 10)), 12, new BigDecimal("90.00"));
+        SaleFacts.Cost shortfall = SaleFacts.costOf(List.of(draw("100.00", 10)), BigDecimal.valueOf(12), new BigDecimal("90.00"));
         assertThat(shortfall.amount()).isEqualByComparingTo("1180.00");
         assertThat(shortfall.basis()).isEqualTo(CostBasis.AVERAGE);
     }
 
     @Test
     void withNoCostAnywhereTheWholeIsUnknownNotZero() {
-        assertThat(SaleFacts.costOf(List.of(draw("100.00", 10), draw(null, 5)), 15, null)).isEqualTo(SaleFacts.Cost.UNKNOWN);
-        assertThat(SaleFacts.costOf(List.of(), 3, null)).isEqualTo(SaleFacts.Cost.UNKNOWN);
+        assertThat(SaleFacts.costOf(List.of(draw("100.00", 10), draw(null, 5)), BigDecimal.valueOf(15), null)).isEqualTo(SaleFacts.Cost.UNKNOWN);
+        assertThat(SaleFacts.costOf(List.of(), BigDecimal.valueOf(3), null)).isEqualTo(SaleFacts.Cost.UNKNOWN);
     }
 
     private static StockOutRequest out(
             int quantity, String unitPrice, OutReason reason, String unit, UUID saleId, String lineTotal) {
         return new StockOutRequest(
-                quantity,
+                BigDecimal.valueOf(quantity),
                 unitPrice == null ? null : new BigDecimal(unitPrice),
                 null,
                 unit,
@@ -84,6 +84,6 @@ class SaleFactsTest {
 
     private static SaleFacts.Draw draw(String lotPrice, int quantity) {
         StockMovement lot = StockMovement.builder().unitPriceAtTime(lotPrice == null ? null : new BigDecimal(lotPrice)).build();
-        return new SaleFacts.Draw(lot, quantity);
+        return new SaleFacts.Draw(lot, BigDecimal.valueOf(quantity));
     }
 }

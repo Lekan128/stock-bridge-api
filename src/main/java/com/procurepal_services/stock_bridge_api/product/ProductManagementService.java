@@ -1,5 +1,9 @@
 package com.procurepal_services.stock_bridge_api.product;
 
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
+import com.procurepal_services.stock_bridge_api.product.unit.InvalidMeasureException;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure;
 import com.procurepal_services.stock_bridge_api.selling.SellingPricePermission;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
@@ -505,6 +509,8 @@ public class ProductManagementService {
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
                 .packagingSize(request.packagingSize())
+                // UNITS_PLAN.md Part 1: the product's own units, each with what one holds.
+                .measures(new ArrayList<>(ProductMeasures.validate(request.measures(), unitOfMeasure, packagingUnit)))
                 .quantityOnHand(BigDecimal.ZERO)
                 .incomingQuantity(0)
                 .active(true)
@@ -516,6 +522,7 @@ public class ProductManagementService {
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
                 .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
+        product.setUsedInUnit(usedInUnit(product, request.usedInUnit()));
         // After the units are set: a price typed per carton is converted by this product's own pack.
         // Without CHANGE_SELLING_PRICES (V52) the product is created without a price - "No price yet",
         // which selling already allows - rather than refused: the rest of what was typed is still wanted.
@@ -668,6 +675,17 @@ public class ProductManagementService {
         }
         if (request.packagingSize() != null) {
             product.setPackagingSize(request.packagingSize());
+        }
+        // UNITS_PLAN.md Part 1-3: the product's own units, after the stock unit and pack they're measured against.
+        if (request.measures() != null) {
+            product.setMeasures(new ArrayList<>(mergedMeasures(product, request.measures())));
+        }
+        if (request.usedInUnit() != null) {
+            product.setUsedInUnit(usedInUnit(product, request.usedInUnit()));
+        } else if (product.getUsedInUnit() != null
+                && UnitOptions.resolveKey(UnitOptions.forProduct(product), product.getUsedInUnit()).isEmpty()) {
+            // Its unit was taken off or hidden: stock-outs start in the stock unit again.
+            product.setUsedInUnit(null);
         }
         // The selling price, after the units: a price typed per carton converts by the pack as it
         // now stands, and a pack that changed size re-derives the per-piece price from what was
@@ -977,6 +995,50 @@ public class ProductManagementService {
      * "pack" in the exception message (UNIT_UX_CONTRACT.md section 1) so a caller can tell the two validation
      * failures apart even though they share one exception class.
      */
+    /**
+     * The product's own units as asked (UNITS_PLAN.md Part 1-3), checked: a size changed counts from now on only - every
+     * movement keeps what it was - and one left out that has been typed in somewhere is kept hidden rather than removed,
+     * so last week's "5 Derica" still reads (D-U4).
+     */
+    private List<ProductMeasure> mergedMeasures(Product product, List<ProductMeasure> requested) {
+        List<ProductMeasure> kept = new ArrayList<>(
+                ProductMeasures.validate(requested, product.getUnitOfMeasure(), product.getPackagingUnit()));
+        java.util.Set<String> named = new java.util.HashSet<>();
+        kept.forEach(measure -> named.add(measure.name().toLowerCase(java.util.Locale.ROOT)));
+        for (ProductMeasure before : product.getMeasures() == null ? List.<ProductMeasure>of() : product.getMeasures()) {
+            if (!named.contains(before.name().toLowerCase(java.util.Locale.ROOT)) && measureUsed(product, before.name())) {
+                kept.add(before.hide());
+            }
+        }
+        return kept;
+    }
+
+    /** Whether anything has been recorded in this measure of the product: a movement, a move, an ask or a waybill. */
+    private boolean measureUsed(Product product, String name) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM stock_movements WHERE product_id = :productId AND lower(entered_unit) = :name)
+                    OR EXISTS (SELECT 1 FROM area_move_lines WHERE product_id = :productId AND lower(entered_unit) = :name)
+                    OR EXISTS (SELECT 1 FROM stock_request_lines WHERE product_id = :productId AND lower(entered_unit) = :name)
+                    OR EXISTS (SELECT 1 FROM stock_transfer_lines WHERE product_id = :productId AND lower(entered_unit) = :name)
+                """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                        .addValue("productId", product.getId())
+                        .addValue("name", name.toLowerCase(java.util.Locale.ROOT)), Boolean.class));
+    }
+
+    /**
+     * Where stock-outs and counts start for the product (Part 2), as one of its own units: "Derica", "KG", or a pack
+     * key. Blank is the stock unit (null).
+     */
+    private String usedInUnit(Product product, String requested) {
+        if (requested == null || requested.isBlank()) {
+            return null;
+        }
+        return UnitOptions.resolveKey(UnitOptions.forProduct(product), requested.trim())
+                .filter(option -> !option.isStockUnit())
+                .map(UnitOptions::key)
+                .orElseThrow(() -> new InvalidMeasureException("“" + requested.trim() + "” isn't one of this product's units."));
+    }
+
     private String resolvePackagingUnit(String code) {
         if (code == null || code.isBlank()) {
             return null;

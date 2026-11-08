@@ -100,7 +100,29 @@ public record CreateProductRequest(
          * Which of the product's units {@code unitPrice} is per (V47) - "CARTON" for "5,000 a carton".
          * Absent is the stock unit, which is what every caller before it meant.
          */
-        String unitPriceUnit) {
+        String unitPriceUnit,
+        /** The product's own units, each with what one holds (UNITS_PLAN.md Part 1): "1 Derica = 0.6 kg". */
+        java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+        /** Where stock-outs and counts start for this product (Part 2): a measure, a unit or a pack key. */
+        String usedInUnit) {
+
+    /** The shape before a product's own units (V82). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, null, null);
+    }
 
     /** The shape before the price unit (V47) - a price per stock unit. */
     public CreateProductRequest(

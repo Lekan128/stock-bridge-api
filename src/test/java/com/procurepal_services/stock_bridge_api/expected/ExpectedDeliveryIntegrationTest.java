@@ -147,7 +147,7 @@ class ExpectedDeliveryIntegrationTest {
         assertThat(after.lines().get(0).outstanding()).isEqualByComparingTo("0");
 
         // The stock itself went through the ordinary stock-in: 10 bags of 50 kg.
-        assertThat(productById(tenant, rice.id()).quantityOnHand()).isEqualTo(500);
+        assertThat(productById(tenant, rice.id()).quantityOnHand()).isEqualByComparingTo("500");
         assertThat(productById(tenant, rice.id()).expectedQuantity()).as("nothing owed any more").isNull();
     }
 
@@ -171,7 +171,7 @@ class ExpectedDeliveryIntegrationTest {
         assertThat(productById(tenant, rice.id()).expectedQuantity())
                 .as("six bags still owed, in kg")
                 .isEqualByComparingTo("300");
-        assertThat(productById(tenant, rice.id()).quantityOnHand()).isEqualTo(200);
+        assertThat(productById(tenant, rice.id()).quantityOnHand()).isEqualByComparingTo("200");
     }
 
     @Test

@@ -91,7 +91,7 @@ class AreaStockIntegrationTest {
         StockMutationResponse counted = write(s, "count", Map.of("countedQuantity", 12), StockMutationResponse.class).getBody();
         voidWrite(s, counted.movement().id());
 
-        assertThat(product(s).quantityOnHand()).isEqualTo(15);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("15");
         assertThat(branchFigure(main, s)).isEqualTo(15);
         List<UUID> areas = jdbc.queryForList(
                 "SELECT DISTINCT area_id FROM stock_movements WHERE product_id = :p",
@@ -113,7 +113,7 @@ class AreaStockIntegrationTest {
         assertThat(areaFigure(area(main, "Store"), s)).isEqualTo(10);
         assertThat(areaFigure(kitchen, s)).isZero();
         assertThat(branchFigure(main, s)).isEqualTo(10);
-        assertThat(in.product().quantityOnHand()).isEqualTo(10);
+        assertThat(in.product().quantityOnHand()).isEqualByComparingTo("10");
     }
 
     /** D-E10: a stock-out with no area, at a branch with a Store and a Kitchen, is never a guess. */
@@ -128,7 +128,7 @@ class AreaStockIntegrationTest {
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(refused.getBody()).contains("Choose the area this is for");
-        assertThat(product(s).quantityOnHand()).isEqualTo(10);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("10");
     }
 
     /** "The Kitchen has 3": judged against the area's figure, not the branch's. */
@@ -144,13 +144,13 @@ class AreaStockIntegrationTest {
         ResponseEntity<InsufficientStockErrorResponse> refused =
                 write(s, "stock-out", in(body(5), kitchen), InsufficientStockErrorResponse.class);
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(refused.getBody().availableQuantity()).isEqualTo(3);
+        assertThat(refused.getBody().availableQuantity()).isEqualByComparingTo("3");
 
         StockMutationResponse used = stockOut(s, in(body(2), kitchen));
         assertThat(areaFigure(kitchen, s)).isEqualTo(1);
         assertThat(areaFigure(store, s)).isEqualTo(10);
         assertThat(branchFigure(main, s)).isEqualTo(11);
-        assertThat(used.product().quantityOnHand()).isEqualTo(11);
+        assertThat(used.product().quantityOnHand()).isEqualByComparingTo("11");
     }
 
     @Test
@@ -240,7 +240,7 @@ class AreaStockIntegrationTest {
         assertThat(areaFigure(secondStore, s)).isEqualTo(4);
         assertThat(areaFigure(secondBar, s)).isZero();
         assertThat(branchFigure(second, s)).isEqualTo(4);
-        assertThat(product(s).quantityOnHand()).isEqualTo(13);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("13");
     }
 
     // ------------------------------------------------------------------------------- Area Health

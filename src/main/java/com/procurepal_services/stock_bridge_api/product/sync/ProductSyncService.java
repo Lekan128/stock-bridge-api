@@ -211,7 +211,9 @@ public class ProductSyncService {
                         product.getUnitPriceEntered(),
                         product.getUnitPriceEnteredUnit(),
                         branchStock == null ? null : branchStock.get(product.getId()),
-                        areaStock == null ? null : areaStock.get(product.getId())))
+                        areaStock == null ? null : areaStock.get(product.getId()),
+                        product.getMeasures() == null || product.getMeasures().isEmpty() ? null : product.getMeasures(),
+                        product.getUsedInUnit()))
                 .toList();
     }
 

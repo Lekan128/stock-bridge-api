@@ -126,7 +126,7 @@ class MarketplaceCatalogIntegrationTest {
                         .sku(sku)
                         .slug("definitely-not-for-sale-" + sku.toLowerCase())
                         .unitPrice(new BigDecimal("1000.00"))
-                        .quantityOnHand(50)
+                        .quantityOnHand(BigDecimal.valueOf(50))
                         .active(true)
                         .marketplaceListed(true)
                         // APPROVED deliberately, even though nothing would ever approve
@@ -259,18 +259,18 @@ class MarketplaceCatalogIntegrationTest {
             committing = placeCommittingOrder(buyerId, product, 4, OrderStatus.PLACED);
 
             MarketplaceProductResponse fromGrid = onlyMatch(getCatalog("?size=200&q=" + product.getSku()));
-            assertThat(fromGrid.quantityOnHand()).isEqualTo(6);
+            assertThat(fromGrid.quantityOnHand()).isEqualByComparingTo("6");
             assertThat(fromGrid.inStock()).isTrue();
 
             // ...and every other surface agrees.
-            assertThat(getOne(CATALOG + "/" + product.getId()).quantityOnHand()).isEqualTo(6);
-            assertThat(getOne(CATALOG + "/" + slug).quantityOnHand()).isEqualTo(6);
+            assertThat(getOne(CATALOG + "/" + product.getId()).quantityOnHand()).isEqualByComparingTo("6");
+            assertThat(getOne(CATALOG + "/" + slug).quantityOnHand()).isEqualByComparingTo("6");
             assertThat(onlyMatch(getCatalog("?ids=" + product.getId())).quantityOnHand())
-                    .isEqualTo(6);
+                    .isEqualByComparingTo("6");
 
             // Raw on-hand is untouched: nothing has physically left the warehouse.
             assertThat(reload(product.getClientId(), product.getId()).getQuantityOnHand())
-                    .isEqualTo(10);
+                    .isEqualByComparingTo("10");
         } finally {
             deleteOrder(buyerId, committing);
             deleteAs(product.getClientId(), product);
@@ -359,17 +359,17 @@ class MarketplaceCatalogIntegrationTest {
                     .content()
                     .getFirst();
 
-            assertThat(fromList.quantityOnHand()).isEqualTo(10);
+            assertThat(fromList.quantityOnHand()).isEqualByComparingTo("10");
             assertThat(fromList.committedQuantity()).isEqualTo(4);
-            assertThat(fromList.availableToSell()).isEqualTo(6);
+            assertThat(fromList.availableToSell()).isEqualByComparingTo("6");
 
             // The single-product write path projects the same three numbers as the list.
             AdminCatalogProductResponse fromWrite = adminBody(
                     operator, HttpMethod.POST, ADMIN + "/products/" + product.getId() + "/listing",
                     new UpdateListingRequest(true), AdminCatalogProductResponse.class);
-            assertThat(fromWrite.quantityOnHand()).isEqualTo(10);
+            assertThat(fromWrite.quantityOnHand()).isEqualByComparingTo("10");
             assertThat(fromWrite.committedQuantity()).isEqualTo(4);
-            assertThat(fromWrite.availableToSell()).isEqualTo(6);
+            assertThat(fromWrite.availableToSell()).isEqualByComparingTo("6");
         } finally {
             deleteOrder(buyerId, committing);
             deleteAs(product.getClientId(), product);
@@ -627,7 +627,7 @@ class MarketplaceCatalogIntegrationTest {
                         .name("Their Widget")
                         .sku("THEIRS-" + UUID.randomUUID().toString().substring(0, 8))
                         .unitPrice(new BigDecimal("500.00"))
-                        .quantityOnHand(10)
+                        .quantityOnHand(BigDecimal.valueOf(10))
                         .active(true)
                         .build());
         try {
@@ -1050,7 +1050,7 @@ class MarketplaceCatalogIntegrationTest {
                 .sku(unique)
                 .slug(unique.toLowerCase())
                 .unitPrice(new BigDecimal("4200.00"))
-                .quantityOnHand(25)
+                .quantityOnHand(BigDecimal.valueOf(25))
                 .active(true)
                 .marketplaceListed(true)
                 .approvalStatus(approvalStatus)
@@ -1158,7 +1158,7 @@ class MarketplaceCatalogIntegrationTest {
                         .name(name)
                         .sku("TST-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase())
                         .unitPrice(new BigDecimal("7500.00"))
-                        .quantityOnHand(quantityOnHand)
+                        .quantityOnHand(BigDecimal.valueOf(quantityOnHand))
                         .active(true)
                         // ProcurePal's own catalogue is auto-approved by
                         // ProductModerationRules, but this fixture bypasses the service
@@ -1179,7 +1179,7 @@ class MarketplaceCatalogIntegrationTest {
 
     /** Sellable stock as the public grid reports it, for a fixture product listed by this test. */
     private int catalogQuantity(Product product) {
-        return onlyMatch(getCatalog("?size=200&q=" + product.getSku())).quantityOnHand();
+        return onlyMatch(getCatalog("?size=200&q=" + product.getSku())).quantityOnHand().intValueExact();
     }
 
     private MarketplaceProductResponse onlyMatch(List<MarketplaceProductResponse> products) {

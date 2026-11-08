@@ -81,7 +81,7 @@ class RoleManagementIntegrationTest {
                 "/api/products/" + UUID.randomUUID() + "/stock/stock-out",
                 HttpMethod.POST,
                 clerk,
-                new StockOutRequest(1, null, null));
+                new StockOutRequest(BigDecimal.valueOf(1), null, null));
     }
 
     @Test

@@ -118,7 +118,8 @@ public record ProductVendorResponse(
                         vendor.getProduct().getPackagingSize(),
                         packs.stream()
                                 .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
-                                .toList()),
+                                .toList(),
+                        vendor.getProduct().getMeasures()),
                 defaultPackTiers,
                 vendor.getCreatedAt(),
                 vendor.getUpdatedAt());

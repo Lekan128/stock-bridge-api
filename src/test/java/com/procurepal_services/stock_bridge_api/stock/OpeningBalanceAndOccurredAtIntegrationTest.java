@@ -120,7 +120,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         // not what it is. costPrice comes out of stockIn's weighted-average recalculation now
         // rather than being copied from the cell, and against a product with zero on hand that
         // recalculation returns the delivery's own price: the same number, arrived at honestly.
-        assertThat(product.quantityOnHand()).isEqualTo(40);
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("40");
         assertThat(product.costPrice()).isEqualByComparingTo("4500");
 
         // The lot that did not used to exist.
@@ -128,7 +128,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         assertThat(history).hasSize(1);
         StockMovementResponse opening = history.get(0);
         assertThat(opening.movementType()).isEqualTo(MovementType.IN);
-        assertThat(opening.quantity()).isEqualTo(40);
+        assertThat(opening.quantity()).isEqualByComparingTo("40");
         assertThat(opening.unitPriceAtTime()).isEqualByComparingTo("4500");
         assertThat(opening.note()).isEqualTo("Opening balance (imported)");
         // Attributed to the uploader rather than to nobody - the acting user is threaded from
@@ -147,10 +147,10 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
 
         // The sale, and the allocation that used to be silently missing.
         StockMutationResponse sale = stockOut(admin, product.id(), 15).getBody();
-        assertThat(sale.product().quantityOnHand()).isEqualTo(25);
+        assertThat(sale.product().quantityOnHand()).isEqualByComparingTo("25");
         assertThat(sale.breakdown()).hasSize(1);
         assertThat(sale.breakdown().get(0).inMovementId()).isEqualTo(opening.id());
-        assertThat(sale.breakdown().get(0).quantity()).isEqualTo(15);
+        assertThat(sale.breakdown().get(0).quantity()).isEqualByComparingTo("15");
 
         // And the same fact read from the other end - the forward trace from the delivery to
         // every sale it funded, which is the query MULTI_VENDOR_INVENTORY_DESIGN.md section 10
@@ -158,7 +158,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         List<AllocationResponse> allocations = allocations(admin, opening.id());
         assertThat(allocations).hasSize(1);
         assertThat(allocations.get(0).outMovementId()).isEqualTo(sale.movement().id());
-        assertThat(allocations.get(0).quantity()).isEqualTo(15);
+        assertThat(allocations.get(0).quantity()).isEqualByComparingTo("15");
     }
 
     /**
@@ -240,7 +240,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         assertThat(sale.breakdown().get(0).inMovementId())
                 .as("FIFO must draw the older DELIVERY, not the older data-entry row")
                 .isEqualTo(lotRecordedSecond.movement().id());
-        assertThat(sale.breakdown().get(0).quantity()).isEqualTo(10);
+        assertThat(sale.breakdown().get(0).quantity()).isEqualByComparingTo("10");
         // The receipt line ("10 from the 30-days-ago delivery") reads the arrival date, not the
         // entry date - see StockMutationResponse.AllocationBreakdown.
         assertThat(sale.breakdown().get(0).inMovementOccurredAt())
@@ -311,7 +311,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
                 StockMutationResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(response.getBody().product().quantityOnHand()).isEqualTo(5);
+        assertThat(response.getBody().product().quantityOnHand()).isEqualByComparingTo("5");
     }
 
     // -----------------------------------------------------------------------------------
@@ -337,7 +337,7 @@ class OpeningBalanceAndOccurredAtIntegrationTest {
         return restTemplate.exchange(
                 "/api/products/" + productId + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(quantity, null, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(quantity), null, null), authHeaders(admin)),
                 StockMutationResponse.class);
     }
 

@@ -610,7 +610,7 @@ class ProductModerationWritePathIntegrationTest {
         restTemplate.exchange(
                 "/api/products/" + approvedProductId + "/stock/adjustment",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockAdjustmentRequest(12, "stocktake"), vendorHeaders),
+                new HttpEntity<>(new StockAdjustmentRequest(BigDecimal.valueOf(12), "stocktake"), vendorHeaders),
                 String.class);
 
         assertThat(approvalStatusOf(approvedProductId)).isEqualTo(ProductApprovalStatus.APPROVED);

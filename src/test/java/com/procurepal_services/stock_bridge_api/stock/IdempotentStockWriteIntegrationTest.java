@@ -70,7 +70,7 @@ class IdempotentStockWriteIntegrationTest {
         assertThat(second.getHeaders().getFirst(StockController.IDEMPOTENT_REPLAYED_HEADER)).isEqualTo("true");
         // The replay is the first answer, not a second write that happens to look the same.
         assertThat(second.getBody().movement().id()).isEqualTo(first.getBody().movement().id());
-        assertThat(second.getBody().product().quantityOnHand()).isEqualTo(15);
+        assertThat(second.getBody().product().quantityOnHand()).isEqualByComparingTo("15");
 
         assertThat(quantityOnHand(admin, product.id())).isEqualTo(15);
         assertThat(history(admin, product.id())).hasSize(1);
@@ -83,13 +83,13 @@ class IdempotentStockWriteIntegrationTest {
         post(admin, product.id(), "stock-in", new StockInRequest(20, null, null), null);
 
         String outKey = UUID.randomUUID().toString();
-        StockOutRequest out = new StockOutRequest(5, null, "sold");
+        StockOutRequest out = new StockOutRequest(BigDecimal.valueOf(5), null, "sold");
         post(admin, product.id(), "stock-out", out, outKey);
         post(admin, product.id(), "stock-out", out, outKey);
         assertThat(quantityOnHand(admin, product.id())).isEqualTo(15);
 
         String adjustKey = UUID.randomUUID().toString();
-        StockAdjustmentRequest adjust = new StockAdjustmentRequest(12, "count");
+        StockAdjustmentRequest adjust = new StockAdjustmentRequest(BigDecimal.valueOf(12), "count");
         post(admin, product.id(), "adjustment", adjust, adjustKey);
         post(admin, product.id(), "adjustment", adjust, adjustKey);
         assertThat(quantityOnHand(admin, product.id())).isEqualTo(12);
@@ -171,7 +171,7 @@ class IdempotentStockWriteIntegrationTest {
         TenantLoginResponse admin = signup("Idem Fail Co");
         ProductResponse product = createProduct(admin, "IDEM-5");
         String key = UUID.randomUUID().toString();
-        StockOutRequest out = new StockOutRequest(5, null, null);
+        StockOutRequest out = new StockOutRequest(BigDecimal.valueOf(5), null, null);
 
         ResponseEntity<String> refused = postRaw(admin, product.id(), "stock-out", out, key);
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
@@ -261,7 +261,8 @@ class IdempotentStockWriteIntegrationTest {
         return restTemplate
                 .exchange("/api/products/" + productId, HttpMethod.GET, new HttpEntity<>(authHeaders(admin)), ProductResponse.class)
                 .getBody()
-                .quantityOnHand();
+                .quantityOnHand()
+                .intValueExact();
     }
 
     private List<StockMovementResponse> history(TenantLoginResponse admin, UUID productId) {

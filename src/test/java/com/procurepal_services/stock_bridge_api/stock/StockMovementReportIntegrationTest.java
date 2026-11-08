@@ -68,7 +68,7 @@ class StockMovementReportIntegrationTest {
         assertThat(row.productId()).isEqualTo(product.id());
         assertThat(row.productName()).isEqualTo("Product RPT-1");
         assertThat(row.productSku()).isEqualTo("RPT-1");
-        assertThat(row.quantity()).isEqualTo(10);
+        assertThat(row.quantity()).isEqualByComparingTo("10");
         assertThat(row.unitPriceAtTime()).isEqualByComparingTo("250.00");
         assertThat(row.lineValue()).isEqualByComparingTo("2500.00");
         assertThat(row.occurredAt()).isNotNull();
@@ -118,8 +118,8 @@ class StockMovementReportIntegrationTest {
         assertThat(summary.outValue()).isEqualByComparingTo("1200.00");
         // Every IN in range counts toward quantity whether or not it carried a price, which is
         // exactly why the unpriced count below has to be published beside it.
-        assertThat(summary.inQuantity()).isEqualTo(18);
-        assertThat(summary.outQuantity()).isEqualTo(4);
+        assertThat(summary.inQuantity()).isEqualByComparingTo("18");
+        assertThat(summary.outQuantity()).isEqualByComparingTo("4");
         assertThat(summary.inMovementCount()).isEqualTo(3);
         assertThat(summary.outMovementCount()).isEqualTo(1);
         assertThat(summary.unpricedInCount()).isEqualTo(1);
@@ -235,7 +235,7 @@ class StockMovementReportIntegrationTest {
         restTemplate.exchange(
                 "/api/products/" + productId + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(quantity, unitPrice, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(quantity), unitPrice, null), authHeaders(admin)),
                 StockMutationResponse.class);
     }
 
@@ -243,7 +243,7 @@ class StockMovementReportIntegrationTest {
         restTemplate.exchange(
                 "/api/products/" + productId + "/stock/adjustment",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockAdjustmentRequest(newQuantity, "stock count"), authHeaders(admin)),
+                new HttpEntity<>(new StockAdjustmentRequest(BigDecimal.valueOf(newQuantity), "stock count"), authHeaders(admin)),
                 StockMutationResponse.class);
     }
 

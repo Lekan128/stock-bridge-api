@@ -89,7 +89,7 @@ class BranchStockIntegrationTest {
                 write(s, "stock-out", body(11), InsufficientStockErrorResponse.class);
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(refused.getBody().availableQuantity()).isEqualTo(10);
+        assertThat(refused.getBody().availableQuantity()).isEqualByComparingTo("10");
         assertThat(stockOut(s, body(10)).product().quantityOnHand()).isZero();
     }
 
@@ -115,7 +115,7 @@ class BranchStockIntegrationTest {
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
         assertThat(refused.getBody()).contains("That branch was not found.");
-        assertThat(product(mine).quantityOnHand()).isEqualTo(5);
+        assertThat(product(mine).quantityOnHand()).isEqualByComparingTo("5");
     }
 
     @Test
@@ -154,7 +154,7 @@ class BranchStockIntegrationTest {
         stockIn(s, at(body(10), main));
         StockMutationResponse in = stockIn(s, at(body(4), second));
 
-        assertThat(in.product().quantityOnHand()).isEqualTo(14);
+        assertThat(in.product().quantityOnHand()).isEqualByComparingTo("14");
         assertThat(branchFigure(main, s)).isEqualTo(10);
         assertThat(branchFigure(second, s)).isEqualTo(4);
     }
@@ -171,16 +171,16 @@ class BranchStockIntegrationTest {
         ResponseEntity<InsufficientStockErrorResponse> refused =
                 write(s, "stock-out", at(body(6), second), InsufficientStockErrorResponse.class);
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(refused.getBody().availableQuantity()).isEqualTo(4);
+        assertThat(refused.getBody().availableQuantity()).isEqualByComparingTo("4");
 
         StockMutationResponse sold = stockOut(s, at(body(3), second));
         assertThat(sold.breakdown()).singleElement().satisfies(draw -> {
             assertThat(draw.inMovementId()).isEqualTo(secondLot.movement().id());
-            assertThat(draw.quantity()).isEqualTo(3);
+            assertThat(draw.quantity()).isEqualByComparingTo("3");
         });
         assertThat(branchFigure(second, s)).isEqualTo(1);
         assertThat(branchFigure(main, s)).isEqualTo(10);
-        assertThat(sold.product().quantityOnHand()).isEqualTo(11);
+        assertThat(sold.product().quantityOnHand()).isEqualByComparingTo("11");
     }
 
     /**
@@ -206,7 +206,7 @@ class BranchStockIntegrationTest {
         assertThat(counted.movement()).as("not superseded by the other branch's newer count").isNotNull();
         assertThat(branchFigure(main, s)).as("the other branch's sale is not carried in").isEqualTo(7);
         assertThat(branchFigure(second, s)).isEqualTo(3);
-        assertThat(counted.product().quantityOnHand()).isEqualTo(10);
+        assertThat(counted.product().quantityOnHand()).isEqualByComparingTo("10");
     }
 
     @Test
@@ -222,7 +222,7 @@ class BranchStockIntegrationTest {
 
         assertThat(branchFigure(second, s)).isEqualTo(4);
         assertThat(branchFigure(main, s)).isEqualTo(10);
-        assertThat(product(s).quantityOnHand()).isEqualTo(14);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("14");
     }
 
     // ------------------------------------------------------------------------------- branch health
@@ -290,7 +290,7 @@ class BranchStockIntegrationTest {
     }
 
     private void assertMirror(Session s, UUID main, int expected) {
-        assertThat(product(s).quantityOnHand()).isEqualTo(expected);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(expected));
         assertThat(branchFigure(main, s)).as("the one branch's row mirrors the product").isEqualTo(expected);
     }
 

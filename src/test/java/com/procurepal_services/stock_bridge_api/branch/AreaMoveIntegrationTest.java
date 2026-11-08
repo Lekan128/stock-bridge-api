@@ -75,14 +75,14 @@ class AreaMoveIntegrationTest {
         assertThat(moved.toAreaName()).isEqualTo("Kitchen");
         assertThat(moved.status()).isEqualTo("DONE");
         assertThat(moved.lines()).singleElement().satisfies(line -> {
-            assertThat(line.quantity()).isEqualTo(4);
+            assertThat(line.quantity()).isEqualByComparingTo("4");
             assertThat(line.used()).isFalse();
         });
         assertThat(moved.undoUntil()).isNotNull();
         assertThat(areaFigure(a.store(), s)).isEqualTo(6);
         assertThat(areaFigure(a.other(), s)).isEqualTo(4);
         assertThat(branchFigure(s)).isEqualTo(10);
-        assertThat(product(s).quantityOnHand()).isEqualTo(10);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("10");
         assertThat(movements(s)).as("a move is not a ledger row").isEqualTo(ledgerBefore);
         AreaHealthResponse health = areaHealthService.health();
         assertThat(health.healthy()).as(health.toString()).isTrue();
@@ -101,13 +101,13 @@ class AreaMoveIntegrationTest {
         assertThat(given.lines()).singleElement().satisfies(line -> assertThat(line.used()).isTrue());
         assertThat(areaFigure(a.store(), s)).isEqualTo(7);
         assertThat(branchFigure(s)).isEqualTo(7);
-        assertThat(product(s).quantityOnHand()).isEqualTo(7);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("7");
         Map<String, Object> out = jdbc.queryForMap("""
                 SELECT movement_type, out_reason, area_id, used_area_id, cost_amount, quantity FROM stock_movements
                 WHERE product_id = :p AND movement_type = 'OUT'
                 """, new MapSqlParameterSource("p", s.productId()));
         assertThat(out).containsEntry("out_reason", "USED").containsEntry("area_id", a.store())
-                .containsEntry("used_area_id", a.other()).containsEntry("quantity", 3);
+                .containsEntry("used_area_id", a.other()).containsEntry("quantity", new BigDecimal("3.000"));
         assertThat((BigDecimal) out.get("cost_amount")).isEqualByComparingTo("750");
         assertThat(areaHealthService.health().healthy()).isTrue();
     }
@@ -130,7 +130,7 @@ class AreaMoveIntegrationTest {
         ResponseEntity<String> toTheirs = raw(s, a.store(), theirs, 1, String.class);
 
         assertThat(tooMuch.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(tooMuch.getBody().availableQuantity()).isEqualTo(5);
+        assertThat(tooMuch.getBody().availableQuantity()).isEqualByComparingTo("5");
         assertThat(same.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(same.getBody()).contains("Choose two different areas");
         assertThat(fromUsed.getBody()).contains("Housekeeping uses stock up as soon as it arrives");
@@ -222,7 +222,7 @@ class AreaMoveIntegrationTest {
         AreaMoveResponse given = move(s, a.store(), housekeeping, 3);
         assertThat(post(s, "/api/area-moves/" + given.id() + "/undo", null, String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(areaFigure(a.store(), s)).isEqualTo(10);
-        assertThat(product(s).quantityOnHand()).isEqualTo(10);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("10");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM stock_movements WHERE product_id = :p AND movement_type = 'OUT'",
                 new MapSqlParameterSource("p", s.productId()), Long.class)).isZero();
         assertThat(areaHealthService.health().healthy()).isTrue();
@@ -287,7 +287,7 @@ class AreaMoveIntegrationTest {
         assertThat(row.get("moveId")).isEqualTo(moved.id().toString());
         assertThat(row.get("areaName")).isEqualTo("Store");
         assertThat(row.get("toAreaName")).isEqualTo("Kitchen");
-        assertThat(row.get("quantity")).isEqualTo(4);
+        assertThat(row.get("quantity")).isEqualTo(4.0);
         assertThat(row.get("createdByName")).isNotNull();
         assertThat(row.get("lineValue")).isNull();
 

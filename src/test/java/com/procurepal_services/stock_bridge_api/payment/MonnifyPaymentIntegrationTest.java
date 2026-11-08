@@ -762,7 +762,7 @@ class MonnifyPaymentIntegrationTest {
                     .name("Incoming stock probe " + unique)
                     .sku("PAYTEST-" + unique)
                     .unitPrice(ORDER_TOTAL)
-                    .quantityOnHand(0)
+                    .quantityOnHand(BigDecimal.valueOf(0))
                     .incomingQuantity(0)
                     .active(true)
                     .build());

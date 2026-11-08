@@ -137,7 +137,7 @@ class BulkImportSessionIntegrationTest {
         assertThat(product.name()).isEqualTo("Rice 50kg premium");
         assertThat(product.lowStockThreshold()).isEqualTo(5);
         // The ledger owns the counter and no update row may move it - contract section 8.1.
-        assertThat(product.quantityOnHand()).isEqualTo(20);
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("20");
     }
 
     /** Section 6.3, bottom-right cell: a new code under UPDATE_ONLY is an error on that row. */
@@ -202,7 +202,7 @@ class BulkImportSessionIntegrationTest {
         // A warning does not block: the file is still importable, and the quantity still does
         // nothing.
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "IGNQTY-1").quantityOnHand()).isEqualTo(20);
+        assertThat(productBySku(tenant, "IGNQTY-1").quantityOnHand()).isEqualByComparingTo("20");
     }
 
     /**
@@ -452,7 +452,7 @@ class BulkImportSessionIntegrationTest {
         assertThat(second.getBody()).contains("already been imported");
 
         // One product, not two, and one lot, not two.
-        assertThat(productBySku(tenant, "IDEM-1").quantityOnHand()).isEqualTo(10);
+        assertThat(productBySku(tenant, "IDEM-1").quantityOnHand()).isEqualByComparingTo("10");
     }
 
     // -------------------------------------------------------------------- undo
@@ -469,7 +469,7 @@ class BulkImportSessionIntegrationTest {
                 tenant, CATALOG_HEADERS + "Rice 50kg,UNDO-1,,42000,40,,KG,,,,,\n", "PRODUCT_CATALOG", "CREATE_ONLY");
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.undoable()).isTrue();
-        assertThat(productBySku(tenant, "UNDO-1").quantityOnHand()).isEqualTo(40);
+        assertThat(productBySku(tenant, "UNDO-1").quantityOnHand()).isEqualByComparingTo("40");
 
         ResponseEntity<ImportResultResponse> undone = restTemplate.exchange(
                 "/api/imports/" + session.id() + "/undo",
@@ -506,7 +506,7 @@ class BulkImportSessionIntegrationTest {
                 "STOCK_IN",
                 null);
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "UNDOBLK-1").quantityOnHand()).isEqualTo(40);
+        assertThat(productBySku(tenant, "UNDOBLK-1").quantityOnHand()).isEqualByComparingTo("40");
 
         stockOut(tenant, product.id(), 5);
 
@@ -532,7 +532,7 @@ class BulkImportSessionIntegrationTest {
         });
 
         // Refused means refused: the ledger is untouched and the stock is where the sale left it.
-        assertThat(productBySku(tenant, "UNDOBLK-1").quantityOnHand()).isEqualTo(35);
+        assertThat(productBySku(tenant, "UNDOBLK-1").quantityOnHand()).isEqualByComparingTo("35");
     }
 
     /**
@@ -610,7 +610,7 @@ class BulkImportSessionIntegrationTest {
 
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.movementsCreated()).isEqualTo(1);
-        assertThat(productBySku(tenant, "SIS-1").quantityOnHand()).isEqualTo(40);
+        assertThat(productBySku(tenant, "SIS-1").quantityOnHand()).isEqualByComparingTo("40");
         assertThat(productBySku(tenant, "SIS-2").quantityOnHand()).isZero();
     }
 
@@ -657,7 +657,7 @@ class BulkImportSessionIntegrationTest {
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.productsCreated()).as("said out loud in the result, never silently").isEqualTo(1);
         assertThat(result.movementsCreated()).isEqualTo(2);
-        assertThat(productBySku(tenant, "INL-NEW").quantityOnHand()).isEqualTo(4);
+        assertThat(productBySku(tenant, "INL-NEW").quantityOnHand()).isEqualByComparingTo("4");
     }
 
     /**
@@ -991,7 +991,7 @@ class BulkImportSessionIntegrationTest {
 
         commit(tenant, session.id());
         ProductResponse rice = productBySku(tenant, "FRAC-1");
-        assertThat(rice.quantityOnHand()).isEqualTo(125);
+        assertThat(rice.quantityOnHand()).isEqualByComparingTo("125");
         assertThat(rice.costPrice()).isEqualByComparingTo("900");
     }
 
@@ -1148,7 +1148,7 @@ class BulkImportSessionIntegrationTest {
 
         // Thirty kegs of 50 ml.
         ProductResponse oil = productBySku(tenant, "PACKQ-1");
-        assertThat(oil.quantityOnHand()).isEqualTo(1_500);
+        assertThat(oil.quantityOnHand()).isEqualByComparingTo("1500");
         // low_stock_alert_at follows the same rule - five kegs, 250 ml.
         assertThat(oil.lowStockThreshold()).isEqualTo(250);
         // cost_price follows the pack too, and this is the AMENDED section 9.2. N475 for one 50 ml
@@ -1161,7 +1161,7 @@ class BulkImportSessionIntegrationTest {
 
         // No pack declared, so the bare number is stock units, exactly as it always was.
         ProductResponse bolts = productBySku(tenant, "PACKQ-2");
-        assertThat(bolts.quantityOnHand()).isEqualTo(600);
+        assertThat(bolts.quantityOnHand()).isEqualByComparingTo("600");
         assertThat(bolts.lowStockThreshold()).isEqualTo(50);
     }
 
@@ -1181,7 +1181,7 @@ class BulkImportSessionIntegrationTest {
 
         assertThat(session.errorCount()).isZero();
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "HALF-1").quantityOnHand()).isEqualTo(1_525);
+        assertThat(productBySku(tenant, "HALF-1").quantityOnHand()).isEqualByComparingTo("1525");
     }
 
     /**
@@ -1194,14 +1194,14 @@ class BulkImportSessionIntegrationTest {
         TenantLoginResponse tenant = signup("Rounds To Zero Co");
         ImportSessionResponse session = upload(
                 tenant,
-                CATALOG_HEADERS_TODAY + "Gold Dust,ZERO-1,,,kg,0.4,,,,,\n",
+                CATALOG_HEADERS_TODAY + "Gold Dust,ZERO-1,,,kg,0.0004,,,,,\n",
                 "PRODUCT_CATALOG",
                 "CREATE_ONLY");
 
         assertThat(session.errorCount()).isEqualTo(1);
         assertThat(firstRow(tenant, session, "ERROR").errors()).anySatisfy(error -> {
             assertThat(error.column()).isEqualTo("opening_stock");
-            assertThat(error.message()).contains("less than one whole kg");
+            assertThat(error.message()).contains("too little to record");
         });
     }
 
@@ -1310,7 +1310,7 @@ class BulkImportSessionIntegrationTest {
         commit(tenant, session.id());
 
         ProductResponse product = productBySku(tenant, "PRICE-1");
-        assertThat(product.quantityOnHand()).isEqualTo(1000);
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("1000");
         assertThat(product.costPrice()).isEqualByComparingTo("900");
     }
 
@@ -1414,7 +1414,7 @@ class BulkImportSessionIntegrationTest {
         assertThat(row.baseQuantityText()).isEqualTo("= 100 kg");
 
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "REFS-1").quantityOnHand()).isEqualTo(100);
+        assertThat(productBySku(tenant, "REFS-1").quantityOnHand()).isEqualByComparingTo("100");
     }
 
     /**
@@ -1468,7 +1468,7 @@ class BulkImportSessionIntegrationTest {
         assertThat(firstRow(tenant, answered, "ALL").normalized().get("counted_in")).isEqualTo("BAG:25");
 
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "MTB-1").quantityOnHand()).isEqualTo(25 + 50);
+        assertThat(productBySku(tenant, "MTB-1").quantityOnHand()).isEqualByComparingTo("75");
     }
 
     /**
@@ -1670,7 +1670,7 @@ class BulkImportSessionIntegrationTest {
                 "quantity", 1, "unit", "BAG", "unitPrice", 20000,
                 "companyVendorId", mill.id().toString(),
                 "packagingUnit", "BAG", "packagingSize", 25, "saveAsSupplierDefault", true));
-        assertThat(productBySku(tenant, "TWOB-1").quantityOnHand()).isEqualTo(25);
+        assertThat(productBySku(tenant, "TWOB-1").quantityOnHand()).isEqualByComparingTo("25");
 
         ImportSessionResponse session = upload(
                 tenant,
@@ -1685,7 +1685,7 @@ class BulkImportSessionIntegrationTest {
         assertThat(row.baseQuantityText()).isEqualTo("= 50 kg");
 
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "TWOB-1").quantityOnHand()).isEqualTo(75);
+        assertThat(productBySku(tenant, "TWOB-1").quantityOnHand()).isEqualByComparingTo("75");
     }
 
     /**
@@ -1720,7 +1720,7 @@ class BulkImportSessionIntegrationTest {
 
         commit(tenant, session.id());
         ProductResponse rice = productBySku(tenant, "LAST-1");
-        assertThat(rice.quantityOnHand()).isEqualTo(100);
+        assertThat(rice.quantityOnHand()).isEqualByComparingTo("100");
         // Two bags at N45,000 is N900 a kg either way - the blank price did not drag the average.
         assertThat(rice.costPrice()).isEqualByComparingTo("900");
     }
@@ -1767,9 +1767,9 @@ class BulkImportSessionIntegrationTest {
         assertThat(answered.errorCount()).isZero();
 
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "NAME-1").quantityOnHand()).isEqualTo(12);
+        assertThat(productBySku(tenant, "NAME-1").quantityOnHand()).isEqualByComparingTo("12");
         assertThat(productBySku(tenant, "NAME-2").quantityOnHand()).isZero();
-        assertThat(productBySku(tenant, "NAME-3").quantityOnHand()).isEqualTo(5);
+        assertThat(productBySku(tenant, "NAME-3").quantityOnHand()).isEqualByComparingTo("5");
     }
 
     /**
@@ -1795,7 +1795,7 @@ class BulkImportSessionIntegrationTest {
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.productsCreated()).isEqualTo(1);
         ProductResponse oil = productBySku(tenant, "PALM-OIL-25L");
-        assertThat(oil.quantityOnHand()).isEqualTo(40);
+        assertThat(oil.quantityOnHand()).isEqualByComparingTo("40");
     }
 
     /**

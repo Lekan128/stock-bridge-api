@@ -41,7 +41,7 @@ class StockIdempotencyHashPinTest {
 
     @Test
     void aSimpleStockOutHashesExactlyAsBeforePhaseOne() {
-        StockOutRequest request = new StockOutRequest(3, new BigDecimal("5000.00"), "front counter", "CARTON", null);
+        StockOutRequest request = new StockOutRequest(BigDecimal.valueOf(3), new BigDecimal("5000.00"), "front counter", "CARTON", null);
 
         assertThat(idempotencyService.hashMaterial("STOCK_OUT", PRODUCT, request)).isEqualTo(PINNED_SIMPLE_MATERIAL);
         assertThat(idempotencyService.hash("STOCK_OUT", PRODUCT, request)).isEqualTo(PINNED_SIMPLE_HASH);
@@ -50,7 +50,7 @@ class StockIdempotencyHashPinTest {
     @Test
     void aStockOutWithChosenDeliveriesHashesExactlyAsBeforePhaseOne() {
         StockOutRequest request = new StockOutRequest(
-                12, null, null, null, List.of(new StockOutRequest.Allocation(LOT, 12)));
+                BigDecimal.valueOf(12), null, null, null, List.of(new StockOutRequest.Allocation(LOT, BigDecimal.valueOf(12))));
 
         assertThat(idempotencyService.hash("STOCK_OUT", PRODUCT, request)).isEqualTo(PINNED_ALLOCATED_HASH);
     }
@@ -58,16 +58,16 @@ class StockIdempotencyHashPinTest {
     @Test
     void nullFieldsAreLeftOutOfWhatIsHashed() {
         // The rule every later optional field relies on: absent and null hash the same.
-        String material = idempotencyService.hashMaterial("STOCK_OUT", PRODUCT, new StockOutRequest(1, null, null));
+        String material = idempotencyService.hashMaterial("STOCK_OUT", PRODUCT, new StockOutRequest(BigDecimal.valueOf(1), null, null));
 
         assertThat(material).doesNotContain("null").doesNotContain("unitPrice").doesNotContain("note");
     }
 
     @Test
     void timingFieldsStillDoNotChangeTheHash() {
-        StockOutRequest sentOnline = new StockOutRequest(2, null, null, null, null, null, null);
+        StockOutRequest sentOnline = new StockOutRequest(BigDecimal.valueOf(2), null, null, null, null, null, null);
         StockOutRequest resentFromOutbox = new StockOutRequest(
-                2, null, null, null, null, OffsetDateTime.parse("2026-10-19T09:00:00+01:00"), true);
+                BigDecimal.valueOf(2), null, null, null, null, OffsetDateTime.parse("2026-10-19T09:00:00+01:00"), true);
 
         assertThat(idempotencyService.hash("STOCK_OUT", PRODUCT, resentFromOutbox))
                 .isEqualTo(idempotencyService.hash("STOCK_OUT", PRODUCT, sentOnline));

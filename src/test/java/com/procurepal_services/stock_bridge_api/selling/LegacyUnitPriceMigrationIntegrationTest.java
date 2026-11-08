@@ -133,7 +133,7 @@ class LegacyUnitPriceMigrationIntegrationTest {
                             .name("Legacy priced " + UUID.randomUUID().toString().substring(0, 6))
                             .sku("LEGACY-" + UUID.randomUUID().toString().substring(0, 8))
                             .unitPrice(new BigDecimal(unitPrice))
-                            .quantityOnHand(0)
+                            .quantityOnHand(BigDecimal.valueOf(0))
                             .active(true)
                             .build())
                     .getId();

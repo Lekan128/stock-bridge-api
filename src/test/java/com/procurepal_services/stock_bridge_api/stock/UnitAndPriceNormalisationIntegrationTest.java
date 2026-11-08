@@ -80,8 +80,8 @@ class UnitAndPriceNormalisationIntegrationTest {
         assertThat(receipt).isNotNull();
 
         // Quantity: converted, as it always was.
-        assertThat(receipt.movement().quantity()).isEqualTo(1000);
-        assertThat(receipt.product().quantityOnHand()).isEqualTo(1000);
+        assertThat(receipt.movement().quantity()).isEqualByComparingTo("1000");
+        assertThat(receipt.product().quantityOnHand()).isEqualByComparingTo("1000");
 
         // Price: converted too, which is new. N45,000 / 50 = N900 per kg.
         assertThat(receipt.movement().unitPriceAtTime()).isEqualByComparingTo("900");
@@ -110,7 +110,7 @@ class UnitAndPriceNormalisationIntegrationTest {
 
         // (1000*900 + 1000*1100) / 2000 = 1000.00 per kg.
         assertThat(second.product().costPrice()).isEqualByComparingTo("1000.00");
-        assertThat(second.product().quantityOnHand()).isEqualTo(2000);
+        assertThat(second.product().quantityOnHand()).isEqualByComparingTo("2000");
     }
 
     /**
@@ -128,10 +128,10 @@ class UnitAndPriceNormalisationIntegrationTest {
                 stockIn(admin, product.id(), 500, new BigDecimal("2.50"), null, supplier.id(), null, null, null)
                         .getBody();
 
-        assertThat(receipt.movement().quantity()).isEqualTo(500);
+        assertThat(receipt.movement().quantity()).isEqualByComparingTo("500");
         assertThat(receipt.movement().unitPriceAtTime()).isEqualByComparingTo("2.50");
         assertThat(receipt.product().costPrice()).isEqualByComparingTo("2.50");
-        assertThat(receipt.product().quantityOnHand()).isEqualTo(500);
+        assertThat(receipt.product().quantityOnHand()).isEqualByComparingTo("500");
     }
 
     /**
@@ -168,9 +168,9 @@ class UnitAndPriceNormalisationIntegrationTest {
     }
 
     /**
-     * Section 3.1's round-to-zero 400. 1 g of a product counted in kg is 0.001 kg, which rounds
-     * to nothing; recording that would mean writing "this delivery contained nothing" for a
-     * delivery somebody just typed.
+     * Section 3.1's round-to-zero 400. 0.4 g of a product counted in kg is 0.0004 kg, which is nothing at
+     * the ledger's 3 places (V81); recording that would mean writing "this delivery contained nothing"
+     * for a delivery somebody just typed.
      */
     @Test
     void aConversionThatRoundsToZeroIsRejectedRatherThanSilentlyRecordedAsNothing() {
@@ -182,14 +182,14 @@ class UnitAndPriceNormalisationIntegrationTest {
                 "/api/products/" + product.id() + "/stock/stock-in",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new StockInRequest(1, new BigDecimal("5"), null, "G", supplier.id(), null, null),
+                        new StockInRequest(new BigDecimal("0.4"), new BigDecimal("5"), null, "G", supplier.id(), null,
+                                null, null, null, null),
                         authHeaders(admin)),
                 ApiError.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(response.getBody().message())
-                .isEqualTo("1 g is less than one whole kg — enter this in g by changing this product's stock "
-                        + "unit, or enter a larger amount.");
+                .isEqualTo("0.4 g is too little to record — the smallest amount is 0.001 kg.");
 
         // Nothing was written: not a zero-quantity movement, not a cost.
         ResponseEntity<ProductResponse> unchanged = restTemplate.exchange(
@@ -215,7 +215,7 @@ class UnitAndPriceNormalisationIntegrationTest {
                         admin, product.id(), 2, new BigDecimal("900000"), "T", supplier.id(), null, null, null)
                 .getBody();
 
-        assertThat(receipt.movement().quantity()).isEqualTo(2000);
+        assertThat(receipt.movement().quantity()).isEqualByComparingTo("2000");
         assertThat(receipt.movement().unitPriceAtTime()).isEqualByComparingTo("900");
     }
 
@@ -252,7 +252,7 @@ class UnitAndPriceNormalisationIntegrationTest {
                         new BigDecimal("25"),
                         null)
                 .getBody();
-        assertThat(oneOff.movement().quantity()).isEqualTo(100);
+        assertThat(oneOff.movement().quantity()).isEqualByComparingTo("100");
         assertThat(oneOff.movement().unitPriceAtTime()).isEqualByComparingTo("900");
 
         ProductVendorResponse after = findSupplierLine(admin, product.id(), supplier.id());
@@ -323,8 +323,8 @@ class UnitAndPriceNormalisationIntegrationTest {
 
         List<ProductLotResponse> beforeSale = lots(admin, product.id(), true);
         assertThat(beforeSale).hasSize(2);
-        assertThat(beforeSale).extracting(ProductLotResponse::quantity).containsExactly(300, 200);
-        assertThat(beforeSale).extracting(ProductLotResponse::remaining).containsExactly(300, 200);
+        assertThat(beforeSale).extracting(lot -> lot.quantity().intValueExact()).containsExactly(300, 200);
+        assertThat(beforeSale).extracting(lot -> lot.remaining().intValueExact()).containsExactly(300, 200);
         // Per stock unit, both of them: N45,000/bag is N900/kg, N50,000/bag is N1,000/kg.
         assertThat(beforeSale.get(0).unitPriceAtTime()).isEqualByComparingTo("900");
         assertThat(beforeSale.get(1).unitPriceAtTime()).isEqualByComparingTo("1000");
@@ -340,20 +340,20 @@ class UnitAndPriceNormalisationIntegrationTest {
         restTemplate.exchange(
                 "/api/products/" + product.id() + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(350, null, "sale"), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(350), null, "sale"), authHeaders(admin)),
                 StockMutationResponse.class);
 
         List<ProductLotResponse> open = lots(admin, product.id(), true);
         assertThat(open).hasSize(1);
         assertThat(open.get(0).inMovementId()).isEqualTo(beforeSale.get(1).inMovementId());
-        assertThat(open.get(0).quantity()).isEqualTo(200);
-        assertThat(open.get(0).remaining()).isEqualTo(150);
+        assertThat(open.get(0).quantity()).isEqualByComparingTo("200");
+        assertThat(open.get(0).remaining()).isEqualByComparingTo("150");
 
         // open=false still shows the exhausted lot, at zero and never below it.
         List<ProductLotResponse> all = lots(admin, product.id(), false);
         assertThat(all).hasSize(2);
         assertThat(all.get(0).remaining()).isZero();
-        assertThat(all).allSatisfy(lot -> assertThat(lot.remaining()).isGreaterThanOrEqualTo(0));
+        assertThat(all).allSatisfy(lot -> assertThat(lot.remaining()).isGreaterThanOrEqualTo(BigDecimal.ZERO));
     }
 
     /**
@@ -377,7 +377,7 @@ class UnitAndPriceNormalisationIntegrationTest {
                 HttpMethod.POST,
                 new HttpEntity<>(
                         new StockOutRequest(
-                                80, null, null, null, List.of(new StockOutRequest.Allocation(firstLot, 80))),
+                                BigDecimal.valueOf(80), null, null, null, List.of(new StockOutRequest.Allocation(firstLot, BigDecimal.valueOf(80)))),
                         authHeaders(admin)),
                 ApiError.class);
 
@@ -406,7 +406,7 @@ class UnitAndPriceNormalisationIntegrationTest {
                 "/api/products/" + product.id() + "/stock/stock-out",
                 HttpMethod.POST,
                 new HttpEntity<>(
-                        new StockOutRequest(2, null, null, "BAG", List.of(new StockOutRequest.Allocation(lot, 50))),
+                        new StockOutRequest(BigDecimal.valueOf(2), null, null, "BAG", List.of(new StockOutRequest.Allocation(lot, BigDecimal.valueOf(50)))),
                         authHeaders(admin)),
                 ApiError.class);
 
@@ -429,15 +429,15 @@ class UnitAndPriceNormalisationIntegrationTest {
         ResponseEntity<InsufficientStockErrorResponse> response = restTemplate.exchange(
                 "/api/products/" + product.id() + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(2, null, null, "BAG", null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(2), null, null, "BAG", null), authHeaders(admin)),
                 InsufficientStockErrorResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(response.getBody().message()).isEqualTo("Only 50 kg available — you asked for 100 kg.");
         // The raw numbers stay on the body, both in the product's stock unit - a client that
         // wants to render its own sentence never has to parse the one above.
-        assertThat(response.getBody().availableQuantity()).isEqualTo(50);
-        assertThat(response.getBody().requestedQuantity()).isEqualTo(100);
+        assertThat(response.getBody().availableQuantity()).isEqualByComparingTo("50");
+        assertThat(response.getBody().requestedQuantity()).isEqualByComparingTo("100");
     }
 
     /**
@@ -456,13 +456,13 @@ class UnitAndPriceNormalisationIntegrationTest {
                 .exchange(
                         "/api/products/" + product.id() + "/stock/stock-out",
                         HttpMethod.POST,
-                        new HttpEntity<>(new StockOutRequest(1, null, null, "BAG", null), authHeaders(admin)),
+                        new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(1), null, null, "BAG", null), authHeaders(admin)),
                         StockMutationResponse.class)
                 .getBody();
 
         assertThat(out.breakdown()).hasSize(1);
         StockMutationResponse.AllocationBreakdown line = out.breakdown().get(0);
-        assertThat(line.quantity()).isEqualTo(50);
+        assertThat(line.quantity()).isEqualByComparingTo("50");
         assertThat(line.label()).contains("Dangote Nigeria Plc").contains("·");
         assertNoUuid(line.label());
     }
@@ -486,8 +486,8 @@ class UnitAndPriceNormalisationIntegrationTest {
         StockMutationResponse receipt = stockInRaw(admin, product.id(), "2.5", "45000", "BAG", StockMutationResponse.class)
                 .getBody();
 
-        assertThat(receipt.movement().quantity()).isEqualTo(125);
-        assertThat(receipt.product().quantityOnHand()).isEqualTo(125);
+        assertThat(receipt.movement().quantity()).isEqualByComparingTo("125");
+        assertThat(receipt.product().quantityOnHand()).isEqualByComparingTo("125");
         assertThat(receipt.movement().unitPriceAtTime()).isEqualByComparingTo("900");
     }
 
@@ -508,23 +508,22 @@ class UnitAndPriceNormalisationIntegrationTest {
 
         StockMutationResponse half = stockInRaw(admin, product.id(), "0.5", null, "PACK", StockMutationResponse.class)
                 .getBody();
-        assertThat(half.movement().quantity()).isEqualTo(5);
+        assertThat(half.movement().quantity()).isEqualByComparingTo("5");
     }
 
     /**
-     * A measured stock unit rounds, as contract section 3.1 has always said: 12.4 kg of a product
-     * counted in whole kg is stored as 12 kg. Refusing it would be the software being right about a
-     * technicality and wrong about the scale in the storeroom.
+     * A measured stock unit keeps its fraction (UNITS_PLAN.md Part 0, V81): 12.4 kg is stored as 12.4 kg.
+     * Until V81 it was rounded to 12, losing 400 g on every such delivery.
      */
     @Test
-    void aFractionOfAMeasuredStockUnitIsRoundedToTheNearestWholeUnit() {
+    void aFractionOfAMeasuredStockUnitIsKeptToTheGram() {
         TenantLoginResponse admin = signup("Rounded Kg Co");
         ProductResponse product = createRiceProduct(admin, "UPN-FR3");
 
         StockMutationResponse receipt = stockInRaw(admin, product.id(), "12.4", null, "KG", StockMutationResponse.class)
                 .getBody();
 
-        assertThat(receipt.movement().quantity()).isEqualTo(12);
+        assertThat(receipt.movement().quantity()).isEqualByComparingTo("12.4");
     }
 
     /** Posts the body as JSON text, so a decimal reaches the server exactly as a browser sends it. */

@@ -56,19 +56,17 @@ public class InvalidStockUnitException extends RuntimeException {
     }
 
     /**
-     * <em>"1 g is less than one whole kg — enter this in g by changing this product's stock unit,
-     * or enter a larger amount."</em> - UNIT_UX_CONTRACT.md section 3.1's second message.
+     * <em>"0.4 g is too little to record — the smallest amount is 0.001 kg."</em> - UNIT_UX_CONTRACT.md section
+     * 3.1's second message, as V81 (UNITS_PLAN.md Part 0) left it.
      *
      * <h2>Why this is an error and not a zero</h2>
-     * Every stock quantity in this schema is an integer in the product's stock unit, so 1 g on a
-     * product counted in kg has nowhere to go: {@code round(1 × 0.001)} is 0. Recording that
+     * Every stock quantity in this schema is kept to 3 places of the product's stock unit, so 0.4 g on a
+     * product counted in kg has nowhere to go: {@code round(0.4 × 0.001, 3)} is 0. Recording that
      * would mean writing "this delivery contained nothing" for a delivery somebody just typed,
      * and then quietly blending its price into a weighted average over zero units. Section 3.1 is
      * explicit - "a conversion that rounds to zero ⇒ 400, never a silent 0".
      *
-     * <p>The message offers both real ways out, because they are genuinely different decisions:
-     * change how the product is counted (a lasting configuration change, right when the user has
-     * just discovered they need it), or enter an amount that is at least one whole stock unit.
+     * <p>The message says the smallest amount that can be recorded, which is the way out.
      *
      * @param enteredQuantity the number the user typed, in {@code enteredOption}'s unit.
      * @param enteredOption the unit they typed it in - the one whose factor is too small.
@@ -77,9 +75,9 @@ public class InvalidStockUnitException extends RuntimeException {
     public static InvalidStockUnitException roundsToZero(
             BigDecimal enteredQuantity, UnitOption enteredOption, String stockUnitSymbol) {
         String entered = UnitOptions.spokenPhrase(enteredOption);
-        return new InvalidStockUnitException(plain(enteredQuantity) + " " + entered + " is less than one whole "
-                + stockUnitSymbol + " — enter this in " + entered
-                + " by changing this product's stock unit, or enter a larger amount.");
+        // Since V81 a stock figure keeps 3 places (UNITS_PLAN.md Part 0): only less than 0.001 of the unit is nothing.
+        return new InvalidStockUnitException(plain(enteredQuantity) + " " + entered
+                + " is too little to record — the smallest amount is 0.001 " + stockUnitSymbol + ".");
     }
 
     /**

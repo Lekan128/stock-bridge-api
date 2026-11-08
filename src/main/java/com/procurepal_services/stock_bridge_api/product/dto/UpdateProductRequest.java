@@ -87,7 +87,36 @@ public record UpdateProductRequest(
          * True takes the selling price off (V47) - a company that no longer sells this product. A
          * marketplace seller's price can never be taken off; the request is refused for them.
          */
-        Boolean clearUnitPrice) {
+        Boolean clearUnitPrice,
+        /**
+         * The product's own units, the whole list (UNITS_PLAN.md Part 1-3); absent leaves them as they are. One left
+         * out that has been used is hidden rather than removed, so what was typed in it still reads.
+         */
+        java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+        /** Where stock-outs and counts start for this product (Part 2): a measure, a unit or a pack key. Blank clears. */
+        String usedInUnit) {
+
+    /** The shape before a product's own units (V82). */
+    public UpdateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            Boolean active,
+            Boolean removeImage,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            UUID categoryId,
+            Boolean clearCategory,
+            String barcode,
+            String unitPriceUnit,
+            Boolean clearUnitPrice) {
+        this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure,
+                packagingUnit, packagingSize, categoryId, clearCategory, barcode, unitPriceUnit, clearUnitPrice, null,
+                null);
+    }
 
     /** The shape before the price unit (V47) - a price per stock unit, never cleared. */
     public UpdateProductRequest(

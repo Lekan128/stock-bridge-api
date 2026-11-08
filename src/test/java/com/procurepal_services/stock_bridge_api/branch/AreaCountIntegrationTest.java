@@ -74,7 +74,7 @@ class AreaCountIntegrationTest {
                         + " WHERE product_id = :p AND is_count",
                 new MapSqlParameterSource("p", s.productId()));
         assertThat(used).containsEntry("movement_type", "OUT").containsEntry("out_reason", "USED")
-                .containsEntry("quantity", 2).containsEntry("is_count", true).containsEntry("area_id", a.other());
+                .containsEntry("quantity", new BigDecimal("2.000")).containsEntry("is_count", true).containsEntry("area_id", a.other());
         assertThat((BigDecimal) used.get("cost_amount")).isEqualByComparingTo("200");
         assertThat(areaFigure(a.other(), s)).isEqualTo(4);
         assertThat(branchFigure(s)).isEqualTo(8);

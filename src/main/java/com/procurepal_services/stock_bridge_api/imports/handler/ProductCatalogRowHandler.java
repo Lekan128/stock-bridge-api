@@ -722,9 +722,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         if (stockUnits.signum() == 0 && entered.signum() > 0) {
             out.error(field, "ROUNDS_TO_ZERO",
-                    "%s of %s is less than one whole %s, and we can only record whole ones - enter a larger "
-                            .formatted(ImportCopy.count(entered), spokenOf(countedIn), symbolOrUnits(stockUnitCode))
-                            + "amount, or count " + subject + " in a smaller unit.");
+                    "%s of %s is too little to record - the smallest amount is 0.001 %s."
+                            .formatted(ImportCopy.count(entered), spokenOf(countedIn), symbolOrUnits(stockUnitCode)));
             out.value(field, null);
             return null;
         }

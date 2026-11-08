@@ -113,7 +113,7 @@ class StockRequestIntegrationTest {
         fill(keeper, id, a.store(), a.other(), Map.of(s.productId(), 3));
         StockRequestResponse part = request(cook, id);
         assertThat(part.status()).isEqualTo("OPEN");
-        assertThat(part.lines()).singleElement().satisfies(line -> assertThat(line.moved()).isEqualTo(3));
+        assertThat(part.lines()).singleElement().satisfies(line -> assertThat(line.moved()).isEqualByComparingTo("3"));
         assertThat(part.canCancel()).as("some of it has moved").isFalse();
         assertThat(areaFigure(a.other(), s)).isEqualTo(3);
         assertThat(notifications(cook, "STOCK_REQUEST_ANSWERED")).isEqualTo(1);
@@ -262,7 +262,7 @@ class StockRequestIntegrationTest {
         assertThat(waiting(keeper)).isEmpty();
         assertThat(noneInStore(s)).singleElement().satisfies(line -> {
             assertThat(line.productId()).isEqualTo(paste);
-            assertThat(line.quantity()).isEqualTo(3);
+            assertThat(line.quantity()).isEqualByComparingTo("3");
             assertThat(line.toAreaName()).isEqualTo("Kitchen");
             assertThat(line.fromAreaName()).isEqualTo("Store");
             assertThat(line.askedByName()).isEqualTo("cook");

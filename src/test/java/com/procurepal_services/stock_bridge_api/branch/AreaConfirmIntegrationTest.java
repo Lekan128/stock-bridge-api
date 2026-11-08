@@ -78,7 +78,7 @@ class AreaConfirmIntegrationTest {
         assertThat(branchFigure(s)).isEqualTo(10);
         assertHealthy();
         assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other()))
-                .singleElement().satisfies(figure -> assertThat(figure.waiting()).isEqualTo(4));
+                .singleElement().satisfies(figure -> assertThat(figure.waiting()).isEqualByComparingTo("4"));
         assertThat(notifications(cook, "AREA_MOVE_WAITING")).isEqualTo(1);
         List<AreaMoveResponse> waiting = waiting(cook);
         assertThat(waiting).singleElement().satisfies(m -> {
@@ -91,7 +91,7 @@ class AreaConfirmIntegrationTest {
 
         assertThat(confirmed.status()).isEqualTo("DONE");
         assertThat(confirmed.confirmedByName()).isEqualTo("cook");
-        assertThat(confirmed.lines()).singleElement().satisfies(line -> assertThat(line.got()).isEqualTo(4));
+        assertThat(confirmed.lines()).singleElement().satisfies(line -> assertThat(line.got()).isEqualByComparingTo("4"));
         assertThat(areaFigure(a.other(), s)).isEqualTo(4);
         assertThat(areaFigure(a.store(), s)).isEqualTo(6);
         assertThat(branchFigure(s)).isEqualTo(10);
@@ -100,7 +100,7 @@ class AreaConfirmIntegrationTest {
         // Stock movements: one Store → Kitchen row, for what arrived.
         assertThat(rows(s, "/api/stock/movements?productId=" + s.productId()))
                 .filteredOn(row -> "MOVE".equals(((Map<?, ?>) row).get("movementType")))
-                .singleElement().satisfies(row -> assertThat(((Map<?, ?>) row).get("quantity")).isEqualTo(4));
+                .singleElement().satisfies(row -> assertThat(((Map<?, ?>) row).get("quantity")).isEqualTo(4.0));
         // Sent again (a lost reply): the first stands.
         assertThat(confirm(cook, moved.id(), Map.of("lines", List.of(line(s, 0)))).status()).isEqualTo("DONE");
         assertThat(areaFigure(a.other(), s)).isEqualTo(4);
@@ -119,7 +119,7 @@ class AreaConfirmIntegrationTest {
 
         assertThat(back.status()).isEqualTo("CONFIRMED_SHORT");
         assertThat(back.lines()).singleElement().satisfies(line -> {
-            assertThat(line.got()).isEqualTo(3);
+            assertThat(line.got()).isEqualByComparingTo("3");
             assertThat(line.damaged()).isZero();
         });
         assertThat(areaFigure(a.store(), s)).isEqualTo(7);
@@ -131,14 +131,14 @@ class AreaConfirmIntegrationTest {
         AreaMoveResponse second = move(s, a.store(), a.other(), 4);
         AreaMoveResponse damaged = confirm(cook, second.id(), Map.of("lines", List.of(line(s, 1)), "rest", "DAMAGED"));
 
-        assertThat(damaged.lines()).singleElement().satisfies(line -> assertThat(line.damaged()).isEqualTo(3));
+        assertThat(damaged.lines()).singleElement().satisfies(line -> assertThat(line.damaged()).isEqualByComparingTo("3"));
         assertThat(areaFigure(a.store(), s)).isEqualTo(3);
         assertThat(areaFigure(a.other(), s)).isEqualTo(4);
         assertThat(branchFigure(s)).isEqualTo(7);
         Map<String, Object> out = jdbc.queryForMap("""
                 SELECT out_reason, area_id, quantity FROM stock_movements WHERE product_id = :p AND movement_type = 'OUT'
                 """, new MapSqlParameterSource("p", s.productId()));
-        assertThat(out).containsEntry("out_reason", "DAMAGED").containsEntry("area_id", a.store()).containsEntry("quantity", 3);
+        assertThat(out).containsEntry("out_reason", "DAMAGED").containsEntry("area_id", a.store()).containsEntry("quantity", new java.math.BigDecimal("3.000"));
         assertHealthy();
     }
 
@@ -163,7 +163,7 @@ class AreaConfirmIntegrationTest {
                 WHERE product_id = :p AND movement_type = 'OUT'
                 """, new MapSqlParameterSource("p", s.productId()));
         assertThat(out).containsEntry("out_reason", "USED").containsEntry("area_id", a.store())
-                .containsEntry("used_area_id", a.other()).containsEntry("quantity", 2);
+                .containsEntry("used_area_id", a.other()).containsEntry("quantity", new BigDecimal("2.000"));
         assertThat(areaFigure(a.store(), s)).isEqualTo(8);
         assertThat(branchFigure(s)).isEqualTo(8);
         assertHealthy();
