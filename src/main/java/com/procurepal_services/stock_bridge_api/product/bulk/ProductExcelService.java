@@ -97,7 +97,7 @@ public class ProductExcelService {
     /** Template and export column order: what it is, how you buy it, what you have, the rest. */
     static final List<String> SHEET_FIELDS = List.of(
             "name", "sku", "pack", "contains", "vendor_name", "opening_stock", "cost_price", "unit_price",
-            "low_stock_alert_at", "category", "description", "vendor_sku", "barcode");
+            "low_stock_alert_at", "category", "description", "vendor_sku", "barcode", "also_used_in");
 
     static final Map<String, String> SHEET_HEADERS = Map.ofEntries(
             Map.entry("name", "Product name *"),
@@ -113,6 +113,7 @@ public class ProductExcelService {
             Map.entry("description", "Notes"),
             Map.entry("vendor_sku", "Supplier's code for it"),
             Map.entry("barcode", "Barcode"),
+            Map.entry("also_used_in", "Also used in"),
             Map.entry("ref", "Ref"));
 
     /**
@@ -137,13 +138,14 @@ public class ProductExcelService {
             Map.entry("description", "Optional. Anything you want on the product page."),
             Map.entry("vendor_sku", "Optional. The supplier's own code, if they use one."),
             Map.entry("barcode", "Optional. The barcode on the box, so you can scan it later."),
+            Map.entry("also_used_in", "Optional. Your own units and what ONE holds: Derica=0.6; Cup=0.2 (in kg for rice in kg)."),
             Map.entry("ref", "Leave alone - it's how we recognise the product."));
 
     private static final Map<String, Integer> SHEET_WIDTHS = Map.ofEntries(
             Map.entry("name", 30), Map.entry("sku", 16), Map.entry("pack", 14), Map.entry("contains", 18),
             Map.entry("vendor_name", 22), Map.entry("opening_stock", 16), Map.entry("cost_price", 18),
             Map.entry("unit_price", 16), Map.entry("low_stock_alert_at", 16), Map.entry("category", 16),
-            Map.entry("barcode", 18),
+            Map.entry("barcode", 18), Map.entry("also_used_in", 22),
             Map.entry("description", 26), Map.entry("vendor_sku", 18), Map.entry("ref", 12));
 
     /**
@@ -414,6 +416,9 @@ public class ProductExcelService {
                 cell(fields, row, "sku").setCellValue(product.getSku());
                 cell(fields, row, "description")
                         .setCellValue(product.getDescription() == null ? "" : product.getDescription());
+                // The product's own units (UNITS_PLAN.md Part 5), as the column is read back: "Derica=0.6; Cup=0.2".
+                cell(fields, row, "also_used_in").setCellValue(
+                        com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures.format(product.getMeasures()));
                 // Labels, not the stored codes - contract section 7, non-negotiable 4. The export
                 // and the template are the same file to a user who exports, edits and re-uploads,
                 // so a cell that reads "KG" on one and "Kilogram (kg)" on the other would be two

@@ -41,6 +41,9 @@ import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductMo
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationService;
+import com.procurepal_services.stock_bridge_api.product.unit.InvalidMeasureException;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.PackContents;
@@ -225,6 +228,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 "Anything you want shown on the product page."));
         fields.add(ImportFieldDescriptor.text(ImportFields.BARCODE, "Barcode",
                 "The barcode on the box, if it has one. Lets you scan it when a delivery arrives."));
+        fields.add(ImportFieldDescriptor.text(ImportFields.ALSO_USED_IN, "Also used in",
+                "Your own units and what one holds, in its stock unit - Derica=0.6; Cup=0.2."));
         fields.add(ImportFieldDescriptor.text(ImportFields.CATEGORY, "Category",
                 "One of your categories, or a new one - we add any you don't have yet."));
         // Kept although new templates no longer carry the column - PACK_ENTRY_REDESIGN.md section
@@ -412,6 +417,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         validatePackagingCoherence(ctx, out, subject, unitOfMeasure, packagingUnit, packagingSize);
+        validateMeasures(ctx, out, existing, unitOfMeasure, packagingUnit);
         warnAboutImplausibleSetup(ctx, out, name == null ? subject : name, unitOfMeasure, packagingUnit, packagingSize);
         if (creating && !looksLikeContinuation && name != null) {
             warnAboutPossibleDuplicate(ctx, out, name);
@@ -434,6 +440,32 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         return out.build();
+    }
+
+    /**
+     * The "Also used in" cell (UNITS_PLAN.md Part 5): "Derica=0.6; Cup=0.2", each size in the row's stock unit. Read
+     * and checked here, by the same rules the product form uses, and written back in its canonical spelling.
+     */
+    private void validateMeasures(
+            RowContext ctx, RowValidation.Builder out, Product existing, String unitOfMeasure, String packagingUnit) {
+        String cell = ctx.text(ImportFields.ALSO_USED_IN);
+        if (cell == null) {
+            return;
+        }
+        String stockUnit = unitOfMeasure != null ? unitOfMeasure : existing == null ? null : existing.getUnitOfMeasure();
+        String pack = packagingUnit != null ? packagingUnit : existing == null ? null : existing.getPackagingUnit();
+        try {
+            List<ProductMeasure> measures = ProductMeasures.validate(ProductMeasures.parse(cell), stockUnit, pack);
+            out.value(ImportFields.ALSO_USED_IN, ProductMeasures.format(measures));
+        } catch (InvalidMeasureException unusable) {
+            out.error(ImportFields.ALSO_USED_IN, "MEASURES_INVALID", unusable.getMessage());
+        }
+    }
+
+    /** The row's measures, as validate left them; none when the cell was blank. */
+    private static List<ProductMeasure> measuresOf(ImportRowState state) {
+        String cell = state.text(ImportFields.ALSO_USED_IN);
+        return cell == null ? List.of() : ProductMeasures.parse(cell);
     }
 
     // ---------------------------------------------------------- sense checks (task 1.7)
@@ -1526,6 +1558,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 // stock units. Converting here rather than storing what was typed is what stops
                 // a 5-keg alert firing at 5 ml.
                 .lowStockThreshold(wholeStockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT))
+                .measures(new ArrayList<>(measuresOf(state)))
                 .unitOfMeasure(state.text(ImportFields.STOCK_UNIT))
                 .packagingUnit(state.text(ImportFields.PACK))
                 .packagingSize(packSizeOf(state))
@@ -1567,6 +1600,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         before.put(ImportFields.SKU, product.getSku());
         before.put(ImportFields.DESCRIPTION, product.getDescription());
         before.put(ImportFields.BARCODE, product.getBarcode());
+        before.put(ImportFields.ALSO_USED_IN, product.getMeasures() == null ? List.of() : product.getMeasures().stream()
+                .map(measure -> Map.of("name", measure.name(), "size", measure.size().toPlainString(),
+                        "hidden", measure.hiddenNow()))
+                .toList());
         before.put(ImportFields.UNIT_PRICE, product.getUnitPrice() == null ? null : product.getUnitPrice().toPlainString());
         before.put(BEFORE_PRICE_ENTERED, product.getUnitPriceEntered() == null ? null : product.getUnitPriceEntered().toPlainString());
         before.put(BEFORE_PRICE_ENTERED_UNIT, product.getUnitPriceEnteredUnit());
@@ -1603,6 +1640,16 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         if (state.text(ImportFields.BARCODE) != null) {
             product.setBarcode(state.text(ImportFields.BARCODE));
+        }
+        // A sheet adds or re-weighs the units it names and never takes one off (UNITS_PLAN.md Part 5): a blank cell, or
+        // one left out, says nothing about it. Taking one off is the product page's, where a used one is kept hidden.
+        if (state.text(ImportFields.ALSO_USED_IN) != null) {
+            List<ProductMeasure> merged = new ArrayList<>(product.getMeasures() == null ? List.of() : product.getMeasures());
+            for (ProductMeasure named : measuresOf(state)) {
+                merged.removeIf(measure -> measure.name().equalsIgnoreCase(named.name()));
+                merged.add(named);
+            }
+            product.setMeasures(merged);
         }
         Integer alertAt = wholeStockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
         if (alertAt != null) {
@@ -1963,6 +2010,18 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             // so an undo of an older import does not quietly strip a barcode added since.
             if (snapshot.containsKey(ImportFields.BARCODE)) {
                 product.setBarcode(asString(snapshot.get(ImportFields.BARCODE)));
+            }
+            // Only snapshots taken since a product's own units existed (V82) carry them.
+            if (snapshot.get(ImportFields.ALSO_USED_IN) instanceof List<?> before) {
+                List<ProductMeasure> restored = new ArrayList<>();
+                for (Object entry : before) {
+                    if (entry instanceof Map<?, ?> measure) {
+                        restored.add(new ProductMeasure(String.valueOf(measure.get("name")),
+                                new BigDecimal(String.valueOf(measure.get("size"))),
+                                Boolean.TRUE.equals(measure.get("hidden")) ? Boolean.TRUE : null));
+                    }
+                }
+                product.setMeasures(restored);
             }
             SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
             product.setUnitPrice(asDecimal(snapshot.get(ImportFields.UNIT_PRICE)));

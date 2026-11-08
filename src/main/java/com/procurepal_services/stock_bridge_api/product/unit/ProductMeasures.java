@@ -149,6 +149,45 @@ public final class ProductMeasures {
         return List.copyOf(kept);
     }
 
+    /**
+     * A sheet's "Also used in" cell (UNITS_PLAN.md Part 5): {@code "Derica=0.6; Cup=0.2"}, a size in the product's stock
+     * unit after each name. Commas work as well as semicolons, and spaces around {@code =} are fine. Checked by
+     * {@link #validate} afterwards, like a form's list.
+     *
+     * @throws InvalidMeasureException for a part with no {@code =} or a size that isn't a number.
+     */
+    public static List<ProductMeasure> parse(String cell) {
+        if (cell == null || cell.isBlank()) {
+            return List.of();
+        }
+        List<ProductMeasure> parsed = new ArrayList<>();
+        for (String part : cell.split("[;,]")) {
+            if (part.isBlank()) {
+                continue;
+            }
+            int equals = part.indexOf('=');
+            if (equals < 0) {
+                throw new InvalidMeasureException("“" + part.trim() + "” needs what one holds, like Derica=0.6.");
+            }
+            String name = part.substring(0, equals).trim();
+            String size = part.substring(equals + 1).trim();
+            try {
+                parsed.add(new ProductMeasure(name, new BigDecimal(size)));
+            } catch (NumberFormatException notANumber) {
+                throw new InvalidMeasureException("“" + size + "” isn't a number. Write what one " + name
+                        + " holds, like " + name + "=0.6.");
+            }
+        }
+        return parsed;
+    }
+
+    /** {@code "Derica=0.6; Cup=0.2"}: the offered measures as a sheet writes them. Empty for none. */
+    public static String format(List<ProductMeasure> measures) {
+        return offered(measures).stream()
+                .map(measure -> measure.name() + "=" + Decimals.plain(measure.size()).toPlainString())
+                .collect(java.util.stream.Collectors.joining("; "));
+    }
+
     /** A name a unit code or a unit's label already answers to - "KG", "Kilogram", "Bag" - so it would mean two things. */
     private static boolean isTakenByAUnit(String name) {
         return UnitOfMeasure.fromCodeOrLabel(name).isPresent() || UnitOfMeasureAliases.resolve(name).isPresent();

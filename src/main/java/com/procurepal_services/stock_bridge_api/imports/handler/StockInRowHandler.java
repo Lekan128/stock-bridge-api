@@ -39,6 +39,7 @@ import com.procurepal_services.stock_bridge_api.product.bulk.SheetUnitOptions;
 import com.procurepal_services.stock_bridge_api.product.bulk.StockInExcelService;
 import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationService;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures;
 import com.procurepal_services.stock_bridge_api.product.unit.Quantities;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
@@ -714,6 +715,12 @@ public class StockInRowHandler implements ImportRowHandler {
                     .findFirst();
             if (byLabel.isPresent()) {
                 return acceptCountedIn(out, subject, byLabel.get(), packEntities);
+            }
+            // One of the product's own units, as the kitchen spells it - "derika" is the product's Derica (Part 5).
+            Optional<UnitOption> byMeasure = ProductMeasures.find(product.getMeasures(), cell, false)
+                    .flatMap(measure -> UnitOptions.resolve(options, measure.name()));
+            if (byMeasure.isPresent()) {
+                return acceptCountedIn(out, subject, byMeasure.get(), packEntities);
             }
         }
         // The sheet's own wording ("Bag · 50 kg", "Loose · kg") in the grammar the parsers read;
@@ -2034,8 +2041,10 @@ public class StockInRowHandler implements ImportRowHandler {
         List<UnitOptions.PackSpec> packs = packEntities.stream()
                 .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
                 .toList();
+        // With the product's own units (UNITS_PLAN.md Part 5): a delivery typed in dericas reads like one in bags.
         List<UnitOption> options = UnitOptions.forProductAndSupplier(
-                product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize(), packs);
+                product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize(), packs,
+                product.getMeasures());
         // A price is looked for with this row's own supplier first, then the preferred one.
         List<ProductVendorPack> pricePacks = rowPackEntities.isEmpty()
                 ? preferredPackEntities

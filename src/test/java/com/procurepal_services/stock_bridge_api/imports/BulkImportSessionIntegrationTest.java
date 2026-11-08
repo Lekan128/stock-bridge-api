@@ -996,6 +996,32 @@ class BulkImportSessionIntegrationTest {
     }
 
     /**
+     * UNITS_PLAN.md Part 5: the product sheet's "Also used in" column gives a product its own units, and a stock-in
+     * sheet can then count in one, spelt the way the kitchen spells it.
+     */
+    @Test
+    void aSheetGivesAProductItsOwnUnitsAndADeliveryCanBeCountedInOne() {
+        TenantLoginResponse tenant = signup("Derica Sheet Co");
+        commitCatalog(tenant, "CREATE_ONLY",
+                "name,sku,pack,contains,also_used_in\n" + "Rice,DER-1,Bag,80 kg,\"derica=0.6; Cup = 0.2\"\n");
+        ProductResponse rice = productBySku(tenant, "DER-1");
+        assertThat(rice.measures()).extracting(measure -> measure.name()).containsExactly("Derica", "Cup");
+
+        ImportSessionResponse session = upload(tenant, STOCK_IN_HEADERS + "DER-1,Rice,,5,derika,,,,\n", "STOCK_IN", null);
+        assertThat(session.errorCount()).isZero();
+        commit(tenant, session.id());
+        assertThat(productBySku(tenant, "DER-1").quantityOnHand()).isEqualByComparingTo("3");
+
+        ImportSessionResponse wrong = upload(tenant, "name,sku,contains,also_used_in\n" + "Beans,DER-2,kg,Mudu\n",
+                "PRODUCT_CATALOG", "CREATE_ONLY");
+        assertThat(wrong.errorCount()).isEqualTo(1);
+        assertThat(firstRow(tenant, wrong, "ERROR").errors()).anySatisfy(error -> {
+            assertThat(error.column()).isEqualTo("also_used_in");
+            assertThat(error.message()).contains("Derica=0.6");
+        });
+    }
+
+    /**
      * A quarter of a pack of ten pieces is two and a half pieces. The row says so on the review
      * screen - naming the product and the whole numbers that would work - instead of letting the
      * commit refuse it and roll the whole file back.
