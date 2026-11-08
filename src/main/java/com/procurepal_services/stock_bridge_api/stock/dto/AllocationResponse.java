@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.StockMovementAllocation;
 import java.time.OffsetDateTime;
@@ -17,7 +18,7 @@ import java.util.UUID;
  */
 public record AllocationResponse(
         UUID outMovementId,
-        int quantity,
+        BigDecimal quantity,
         OffsetDateTime createdAt,
         // V46: true on the row that handed stock BACK to this delivery when a sale was cancelled.
         // Its quantity is negative and outMovementId is the cancellation, not a stock-out.
@@ -40,7 +41,7 @@ public record AllocationResponse(
                 allocation.getOutMovement().getId(),
                 allocation.getQuantity(),
                 allocation.getCreatedAt(),
-                allocation.getQuantity() < 0,
+                allocation.getQuantity().signum() < 0,
                 allocation.getOutMovement().getMovementType(),
                 allocation.getOutMovement().getBranchId(),
                 throughLotId);

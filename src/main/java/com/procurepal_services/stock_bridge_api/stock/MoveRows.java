@@ -113,7 +113,7 @@ class MoveRows {
                             rs.getString("sku"),
                             rs.getString("unit_of_measure"),
                             MovementType.MOVE,
-                            rs.getInt("quantity"),
+                            rs.getBigDecimal("quantity"),
                             null,
                             rs.getString("note"),
                             rs.getObject("moved_by", UUID.class),

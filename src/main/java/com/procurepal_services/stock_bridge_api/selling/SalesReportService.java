@@ -381,7 +381,7 @@ public class SalesReportService {
         return new SalesReportRow(
                 key,
                 label,
-                "product".equals(grouping) ? rs.getLong("quantity") : null,
+                "product".equals(grouping) ? rs.getBigDecimal("quantity") : null,
                 rs.getString("unit"),
                 occurred == null ? null : occurred.toInstant().atOffset(ZoneOffset.UTC),
                 totals(rs),

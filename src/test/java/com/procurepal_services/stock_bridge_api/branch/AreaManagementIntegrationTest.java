@@ -276,7 +276,7 @@ class AreaManagementIntegrationTest {
 
     private static Map<UUID, Integer> figures(List<AreaFigure> figures) {
         assertThat(figures).isNotNull();
-        return figures.stream().collect(Collectors.toMap(AreaFigure::areaId, AreaFigure::quantityOnHand,
+        return figures.stream().collect(Collectors.toMap(AreaFigure::areaId, figure -> figure.quantityOnHand().intValueExact(),
                 (a, b) -> a, java.util.LinkedHashMap::new));
     }
 

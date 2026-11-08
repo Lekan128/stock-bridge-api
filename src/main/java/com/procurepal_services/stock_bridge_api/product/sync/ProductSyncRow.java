@@ -28,7 +28,7 @@ public record ProductSyncRow(
         BigDecimal packagingSize,
         boolean hasMultiplePacks,
         BigDecimal unitPrice,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         int incomingQuantity,
         BigDecimal expectedQuantity,
         Integer lowStockThreshold,

@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.order.dto;
 
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import java.util.List;
 import java.util.UUID;
@@ -15,7 +16,7 @@ import java.util.UUID;
 public record OrderItemMatchSuggestionResponse(UUID orderItemId, List<ProductMatchCandidateResponse> candidates) {
 
     public record ProductMatchCandidateResponse(
-            UUID id, String name, int quantityOnHand, String imageUrl, String unitOfMeasure) {
+            UUID id, String name, BigDecimal quantityOnHand, String imageUrl, String unitOfMeasure) {
 
         public static ProductMatchCandidateResponse from(Product product) {
             return new ProductMatchCandidateResponse(

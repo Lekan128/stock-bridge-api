@@ -324,7 +324,7 @@ public class ProductVendorService {
             BigDecimal costPrice,
             String packagingUnit,
             BigDecimal packagingSize,
-            int quantityReceivedBaseUnits,
+            BigDecimal quantityReceivedBaseUnits,
             boolean saveAsSupplierDefault) {
         UUID tenantId = requireTenantId();
         CompanyVendor companyVendor =
@@ -343,16 +343,16 @@ public class ProductVendorService {
                     .product(product)
                     .companyVendor(companyVendor)
                     .isPreferred(existingCount == 0)
-                    .quantityOnHandFromVendor(0)
-                    .totalQuantityReceived(0)
+                    .quantityOnHandFromVendor(BigDecimal.ZERO)
+                    .totalQuantityReceived(BigDecimal.ZERO)
                     .build());
         }
 
         PackChange packChange =
                 applyReceiptToPack(vendor, vendorSku, costPrice, packagingUnit, packagingSize, saveAsSupplierDefault);
 
-        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor() + quantityReceivedBaseUnits);
-        vendor.setTotalQuantityReceived(vendor.getTotalQuantityReceived() + quantityReceivedBaseUnits);
+        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor().add(quantityReceivedBaseUnits));
+        vendor.setTotalQuantityReceived(vendor.getTotalQuantityReceived().add(quantityReceivedBaseUnits));
 
         return new ReceiptResult(productVendorRepository.saveAndFlush(vendor), vendorIsNewToProduct, packChange);
     }
@@ -426,8 +426,8 @@ public class ProductVendorService {
 
     /** Decrements the cached display rollup when a stock-out draws from this vendor's lots. */
     @Transactional
-    public void recordAllocationDrawdown(ProductVendor vendor, int quantityDrawn) {
-        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor() - quantityDrawn);
+    public void recordAllocationDrawdown(ProductVendor vendor, BigDecimal quantityDrawn) {
+        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor().subtract(quantityDrawn));
     }
 
     /**

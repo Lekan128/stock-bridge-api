@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.branch.dto;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
@@ -8,8 +9,8 @@ import java.util.UUID;
  * the app hides it.
  */
 public record AreaFigure(
-        UUID areaId, UUID branchId, int quantityOnHand, java.time.OffsetDateTime lastCountedAt, boolean carried,
-        int waiting) {
+        UUID areaId, UUID branchId, BigDecimal quantityOnHand, java.time.OffsetDateTime lastCountedAt, boolean carried,
+        BigDecimal waiting) {
 
     /**
      * @param carried the area has had this product - holds it, or ran out of it (Part 3.6): its list in an area
@@ -17,7 +18,7 @@ public record AreaFigure(
      * @param waiting moved to this area and not confirmed yet (Part 4): in the branch's figure, in no area's -
      *     "2 waiting for Kitchen".
      */
-    public AreaFigure(UUID areaId, UUID branchId, int quantityOnHand, boolean carried, int waiting) {
+    public AreaFigure(UUID areaId, UUID branchId, BigDecimal quantityOnHand, boolean carried, BigDecimal waiting) {
         this(areaId, branchId, quantityOnHand, null, carried, waiting);
     }
 

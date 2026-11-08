@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.branch;
 
+import com.procurepal_services.stock_bridge_api.product.unit.Quantities;
+import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveResponse;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaReturnRequest;
@@ -115,19 +117,19 @@ public class AreaReturnService {
         }
         Map<String, Object> line = lines.getFirst();
         // What arrived of it (Part 4: what was confirmed, when it waited).
-        int used = line.get("quantity_confirmed") != null ? ((Number) line.get("quantity_confirmed")).intValue()
-                : ((Number) line.get("quantity")).intValue();
-        int already = jdbc.queryForObject("""
+        BigDecimal used = Quantities.of(line.get("quantity_confirmed") != null ? line.get("quantity_confirmed")
+                : line.get("quantity"));
+        BigDecimal already = jdbc.queryForObject("""
                 SELECT COALESCE(SUM(quantity), 0) FROM area_move_returns WHERE move_id = :id AND product_id = :productId
                 """, new MapSqlParameterSource().addValue("id", moveId).addValue("productId", request.productId()),
-                Integer.class);
-        int quantity = stockManagementService.inStockUnits(request.productId(), request.quantity(),
+                BigDecimal.class);
+        BigDecimal quantity = stockManagementService.inStockUnits(request.productId(), request.quantity(),
                 blankToNull(request.unit())).quantity();
         String unit = (String) line.get("unit_of_measure");
         String product = (String) line.get("name");
-        int left = used - already;
-        if (quantity > left) {
-            throw new BranchChangeRefusedException(left <= 0
+        BigDecimal left = used.subtract(already);
+        if (quantity.compareTo(left) > 0) {
+            throw new BranchChangeRefusedException(left.signum() <= 0
                     ? "All of the " + product + " given has been given back or reported already."
                     : "Only " + amount(left, unit) + " of the " + product + " is left to give back or report.");
         }
@@ -191,7 +193,7 @@ public class AreaReturnService {
      * Amaka · the note", once each to the people of the area it came from (else those in every area) and the owners,
      * never to who did it.
      */
-    private void tell(UUID clientId, Map<String, Object> move, AreaReturnRequest request, int quantity, String unit,
+    private void tell(UUID clientId, Map<String, Object> move, AreaReturnRequest request, BigDecimal quantity, String unit,
             String product, String note, UUID userId) {
         UUID branchId = (UUID) move.get("branch_id");
         Set<UUID> people = new LinkedHashSet<>(areaPeople.of((UUID) move.get("from_area_id"), branchId, userId));
@@ -235,10 +237,11 @@ public class AreaReturnService {
     }
 
     /** "1 bag", "2 kg", "3 pieces" - the stock unit as people say it. */
-    private static String amount(int quantity, String unit) {
-        String word = UnitOptions.sizeUnitWord(unit, BigDecimal.valueOf(quantity));
+    private static String amount(BigDecimal quantity, String unit) {
+        String word = UnitOptions.sizeUnitWord(unit, quantity);
         // A product with no stock unit is counted in plain units, as the sheets call it.
-        return quantity + " " + (word == null || word.isEmpty() ? (quantity == 1 ? "unit" : "units") : word);
+        return ImportCopy.count(quantity) + " "
+                + (word == null || word.isEmpty() ? (quantity.compareTo(BigDecimal.ONE) == 0 ? "unit" : "units") : word);
     }
 
     private static OffsetDateTime timestamp(Object value) {

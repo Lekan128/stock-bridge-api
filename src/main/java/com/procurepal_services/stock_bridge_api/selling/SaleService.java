@@ -192,7 +192,7 @@ public class SaleService {
         if (request.unitPrice() != null) {
             BigDecimal typedQuantity = line.getEnteredQuantity() != null
                     ? line.getEnteredQuantity()
-                    : BigDecimal.valueOf(line.getQuantity());
+                    : line.getQuantity();
             return request.unitPrice().multiply(typedQuantity).setScale(2, RoundingMode.HALF_UP);
         }
         throw new InvalidSalePriceException();

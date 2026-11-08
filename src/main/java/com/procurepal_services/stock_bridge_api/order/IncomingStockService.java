@@ -209,10 +209,12 @@ public class IncomingStockService {
                 // packagingUnit/packagingSize extend target's unit set identically for both this
                 // bookkeeping conversion and the ledger write below, so a buyer-supplied "1 bag =
                 // 25 kg" answer resolves the SAME way in both places.
-                int outstandingInTargetUnit = stockManagementService.toStockUnitQuantity(
-                        target, item.getQuantity(), item.getUnitOfMeasure(), packagingUnit, packagingSize);
-                quantityInLockedUnit = stockManagementService.toStockUnitQuantity(
-                        target, quantity, stockInUnit, packagingUnit, packagingSize);
+                // incomingQuantity stays whole (marketplace orders are whole items): rounded once, here.
+                int outstandingInTargetUnit = wholeUnits(stockManagementService.toStockUnitQuantity(
+                        target, java.math.BigDecimal.valueOf(item.getQuantity()), item.getUnitOfMeasure(), packagingUnit,
+                        packagingSize));
+                quantityInLockedUnit = wholeUnits(stockManagementService.toStockUnitQuantity(
+                        target, java.math.BigDecimal.valueOf(quantity), stockInUnit, packagingUnit, packagingSize));
                 locked.setIncomingQuantity(Math.max(0, locked.getIncomingQuantity() - item.getQuantity()));
                 target.setIncomingQuantity(target.getIncomingQuantity() + outstandingInTargetUnit);
                 if (target.getSourceProductId() == null) {
@@ -287,7 +289,7 @@ public class IncomingStockService {
             // above, not the one it still carried before this method ran.
             if (orphanedDuplicate != null) {
                 orderItemRepository.flush();
-                if (orphanedDuplicate.getQuantityOnHand() == 0
+                if (orphanedDuplicate.getQuantityOnHand().signum() == 0
                         && orphanedDuplicate.getIncomingQuantity() == 0
                         && !orderItemRepository.existsByBuyerProductId(orphanedDuplicate.getId())) {
                     productRepository.delete(orphanedDuplicate);
@@ -382,7 +384,7 @@ public class IncomingStockService {
                 // (SELLING_PRICE_PLAN.md section 1, problem 1). A company that sells this item
                 // gives it its own price.
                 .costPrice(item.getUnitPrice())
-                .quantityOnHand(0)
+                .quantityOnHand(java.math.BigDecimal.ZERO)
                 .incomingQuantity(0)
                 .imageUrl(item.getImageUrl())
                 .active(true)
@@ -471,4 +473,10 @@ public class IncomingStockService {
         return open ? branchId
                 : branchRepository.findByClientIdAndDefaultBranchTrue(order.getClientId()).map(branch -> branch.getId()).orElse(null);
     }
+
+    /** A stock-unit quantity as the whole number {@code incomingQuantity} keeps. */
+    private static int wholeUnits(java.math.BigDecimal quantity) {
+        return quantity.setScale(0, java.math.RoundingMode.HALF_UP).intValueExact();
+    }
+
 }

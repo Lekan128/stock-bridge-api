@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.branch.dto;
 
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.product.StockStatus;
 import java.util.UUID;
 
@@ -15,21 +16,21 @@ import java.util.UUID;
  */
 public record BranchFigure(
         UUID branchId,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         Integer lowStockThreshold,
         boolean isLowStock,
         StockStatus stockStatus,
-        int onTheWay,
+        BigDecimal onTheWay,
         /** The product page only (section 6): the branch's latest count; absent if never counted. */
         java.time.OffsetDateTime lastCountedAt,
         /** The product page only: the branch's own level, absent when it uses the product's. */
         Integer ownLowStockThreshold) {
 
-    public static BranchFigure of(UUID branchId, int quantityOnHand, Integer lowStockThreshold) {
-        return of(branchId, quantityOnHand, lowStockThreshold, 0);
+    public static BranchFigure of(UUID branchId, BigDecimal quantityOnHand, Integer lowStockThreshold) {
+        return of(branchId, quantityOnHand, lowStockThreshold, BigDecimal.ZERO);
     }
 
-    public static BranchFigure of(UUID branchId, int quantityOnHand, Integer lowStockThreshold, int onTheWay) {
+    public static BranchFigure of(UUID branchId, BigDecimal quantityOnHand, Integer lowStockThreshold, BigDecimal onTheWay) {
         return new BranchFigure(
                 branchId,
                 quantityOnHand,

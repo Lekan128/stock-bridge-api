@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.entity;
 
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.tenant.TenantAwareEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -14,6 +15,7 @@ import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
+import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -97,14 +99,16 @@ public class ProductVendor extends TenantAwareEntity {
      * the same transaction as the movement/allocation write.
      */
     @Column(name = "quantity_on_hand_from_vendor", nullable = false)
-    private int quantityOnHandFromVendor;
+    @Builder.Default
+    private BigDecimal quantityOnHandFromVendor = BigDecimal.ZERO;
 
     /**
      * Lifetime quantity received from this vendor. Derived as SUM(this vendor's IN movements)
      * alone - unlike {@link #quantityOnHandFromVendor}, never decremented by a sale.
      */
     @Column(name = "total_quantity_received", nullable = false)
-    private int totalQuantityReceived;
+    @Builder.Default
+    private BigDecimal totalQuantityReceived = BigDecimal.ZERO;
 
     /**
      * This vendor's priced offerings - a real pack, or the bare stock unit, or both

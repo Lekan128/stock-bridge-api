@@ -43,7 +43,7 @@ public record StockRequestResponse(
      * @param noneInStore the area asked said it has none.
      */
     public record Line(
-            UUID productId, String productName, String unitOfMeasure, int quantity, BigDecimal enteredQuantity,
-            String enteredUnit, int moved, boolean noneInStore) {
+            UUID productId, String productName, String unitOfMeasure, BigDecimal quantity, BigDecimal enteredQuantity,
+            String enteredUnit, BigDecimal moved, boolean noneInStore) {
     }
 }

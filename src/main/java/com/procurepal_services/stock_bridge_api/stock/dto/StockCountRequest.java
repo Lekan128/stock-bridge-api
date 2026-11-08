@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -26,7 +27,7 @@ import java.util.UUID;
  *     what the area says - used where stock is worked with (a kitchen), missing where it's stored.
  */
 public record StockCountRequest(
-        @NotNull @Min(0) Integer countedQuantity,
+        @NotNull @Min(0) BigDecimal countedQuantity,
         OffsetDateTime countedAt,
         @Size(max = 1000) String note,
         UUID branchId,
@@ -40,17 +41,17 @@ public record StockCountRequest(
     }
 
     /** The shape before {@code shortAs} (areas, Part 3.5). */
-    public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note, UUID branchId, UUID areaId) {
+    public StockCountRequest(BigDecimal countedQuantity, OffsetDateTime countedAt, String note, UUID branchId, UUID areaId) {
         this(countedQuantity, countedAt, note, branchId, areaId, null);
     }
 
     /** The shape before {@code areaId} (areas, Part 0). */
-    public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note, UUID branchId) {
+    public StockCountRequest(BigDecimal countedQuantity, OffsetDateTime countedAt, String note, UUID branchId) {
         this(countedQuantity, countedAt, note, branchId, null, null);
     }
 
     /** The shape before {@code branchId} (multiple branches, Phase 0). */
-    public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note) {
+    public StockCountRequest(BigDecimal countedQuantity, OffsetDateTime countedAt, String note) {
         this(countedQuantity, countedAt, note, null, null, null);
     }
 

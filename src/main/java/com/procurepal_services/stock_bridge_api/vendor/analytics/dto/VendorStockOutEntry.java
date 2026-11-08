@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.vendor.analytics.dto;
 
+import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
@@ -36,9 +37,9 @@ public record VendorStockOutEntry(
         UUID productId,
         String name,
         String sku,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         int committedQuantity,
-        int availableToSell,
+        BigDecimal availableToSell,
         boolean listed,
         Integer lowStockThreshold) {
 }

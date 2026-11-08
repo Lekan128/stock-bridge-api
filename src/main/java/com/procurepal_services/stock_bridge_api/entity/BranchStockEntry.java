@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.entity;
 
+import java.math.BigDecimal;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -37,7 +38,7 @@ public class BranchStockEntry {
     private UUID clientId;
 
     @Column(name = "quantity_on_hand")
-    private int quantityOnHand;
+    private BigDecimal quantityOnHand = BigDecimal.ZERO;
 
     @Column(name = "low_stock_threshold")
     private Integer lowStockThreshold;

@@ -130,7 +130,7 @@ class AnalyticsIntegrationTest {
 
         List<TopProductEntry> byQuantityIn = topProducts(admin, "quantity", "in", 10);
         assertThat(byQuantityIn.get(0).sku()).isEqualTo("TP-CHEAP");
-        assertThat(byQuantityIn.get(0).quantity()).isEqualTo(100);
+        assertThat(byQuantityIn.get(0).quantity()).isEqualByComparingTo("100");
 
         List<TopProductEntry> byValueIn = topProducts(admin, "value", "in", 10);
         assertThat(byValueIn.get(0).sku()).isEqualTo("TP-EXPENSIVE");
@@ -139,7 +139,7 @@ class AnalyticsIntegrationTest {
         List<TopProductEntry> byQuantityOut = topProducts(admin, "quantity", "out", 10);
         assertThat(byQuantityOut).hasSize(1);
         assertThat(byQuantityOut.get(0).sku()).isEqualTo("TP-CHEAP");
-        assertThat(byQuantityOut.get(0).quantity()).isEqualTo(10);
+        assertThat(byQuantityOut.get(0).quantity()).isEqualByComparingTo("10");
     }
 
     @Test
@@ -205,7 +205,7 @@ class AnalyticsIntegrationTest {
         restTemplate.exchange(
                 "/api/products/" + productId + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(quantity, unitPrice, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(quantity), unitPrice, null), authHeaders(admin)),
                 StockMutationResponse.class);
     }
 

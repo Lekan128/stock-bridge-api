@@ -135,7 +135,8 @@ public class Product extends TenantAwareEntity {
     private BigDecimal costPrice;
 
     @Column(name = "quantity_on_hand", nullable = false)
-    private int quantityOnHand;
+    @Builder.Default
+    private BigDecimal quantityOnHand = BigDecimal.ZERO;
 
     @Column(name = "low_stock_threshold")
     private Integer lowStockThreshold;

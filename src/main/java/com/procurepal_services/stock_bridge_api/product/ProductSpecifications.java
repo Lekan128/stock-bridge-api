@@ -95,7 +95,7 @@ final class ProductSpecifications {
             return base;
         }
         return base.and((root, query, cb) -> {
-            jakarta.persistence.criteria.Subquery<Integer> quantity = query.subquery(Integer.class);
+            jakarta.persistence.criteria.Subquery<java.math.BigDecimal> quantity = query.subquery(java.math.BigDecimal.class);
             Root<com.procurepal_services.stock_bridge_api.entity.BranchStockEntry> held =
                     quantity.from(com.procurepal_services.stock_bridge_api.entity.BranchStockEntry.class);
             quantity.select(held.get("quantityOnHand"))
@@ -105,7 +105,7 @@ final class ProductSpecifications {
                     level.from(com.procurepal_services.stock_bridge_api.entity.BranchStockEntry.class);
             level.select(own.get("lowStockThreshold"))
                     .where(cb.equal(own.get("productId"), root.get("id")), cb.equal(own.get("branchId"), branchId));
-            jakarta.persistence.criteria.Expression<Integer> figure = cb.coalesce(quantity, 0);
+            jakarta.persistence.criteria.Expression<java.math.BigDecimal> figure = cb.coalesce(quantity, java.math.BigDecimal.ZERO);
             jakarta.persistence.criteria.Expression<Integer> threshold = cb.coalesce(level, root.<Integer>get("lowStockThreshold"));
             Predicate out = cb.le(figure, 0);
             Predicate atOrBelow = cb.and(cb.isNotNull(threshold), cb.le(figure, threshold));

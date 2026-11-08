@@ -115,11 +115,11 @@ public class StockTransfer extends TenantAwareEntity implements Persistable<UUID
 
     /** Everything sent is received, missing or damaged. */
     public boolean isAccountedFor() {
-        return lines.stream().allMatch(line -> line.onTheWay() == 0);
+        return lines.stream().allMatch(line -> line.onTheWay().signum() == 0);
     }
 
     public boolean hasLosses() {
-        return lines.stream().anyMatch(line -> line.getQuantityMissing() + line.getQuantityDamaged() > 0);
+        return lines.stream().anyMatch(line -> line.getQuantityMissing().add(line.getQuantityDamaged()).signum() > 0);
     }
 
     @Override

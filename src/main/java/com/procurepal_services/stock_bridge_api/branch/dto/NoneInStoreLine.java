@@ -14,7 +14,7 @@ public record NoneInStoreLine(
         UUID productId,
         String productName,
         String unitOfMeasure,
-        int quantity,
+        BigDecimal quantity,
         BigDecimal enteredQuantity,
         String enteredUnit,
         String fromAreaName,

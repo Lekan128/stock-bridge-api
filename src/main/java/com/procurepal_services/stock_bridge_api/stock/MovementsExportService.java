@@ -66,7 +66,7 @@ public class MovementsExportService {
                 row.createCell(col++).setCellValue(text(movement.productName()));
                 row.createCell(col++).setCellValue(text(movement.productSku()));
                 row.createCell(col++).setCellValue(TYPES.getOrDefault(movement.movementType(), movement.movementType().name()));
-                row.createCell(col++).setCellValue(signed(movement));
+                row.createCell(col++).setCellValue(signed(movement).doubleValue());
                 row.createCell(col++).setCellValue(text(movement.unitOfMeasure()).toLowerCase(java.util.Locale.ROOT));
                 row.createCell(col++).setCellValue(movement.outReason() == null ? "" : movement.outReason().name().replace('_', ' ').toLowerCase(java.util.Locale.ROOT));
                 if (multiBranch) row.createCell(col++).setCellValue(branchNames.getOrDefault(movement.branchId(), ""));
@@ -85,13 +85,13 @@ public class MovementsExportService {
     }
 
     /** In the direction it moved the shelf: out, sent and a negative adjustment are minus. */
-    private static int signed(StockMovementResponse movement) {
+    private static BigDecimal signed(StockMovementResponse movement) {
         return switch (movement.movementType()) {
-            case OUT, TRANSFER_OUT -> -Math.abs(movement.quantity());
-            case IN, TRANSFER_IN -> Math.abs(movement.quantity());
+            case OUT, TRANSFER_OUT -> movement.quantity().abs().negate();
+            case IN, TRANSFER_IN -> movement.quantity().abs();
             case ADJUSTMENT -> movement.quantity();
             // The export lists the ledger only; a move changes no branch figure.
-            case MOVE -> 0;
+            case MOVE -> BigDecimal.ZERO;
         };
     }
 

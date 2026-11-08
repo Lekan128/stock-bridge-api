@@ -137,7 +137,7 @@ public class PurchaseOrderPicker {
         for (Product product : productRepository.findAllById(rowProductIds)) {
             products.put(product.getId(), product);
         }
-        Map<UUID, int[]> stock = stockOf(tenantId, products, branchId);
+        Map<UUID, Figure> stock = stockOf(tenantId, products, branchId);
         Map<UUID, BigDecimal> coming = comingInStockUnits(tenantId, rows, rowProductIds, excludeOrderId);
         Map<UUID, Object[]> last = lastOrdered(tenantId, vendorId, rowProductIds);
         LastPrices prices = lastPrices(tenantId, vendorId, rowProductIds);
@@ -163,7 +163,7 @@ public class PurchaseOrderPicker {
         if (runningLow) {
             keep = new LinkedHashSet<>();
             for (UUID productId : rowProductIds) {
-                int[] figure = stock.get(productId);
+                Figure figure = stock.get(productId);
                 if (figure != null && isLowOrOut(figure)) {
                     keep.add(productId);
                 }
@@ -180,7 +180,7 @@ public class PurchaseOrderPicker {
             }
             BigDecimal factor = row.option().factorToStockUnit();
             String unit = UnitOptions.key(row.option());
-            int[] figure = stock.get(row.productId());
+            Figure figure = stock.get(row.productId());
             Object[] previous = last.get(row.productId());
             BigDecimal comingHere = coming.get(row.productId());
             LastPrice price = prices.of(row.productId(), unit, factor);
@@ -191,8 +191,8 @@ public class PurchaseOrderPicker {
                     unit,
                     SheetUnitOptions.comesInLabel(row.option()),
                     row.option().isPack(),
-                    figure == null ? null : inUnit(BigDecimal.valueOf(figure[0]), factor),
-                    figure == null ? null : BigDecimal.valueOf(figure[0]),
+                    figure == null ? null : inUnit(figure.onHand(), factor),
+                    figure == null ? null : plain(figure.onHand()),
                     factor == null ? BigDecimal.ONE : plain(factor),
                     figure == null ? null : state(figure),
                     comingHere == null || comingHere.signum() <= 0 ? null : inUnit(comingHere, factor),
@@ -226,15 +226,13 @@ public class PurchaseOrderPicker {
         return new ArrayList<>(byVendor.values());
     }
 
-    /** {on hand, alert level or -1} in stock units, per product, at the branch (or the company). */
-    private Map<UUID, int[]> stockOf(UUID tenantId, Map<UUID, Product> products, UUID branchId) {
-        Map<UUID, int[]> stock = new HashMap<>();
+    /** On hand and alert level in stock units, per product, at the branch (or the company). */
+    private Map<UUID, Figure> stockOf(UUID tenantId, Map<UUID, Product> products, UUID branchId) {
+        Map<UUID, Figure> stock = new HashMap<>();
         Map<UUID, Integer> thresholds = new HashMap<>();
         for (Product product : products.values()) {
             thresholds.put(product.getId(), product.getLowStockThreshold());
-            stock.put(product.getId(), new int[] {
-                    product.getQuantityOnHand(),
-                    product.getLowStockThreshold() == null ? -1 : product.getLowStockThreshold()});
+            stock.put(product.getId(), new Figure(product.getQuantityOnHand(), product.getLowStockThreshold()));
         }
         if (branchId != null && branchStockService.isMultiBranch(tenantId)) {
             Map<UUID, List<BranchFigure>> figures =
@@ -245,9 +243,7 @@ public class PurchaseOrderPicker {
                         continue;
                     }
                     BranchFigure figure = entry.getValue().getFirst();
-                    stock.put(entry.getKey(), new int[] {
-                            figure.quantityOnHand(),
-                            figure.lowStockThreshold() == null ? -1 : figure.lowStockThreshold()});
+                    stock.put(entry.getKey(), new Figure(figure.quantityOnHand(), figure.lowStockThreshold()));
                 }
             }
         }
@@ -388,13 +384,17 @@ public class PurchaseOrderPicker {
         return last;
     }
 
-    private static boolean isLowOrOut(int[] figure) {
+    /** What a product has here, and the level it's low at (none: null). */
+    private record Figure(BigDecimal onHand, Integer level) {
+    }
+
+    private static boolean isLowOrOut(Figure figure) {
         StockStatus state = state(figure);
         return state == StockStatus.LOW || state == StockStatus.OUT;
     }
 
-    private static StockStatus state(int[] figure) {
-        return StockStatus.of(figure[0], figure[1] < 0 ? null : figure[1]);
+    private static StockStatus state(Figure figure) {
+        return StockStatus.of(figure.onHand(), figure.level());
     }
 
     /** A stock-unit quantity said in this unit, rounded down to one decimal: 170 kg is "3.4" bags. */

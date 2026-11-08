@@ -80,35 +80,31 @@ public record UnitOption(
     private static final int PRICE_SCALE = 6;
 
     /**
-     * The number of stock units {@code enteredQuantity} of this unit is - {@code round(quantity
-     * &times; factorToStockUnit)}, HALF_UP, scale 0 (UNIT_UX_CONTRACT.md section 3.1). Stock
-     * quantities are integers everywhere in this schema ({@code stock_movements.quantity},
-     * {@code products.quantity_on_hand}), so the rounding is not a choice this method makes, it
-     * is the shape of the column it feeds.
+     * The number of stock units {@code enteredQuantity} of this unit is - {@code quantity &times;
+     * factorToStockUnit}, kept to {@link Quantities#SCALE} places, HALF_UP (UNITS_PLAN.md Part 0, V81). Until
+     * V81 stock was whole numbers and this rounded to one, so 12.6 kg became 13; now 5 dericas of 0.6 kg is
+     * exactly 3 kg and 7 is 4.2.
      *
      * <p><b>Can legitimately return 0</b>, and the caller must treat that as an error rather
-     * than a quantity - 1 g on a KG product is 0.001 kg, which rounds to nothing at all.
+     * than a quantity - 0.4 g on a KG product is 0.0004 kg, which keeps to nothing at all.
      * Section 3.1 requires a 400 there, never a silent zero, because silently recording "we
      * received nothing" for a delivery somebody typed is the same class of defect as recording
      * the wrong number. The check is not made here because the message needs the product's name
      * and its stock unit, which this record does not carry; see
      * {@code StockManagementService.resolveEntry}.
      *
-     * <p>The entered quantity may be a fraction - two and a half bags is a real delivery - and
-     * the rounding happens once, here, after the multiplication, so 2.5 bags of 50 kg is exactly
-     * 125 kg rather than 2 bags' worth. Whether an INEXACT result is acceptable is the caller's
-     * question, answered with {@link #exactStockUnits}.
+     * <p>Whether a fraction of the stock unit is acceptable at all - half a piece is not - is the caller's
+     * question, answered with {@link #exactStockUnits} and {@link UnitOptions#isCountedInWholeUnits}.
      *
-     * @param enteredQuantity a quantity counted in THIS unit (bags, tonnes, kg).
-     * @return the same amount counted in the product's stock unit.
-     * @throws ArithmeticException when the result does not fit an int.
+     * @param enteredQuantity a quantity counted in THIS unit (bags, tonnes, kg, dericas).
+     * @return the same amount counted in the product's stock unit, at scale 3.
      */
-    public int toStockUnitQuantity(BigDecimal enteredQuantity) {
-        return exactStockUnits(enteredQuantity).setScale(0, RoundingMode.HALF_UP).intValueExact();
+    public BigDecimal toStockUnitQuantity(BigDecimal enteredQuantity) {
+        return Quantities.kept(exactStockUnits(enteredQuantity));
     }
 
     /** {@link #toStockUnitQuantity(BigDecimal)} for a whole-number entry. */
-    public int toStockUnitQuantity(int enteredQuantity) {
+    public BigDecimal toStockUnitQuantity(int enteredQuantity) {
         return toStockUnitQuantity(BigDecimal.valueOf(enteredQuantity));
     }
 

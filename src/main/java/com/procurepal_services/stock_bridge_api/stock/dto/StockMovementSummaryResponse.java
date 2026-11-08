@@ -35,9 +35,9 @@ public record StockMovementSummaryResponse(
         /** Money recorded against priced OUT movements in range. Never null. */
         BigDecimal outValue,
         /** Units received, in each product's own stock unit, priced or not. */
-        long inQuantity,
+        BigDecimal inQuantity,
         /** Units issued, in each product's own stock unit, priced or not. */
-        long outQuantity,
+        BigDecimal outQuantity,
         long inMovementCount,
         long outMovementCount,
         /** IN movements in range with no price on file - the gap between inQuantity and inValue. */
@@ -61,8 +61,8 @@ public record StockMovementSummaryResponse(
          * section 4.3): their own figures, never part of stock in / stock out. Across every branch the
          * two are equal once everything has arrived - a move is neither a purchase nor a sale.
          */
-        long movedInQuantity,
-        long movedOutQuantity,
+        BigDecimal movedInQuantity,
+        BigDecimal movedOutQuantity,
         long movedInCount,
         long movedOutCount,
         /**
@@ -72,6 +72,6 @@ public record StockMovementSummaryResponse(
          */
         BigDecimal writtenOffCost,
         /** The same, in units: net units written off. */
-        long writtenOffQuantity,
+        BigDecimal writtenOffQuantity,
         long writtenOffUnpricedCount) {
 }

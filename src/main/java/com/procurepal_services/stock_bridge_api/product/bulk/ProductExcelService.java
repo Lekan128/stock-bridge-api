@@ -394,7 +394,7 @@ public class ProductExcelService {
      */
     public byte[] exportProducts(
             List<Product> products, Map<UUID, ProductVendorSnapshot> preferredVendorsByProductId, boolean isSeller,
-            boolean sellingPricePerPack, Map<UUID, Integer> quantities) {
+            boolean sellingPricePerPack, Map<UUID, BigDecimal> quantities) {
         List<String> fields = exportFieldsFor(isSeller);
         try (WorkbookBuilder builder = new WorkbookBuilder("Products")) {
             // The same columns and words as the template, so an exported sheet can be edited and
@@ -434,8 +434,8 @@ public class ProductExcelService {
                 // trip - the same trap the deleted opening_stock_counted_in column was left blank
                 // to avoid, solved now by stating the number in the column's own unit instead of
                 // by leaving a second column empty.
-                int onHand = quantities == null ? product.getQuantityOnHand() : quantities.getOrDefault(product.getId(), 0);
-                BigDecimal openingStock = inSheetUnits(product, BigDecimal.valueOf(onHand));
+                BigDecimal onHand = quantities == null ? product.getQuantityOnHand() : quantities.getOrDefault(product.getId(), BigDecimal.ZERO);
+                BigDecimal openingStock = inSheetUnits(product, onHand);
                 cell(fields, row, "opening_stock").setCellValue(openingStock.doubleValue());
                 if (product.getLowStockThreshold() != null) {
                     BigDecimal alertAt =

@@ -28,7 +28,7 @@ public record AreaMoveConfirmRequest(
         Boolean recordedOffline) {
 
     /** @param rest what happened to this line's shortfall (STOCK_AREAS_PART_6.md); absent: the move's {@code rest}. */
-    public record Line(@NotNull UUID productId, @NotNull @PositiveOrZero Integer got, Rest rest) {
+    public record Line(@NotNull UUID productId, @NotNull @PositiveOrZero java.math.BigDecimal got, Rest rest) {
     }
 
     /** What happened to what didn't arrive: still where it was, or written off there as one of the stock-out reasons. */

@@ -1,5 +1,8 @@
 package com.procurepal_services.stock_bridge_api.branch;
 
+import java.math.BigDecimal;
+import com.procurepal_services.stock_bridge_api.product.unit.Quantities;
+import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
 import com.procurepal_services.stock_bridge_api.branch.BranchStockService.AreaUse;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveConfirmRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveRequest;
@@ -192,7 +195,7 @@ public class AreaMoveService {
         areaAccessService.requireMayRecordIn(userId, branchId, to.id());
         String fromName = requireArea(fromAreaId, branchId).name();
 
-        Map<UUID, Integer> got = new HashMap<>();
+        Map<UUID, BigDecimal> got = new HashMap<>();
         Map<UUID, AreaMoveConfirmRequest.Rest> restOf = new HashMap<>();
         for (AreaMoveConfirmRequest.Line line : request.lines() == null ? List.<AreaMoveConfirmRequest.Line>of() : request.lines()) {
             if (got.put(line.productId(), line.got()) != null) {
@@ -215,25 +218,26 @@ public class AreaMoveService {
                 throw new BranchChangeRefusedException("That product isn't on this move.");
             }
         }
-        int short_ = 0;
-        Map<AreaMoveConfirmRequest.Rest, Integer> restTotals = new java.util.EnumMap<>(AreaMoveConfirmRequest.Rest.class);
+        BigDecimal short_ = BigDecimal.ZERO;
+        Map<AreaMoveConfirmRequest.Rest, BigDecimal> restTotals = new java.util.EnumMap<>(AreaMoveConfirmRequest.Rest.class);
         for (Map<String, Object> line : lines) {
             UUID productId = (UUID) line.get("product_id");
-            int quantity = ((Number) line.get("quantity")).intValue();
-            int arrived = got.getOrDefault(productId, quantity);
-            if (arrived > quantity) {
-                throw new BranchChangeRefusedException("More can't arrive than was moved: " + quantity + " were moved.");
+            BigDecimal quantity = Quantities.of(line.get("quantity"));
+            BigDecimal arrived = got.getOrDefault(productId, quantity);
+            if (arrived.compareTo(quantity) > 0) {
+                throw new BranchChangeRefusedException(
+                        "More can't arrive than was moved: " + ImportCopy.count(quantity) + " were moved.");
             }
             boolean keep = to.keepsStock() && !Boolean.TRUE.equals(line.get("used_now"));
-            int rest = quantity - arrived;
-            AreaMoveConfirmRequest.Rest why = rest > 0 ? restOf.getOrDefault(productId, moveRest) : null;
+            BigDecimal rest = quantity.subtract(arrived);
+            AreaMoveConfirmRequest.Rest why = rest.signum() > 0 ? restOf.getOrDefault(productId, moveRest) : null;
             OutReason writtenOff = why == null ? null : why.outReason();
             StockManagementService.SettledLine settled = stockManagementService.settleWaitingLine(
                     productId, branchId, fromAreaId, to.id(), quantity, arrived, keep, writtenOff, at, late,
                     "Given to " + to.name(), restNote(why, to.name(), note), userId);
-            short_ += rest;
+            short_ = short_.add(rest);
             if (why != null) {
-                restTotals.merge(why, rest, Integer::sum);
+                restTotals.merge(why, rest, BigDecimal::add);
             }
             jdbc.update("""
                     UPDATE area_move_lines SET quantity_confirmed = :got, quantity_damaged = :damaged,
@@ -241,7 +245,7 @@ public class AreaMoveService {
                     WHERE move_id = :id AND product_id = :productId
                     """, new MapSqlParameterSource()
                             .addValue("got", arrived)
-                            .addValue("damaged", writtenOff != null ? rest : 0)
+                            .addValue("damaged", writtenOff != null ? rest : BigDecimal.ZERO)
                             .addValue("why", why == null ? null : why.name())
                             .addValue("used", settled.usedMovementId())
                             .addValue("id", moveId)
@@ -252,12 +256,12 @@ public class AreaMoveService {
                 WHERE id = :id
                 """, new MapSqlParameterSource()
                         .addValue("note", note)
-                        .addValue("status", short_ > 0 ? "CONFIRMED_SHORT" : "DONE")
+                        .addValue("status", short_.signum() > 0 ? "CONFIRMED_SHORT" : "DONE")
                         .addValue("userId", userId)
                         .addValue("at", at)
                         .addValue("id", moveId));
         log.info("Area move {} confirmed by {}: {} short ({})", moveId, userId, short_, restTotals);
-        if (short_ > 0) {
+        if (short_.signum() > 0) {
             notifyShort(clientId, moveId, fromName, to.name(), lines, got, restTotals, note, (UUID) move.get("moved_by"),
                     userId);
         }
@@ -381,7 +385,7 @@ public class AreaMoveService {
                 stockManagementService.voidWrite(productId, usedMovementId, userId);
             } else {
                 stockManagementService.moveAreaLineBack(productId, branchId, fromAreaId, toAreaId,
-                        ((Number) line.get("quantity")).intValue());
+                        Quantities.of(line.get("quantity")));
             }
         }
         jdbc.update("UPDATE area_moves SET status = 'VOIDED' WHERE id = :id", new MapSqlParameterSource("id", moveId));
@@ -433,7 +437,7 @@ public class AreaMoveService {
                 new MapSqlParameterSource("id", moveId));
         for (Map<String, Object> line : lines) {
             stockManagementService.settleWaitingLine((UUID) line.get("product_id"), branchId, fromAreaId, toAreaId,
-                    ((Number) line.get("quantity")).intValue(), 0, false, null, null, false, null, null, userId);
+                    Quantities.of(line.get("quantity")), BigDecimal.ZERO, false, null, null, false, null, null, userId);
         }
     }
 
@@ -457,7 +461,7 @@ public class AreaMoveService {
 
     /** "Kitchen got 2 of 3 from the Store", to the mover and the account holders - not the person who confirmed. */
     private void notifyShort(UUID clientId, UUID moveId, String fromName, String toName, List<Map<String, Object>> lines,
-            Map<UUID, Integer> got, Map<AreaMoveConfirmRequest.Rest, Integer> restTotals, String note, UUID moverId,
+            Map<UUID, BigDecimal> got, Map<AreaMoveConfirmRequest.Rest, BigDecimal> restTotals, String note, UUID moverId,
             UUID confirmerId) {
         Set<UUID> people = new HashSet<>(jdbc.queryForList(
                 "SELECT id FROM users WHERE client_id = :clientId AND is_root AND is_active",
@@ -466,14 +470,15 @@ public class AreaMoveService {
             people.add(moverId);
         }
         people.remove(confirmerId);
-        int moved = lines.stream().mapToInt(line -> ((Number) line.get("quantity")).intValue()).sum();
-        int arrived = lines.stream()
-                .mapToInt(line -> got.getOrDefault((UUID) line.get("product_id"), ((Number) line.get("quantity")).intValue()))
-                .sum();
-        String title = "The " + toName + " got " + arrived + " of " + moved + " from the " + fromName;
+        BigDecimal moved = lines.stream().map(line -> Quantities.of(line.get("quantity"))).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal arrived = lines.stream()
+                .map(line -> got.getOrDefault((UUID) line.get("product_id"), Quantities.of(line.get("quantity"))))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        String title = "The " + toName + " got " + ImportCopy.count(arrived) + " of " + ImportCopy.count(moved)
+                + " from the " + fromName;
         // "1 still in the Store · 1 damaged or spoilt · Two bags torn on the stairs" (Part 6).
         List<String> parts = new ArrayList<>();
-        restTotals.forEach((why, count) -> parts.add(count + " " + restWords(why, fromName)));
+        restTotals.forEach((why, count) -> parts.add(ImportCopy.count(count) + " " + restWords(why, fromName)));
         if (note != null) {
             parts.add(note);
         }
@@ -519,16 +524,16 @@ public class AreaMoveService {
                             .add(new AreaMoveResponse.Line(
                                     rs.getObject("product_id", UUID.class),
                                     rs.getString("name"),
-                                    rs.getInt("quantity"),
+                                    rs.getBigDecimal("quantity"),
                                     rs.getBigDecimal("entered_quantity"),
                                     rs.getString("entered_unit"),
                                     rs.getBoolean("used"),
-                                    rs.getObject("quantity_confirmed", Integer.class),
-                                    rs.getInt("quantity_damaged"),
+                                    rs.getBigDecimal("quantity_confirmed"),
+                                    rs.getBigDecimal("quantity_damaged"),
                                     rs.getString("unit_of_measure"),
                                     rs.getString("rest_reason"),
                                     List.of(),
-                                    0));
+                                    BigDecimal.ZERO));
                 });
         Map<UUID, Map<UUID, List<AreaMoveResponse.Return>>> returns = areaReturns.byMove(
                 moves.stream().map(m -> (UUID) m.get("id")).toList());
@@ -577,11 +582,12 @@ public class AreaMoveService {
                             .map(line -> {
                                 List<AreaMoveResponse.Return> back = returns.getOrDefault(id, Map.of())
                                         .getOrDefault(line.productId(), List.of());
-                                int used = line.got() != null ? line.got() : line.quantity();
+                                BigDecimal used = line.got() != null ? line.got() : line.quantity();
                                 return new AreaMoveResponse.Line(line.productId(), line.productName(), line.quantity(),
                                         line.enteredQuantity(), line.enteredUnit(), !toKeepsStock || line.used(), line.got(),
                                         line.damaged(), line.unitOfMeasure(), line.restReason(), back,
-                                        Math.max(0, used - back.stream().mapToInt(AreaMoveResponse.Return::quantity).sum()));
+                                        used.subtract(back.stream().map(AreaMoveResponse.Return::quantity)
+                                                .reduce(BigDecimal.ZERO, BigDecimal::add)).max(BigDecimal.ZERO));
                             })
                             .toList(),
                     waits,

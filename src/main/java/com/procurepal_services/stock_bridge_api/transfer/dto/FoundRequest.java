@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.transfer.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import java.time.OffsetDateTime;
@@ -13,6 +14,6 @@ import java.util.UUID;
  * @param quantity in the product's stock unit; at most what is still missing on the line.
  */
 public record FoundRequest(
-        @NotNull UUID id, @NotNull UUID productId, @NotNull @Positive Integer quantity, @NotNull UUID branchId,
+        @NotNull UUID id, @NotNull UUID productId, @NotNull @Positive BigDecimal quantity, @NotNull UUID branchId,
         OffsetDateTime occurredAt) {
 }

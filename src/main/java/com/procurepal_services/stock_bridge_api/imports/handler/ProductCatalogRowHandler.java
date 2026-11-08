@@ -713,14 +713,14 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (entered == null) {
             return null;
         }
-        Integer stockUnits = toStockUnits(countedIn, entered);
+        BigDecimal stockUnits = toStockUnits(countedIn, entered);
         if (stockUnits == null) {
             out.error(field, "NUMBER_TOO_LARGE",
                     "%s is larger than we can record for %s.".formatted(label, subject));
             out.value(field, null);
             return null;
         }
-        if (stockUnits == 0 && entered.signum() > 0) {
+        if (stockUnits.signum() == 0 && entered.signum() > 0) {
             out.error(field, "ROUNDS_TO_ZERO",
                     "%s of %s is less than one whole %s, and we can only record whole ones - enter a larger "
                             .formatted(ImportCopy.count(entered), spokenOf(countedIn), symbolOrUnits(stockUnitCode))
@@ -728,7 +728,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             out.value(field, null);
             return null;
         }
-        if (primary && !countedIn.isStockUnit() && stockUnits > 0) {
+        if (primary && !countedIn.isStockUnit() && stockUnits.signum() > 0) {
             out.value(ImportFields.BASE_QUANTITY_TEXT, ImportCopy.baseQuantityText(stockUnits, stockUnitCode));
         }
         return entered;
@@ -803,9 +803,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return countedIn(state).toStockUnitPrice(entered);
     }
 
-    private Integer stockUnitsOf(ImportRowState state, String field) {
+    private BigDecimal stockUnitsOf(ImportRowState state, String field) {
         BigDecimal entered = decimalOf(state, field);
         return entered == null ? null : toStockUnits(countedIn(state), entered);
+    }
+
+    /** {@link #stockUnitsOf} for a low-stock level, which stays a whole number of the stock unit. */
+    private Integer wholeStockUnitsOf(ImportRowState state, String field) {
+        BigDecimal stockUnits = stockUnitsOf(state, field);
+        return stockUnits == null ? null : stockUnits.setScale(0, java.math.RoundingMode.HALF_UP).intValueExact();
     }
 
     /**
@@ -826,12 +832,13 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
      *
      * @return the amount in stock units, or null when it does not fit an int.
      */
-    private static Integer toStockUnits(UnitOption option, BigDecimal entered) {
-        BigDecimal converted = option.factorToStockUnit().multiply(entered);
+    private static BigDecimal toStockUnits(UnitOption option, BigDecimal entered) {
+        BigDecimal converted = option.toStockUnitQuantity(entered);
+        // numeric(14, 3), and a level must still fit an int.
         if (converted.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0) {
             return null;
         }
-        return converted.setScale(0, java.math.RoundingMode.HALF_UP).intValue();
+        return converted;
     }
 
     /** "kegs", "kg" - one option as it reads inside a sentence. */
@@ -903,7 +910,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         // actually asks for a different figure. A downloaded sheet carries today's stock on every
         // row, and warning about all of them would bury the one that changed.
         if (quantity != null && quantity.signum() > 0
-                && !sameNumber(quantity, BigDecimal.valueOf(existing.getQuantityOnHand()).divide(factor, 3, java.math.RoundingMode.HALF_UP))) {
+                && !sameNumber(quantity, existing.getQuantityOnHand().divide(factor, 3, java.math.RoundingMode.HALF_UP))) {
             out.warning(ImportFields.OPENING_STOCK, "QUANTITY_IGNORED_ON_UPDATE",
                     "Stock can't be changed from this sheet, so this number is ignored. Use Record a delivery for "
                             + "what arrived, or a stock adjustment after a count.");
@@ -1248,7 +1255,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         /** Rows that set a selling price: one price serves every branch (multi-branch section 5.14). */
         int priced;
         /** Stock-unit symbol to the opening stock counted in it. Insertion-ordered by file order. */
-        final Map<String, Long> openingByStockUnit = new LinkedHashMap<>();
+        final Map<String, BigDecimal> openingByStockUnit = new LinkedHashMap<>();
     }
 
     private Tally tally(BatchContext ctx) {
@@ -1270,11 +1277,11 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 // converting the row's pack count first. A preview that added up bags and
                 // millilitres because both cells happen to hold a bare number would be the exact
                 // "bare sum of mixed entered quantities" 6.3 forbids.
-                Integer quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
-                if (quantity != null && quantity > 0) {
+                BigDecimal quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
+                if (quantity != null && quantity.signum() > 0) {
                     tally.openingProducts++;
                     tally.openingByStockUnit.merge(
-                            symbolOrUnits(state.text(ImportFields.STOCK_UNIT)), (long) quantity, Long::sum);
+                            symbolOrUnits(state.text(ImportFields.STOCK_UNIT)), quantity, BigDecimal::add);
                 }
             } else {
                 tally.updates++;
@@ -1513,13 +1520,13 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 // Zero, always. Contract section 8.1: no quantity reaches quantity_on_hand
                 // without a StockMovement, and the opening-balance stockIn below is the only
                 // thing allowed to move it.
-                .quantityOnHand(0)
+                .quantityOnHand(BigDecimal.ZERO)
                 .incomingQuantity(0)
                 // Section 9.1: the cell counts packs when the row declares one, and
                 // products.low_stock_threshold is compared against quantity_on_hand, which is in
                 // stock units. Converting here rather than storing what was typed is what stops
                 // a 5-keg alert firing at 5 ml.
-                .lowStockThreshold(stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT))
+                .lowStockThreshold(wholeStockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT))
                 .unitOfMeasure(state.text(ImportFields.STOCK_UNIT))
                 .packagingUnit(state.text(ImportFields.PACK))
                 .packagingSize(packSizeOf(state))
@@ -1598,7 +1605,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (state.text(ImportFields.BARCODE) != null) {
             product.setBarcode(state.text(ImportFields.BARCODE));
         }
-        Integer alertAt = stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
+        Integer alertAt = wholeStockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
         if (alertAt != null) {
             product.setLowStockThreshold(alertAt);
         }
@@ -1683,8 +1690,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                     // MULTI_VENDOR_INVENTORY_DESIGN.md 5.1/7.3 states and findOrCreateForReceipt
                     // already implements, restated here rather than diverged from.
                     .isPreferred(existingLines == 0)
-                    .quantityOnHandFromVendor(0)
-                    .totalQuantityReceived(0)
+                    .quantityOnHandFromVendor(BigDecimal.ZERO)
+                    .totalQuantityReceived(BigDecimal.ZERO)
                     .build();
             // Persisted before its pack is touched below - a pack's FK needs a parent id, and
             // vendorSku/lastCostPrice no longer live on this row itself (V24).
@@ -1762,8 +1769,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             Map<String, CompanyVendor> createdVendors,
             UUID batchId) {
         // In STOCK units, converted once, here. Section 9.1's cell counts packs.
-        Integer quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
-        if (product == null || quantity == null || quantity <= 0) {
+        BigDecimal quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
+        if (product == null || quantity == null || quantity.signum() <= 0) {
             return false;
         }
         CompanyVendor vendor = resolveVendor(ctx, state, createdVendors);
@@ -1804,7 +1811,9 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                         vendor == null ? null : vendor.getId(),
                         null,
                         null,
-                        OffsetDateTime.now())
+                        OffsetDateTime.now(),
+                        null,
+                        null)
                         // Opening quantities land at the branch the sheet was uploaded for (V52).
                         .withBranchId(ctx.session().getBranchId()),
                 ctx.actingUserId(),
@@ -1906,12 +1915,12 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 continue;
             }
             branchStockService.apply(
-                    product, movement.getBranchId(), branchStockService.areaOf(movement), -movement.getQuantity());
+                    product, movement.getBranchId(), branchStockService.areaOf(movement), movement.getQuantity().negate());
             stockMovementRepository.save(StockMovement.builder()
                     .product(product)
                     .branchId(movement.getBranchId())
                     .movementType(MovementType.ADJUSTMENT)
-                    .quantity(-movement.getQuantity())
+                    .quantity(movement.getQuantity().negate())
                     .note("Reversing an import that was undone")
                     .companyVendor(movement.getCompanyVendor())
                     .occurredAt(OffsetDateTime.now())
@@ -1923,8 +1932,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                                 tenantId, product.getId(), movement.getCompanyVendor().getId())
                         .ifPresent(line -> {
                             line.setQuantityOnHandFromVendor(
-                                    line.getQuantityOnHandFromVendor() - movement.getQuantity());
-                            line.setTotalQuantityReceived(line.getTotalQuantityReceived() - movement.getQuantity());
+                                    line.getQuantityOnHandFromVendor().subtract(movement.getQuantity()));
+                            line.setTotalQuantityReceived(line.getTotalQuantityReceived().subtract(movement.getQuantity()));
                         });
             }
             reversed++;

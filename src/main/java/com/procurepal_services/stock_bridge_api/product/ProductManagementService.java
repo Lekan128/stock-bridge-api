@@ -505,7 +505,7 @@ public class ProductManagementService {
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
                 .packagingSize(request.packagingSize())
-                .quantityOnHand(0)
+                .quantityOnHand(BigDecimal.ZERO)
                 .incomingQuantity(0)
                 .active(true)
                 // Stated rather than left to the column's PENDING default, so the
@@ -809,10 +809,10 @@ public class ProductManagementService {
     public byte[] exportActiveProducts(UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         List<Product> products = productRepository.findAll(ProductSpecifications.forTenant(tenantId, null, true));
-        Map<UUID, Integer> quantities = null;
+        Map<UUID, BigDecimal> quantities = null;
         if (userId != null && branchStockService.isMultiBranch(tenantId)) {
             List<UUID> scope = branchAccessService.stockScope(userId, branchId);
-            Map<UUID, Integer> held = new java.util.HashMap<>();
+            Map<UUID, BigDecimal> held = new java.util.HashMap<>();
             jdbc.query("""
                     SELECT product_id, SUM(quantity_on_hand) AS held FROM branch_stock
                     WHERE client_id = :clientId AND branch_id = ANY(:scope) GROUP BY product_id
@@ -820,7 +820,7 @@ public class ProductManagementService {
                             .addValue("clientId", tenantId)
                             .addValue("scope", scope.toArray(UUID[]::new)),
                     rs -> {
-                        held.put(rs.getObject("product_id", UUID.class), rs.getInt("held"));
+                        held.put(rs.getObject("product_id", UUID.class), rs.getBigDecimal("held"));
                     });
             quantities = held;
         }

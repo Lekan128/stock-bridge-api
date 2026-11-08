@@ -64,7 +64,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             + "WHEN m.movementType = com.procurepal_services.stock_bridge_api.entity.MovementType.TRANSFER_OUT THEN -m.quantity "
             + "ELSE 0 END), 0) "
             + "FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId AND m.occurredAt > :after")
-    long netChangeAfter(
+    BigDecimal netChangeAfter(
             @Param("productId") UUID productId, @Param("branchId") UUID branchId, @Param("after") OffsetDateTime after);
 
     /**
@@ -94,7 +94,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             + "ELSE 0 END), 0) "
             + "FROM StockMovement m WHERE m.product.id = :productId AND m.branchId = :branchId "
             + "AND COALESCE(m.areaId, :originalAreaId) = :areaId AND m.occurredAt > :after")
-    long netChangeAfterInArea(
+    BigDecimal netChangeAfterInArea(
             @Param("productId") UUID productId,
             @Param("branchId") UUID branchId,
             @Param("areaId") UUID areaId,
@@ -367,7 +367,7 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             + "WHERE m.clientId = :clientId AND m.movementType = :movementType "
             + "AND m.occurredAt BETWEEN :from AND :to AND m.branchId IN :branchIds"
             + " AND (:allAreas = true OR m.areaId IN :areaIds OR (m.areaId IS NULL AND m.branchId IN :origBranches))")
-    long sumQuantityInAreas(
+    BigDecimal sumQuantityInAreas(
             @Param("clientId") UUID clientId,
             @Param("movementType") MovementType movementType,
             @Param("from") OffsetDateTime from,
@@ -377,12 +377,12 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
             @Param("areaIds") java.util.Collection<UUID> areaIds,
             @Param("origBranches") java.util.Collection<UUID> origBranches);
 
-    default long sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
+    default BigDecimal sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds) {
         return sumQuantityInAreas(clientId, movementType, from, to, branchIds, true, AreaScope.areaIds(null), AreaScope.originalBranchIds(null));
     }
 
     /** {@link #sumQuantity} over these areas only (Part 3.6); null is every area. */
-    default long sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
+    default BigDecimal sumQuantity(UUID clientId, MovementType movementType, OffsetDateTime from, OffsetDateTime to, java.util.Collection<UUID> branchIds, AreaScope areas) {
         return sumQuantityInAreas(clientId, movementType, from, to, branchIds, AreaScope.everywhere(areas), AreaScope.areaIds(areas), AreaScope.originalBranchIds(areas));
     }
 

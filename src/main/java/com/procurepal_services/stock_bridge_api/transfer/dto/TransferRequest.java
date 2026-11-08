@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.transfer.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -29,7 +30,7 @@ public record TransferRequest(
         Boolean receiveNow) {
 
     /** {@code quantity} in {@code unit} - a pack ("CRATE") or the stock unit when absent. */
-    public record Line(@NotNull UUID productId, @NotNull @Positive Integer quantity, String unit) {
+    public record Line(@NotNull UUID productId, @NotNull @Positive BigDecimal quantity, String unit) {
     }
 
     public boolean receivesNow() {

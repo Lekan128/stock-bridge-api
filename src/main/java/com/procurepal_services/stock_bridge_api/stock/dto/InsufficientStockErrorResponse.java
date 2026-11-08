@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
+import java.math.BigDecimal;
 /**
  * The 409 oversell body - MULTI_VENDOR_INVENTORY_DESIGN.md section 8: "409/insufficient-stock
  * response states the actual available quantity rather than a bare rejection". A dedicated type
@@ -10,9 +11,9 @@ package com.procurepal_services.stock_bridge_api.stock.dto;
  * plain {@code {message}} envelope everything else returns.
  */
 public record InsufficientStockErrorResponse(
-        int status, String message, int availableQuantity, int requestedQuantity, java.util.UUID productId) {
+        int status, String message, BigDecimal availableQuantity, BigDecimal requestedQuantity, java.util.UUID productId) {
 
-    public InsufficientStockErrorResponse(int status, String message, int availableQuantity, int requestedQuantity) {
+    public InsufficientStockErrorResponse(int status, String message, BigDecimal availableQuantity, BigDecimal requestedQuantity) {
         this(status, message, availableQuantity, requestedQuantity, null);
     }
 }

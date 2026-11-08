@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.branch;
 
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.client.ClientProvisioning;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
@@ -136,27 +137,27 @@ public class BranchStockService {
      * How many of {@code product} the area holds now: the figure a stock-out or count is judged against.
      * At a branch with one area, the branch's own figure, exactly as before areas.
      */
-    public int quantityAt(Product product, UUID branchId, UUID areaId) {
+    public BigDecimal quantityAt(Product product, UUID branchId, UUID areaId) {
         if (!isAreaMode(branchId)) {
             return quantityAt(product, branchId);
         }
-        List<Integer> found = jdbc.queryForList(
+        List<BigDecimal> found = jdbc.queryForList(
                 "SELECT quantity_on_hand FROM area_stock WHERE area_id = :areaId AND product_id = :productId",
                 new MapSqlParameterSource().addValue("areaId", areaId).addValue("productId", product.getId()),
-                Integer.class);
-        return found.isEmpty() ? 0 : found.getFirst();
+                BigDecimal.class);
+        return found.isEmpty() ? BigDecimal.ZERO : found.getFirst();
     }
 
     /** How many of {@code product} the branch holds now, whatever area it is in. */
-    public int quantityAt(Product product, UUID branchId) {
+    public BigDecimal quantityAt(Product product, UUID branchId) {
         if (!isMultiBranch(product.getClientId())) {
             return product.getQuantityOnHand();
         }
-        List<Integer> found = jdbc.queryForList(
+        List<BigDecimal> found = jdbc.queryForList(
                 "SELECT quantity_on_hand FROM branch_stock WHERE branch_id = :branchId AND product_id = :productId",
                 new MapSqlParameterSource().addValue("branchId", branchId).addValue("productId", product.getId()),
-                Integer.class);
-        return found.isEmpty() ? 0 : found.getFirst();
+                BigDecimal.class);
+        return found.isEmpty() ? BigDecimal.ZERO : found.getFirst();
     }
 
     /**
@@ -166,9 +167,9 @@ public class BranchStockService {
      * it on the day a second appears: {@link #resolveAreaForWrite} for a new write, {@link #areaOf} for
      * one being reversed.
      */
-    public void apply(Product product, UUID branchId, UUID areaId, int delta) {
+    public void apply(Product product, UUID branchId, UUID areaId, BigDecimal delta) {
         java.util.Objects.requireNonNull(areaId, "every stock figure is in an area (V60)");
-        product.setQuantityOnHand(product.getQuantityOnHand() + delta);
+        product.setQuantityOnHand(product.getQuantityOnHand().add(delta));
         MapSqlParameterSource params = new MapSqlParameterSource()
                 .addValue("clientId", product.getClientId())
                 .addValue("branchId", branchId)
@@ -225,7 +226,7 @@ public class BranchStockService {
         // company's rows at these branches" by an average company's size - 3 rows, against a chain's
         // 312k - and took 1.6 s for a 50-product page (Phase 4, 26 branches x 20k products).
         jdbc.getJdbcTemplate().execute("SET LOCAL plan_cache_mode = force_custom_plan");
-        Map<UUID, Map<UUID, int[]>> found = new HashMap<>();
+        Map<UUID, Map<UUID, BigDecimal[]>> found = new HashMap<>();
         Map<UUID, Map<UUID, Integer>> thresholds = new HashMap<>();
         // A sync page (2,000 products): the page's ids joined as a table, a hash join over the branch's
         // rows - 4 ms. A list page (50): the product index - 2 ms. Each is several times the other's.
@@ -247,13 +248,13 @@ public class BranchStockService {
                     UUID product = rs.getObject("product_id", UUID.class);
                     UUID branch = rs.getObject("branch_id", UUID.class);
                     found.computeIfAbsent(product, key -> new HashMap<>())
-                            .put(branch, new int[] {rs.getInt("quantity_on_hand")});
+                            .put(branch, new BigDecimal[] {rs.getBigDecimal("quantity_on_hand")});
                     Integer own = (Integer) rs.getObject("low_stock_threshold");
                     if (own != null) {
                         thresholds.computeIfAbsent(product, key -> new HashMap<>()).put(branch, own);
                     }
                 });
-        Map<UUID, Map<UUID, Integer>> onTheWay = new HashMap<>();
+        Map<UUID, Map<UUID, BigDecimal>> onTheWay = new HashMap<>();
         jdbc.query("""
                 SELECT l.product_id, t.to_branch_id,
                        SUM(l.quantity_sent - l.quantity_received - l.quantity_missing - l.quantity_damaged) AS on_the_way
@@ -267,17 +268,17 @@ public class BranchStockService {
                         .addValue("branchIds", branchIds.toArray(UUID[]::new)),
                 rs -> {
                     onTheWay.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
-                            .put(rs.getObject("to_branch_id", UUID.class), rs.getInt("on_the_way"));
+                            .put(rs.getObject("to_branch_id", UUID.class), rs.getBigDecimal("on_the_way"));
                 });
         Map<UUID, List<BranchFigure>> figures = new HashMap<>();
         for (UUID product : productIds) {
             List<BranchFigure> list = new ArrayList<>(branchIds.size());
             for (UUID branch : branchIds) {
-                int[] quantity = found.getOrDefault(product, Map.of()).get(branch);
+                BigDecimal[] quantity = found.getOrDefault(product, Map.of()).get(branch);
                 Integer threshold = thresholds.getOrDefault(product, Map.of())
                         .getOrDefault(branch, productThresholds.get(product));
-                list.add(BranchFigure.of(branch, quantity == null ? 0 : quantity[0], threshold,
-                        onTheWay.getOrDefault(product, Map.of()).getOrDefault(branch, 0)));
+                list.add(BranchFigure.of(branch, quantity == null ? BigDecimal.ZERO : quantity[0], threshold,
+                        onTheWay.getOrDefault(product, Map.of()).getOrDefault(branch, BigDecimal.ZERO)));
             }
             figures.put(product, list);
         }
@@ -370,17 +371,17 @@ public class BranchStockService {
         if (areas.isEmpty()) {
             return null;
         }
-        Map<UUID, Map<UUID, Integer>> held = new HashMap<>();
+        Map<UUID, Map<UUID, BigDecimal>> held = new HashMap<>();
         jdbc.query("""
                 SELECT s.product_id, s.area_id, s.quantity_on_hand FROM area_stock s
                 WHERE s.product_id = ANY(:productIds) AND s.area_id = ANY(:areaIds)
                 """, params.addValue("areaIds", areas.stream().map(area -> area[0]).toArray(UUID[]::new)),
                 rs -> {
                     held.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
-                            .put(rs.getObject("area_id", UUID.class), rs.getInt("quantity_on_hand"));
+                            .put(rs.getObject("area_id", UUID.class), rs.getBigDecimal("quantity_on_hand"));
                 });
         // Moved there and not confirmed yet (Part 4): on its way in, in neither area's figure.
-        Map<UUID, Map<UUID, Integer>> waiting = new HashMap<>();
+        Map<UUID, Map<UUID, BigDecimal>> waiting = new HashMap<>();
         jdbc.query("""
                 SELECT l.product_id, m.to_area_id, SUM(l.quantity) AS waiting
                 FROM area_moves m JOIN area_move_lines l ON l.move_id = m.id
@@ -388,16 +389,16 @@ public class BranchStockService {
                 GROUP BY l.product_id, m.to_area_id
                 """, params, rs -> {
                     waiting.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
-                            .put(rs.getObject("to_area_id", UUID.class), rs.getInt("waiting"));
+                            .put(rs.getObject("to_area_id", UUID.class), rs.getBigDecimal("waiting"));
                 });
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> figures = new HashMap<>();
         for (UUID product : productIds) {
-            Map<UUID, Integer> at = held.getOrDefault(product, Map.of());
-            Map<UUID, Integer> coming = waiting.getOrDefault(product, Map.of());
+            Map<UUID, BigDecimal> at = held.getOrDefault(product, Map.of());
+            Map<UUID, BigDecimal> coming = waiting.getOrDefault(product, Map.of());
             figures.put(product, areas.stream()
                     .map(area -> new com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure(
-                            area[0], area[1], at.getOrDefault(area[0], 0), at.containsKey(area[0]),
-                            coming.getOrDefault(area[0], 0)))
+                            area[0], area[1], at.getOrDefault(area[0], BigDecimal.ZERO), at.containsKey(area[0]),
+                            coming.getOrDefault(area[0], BigDecimal.ZERO)))
                     .toList());
         }
         return figures;
@@ -472,7 +473,7 @@ public class BranchStockService {
      * figures, the lots and the costs are the same before and after. The caller holds the product's lock
      * and has checked the sending area has it.
      */
-    public void moveBetweenAreas(Product product, UUID branchId, UUID fromAreaId, UUID toAreaId, int quantity) {
+    public void moveBetweenAreas(Product product, UUID branchId, UUID fromAreaId, UUID toAreaId, BigDecimal quantity) {
         if (!isAreaMode(branchId)) {
             throw new IllegalStateException("Branch " + branchId + " has one area: there is nowhere to move stock to");
         }
@@ -486,7 +487,7 @@ public class BranchStockService {
                 ON CONFLICT (area_id, product_id)
                 DO UPDATE SET quantity_on_hand = area_stock.quantity_on_hand + :delta
                 """;
-        jdbc.update(upsert, new MapSqlParameterSource(params.getValues()).addValue("areaId", fromAreaId).addValue("delta", -quantity));
+        jdbc.update(upsert, new MapSqlParameterSource(params.getValues()).addValue("areaId", fromAreaId).addValue("delta", quantity.negate()));
         jdbc.update(upsert, new MapSqlParameterSource(params.getValues()).addValue("areaId", toAreaId).addValue("delta", quantity));
     }
 
@@ -495,7 +496,7 @@ public class BranchStockService {
      * holds its lines here - off the sending area, in no area, still in the branch's figure - and gives them
      * back when it is settled. The caller holds the product's lock and has checked the area has it.
      */
-    public void holdInArea(Product product, UUID branchId, UUID areaId, int delta) {
+    public void holdInArea(Product product, UUID branchId, UUID areaId, BigDecimal delta) {
         jdbc.update("""
                 INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand)
                 VALUES (:clientId, :areaId, :branchId, :productId, :delta)
@@ -518,8 +519,8 @@ public class BranchStockService {
      * was settled, what went on arrived in the receiving area and the rest came back (what was used there or
      * damaged then left again as stock-out rows, in the ledger's share). An undone one changed nothing.
      */
-    public long moveNetAfter(UUID productId, UUID branchId, UUID areaId, java.time.OffsetDateTime after) {
-        Long net = jdbc.queryForObject("""
+    public BigDecimal moveNetAfter(UUID productId, UUID branchId, UUID areaId, java.time.OffsetDateTime after) {
+        BigDecimal net = jdbc.queryForObject("""
                 WITH lines AS (
                     SELECT m.from_area_id, m.to_area_id, m.status, m.waits, m.moved_at,
                            COALESCE(m.confirmed_at, m.cancelled_at) AS settled_at, l.quantity, l.used_movement_id,
@@ -543,8 +544,8 @@ public class BranchStockService {
                         .addValue("productId", productId)
                         .addValue("branchId", branchId)
                         .addValue("areaId", areaId)
-                        .addValue("after", after), Long.class);
-        return net == null ? 0 : net;
+                        .addValue("after", after), BigDecimal.class);
+        return net == null ? BigDecimal.ZERO : net;
     }
 
     /** What a write is doing, which decides the area it lands in when it names none (D-E10). */

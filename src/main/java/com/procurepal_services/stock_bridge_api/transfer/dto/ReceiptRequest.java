@@ -18,7 +18,7 @@ import java.util.UUID;
 public record ReceiptRequest(
         @NotNull UUID id, OffsetDateTime occurredAt, Boolean asSent, @Valid List<Line> lines) {
 
-    public record Line(@NotNull UUID productId, @Min(0) Integer received, @Min(0) Integer missing, @Min(0) Integer damaged) {
+    public record Line(@NotNull UUID productId, @Min(0) java.math.BigDecimal received, @Min(0) java.math.BigDecimal missing, @Min(0) java.math.BigDecimal damaged) {
     }
 
     public boolean receivesAsSent() {

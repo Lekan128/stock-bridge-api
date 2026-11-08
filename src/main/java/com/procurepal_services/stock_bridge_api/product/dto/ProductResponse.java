@@ -19,7 +19,7 @@ public record ProductResponse(
         String description,
         BigDecimal unitPrice,
         BigDecimal costPrice,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         // Bought from the marketplace and paid for, but not yet confirmed as received - so it is
         // NOT part of quantityOnHand and must never be presented as usable stock. It becomes
         // on-hand only when the buyer marks the order received, which writes a real IN movement.

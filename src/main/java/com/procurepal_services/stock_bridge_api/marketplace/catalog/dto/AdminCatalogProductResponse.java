@@ -64,9 +64,9 @@ public record AdminCatalogProductResponse(
         String packagingUnit,
         BigDecimal packagingSize,
         int minOrderQuantity,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         int committedQuantity,
-        int availableToSell,
+        BigDecimal availableToSell,
         int incomingQuantity,
         Integer lowStockThreshold,
         boolean active,
@@ -110,7 +110,7 @@ public record AdminCatalogProductResponse(
                 // Floored at zero for the same reason CatalogStockService floors it: an
                 // oversold product is at zero available, and a negative here would read
                 // as a number the operator could act on.
-                Math.max(0, product.getQuantityOnHand() - committedQuantity),
+                product.getQuantityOnHand().subtract(BigDecimal.valueOf(committedQuantity)).max(BigDecimal.ZERO),
                 product.getIncomingQuantity(),
                 product.getLowStockThreshold(),
                 product.isActive(),
