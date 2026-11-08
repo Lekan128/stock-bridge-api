@@ -81,11 +81,6 @@ public class StockManagementExceptionHandler {
                         ex.getProductId()));
     }
 
-    @ExceptionHandler(CompanyVendorRequiredException.class)
-    public ResponseEntity<ApiError> handleCompanyVendorRequired(CompanyVendorRequiredException ex) {
-        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
-    }
-
     @ExceptionHandler(InvalidStockAllocationException.class)
     public ResponseEntity<ApiError> handleInvalidAllocation(InvalidStockAllocationException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));

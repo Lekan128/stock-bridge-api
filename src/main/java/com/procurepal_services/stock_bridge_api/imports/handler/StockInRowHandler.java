@@ -128,7 +128,6 @@ import org.springframework.stereotype.Component;
 public class StockInRowHandler implements ImportRowHandler {
 
     private static final String CACHE_PRODUCTS_BY_SKU = "stock-in-products-by-sku";
-    private static final String CACHE_VENDOR_LINE_COUNT = "stock-in-vendor-line-count";
     private static final String CACHE_ACTIVE_PRODUCTS = "stock-in-active-products";
     private static final String CACHE_PREFERRED_VENDOR_LINE = "stock-in-preferred-vendor-line";
     private static final String CACHE_PREFERRED_VENDOR_PACKS = "stock-in-preferred-vendor-packs";
@@ -1025,12 +1024,9 @@ public class StockInRowHandler implements ImportRowHandler {
     }
 
     /**
-     * A product that already has supplier lines needs one named on the delivery.
-     *
-     * <p>{@code StockManagementService.stockIn} throws {@code CompanyVendorRequiredException} in
-     * exactly this case, and once the commit is running that exception rolls back the whole
-     * import. Asking the same question at validation time turns a whole-file failure into one
-     * outlined cell.
+     * The supplier cell. Blank is fine - a delivery may come from no supplier in particular
+     * (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 3). A name that matches nobody in the directory is still
+     * outlined: it's more likely a typo than "no supplier".
      */
     private void validateVendor(RowContext ctx, RowValidation.Builder out, Product product, String subject) {
         String vendorName = ctx.text(ImportFields.VENDOR_NAME);
@@ -1041,14 +1037,6 @@ public class StockInRowHandler implements ImportRowHandler {
                         || vendorDirectory.match(ctx.tenantId(), ctx.cache(), vendorName) != null);
 
         if (resolvable) {
-            return;
-        }
-        boolean productHasVendors = vendorLineCount(ctx.tenantId(), ctx.cache(), product.getId()) > 0;
-        if (vendorName == null && productHasVendors) {
-            out.error(ImportFields.VENDOR_NAME, "VENDOR_REQUIRED",
-                    "You buy %s from more than one place, so we need to know who this delivery came from - "
-                            .formatted(subject)
-                            + "otherwise we cannot tell whose stock was sold when you sell it.");
             return;
         }
         if (vendorName != null) {
@@ -2167,12 +2155,6 @@ public class StockInRowHandler implements ImportRowHandler {
     private Product findBySku(UUID tenantId, ImportBatchCache cache, String sku) {
         return cache.get(CACHE_PRODUCTS_BY_SKU, sku.toUpperCase(Locale.ROOT),
                 key -> productRepository.findByClientIdAndSku(tenantId, sku).orElse(null));
-    }
-
-    private long vendorLineCount(UUID tenantId, ImportBatchCache cache, UUID productId) {
-        Long count = cache.get(CACHE_VENDOR_LINE_COUNT, productId,
-                id -> productVendorRepository.countByClientIdAndProductId(tenantId, id));
-        return count == null ? 0 : count;
     }
 
     private List<Product> activeProducts(UUID tenantId, ImportBatchCache cache) {

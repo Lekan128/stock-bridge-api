@@ -372,13 +372,20 @@ public class BranchStockService {
             return null;
         }
         Map<UUID, Map<UUID, BigDecimal>> held = new HashMap<>();
+        // When each area last counted it (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 5): the count list's "Counted today".
+        Map<UUID, Map<UUID, java.time.OffsetDateTime>> counted = new HashMap<>();
         jdbc.query("""
-                SELECT s.product_id, s.area_id, s.quantity_on_hand FROM area_stock s
+                SELECT s.product_id, s.area_id, s.quantity_on_hand, s.last_counted_at FROM area_stock s
                 WHERE s.product_id = ANY(:productIds) AND s.area_id = ANY(:areaIds)
                 """, params.addValue("areaIds", areas.stream().map(area -> area[0]).toArray(UUID[]::new)),
                 rs -> {
                     held.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
                             .put(rs.getObject("area_id", UUID.class), rs.getBigDecimal("quantity_on_hand"));
+                    java.time.OffsetDateTime at = rs.getObject("last_counted_at", java.time.OffsetDateTime.class);
+                    if (at != null) {
+                        counted.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
+                                .put(rs.getObject("area_id", UUID.class), at);
+                    }
                 });
         // Moved there and not confirmed yet (Part 4): on its way in, in neither area's figure.
         Map<UUID, Map<UUID, BigDecimal>> waiting = new HashMap<>();
@@ -395,10 +402,11 @@ public class BranchStockService {
         for (UUID product : productIds) {
             Map<UUID, BigDecimal> at = held.getOrDefault(product, Map.of());
             Map<UUID, BigDecimal> coming = waiting.getOrDefault(product, Map.of());
+            Map<UUID, java.time.OffsetDateTime> countedAt = counted.getOrDefault(product, Map.of());
             figures.put(product, areas.stream()
                     .map(area -> new com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure(
-                            area[0], area[1], at.getOrDefault(area[0], BigDecimal.ZERO), at.containsKey(area[0]),
-                            coming.getOrDefault(area[0], BigDecimal.ZERO)))
+                            area[0], area[1], at.getOrDefault(area[0], BigDecimal.ZERO), countedAt.get(area[0]),
+                            at.containsKey(area[0]), coming.getOrDefault(area[0], BigDecimal.ZERO)))
                     .toList());
         }
         return figures;
@@ -519,6 +527,28 @@ public class BranchStockService {
      * was settled, what went on arrived in the receiving area and the rest came back (what was used there or
      * damaged then left again as stock-out rows, in the ledger's share). An undone one changed nothing.
      */
+    /**
+     * The area counted the product at {@code countedAt} (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 5). Written even when
+     * the count found nothing to change: the row's change is what tells the other phones it was counted, so it leaves
+     * every one's "To count" list. Only ever moves later - an offline count arriving late is not the latest.
+     */
+    public void markCounted(Product product, UUID branchId, UUID areaId, java.time.OffsetDateTime countedAt) {
+        if (areaId == null || !isAreaMode(branchId)) {
+            return;
+        }
+        jdbc.update("""
+                INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand, last_counted_at)
+                VALUES (:clientId, :areaId, :branchId, :productId, 0, :at)
+                ON CONFLICT (area_id, product_id) DO UPDATE
+                    SET last_counted_at = GREATEST(area_stock.last_counted_at, EXCLUDED.last_counted_at)
+                """, new MapSqlParameterSource()
+                        .addValue("clientId", product.getClientId())
+                        .addValue("areaId", areaId)
+                        .addValue("branchId", branchId)
+                        .addValue("productId", product.getId())
+                        .addValue("at", countedAt));
+    }
+
     public BigDecimal moveNetAfter(UUID productId, UUID branchId, UUID areaId, java.time.OffsetDateTime after) {
         BigDecimal net = jdbc.queryForObject("""
                 WITH lines AS (

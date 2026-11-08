@@ -128,10 +128,10 @@ public class StockManagementService {
      * Records a delivery. Weighted-average cost is recalculated unconditionally (guarding the
      * divide-by-zero/no-prior-cost case by simply taking the new price - see {@link
      * #recomputeWeightedAverageCost}); the {@code ProductVendor} line is found-or-created only
-     * when {@code request.companyVendorId()} is supplied, which is REQUIRED once the product
-     * already has at least one vendor line on file (see {@link CompanyVendorRequiredException}).
-     * A product with zero vendor lines may still receive stock with none - the very first
-     * stock-in that DOES supply one is what creates that first line, automatically preferred.
+     * when {@code request.companyVendorId()} is supplied. It is optional whatever suppliers the product has
+     * (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 3, owner 2026-11-08): a delivery from nobody in particular
+     * moves the cost and makes a lot, and counts towards no supplier. The first stock-in that DOES name
+     * one creates that supplier's line, automatically preferred when it is the first.
      *
      * <h2>V20: occurredAt, and why it is validated here rather than by an annotation</h2>
      * {@code request.occurredAt()} is when the delivery actually happened; null means now, which
@@ -218,10 +218,8 @@ public class StockManagementService {
         BigDecimal quantityBaseUnits = entry.baseQuantity();
         boolean absorbed = request.isRecordedOffline() && countedAfter(productId, branchId, areaId, occurredAt);
 
-        if (request.companyVendorId() == null
-                && productVendorRepository.countByClientIdAndProductId(tenantId, productId) > 0) {
-            throw new CompanyVendorRequiredException();
-        }
+        // No supplier is an answer (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 3): the delivery's price still moves the
+        // product's cost and its lot; it just counts towards no supplier's figures or hints.
 
         boolean vendorIsNewToProduct = false;
         ProductVendorService.PackChange packChange = null;
@@ -579,6 +577,8 @@ public class StockManagementService {
         boolean shortUsed = delta.signum() < 0 && (request.shortAs() != null
                 ? request.shortAs() == StockCountRequest.ShortAs.USED
                 : branchStockService.isAreaMode(branchId) && branchStockService.isShortUsed(areaId));
+        // Counted here now, whatever it found (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 5).
+        branchStockService.markCounted(product, branchId, areaId, countedAt);
         if (shortUsed) {
             StockMovement used = recordUsedByCount(product, branchId, areaId, delta.negate(), countedAt, note, actingUserId);
             return StockMutationResponse.of(product, used);

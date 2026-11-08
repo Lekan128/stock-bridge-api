@@ -25,7 +25,7 @@ import java.util.List;
  * did not offer. Neither ever contains a UUID or a column name - non-negotiable 6, and section
  * 4's rule for this class specifically.
  *
- * <p>Maps to 400, the same treatment {@code CompanyVendorRequiredException} gets: the request as
+ * <p>Maps to 400: the request as
  * written is not a thing that can have happened, and it would have been just as wrong yesterday.
  */
 public class InvalidStockUnitException extends RuntimeException {

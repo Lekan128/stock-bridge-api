@@ -61,6 +61,34 @@ class AreaCountIntegrationTest {
     @Autowired
     private RoleRepository roleRepository;
 
+    /**
+     * STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 5: a count marks the area counted even when it finds nothing to change,
+     * and the product's area figures say when - so it leaves every phone's "To count" list, the other cooks' too.
+     */
+    @Test
+    void aCountThatMatchesStillMarksTheAreaCountedAndTheFiguresSayWhen() {
+        Session s = session("Counted Today");
+        stockIn(s, 10, "100");
+        Areas a = kitchen(s);
+        move(s, a.store(), a.other(), 6);
+        assertThat(lastCounted(s, a.other())).isNull();
+
+        count(s, a.other(), 6, null, null);
+        assertThat(areaFigure(a.other(), s)).isEqualTo(6);
+        OffsetDateTime first = lastCounted(s, a.other());
+        assertThat(first).isNotNull();
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other()))
+                .singleElement().satisfies(figure -> assertThat(figure.lastCountedAt()).isNotNull());
+        // A late count from an offline phone isn't the latest.
+        count(s, a.other(), 6, null, hoursAgo(5));
+        assertThat(lastCounted(s, a.other())).isEqualTo(first);
+    }
+
+    private OffsetDateTime lastCounted(Session s, UUID areaId) {
+        return jdbc.queryForObject("SELECT last_counted_at FROM area_stock WHERE area_id = :a AND product_id = :p",
+                new MapSqlParameterSource().addValue("a", areaId).addValue("p", s.productId()), OffsetDateTime.class);
+    }
+
     @Test
     void aKitchensShortCountIsUsedThereCostedAndCountingAgainAddsNothing() {
         Session s = session("Count Kitchen");

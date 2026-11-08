@@ -1774,8 +1774,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         CompanyVendor vendor = resolveVendor(ctx, state, createdVendors);
         if (vendor == null) {
-            // stockIn refuses a receipt with no supplier once the product has vendor lines, and
-            // a continuation row may have added one even though the parent named none.
+            // A continuation row may have added a supplier even though the parent named none: the opening
+            // stock is theirs, as it always was.
             vendor = productVendorRepository
                     .findByClientIdAndProductIdAndIsPreferredTrue(ctx.tenantId(), product.getId())
                     .map(ProductVendor::getCompanyVendor)

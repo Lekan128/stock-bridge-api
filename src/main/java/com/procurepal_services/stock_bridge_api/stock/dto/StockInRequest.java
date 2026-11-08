@@ -44,13 +44,9 @@ import java.util.UUID;
  * (UNIT_UX_REMEDIATION_PLAN.md section 3, P0-1). A request that omits {@code unit} has factor 1
  * and so divides by nothing, which is why closing that hole changed no existing caller.
  *
- * <h2>companyVendorId - conditionally required, and not by an annotation</h2>
- * Which supplier this delivery came from. {@code @NotNull} does not appear here deliberately:
- * it is required once the product already has at least one {@code ProductVendor} row (see
- * {@code CompanyVendorRequiredException}), and optional - the product simply has no vendors yet
- * - otherwise. That is a database lookup, not something the shape of this request alone can
- * express, the same reasoning {@code CreateProductRequest.unitPrice}'s javadoc gives for why
- * its own conditional requirement is not a static annotation either.
+ * <h2>companyVendorId - optional</h2>
+ * Which supplier this delivery came from, or null for none in particular
+ * (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 3: it used to be required once the product had a supplier).
  *
  * <h2>packagingUnit / packagingSize - this DELIVERY's pack, snapshotted</h2>
  * Both optional. Frozen onto the resulting {@code StockMovement} row rather than only updating

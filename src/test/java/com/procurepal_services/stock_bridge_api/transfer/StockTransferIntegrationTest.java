@@ -116,7 +116,7 @@ class StockTransferIntegrationTest {
         assertThat(lots).hasSize(2);
         assertThat(lots.get(0)).containsEntry("quantity", new java.math.BigDecimal("3.000"));
         assertThat((BigDecimal) lots.get(0).get("unit_price_at_time")).isEqualByComparingTo("100");
-        assertThat(lots.get(1)).containsEntry("quantity", 2);
+        assertThat(lots.get(1)).containsEntry("quantity", new java.math.BigDecimal("2.000"));
         assertThat((BigDecimal) lots.get(1).get("unit_price_at_time")).isEqualByComparingTo("180");
         assertThat(lots).allSatisfy(lot -> assertThat((BigDecimal) lot.get("unit_price_at_time"))
                 .isEqualByComparingTo((BigDecimal) lot.get("source_price")));
@@ -347,7 +347,7 @@ class StockTransferIntegrationTest {
                 new HttpEntity<>(auth(c.owner())), new ParameterizedTypeReference<List<Map<String, Object>>>() {}).getBody();
         assertThat(trace).hasSize(2);
         assertThat(trace.get(0)).containsEntry("outMovementType", "TRANSFER_OUT").containsEntry("quantity", 5.0);
-        assertThat(trace.get(1)).containsEntry("outMovementType", "OUT").containsEntry("quantity", 2)
+        assertThat(trace.get(1)).containsEntry("outMovementType", "OUT").containsEntry("quantity", 2.0)
                 .containsEntry("outMovementId", sale.movement().id().toString())
                 .containsEntry("branchId", c.oshodi().toString());
         assertThat(trace.get(1).get("throughLotId")).isNotNull();
