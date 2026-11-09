@@ -574,9 +574,10 @@ public class StockManagementService {
         // a Used stock-out, costed off the lots like any other, that is also this count. Elsewhere, or when
         // the sheet says it went missing this time, the count's adjustment as ever. More is never "used".
         String note = request.note() == null || request.note().isBlank() ? "Stock count" : request.note();
-        boolean shortUsed = delta.signum() < 0 && (request.shortAs() != null
-                ? request.shortAs() == StockCountRequest.ShortAs.USED
-                : branchStockService.isAreaMode(branchId) && branchStockService.isShortUsed(areaId));
+        // Used only where stock is used bit by bit (owner, 2026-11-09): a Store's shortfall is always missing, whatever
+        // the sheet sent. A Kitchen's can be recorded as missing for one count.
+        boolean usedHere = branchStockService.isAreaMode(branchId) && branchStockService.isShortUsed(areaId);
+        boolean shortUsed = delta.signum() < 0 && usedHere && request.shortAs() != StockCountRequest.ShortAs.MISSING;
         // Counted here now, whatever it found (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 5).
         branchStockService.markCounted(product, branchId, areaId, countedAt);
         if (shortUsed) {

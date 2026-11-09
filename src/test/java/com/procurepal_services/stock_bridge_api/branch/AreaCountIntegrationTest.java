@@ -126,7 +126,7 @@ class AreaCountIntegrationTest {
     }
 
     @Test
-    void aStoresShortCountIsMissingAndTheSheetCanSayOtherwiseForOneCount() {
+    void aStoresShortCountIsAlwaysMissingAndAKitchensCanBeMissingForOneCount() {
         Session s = session("Count Store");
         stockIn(s, 10, "100");
         Areas a = kitchen(s);
@@ -135,11 +135,12 @@ class AreaCountIntegrationTest {
         count(s, a.store(), 3, null, null);
         assertThat(usedCount(s)).isZero();
         assertThat(areaFigure(a.store(), s)).isEqualTo(3);
-        // This one went missing from the kitchen; and this one was used from the store.
+        // This one went missing from the kitchen, for this count only.
         count(s, a.other(), 5, "MISSING", null);
         assertThat(usedCount(s)).isZero();
+        // Used is only an answer where stock is used bit by bit (owner, 2026-11-09): a Store's short is missing.
         count(s, a.store(), 2, "USED", null);
-        assertThat(usedCount(s)).isEqualTo(1);
+        assertThat(usedCount(s)).isZero();
         assertThat(areaFigure(a.store(), s)).isEqualTo(2);
         assertThat(areaFigure(a.other(), s)).isEqualTo(5);
         assertThat(areaHealthService.health().healthy()).isTrue();
