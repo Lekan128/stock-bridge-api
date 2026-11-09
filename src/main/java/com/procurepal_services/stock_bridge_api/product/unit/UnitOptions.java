@@ -259,7 +259,8 @@ public final class UnitOptions {
         if (stockUnitCode == null || stockUnitCode.isBlank()) {
             return "";
         }
-        Optional<UnitOfMeasure> unit = UnitOfMeasure.fromCode(stockUnitCode);
+        // A product's own unit may be a standard one kept under its short name ("L", "Piece").
+        Optional<UnitOfMeasure> unit = UnitOfMeasure.fromCode(stockUnitCode).or(() -> UnitOfMeasure.fromCodeOrLabel(stockUnitCode));
         if (unit.isEmpty()) {
             // A product's own measure (Part 1), named by the kitchen: "5 dericas", "1 small bowl".
             String word = stockUnitCode.toLowerCase(Locale.ROOT);

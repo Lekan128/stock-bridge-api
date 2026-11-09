@@ -90,6 +90,14 @@ public final class ProductMeasures {
         if (byName.isPresent()) {
             return byName;
         }
+        // "litre" for the product's "L".
+        Optional<UnitOfMeasure> standard = standardUnit(wanted);
+        if (standard.isPresent()) {
+            return measures.stream()
+                    .filter(offered)
+                    .filter(measure -> standardUnit(measure.name()).equals(standard))
+                    .findFirst();
+        }
         return suggestionFor(wanted).flatMap(suggestion -> measures.stream()
                 .filter(offered)
                 .filter(measure -> measure.name().equalsIgnoreCase(suggestion))
@@ -129,12 +137,29 @@ public final class ProductMeasures {
                 throw new InvalidMeasureException("“" + name + "” is too long for a unit name. Keep it to " + MAX_NAME
                         + " letters.");
             }
-            name = Character.toUpperCase(name.charAt(0)) + name.substring(1);
+            Optional<UnitOfMeasure> standard = standardUnit(name);
+            if (standard.isPresent()) {
+                // A standard unit (owner, 2026-11-09: "can't it be g, litre..."): one of another kind is a unit of
+                // the product's own, with its conversion - litres of oil kept in kg, pieces of yam kept in kg. Kept
+                // under its short name. One of the same kind needs nothing, and a container is a pack.
+                UnitOfMeasure unit = standard.get();
+                if (unit.role() == UnitOfMeasureRole.PACKAGING) {
+                    throw new InvalidMeasureException("“" + name + "” is a pack. Set it under Pack, with what one holds.");
+                }
+                Optional<UnitOfMeasure> stock = UnitOfMeasure.fromCode(stockUnitCode);
+                if (stock.isPresent() && stock.get().category() == unit.category()) {
+                    throw new InvalidMeasureException(unit.symbol() + " works out by itself for a product counted in "
+                            + stock.get().symbol() + ". Nothing to add.");
+                }
+                name = unit.hasSymbolAbbreviation() ? unit.symbol() : unit.label();
+            } else {
+                name = Character.toUpperCase(name.charAt(0)) + name.substring(1);
+            }
             if (!seen.add(name.toLowerCase(Locale.ROOT))) {
                 throw new InvalidMeasureException("“" + name + "” is on this product twice.");
             }
-            if (isTakenByAUnit(name) || (packCode != null && name.equalsIgnoreCase(packCode))) {
-                throw new InvalidMeasureException("“" + name + "” is already a unit or a pack here. Call it something else,"
+            if (packCode != null && name.equalsIgnoreCase(packCode)) {
+                throw new InvalidMeasureException("“" + name + "” is already this product's pack. Call it something else,"
                         + " like “" + name + " (kitchen)”.");
             }
             BigDecimal size = measure.size();
@@ -188,8 +213,8 @@ public final class ProductMeasures {
                 .collect(java.util.stream.Collectors.joining("; "));
     }
 
-    /** A name a unit code or a unit's label already answers to - "KG", "Kilogram", "Bag" - so it would mean two things. */
-    private static boolean isTakenByAUnit(String name) {
-        return UnitOfMeasure.fromCodeOrLabel(name).isPresent() || UnitOfMeasureAliases.resolve(name).isPresent();
+    /** The standard unit a name answers to - "kg", "Litre", "Piece" - if it is one. */
+    private static Optional<UnitOfMeasure> standardUnit(String name) {
+        return UnitOfMeasure.fromCodeOrLabel(name).or(() -> UnitOfMeasureAliases.resolve(name));
     }
 }

@@ -97,7 +97,9 @@ class ProductMeasuresIntegrationTest {
     void aMeasureMustHaveASizeANameOfItsOwnAndAStockUnitToBeANumberOf() {
         TenantLoginResponse owner = signup("Measure Rules");
         assertThat(createRefused(owner, "KG", List.of(new ProductMeasure("Bag", new BigDecimal("50")))).message())
-                .contains("already a unit or a pack");
+                .contains("is a pack");
+        assertThat(createRefused(owner, "KG", List.of(new ProductMeasure("g", new BigDecimal("0.001")))).message())
+                .contains("works out by itself");
         assertThat(createRefused(owner, "KG", List.of(new ProductMeasure("Mudu", BigDecimal.ZERO))).message())
                 .isEqualTo("Say how much one Mudu holds.");
         assertThat(createRefused(owner, "KG", List.of(new ProductMeasure("Mudu", new BigDecimal("1.2345")))).message())
@@ -108,6 +110,17 @@ class ProductMeasuresIntegrationTest {
         ResponseEntity<ApiError> notOne = updateRaw(owner, beans.id(), null, "Congo", ApiError.class);
         assertThat(notOne.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(notOne.getBody().message()).isEqualTo("“Congo” isn't one of this product's units.");
+    }
+
+    /** Owner, 2026-11-09: a standard unit of another kind is a unit of the product's own, with its conversion. */
+    @Test
+    void oilKeptInKgCanBeUsedInLitres() {
+        TenantLoginResponse owner = signup("Oil In Litres");
+        ProductResponse oil = create(owner, "Groundnut oil", "KG", null, null,
+                List.of(new ProductMeasure("litre", new BigDecimal("0.92"))), null);
+        assertThat(oil.measures()).extracting(ProductMeasure::name).containsExactly("L");
+        stockIn(owner, oil.id(), new BigDecimal("50"), "KG");
+        assertThat(stockOut(owner, oil.id(), new BigDecimal("10"), "L").movement().quantity()).isEqualByComparingTo("9.2");
     }
 
     @Test
