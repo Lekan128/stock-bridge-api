@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.companyvendor;
 
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorProductPriceResponse;
 import com.procurepal_services.stock_bridge_api.companyvendor.dto.VendorSpendSummary;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
@@ -132,7 +133,7 @@ public class VendorPurchaseService {
                             product.getQuantityOnHand(),
                             product.getIncomingQuantity(),
                             last.item().getUnitPrice(),
-                            last.item().getQuantity(),
+                            BigDecimal.valueOf(last.item().getQuantity()),
                             last.order().getPlacedAt(),
                             last.order().getId(),
                             last.order().getOrderNumber());

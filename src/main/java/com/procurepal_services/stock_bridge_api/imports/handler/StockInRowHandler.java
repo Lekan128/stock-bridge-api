@@ -39,6 +39,8 @@ import com.procurepal_services.stock_bridge_api.product.bulk.SheetUnitOptions;
 import com.procurepal_services.stock_bridge_api.product.bulk.StockInExcelService;
 import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationService;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures;
+import com.procurepal_services.stock_bridge_api.product.unit.Quantities;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasureRole;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
@@ -127,7 +129,6 @@ import org.springframework.stereotype.Component;
 public class StockInRowHandler implements ImportRowHandler {
 
     private static final String CACHE_PRODUCTS_BY_SKU = "stock-in-products-by-sku";
-    private static final String CACHE_VENDOR_LINE_COUNT = "stock-in-vendor-line-count";
     private static final String CACHE_ACTIVE_PRODUCTS = "stock-in-active-products";
     private static final String CACHE_PREFERRED_VENDOR_LINE = "stock-in-preferred-vendor-line";
     private static final String CACHE_PREFERRED_VENDOR_PACKS = "stock-in-preferred-vendor-packs";
@@ -217,8 +218,8 @@ public class StockInRowHandler implements ImportRowHandler {
                             .product(product)
                             .companyVendor(vendor)
                             .isPreferred(existingLines == 0)
-                            .quantityOnHandFromVendor(0)
-                            .totalQuantityReceived(0)
+                            .quantityOnHandFromVendor(BigDecimal.ZERO)
+                            .totalQuantityReceived(BigDecimal.ZERO)
                             .build());
                 });
 
@@ -715,6 +716,12 @@ public class StockInRowHandler implements ImportRowHandler {
             if (byLabel.isPresent()) {
                 return acceptCountedIn(out, subject, byLabel.get(), packEntities);
             }
+            // One of the product's own units, as the kitchen spells it - "derika" is the product's Derica (Part 5).
+            Optional<UnitOption> byMeasure = ProductMeasures.find(product.getMeasures(), cell, false)
+                    .flatMap(measure -> UnitOptions.resolve(options, measure.name()));
+            if (byMeasure.isPresent()) {
+                return acceptCountedIn(out, subject, byMeasure.get(), packEntities);
+            }
         }
         // The sheet's own wording ("Bag · 50 kg", "Loose · kg") in the grammar the parsers read;
         // a key that no longer matches (the row's supplier changed) is read as the pack it named.
@@ -915,7 +922,7 @@ public class StockInRowHandler implements ImportRowHandler {
         if (checkWholeAndNonZero(out, subject, product.getUnitOfMeasure(), countedIn, quantity)) {
             return;
         }
-        Long baseQuantity = toStockUnits(countedIn, quantity);
+        BigDecimal baseQuantity = toStockUnits(countedIn, quantity);
         if (countedIn.isStockUnit()) {
             // Nothing to convert. "= 20 kg" under a cell reading 20 is noise, and section 6.2
             // says null rather than a restatement.
@@ -938,7 +945,7 @@ public class StockInRowHandler implements ImportRowHandler {
         if (countedIn == null || quantity == null || quantity.signum() <= 0) {
             return false;
         }
-        Long baseQuantity = toStockUnits(countedIn, quantity);
+        BigDecimal baseQuantity = toStockUnits(countedIn, quantity);
         if (baseQuantity == null) {
             out.error(ImportFields.QUANTITY, "NUMBER_TOO_LARGE",
                     "That is a larger delivery of %s than we can record.".formatted(subject));
@@ -946,13 +953,13 @@ public class StockInRowHandler implements ImportRowHandler {
             return true;
         }
         BigDecimal exact = countedIn.exactStockUnits(quantity);
-        if (UnitOptions.isCountedInWholeUnits(stockUnitCode) && exact.stripTrailingZeros().scale() > 0) {
+        if (UnitOptions.isCountedInWholeUnits(stockUnitCode) && !Quantities.isWhole(exact)) {
             out.error(ImportFields.QUANTITY, "NOT_A_WHOLE_COUNT", subject + ": "
                     + InvalidStockUnitException.notAWholeCount(quantity, countedIn, exact,
                             UnitOptions.spokenPhraseOfStockUnit(stockUnitCode)).getMessage());
             return true;
         }
-        if (baseQuantity == 0) {
+        if (baseQuantity.signum() == 0) {
             out.error(ImportFields.QUANTITY, "ROUNDS_TO_ZERO", subject + ": "
                     + InvalidStockUnitException.roundsToZero(quantity, countedIn,
                             UnitOptions.symbolOf(stockUnitCode)).getMessage());
@@ -1024,12 +1031,9 @@ public class StockInRowHandler implements ImportRowHandler {
     }
 
     /**
-     * A product that already has supplier lines needs one named on the delivery.
-     *
-     * <p>{@code StockManagementService.stockIn} throws {@code CompanyVendorRequiredException} in
-     * exactly this case, and once the commit is running that exception rolls back the whole
-     * import. Asking the same question at validation time turns a whole-file failure into one
-     * outlined cell.
+     * The supplier cell. Blank is fine - a delivery may come from no supplier in particular
+     * (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 3). A name that matches nobody in the directory is still
+     * outlined: it's more likely a typo than "no supplier".
      */
     private void validateVendor(RowContext ctx, RowValidation.Builder out, Product product, String subject) {
         String vendorName = ctx.text(ImportFields.VENDOR_NAME);
@@ -1040,14 +1044,6 @@ public class StockInRowHandler implements ImportRowHandler {
                         || vendorDirectory.match(ctx.tenantId(), ctx.cache(), vendorName) != null);
 
         if (resolvable) {
-            return;
-        }
-        boolean productHasVendors = vendorLineCount(ctx.tenantId(), ctx.cache(), product.getId()) > 0;
-        if (vendorName == null && productHasVendors) {
-            out.error(ImportFields.VENDOR_NAME, "VENDOR_REQUIRED",
-                    "You buy %s from more than one place, so we need to know who this delivery came from - "
-                            .formatted(subject)
-                            + "otherwise we cannot tell whose stock was sold when you sell it.");
             return;
         }
         if (vendorName != null) {
@@ -1209,7 +1205,7 @@ public class StockInRowHandler implements ImportRowHandler {
     public CommitPreview preview(BatchContext ctx) {
         int deliveries = 0;
         // Insertion-ordered: the first product in the file names the unit the sentence leads with.
-        Map<String, Long> stockUnitTotals = new LinkedHashMap<>();
+        Map<String, BigDecimal> stockUnitTotals = new LinkedHashMap<>();
         Map<String, BigDecimal> enteredTotals = new LinkedHashMap<>();
         int usingLastPrice = 0;
         Map<String, UnitOption> enteredOptions = new LinkedHashMap<>();
@@ -1238,7 +1234,7 @@ public class StockInRowHandler implements ImportRowHandler {
 
             Product product = productOf(ctx, state);
             UnitOption option = optionFor(ctx, product, state, state.text(ImportFields.COUNTED_IN));
-            Long converted = option == null ? null : toStockUnits(option, quantity);
+            BigDecimal converted = option == null ? null : toStockUnits(option, quantity);
             BigDecimal cost = decimalOf(state, ImportFields.COST_PER_UNIT);
             if (cost == null) {
                 cost = decimalOf(state, ImportFields.LAST_PRICE_PAID);
@@ -1252,8 +1248,8 @@ public class StockInRowHandler implements ImportRowHandler {
             // is about - it is a genuine stock-unit quantity for a product with no pack.
             stockUnitTotals.merge(
                     stockUnitSymbolOf(ctx, product, state),
-                    converted == null ? quantity.setScale(0, RoundingMode.HALF_UP).longValue() : converted,
-                    Long::sum);
+                    converted == null ? Quantities.kept(quantity) : converted,
+                    BigDecimal::add);
 
             String enteredCode = option == null ? ImportFields.QUANTITY : UnitOptions.key(option);
             enteredTotals.merge(enteredCode, quantity, BigDecimal::add);
@@ -1331,7 +1327,7 @@ public class StockInRowHandler implements ImportRowHandler {
      * when - and only when - the whole file used one way of counting.
      */
     private String quantityPhrase(
-            Map<String, Long> stockUnitTotals,
+            Map<String, BigDecimal> stockUnitTotals,
             Map<String, BigDecimal> enteredTotals,
             Map<String, UnitOption> enteredOptions) {
         String ledger = ImportCopy.quantityTotals(stockUnitTotals);
@@ -1606,7 +1602,7 @@ public class StockInRowHandler implements ImportRowHandler {
             created.put(entry.getKey(), productRepository.saveAndFlush(Product.builder()
                     .name(name)
                     .sku(sku)
-                    .quantityOnHand(0)
+                    .quantityOnHand(BigDecimal.ZERO)
                     .incomingQuantity(0)
                     .unitOfMeasure(UnitOfMeasure.fromCodeOrLabel(unit, UnitOfMeasureRole.BASE)
                             .map(UnitOfMeasure::code)
@@ -1800,12 +1796,12 @@ public class StockInRowHandler implements ImportRowHandler {
                 continue;
             }
             branchStockService.apply(
-                    product, movement.getBranchId(), branchStockService.areaOf(movement), -movement.getQuantity());
+                    product, movement.getBranchId(), branchStockService.areaOf(movement), movement.getQuantity().negate());
             stockMovementRepository.save(StockMovement.builder()
                     .product(product)
                     .branchId(movement.getBranchId())
                     .movementType(MovementType.ADJUSTMENT)
-                    .quantity(-movement.getQuantity())
+                    .quantity(movement.getQuantity().negate())
                     .note("Reversing a delivery import that was undone")
                     .companyVendor(movement.getCompanyVendor())
                     .occurredAt(OffsetDateTime.now())
@@ -1817,8 +1813,8 @@ public class StockInRowHandler implements ImportRowHandler {
                                 tenantId, product.getId(), movement.getCompanyVendor().getId())
                         .ifPresent(line -> {
                             line.setQuantityOnHandFromVendor(
-                                    line.getQuantityOnHandFromVendor() - movement.getQuantity());
-                            line.setTotalQuantityReceived(line.getTotalQuantityReceived() - movement.getQuantity());
+                                    line.getQuantityOnHandFromVendor().subtract(movement.getQuantity()));
+                            line.setTotalQuantityReceived(line.getTotalQuantityReceived().subtract(movement.getQuantity()));
                         });
             }
             reversed++;
@@ -2045,8 +2041,10 @@ public class StockInRowHandler implements ImportRowHandler {
         List<UnitOptions.PackSpec> packs = packEntities.stream()
                 .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
                 .toList();
+        // With the product's own units (UNITS_PLAN.md Part 5): a delivery typed in dericas reads like one in bags.
         List<UnitOption> options = UnitOptions.forProductAndSupplier(
-                product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize(), packs);
+                product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize(), packs,
+                product.getMeasures());
         // A price is looked for with this row's own supplier first, then the preferred one.
         List<ProductVendorPack> pricePacks = rowPackEntities.isEmpty()
                 ? preferredPackEntities
@@ -2147,7 +2145,7 @@ public class StockInRowHandler implements ImportRowHandler {
      * {@code UnitOption.toStockUnitQuantity} with the overflow turned into an answer rather than
      * an exception.
      *
-     * <p>{@code stock_movements.quantity} is an int, and the conversion multiplies a number the
+     * <p>{@code stock_movements.quantity} is a numeric(14,3), and the conversion multiplies a number the
      * user typed by a factor they configured, so the product of two individually legal values can
      * exceed it. M1's method throws {@code ArithmeticException} there, correctly - it has no
      * subject to name and no cell to outline. This module has both, so it catches the throw and
@@ -2155,23 +2153,17 @@ public class StockInRowHandler implements ImportRowHandler {
      *
      * @return the quantity in stock units, or null when it does not fit.
      */
-    private static Long toStockUnits(UnitOption option, BigDecimal enteredQuantity) {
-        try {
-            return (long) option.toStockUnitQuantity(enteredQuantity);
-        } catch (ArithmeticException tooLarge) {
-            return null;
-        }
+    /** The largest figure a quantity column holds: numeric(14, 3). */
+    private static final BigDecimal LARGEST_QUANTITY = new BigDecimal("99999999999.999");
+
+    private static BigDecimal toStockUnits(UnitOption option, BigDecimal enteredQuantity) {
+        BigDecimal converted = option.toStockUnitQuantity(enteredQuantity);
+        return converted.abs().compareTo(LARGEST_QUANTITY) > 0 ? null : converted;
     }
 
     private Product findBySku(UUID tenantId, ImportBatchCache cache, String sku) {
         return cache.get(CACHE_PRODUCTS_BY_SKU, sku.toUpperCase(Locale.ROOT),
                 key -> productRepository.findByClientIdAndSku(tenantId, sku).orElse(null));
-    }
-
-    private long vendorLineCount(UUID tenantId, ImportBatchCache cache, UUID productId) {
-        Long count = cache.get(CACHE_VENDOR_LINE_COUNT, productId,
-                id -> productVendorRepository.countByClientIdAndProductId(tenantId, id));
-        return count == null ? 0 : count;
     }
 
     private List<Product> activeProducts(UUID tenantId, ImportBatchCache cache) {

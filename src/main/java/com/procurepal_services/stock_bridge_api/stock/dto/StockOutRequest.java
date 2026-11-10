@@ -58,7 +58,7 @@ import java.util.UUID;
  * section 5.3). Null or blank means the stock unit, unchanged from today.
  */
 public record StockOutRequest(
-        @NotNull @Positive Integer quantity,
+        @NotNull @Positive BigDecimal quantity,
         @DecimalMin(value = "0", inclusive = true) BigDecimal unitPrice,
         @Size(max = 1000) String note,
         String unit,
@@ -89,7 +89,7 @@ public record StockOutRequest(
 
     /** The shape before {@code areaId} (areas, Part 0). */
     public StockOutRequest(
-            Integer quantity,
+            BigDecimal quantity,
             BigDecimal unitPrice,
             String note,
             String unit,
@@ -106,7 +106,7 @@ public record StockOutRequest(
 
     /** The shape before {@code branchId} (multiple branches, Phase 0). */
     public StockOutRequest(
-            Integer quantity,
+            BigDecimal quantity,
             BigDecimal unitPrice,
             String note,
             String unit,
@@ -122,7 +122,7 @@ public record StockOutRequest(
 
     /** The shape before V46's reason, sale id and line total. */
     public StockOutRequest(
-            Integer quantity,
+            BigDecimal quantity,
             BigDecimal unitPrice,
             String note,
             String unit,
@@ -133,12 +133,12 @@ public record StockOutRequest(
     }
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
-    public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note) {
+    public StockOutRequest(BigDecimal quantity, BigDecimal unitPrice, String note) {
         this(quantity, unitPrice, note, null, null);
     }
 
     /** The shape before {@code occurredAt} and {@code recordedOffline} (A4). */
-    public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations) {
+    public StockOutRequest(BigDecimal quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations) {
         this(quantity, unitPrice, note, unit, allocations, null, null, null, null, null);
     }
 
@@ -159,6 +159,6 @@ public record StockOutRequest(
     }
 
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */
-    public record Allocation(@NotNull UUID inMovementId, @NotNull @Positive Integer quantity) {
+    public record Allocation(@NotNull UUID inMovementId, @NotNull @Positive BigDecimal quantity) {
     }
 }

@@ -82,7 +82,7 @@ public class StockMovement extends TenantAwareEntity {
     private MovementType movementType;
 
     @Column(nullable = false, updatable = false)
-    private int quantity;
+    private BigDecimal quantity;
 
     @Column(name = "unit_price_at_time", precision = 14, scale = 2, updatable = false)
     private BigDecimal unitPriceAtTime;

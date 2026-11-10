@@ -19,7 +19,7 @@ public record ProductResponse(
         String description,
         BigDecimal unitPrice,
         BigDecimal costPrice,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         // Bought from the marketplace and paid for, but not yet confirmed as received - so it is
         // NOT part of quantityOnHand and must never be presented as usable stock. It becomes
         // on-hand only when the buyer marks the order received, which writes a real IN movement.
@@ -115,7 +115,13 @@ public record ProductResponse(
         List<BranchFigure> branchStock,
         // Areas inside a branch (V60, STOCK_AREAS_PART_1.md): "Store 30 · Kitchen 6" - each open area that
         // keeps stock, at each branch the person sees that has more than one. Absent otherwise.
-        List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> areaStock) {
+        List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure> areaStock,
+        // UNITS_PLAN.md Part 1-2 (V82): the product's own units ("1 Derica = 0.6 kg"), hidden ones flagged, and
+        // where a stock-out or count starts for it. unitOptions above already offers the visible measures.
+        List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+        String usedInUnit,
+        // V84: the units a count of it opens in, as unit keys. Empty: its pack and its stock unit.
+        List<String> countIn) {
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -180,7 +186,10 @@ public record ProductResponse(
                 product.getUnitPriceEntered(),
                 product.getUnitPriceEnteredUnit(),
                 null,
-                null);
+                null,
+                product.getMeasures() == null ? List.of() : List.copyOf(product.getMeasures()),
+                product.getUsedInUnit(),
+                product.getCountIn() == null ? List.of() : List.copyOf(product.getCountIn()));
     }
 
     /**
@@ -194,7 +203,7 @@ public record ProductResponse(
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock);
+                branchStock, areaStock, measures, usedInUnit, countIn);
     }
 
     /**
@@ -207,7 +216,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, figure.lowStockThreshold(), brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, figure.isLowStock(), createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock);
+                branchStock, areaStock, measures, usedInUnit, countIn);
     }
 
     /** The same product with its figure at each branch the person sees (V52) - the product page only. */
@@ -217,7 +226,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                figures, areaStock);
+                figures, areaStock, measures, usedInUnit, countIn);
     }
 
     /** The same product with its figure in each area (V60) of the branches the person sees that have areas. */
@@ -227,6 +236,6 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, figures);
+                branchStock, figures, measures, usedInUnit, countIn);
     }
 }

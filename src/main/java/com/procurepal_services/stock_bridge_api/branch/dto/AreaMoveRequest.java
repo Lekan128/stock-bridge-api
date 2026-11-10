@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.branch.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -42,9 +43,9 @@ public record AreaMoveRequest(
      * @param usedNow used straight away where it goes (Part 3.5): a crate of tomatoes for today's stew. The line is
      *     recorded as used there at once - a give (D-E7) - and doesn't join the area's stock.
      */
-    public record Line(@NotNull UUID productId, @NotNull @Positive Integer quantity, String unit, Boolean usedNow) {
+    public record Line(@NotNull UUID productId, @NotNull @Positive BigDecimal quantity, String unit, Boolean usedNow) {
 
-        public Line(UUID productId, Integer quantity, String unit) {
+        public Line(UUID productId, BigDecimal quantity, String unit) {
             this(productId, quantity, unit, null);
         }
     }

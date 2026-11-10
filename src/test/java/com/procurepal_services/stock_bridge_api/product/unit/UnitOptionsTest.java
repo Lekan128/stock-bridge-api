@@ -234,7 +234,7 @@ class UnitOptionsTest {
                 .orElseThrow();
 
         // The complaint, in one assertion: 20 bags at N45,000/bag is 1,000 kg at N900/kg.
-        assertThat(bag.toStockUnitQuantity(20)).isEqualTo(1000);
+        assertThat(bag.toStockUnitQuantity(20)).isEqualByComparingTo("1000");
         assertThat(bag.toStockUnitPrice(new BigDecimal("45000"))).isEqualByComparingTo("900");
     }
 
@@ -246,20 +246,21 @@ class UnitOptionsTest {
                 UnitOptions.resolve(UnitOptions.forProduct("KG", null, null), null).orElseThrow();
         BigDecimal typed = new BigDecimal("2.50");
         assertThat(kg.toStockUnitPrice(typed)).isSameAs(typed);
-        assertThat(kg.toStockUnitQuantity(7)).isEqualTo(7);
+        assertThat(kg.toStockUnitQuantity(7)).isEqualByComparingTo("7");
         assertThat(kg.toStockUnitPrice(null)).isNull();
     }
 
     @Test
     void aConversionThatRoundsToZeroReturnsZeroForTheCallerToRefuse() {
         UnitOption gram = UnitOptions.resolve(UnitOptions.forProduct("KG", null, null), "G").orElseThrow();
-        // 1 g is 0.001 kg. The zero is real; refusing it is StockManagementService's job.
-        assertThat(gram.toStockUnitQuantity(1)).isZero();
-        assertThat(gram.toStockUnitQuantity(1000)).isEqualTo(1);
-        // HALF_UP, so 500 g is one whole kg rather than none - the rounding rule is the
-        // column's shape, not a judgement about the delivery.
-        assertThat(gram.toStockUnitQuantity(500)).isEqualTo(1);
-        assertThat(gram.toStockUnitQuantity(499)).isZero();
+        // 0.4 g is 0.0004 kg, nothing at the ledger's 3 places (V81). The zero is real; refusing it is
+        // StockManagementService's job. 1 g is 0.001 kg and is kept.
+        assertThat(gram.toStockUnitQuantity(new BigDecimal("0.4"))).isZero();
+        assertThat(gram.toStockUnitQuantity(1)).isEqualByComparingTo("0.001");
+        assertThat(gram.toStockUnitQuantity(1000)).isEqualByComparingTo("1");
+        // HALF_UP at the column's 3 places: 0.5 g is 0.001 kg rather than none, and 499 g is 0.499 kg.
+        assertThat(gram.toStockUnitQuantity(new BigDecimal("0.5"))).isEqualByComparingTo("0.001");
+        assertThat(gram.toStockUnitQuantity(499)).isEqualByComparingTo("0.499");
     }
 
     @Test
@@ -314,7 +315,7 @@ class UnitOptionsTest {
 
         assertThat(json)
                 .isEqualTo("{\"code\":\"BAG\",\"label\":\"Bag of 50 kg\",\"factorToStockUnit\":50,"
-                        + "\"isStockUnit\":false,\"isDefault\":true,\"isPack\":true}");
+                        + "\"isStockUnit\":false,\"isDefault\":true,\"isPack\":true,\"isMeasure\":false}");
     }
 
     /**

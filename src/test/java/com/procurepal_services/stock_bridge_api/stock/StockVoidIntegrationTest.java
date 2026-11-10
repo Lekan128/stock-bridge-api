@@ -59,7 +59,7 @@ class StockVoidIntegrationTest {
         ResponseEntity<StockMutationResponse> voided = voidWrite(s, second.movement().id(), StockMutationResponse.class);
 
         assertThat(voided.getStatusCode()).isEqualTo(HttpStatus.OK);
-        assertThat(voided.getBody().product().quantityOnHand()).isEqualTo(20);
+        assertThat(voided.getBody().product().quantityOnHand()).isEqualByComparingTo("20");
         assertThat(voided.getBody().product().costPrice()).isEqualByComparingTo("10.00");
         assertThat(history(s)).extracting(StockMovementResponse::id).doesNotContain(second.movement().id());
     }
@@ -73,7 +73,7 @@ class StockVoidIntegrationTest {
 
         ResponseEntity<StockMutationResponse> voided = voidWrite(s, sale.movement().id(), StockMutationResponse.class);
 
-        assertThat(voided.getBody().product().quantityOnHand()).isEqualTo(20);
+        assertThat(voided.getBody().product().quantityOnHand()).isEqualByComparingTo("20");
         assertThat(post(s, "stock-out", Map.of("quantity", 20), String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 
@@ -85,7 +85,7 @@ class StockVoidIntegrationTest {
 
         ResponseEntity<StockMutationResponse> voided = voidWrite(s, counted.movement().id(), StockMutationResponse.class);
 
-        assertThat(voided.getBody().product().quantityOnHand()).isEqualTo(20);
+        assertThat(voided.getBody().product().quantityOnHand()).isEqualByComparingTo("20");
         assertThat(history(s)).noneMatch(m -> m.movementType() == MovementType.ADJUSTMENT);
     }
 
@@ -101,8 +101,8 @@ class StockVoidIntegrationTest {
         assertThat(voidWrite(s, second.movement().id(), String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
 
         Map<String, Object> line = supplierLine(s);
-        assertThat(line.get("quantityOnHandFromVendor")).isEqualTo(20);
-        assertThat(line.get("totalQuantityReceived")).isEqualTo(20);
+        assertThat(line.get("quantityOnHandFromVendor")).isEqualTo(20.0);
+        assertThat(line.get("totalQuantityReceived")).isEqualTo(20.0);
         assertThat(new BigDecimal(line.get("lastCostPrice").toString())).isEqualByComparingTo("10");
     }
 
@@ -117,7 +117,7 @@ class StockVoidIntegrationTest {
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(refused.getBody()).contains("first delivery from this supplier");
-        assertThat(product(s).quantityOnHand()).isEqualTo(20);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("20");
     }
 
     @Test
@@ -130,7 +130,7 @@ class StockVoidIntegrationTest {
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(refused.getBody()).contains("Something else has been recorded for this product since");
-        assertThat(product(s).quantityOnHand()).isEqualTo(15);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("15");
     }
 
     @Test
@@ -171,7 +171,7 @@ class StockVoidIntegrationTest {
 
         assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(refused.getBody()).contains("can't be undone");
-        assertThat(product(s).quantityOnHand()).isEqualTo(25);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("25");
     }
 
     @Test
@@ -184,7 +184,7 @@ class StockVoidIntegrationTest {
         ResponseEntity<String> again = voidWrite(s, second.movement().id(), String.class);
 
         assertThat(again.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-        assertThat(product(s).quantityOnHand()).isEqualTo(20);
+        assertThat(product(s).quantityOnHand()).isEqualByComparingTo("20");
     }
 
     // ------------------------------------------------------------------------------- helpers

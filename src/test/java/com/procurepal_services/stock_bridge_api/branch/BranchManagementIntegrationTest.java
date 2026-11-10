@@ -104,7 +104,7 @@ class BranchManagementIntegrationTest {
                 .isEqualTo(HttpStatus.BAD_REQUEST);
         StockMutationResponse in = stock(owner, product, "stock-in", Map.of("quantity", 4, "branchId", oshodi.toString()));
 
-        assertThat(in.product().quantityOnHand()).isEqualTo(4);
+        assertThat(in.product().quantityOnHand()).isEqualByComparingTo("4");
         assertThat(branchFigure(oshodi, product)).isEqualTo(4);
     }
 
@@ -124,7 +124,7 @@ class BranchManagementIntegrationTest {
                 stockRaw(ade, product, "stock-in", Map.of("quantity", 1, "branchId", main.toString()));
 
         assertThat(branchFigure(oshodi, product)).as("their one branch, without naming it").isEqualTo(5);
-        assertThat(in.product().quantityOnHand()).isEqualTo(5);
+        assertThat(in.product().quantityOnHand()).isEqualByComparingTo("5");
         assertThat(elsewhere.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
         assertThat(elsewhere.getBody()).contains("You don't work at Head Office");
         assertThat(branches(ade).branches()).extracting(BranchResponse::id).containsExactly(oshodi);

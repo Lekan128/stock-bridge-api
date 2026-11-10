@@ -116,7 +116,7 @@ class ProductSyncIntegrationTest {
 
         ProductChangesPage changes = changes(admin, cursor);
         assertThat(changes.products()).extracting(ProductSyncRow::id).containsExactly(rice);
-        assertThat(changes.products().get(0).quantityOnHand()).isEqualTo(25);
+        assertThat(changes.products().get(0).quantityOnHand()).isEqualByComparingTo("25");
         assertThat(changes.cursor()).isNotEqualTo(cursor);
 
         ProductChangesPage nothingNew = changes(admin, changes.cursor());
@@ -248,7 +248,7 @@ class ProductSyncIntegrationTest {
         assertThat(rowsForRice).isEqualTo(1);
         ProductChangesPage changes = changes(admin, cursor);
         assertThat(changes.products()).extracting(ProductSyncRow::id).containsExactly(rice);
-        assertThat(changes.products().get(0).quantityOnHand()).isEqualTo(6);
+        assertThat(changes.products().get(0).quantityOnHand()).isEqualByComparingTo("6");
     }
 
     @Test

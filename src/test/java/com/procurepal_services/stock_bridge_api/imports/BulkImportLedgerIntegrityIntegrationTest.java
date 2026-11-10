@@ -106,13 +106,13 @@ class BulkImportLedgerIntegrityIntegrationTest {
         assertLedgerReconciles(tenant, "LEDG-C3");
 
         ProductResponse stocked = productBySku(tenant, "LEDG-C1");
-        assertThat(stocked.quantityOnHand()).isEqualTo(100);
+        assertThat(stocked.quantityOnHand()).isEqualByComparingTo("100");
         assertThat(movements(tenant, stocked.id()))
                 .as("the opening balance must be an IN movement, not a bare column write")
                 .singleElement()
                 .satisfies(movement -> {
                     assertThat(movement.movementType()).isEqualTo(MovementType.IN);
-                    assertThat(movement.quantity()).isEqualTo(100);
+                    assertThat(movement.quantity()).isEqualByComparingTo("100");
                 });
 
         // The row with no quantity, and the row with an explicit zero, both have an empty
@@ -162,9 +162,9 @@ class BulkImportLedgerIntegrityIntegrationTest {
         assertThat(result.movementsCreated()).isEqualTo(2);
 
         // 12 bags of 40 kg = 480 kg. Declared by the row, not inferred by a heuristic.
-        assertThat(productBySku(tenant, "OSU-BAGS").quantityOnHand()).isEqualTo(480);
+        assertThat(productBySku(tenant, "OSU-BAGS").quantityOnHand()).isEqualByComparingTo("480");
         // The identical number on a row that declares no pack is 12 kg.
-        assertThat(productBySku(tenant, "OSU-KG").quantityOnHand()).isEqualTo(12);
+        assertThat(productBySku(tenant, "OSU-KG").quantityOnHand()).isEqualByComparingTo("12");
 
         // N36,000 for one 40 kg bag, stored as N900 per kg. Typed in the same unit as the
         // quantity beside it; stored in the unit that makes two suppliers comparable.
@@ -202,7 +202,7 @@ class BulkImportLedgerIntegrityIntegrationTest {
                 .toList());
         assertThat(after).anySatisfy(movement -> {
             assertThat(movement.movementType()).isEqualTo(MovementType.ADJUSTMENT);
-            assertThat(movement.quantity()).isEqualTo(-80);
+            assertThat(movement.quantity()).isEqualByComparingTo("-80");
         });
 
         // And the two numbers still agree, which is the whole point: an undo that zeroed the
@@ -231,8 +231,8 @@ class BulkImportLedgerIntegrityIntegrationTest {
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.movementsCreated()).isEqualTo(2);
 
-        assertThat(productBySku(tenant, "LEDG-S1").quantityOnHand()).isEqualTo(35);
-        assertThat(productBySku(tenant, "LEDG-S2").quantityOnHand()).isEqualTo(40);
+        assertThat(productBySku(tenant, "LEDG-S1").quantityOnHand()).isEqualByComparingTo("35");
+        assertThat(productBySku(tenant, "LEDG-S2").quantityOnHand()).isEqualByComparingTo("40");
         assertLedgerReconciles(tenant, "LEDG-S1");
         assertLedgerReconciles(tenant, "LEDG-S2");
     }
@@ -245,7 +245,7 @@ class BulkImportLedgerIntegrityIntegrationTest {
         ImportSessionResponse session = upload(
                 tenant, STOCK_IN_HEADERS + "LEDG-SU1,Rice 50kg,,25,KG,42000,,,WB-9\n", "STOCK_IN", null);
         commit(tenant, session.id());
-        assertThat(productBySku(tenant, "LEDG-SU1").quantityOnHand()).isEqualTo(35);
+        assertThat(productBySku(tenant, "LEDG-SU1").quantityOnHand()).isEqualByComparingTo("35");
 
         UUID productId = productBySku(tenant, "LEDG-SU1").id();
         List<UUID> before = movements(tenant, productId).stream()
@@ -258,10 +258,10 @@ class BulkImportLedgerIntegrityIntegrationTest {
         assertThat(after).extracting(StockMovementResponse::id).containsAll(before);
         assertThat(after).anySatisfy(movement -> {
             assertThat(movement.movementType()).isEqualTo(MovementType.ADJUSTMENT);
-            assertThat(movement.quantity()).isEqualTo(-25);
+            assertThat(movement.quantity()).isEqualByComparingTo("-25");
         });
         // Back to the opening balance, and the ledger says so too.
-        assertThat(productBySku(tenant, "LEDG-SU1").quantityOnHand()).isEqualTo(10);
+        assertThat(productBySku(tenant, "LEDG-SU1").quantityOnHand()).isEqualByComparingTo("10");
         assertLedgerReconciles(tenant, "LEDG-SU1");
     }
 
@@ -296,7 +296,7 @@ class BulkImportLedgerIntegrityIntegrationTest {
         assertThat(allocations(tenant, lastWeeksLot))
                 .as("the older delivery must be drawn from first, even though it was entered second")
                 .singleElement()
-                .satisfies(allocation -> assertThat(allocation.quantity()).isEqualTo(10));
+                .satisfies(allocation -> assertThat(allocation.quantity()).isEqualByComparingTo("10"));
         assertThat(allocations(tenant, todaysLot))
                 .as("today's delivery must be untouched while older stock remains")
                 .isEmpty();
@@ -323,12 +323,12 @@ class BulkImportLedgerIntegrityIntegrationTest {
                 .sum();
         assertThat(product.quantityOnHand())
                 .as("%s: quantity_on_hand must equal the signed sum of its stock movements", label)
-                .isEqualTo(fromLedger);
+                .isEqualByComparingTo(java.math.BigDecimal.valueOf(fromLedger));
     }
 
     /** IN adds, OUT subtracts, ADJUSTMENT is already signed - see StockMovement's javadoc. */
     private static int signedQuantity(StockMovementResponse movement) {
-        return movement.movementType() == MovementType.OUT ? -movement.quantity() : movement.quantity();
+        return (movement.movementType() == MovementType.OUT ? movement.quantity().negate() : movement.quantity()).intValueExact();
     }
 
     // ----------------------------------------------------------------- helpers

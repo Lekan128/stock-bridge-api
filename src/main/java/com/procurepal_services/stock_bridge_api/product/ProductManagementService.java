@@ -1,5 +1,10 @@
 package com.procurepal_services.stock_bridge_api.product;
 
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
+import com.procurepal_services.stock_bridge_api.product.unit.InvalidMeasureException;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure;
 import com.procurepal_services.stock_bridge_api.selling.SellingPricePermission;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
@@ -113,6 +118,8 @@ public class ProductManagementService {
      * the one that drifts. See {@link #create}.
      */
     private final StockManagementService stockManagementService;
+    /** Links a new product's suppliers, several at once, each with its pack and price (2026-11-10). */
+    private final com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService productVendorService;
     /**
      * The tenant's own supplier directory. Two uses, both added with the per-tenant template: the
      * {@code vendor_name} dropdown a template is generated with, and resolving what an imported
@@ -505,7 +512,9 @@ public class ProductManagementService {
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
                 .packagingSize(request.packagingSize())
-                .quantityOnHand(0)
+                // UNITS_PLAN.md Part 1: the product's own units, each with what one holds.
+                .measures(new ArrayList<>(ProductMeasures.validate(request.measures(), unitOfMeasure, packagingUnit)))
+                .quantityOnHand(BigDecimal.ZERO)
                 .incomingQuantity(0)
                 .active(true)
                 // Stated rather than left to the column's PENDING default, so the
@@ -516,6 +525,8 @@ public class ProductManagementService {
                 .approvalStatus(ProductModerationRules.initialStatusFor(owner))
                 .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
+        product.setUsedInUnit(usedInUnit(product, request.usedInUnit()));
+        product.setCountIn(new ArrayList<>(countIn(product, request.countIn())));
         // After the units are set: a price typed per carton is converted by this product's own pack.
         // Without CHANGE_SELLING_PRICES (V52) the product is created without a price - "No price yet",
         // which selling already allows - rather than refused: the rest of what was typed is still wanted.
@@ -536,6 +547,52 @@ public class ProductManagementService {
         product = productRepository.saveAndFlush(product);
 
         String preferredVendorName = null;
+        // Its suppliers, several at once (2026-11-10): each linked with its pack and price, nothing received. The
+        // first is preferred, as the first linked always is.
+        java.util.Map<UUID, CreateProductRequest.SupplierLink> linked = new java.util.LinkedHashMap<>();
+        for (CreateProductRequest.SupplierLink link : request.suppliers() == null ? List.<CreateProductRequest.SupplierLink>of() : request.suppliers()) {
+            if (linked.containsKey(link.companyVendorId())) {
+                continue;
+            }
+            String linkPack = resolvePackagingUnit(link.packagingUnit());
+            requirePackagingUnitAndSizePaired(linkPack, link.packagingSize());
+            productVendorService.findOrCreateForReceipt(
+                    product, link.companyVendorId(), link.vendorSku() == null || link.vendorSku().isBlank() ? null : link.vendorSku().trim(), link.cost(), linkPack,
+                    linkPack == null ? null : link.packagingSize(), BigDecimal.ZERO, true);
+            linked.put(link.companyVendorId(), link);
+        }
+        // What's on the shelf now, separately: from one of them (their pack and price), or from nobody named.
+        if (request.openingStock() != null) {
+            CreateProductRequest.OpeningStock opening = request.openingStock();
+            CreateProductRequest.SupplierLink from =
+                    opening.companyVendorId() == null ? null : linked.get(opening.companyVendorId());
+            UUID openingBranchId = branchStockService.resolveForWrite(opening.branchId(), actingUserId);
+            branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
+            String fromPack = from == null ? null : resolvePackagingUnit(from.packagingUnit());
+            stockManagementService.stockIn(
+                    product.getId(),
+                    new StockInRequest(
+                            opening.quantity(),
+                            from == null ? null : from.cost(),
+                            "Opening stock",
+                            null,
+                            opening.companyVendorId(),
+                            fromPack,
+                            fromPack == null ? null : from.packagingSize(),
+                            null,
+                            false,
+                            null,
+                            null,
+                            openingBranchId,
+                            null),
+                    actingUserId);
+        }
+        if (!linked.isEmpty() || request.openingStock() != null) {
+            preferredVendorName = productVendorRepository
+                    .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, product.getId())
+                    .map(vendor -> vendor.getCompanyVendor().getName())
+                    .orElse(null);
+        }
         if (request.initialVendor() != null) {
             CreateProductRequest.InitialVendor initialVendor = request.initialVendor();
             // Reused, not reimplemented: stockIn already owns the ledger write, the weighted-
@@ -668,6 +725,25 @@ public class ProductManagementService {
         }
         if (request.packagingSize() != null) {
             product.setPackagingSize(request.packagingSize());
+        }
+        // UNITS_PLAN.md Part 1-3: the product's own units, after the stock unit and pack they're measured against.
+        if (request.measures() != null) {
+            product.setMeasures(new ArrayList<>(mergedMeasures(product, request.measures())));
+        }
+        if (request.usedInUnit() != null) {
+            product.setUsedInUnit(usedInUnit(product, request.usedInUnit()));
+        } else if (product.getUsedInUnit() != null
+                && UnitOptions.resolveKey(UnitOptions.forProduct(product), product.getUsedInUnit()).isEmpty()) {
+            // Its unit was taken off or hidden: stock-outs start in the stock unit again.
+            product.setUsedInUnit(null);
+        }
+        if (request.countIn() != null) {
+            product.setCountIn(new ArrayList<>(countIn(product, request.countIn())));
+        } else if (product.getCountIn() != null && !product.getCountIn().isEmpty()) {
+            // A count unit taken off or hidden drops out; none left is the default again.
+            List<UnitOption> options = UnitOptions.forProduct(product);
+            product.setCountIn(new ArrayList<>(product.getCountIn().stream()
+                    .filter(key -> UnitOptions.resolveKey(options, key).isPresent()).toList()));
         }
         // The selling price, after the units: a price typed per carton converts by the pack as it
         // now stands, and a pack that changed size re-derives the per-piece price from what was
@@ -809,10 +885,10 @@ public class ProductManagementService {
     public byte[] exportActiveProducts(UUID userId, UUID branchId) {
         UUID tenantId = requireTenantId();
         List<Product> products = productRepository.findAll(ProductSpecifications.forTenant(tenantId, null, true));
-        Map<UUID, Integer> quantities = null;
+        Map<UUID, BigDecimal> quantities = null;
         if (userId != null && branchStockService.isMultiBranch(tenantId)) {
             List<UUID> scope = branchAccessService.stockScope(userId, branchId);
-            Map<UUID, Integer> held = new java.util.HashMap<>();
+            Map<UUID, BigDecimal> held = new java.util.HashMap<>();
             jdbc.query("""
                     SELECT product_id, SUM(quantity_on_hand) AS held FROM branch_stock
                     WHERE client_id = :clientId AND branch_id = ANY(:scope) GROUP BY product_id
@@ -820,7 +896,7 @@ public class ProductManagementService {
                             .addValue("clientId", tenantId)
                             .addValue("scope", scope.toArray(UUID[]::new)),
                     rs -> {
-                        held.put(rs.getObject("product_id", UUID.class), rs.getInt("held"));
+                        held.put(rs.getObject("product_id", UUID.class), rs.getBigDecimal("held"));
                     });
             quantities = held;
         }
@@ -977,6 +1053,71 @@ public class ProductManagementService {
      * "pack" in the exception message (UNIT_UX_CONTRACT.md section 1) so a caller can tell the two validation
      * failures apart even though they share one exception class.
      */
+    /**
+     * The product's own units as asked (UNITS_PLAN.md Part 1-3), checked: a size changed counts from now on only - every
+     * movement keeps what it was - and one left out that has been typed in somewhere is kept hidden rather than removed,
+     * so last week's "5 Derica" still reads (D-U4).
+     */
+    private List<ProductMeasure> mergedMeasures(Product product, List<ProductMeasure> requested) {
+        List<ProductMeasure> kept = new ArrayList<>(
+                ProductMeasures.validate(requested, product.getUnitOfMeasure(), product.getPackagingUnit()));
+        java.util.Set<String> named = new java.util.HashSet<>();
+        kept.forEach(measure -> named.add(measure.name().toLowerCase(java.util.Locale.ROOT)));
+        for (ProductMeasure before : product.getMeasures() == null ? List.<ProductMeasure>of() : product.getMeasures()) {
+            if (!named.contains(before.name().toLowerCase(java.util.Locale.ROOT)) && measureUsed(product, before.name())) {
+                kept.add(before.hide());
+            }
+        }
+        return kept;
+    }
+
+    /** Whether anything has been recorded in this measure of the product: a movement, a move, an ask or a waybill. */
+    private boolean measureUsed(Product product, String name) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM stock_movements WHERE product_id = :productId AND lower(entered_unit) = :name)
+                    OR EXISTS (SELECT 1 FROM area_move_lines WHERE product_id = :productId AND lower(entered_unit) = :name)
+                    OR EXISTS (SELECT 1 FROM stock_request_lines WHERE product_id = :productId AND lower(entered_unit) = :name)
+                    OR EXISTS (SELECT 1 FROM stock_transfer_lines WHERE product_id = :productId AND lower(entered_unit) = :name)
+                """, new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                        .addValue("productId", product.getId())
+                        .addValue("name", name.toLowerCase(java.util.Locale.ROOT)), Boolean.class));
+    }
+
+    /**
+     * Where stock-outs and counts start for the product (Part 2), as one of its own units: "Derica", "KG", or a pack
+     * key. Blank is the stock unit (null).
+     */
+    private String usedInUnit(Product product, String requested) {
+        if (requested == null || requested.isBlank()) {
+            return null;
+        }
+        return UnitOptions.resolveKey(UnitOptions.forProduct(product), requested.trim())
+                .filter(option -> !option.isStockUnit())
+                .map(UnitOptions::key)
+                .orElseThrow(() -> new InvalidMeasureException("“" + requested.trim() + "” isn't one of this product's units."));
+    }
+
+    /**
+     * The units a count of the product opens in (V84), each one of its units, as unit keys, in the order given and
+     * once each. Empty: its pack and its stock unit.
+     */
+    private List<String> countIn(Product product, List<String> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return List.of();
+        }
+        List<UnitOption> options = UnitOptions.forProduct(product);
+        java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>();
+        for (String raw : requested) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            keys.add(UnitOptions.resolveKey(options, raw.trim())
+                    .map(UnitOptions::key)
+                    .orElseThrow(() -> new InvalidMeasureException("“" + raw.trim() + "” isn't one of this product's units.")));
+        }
+        return List.copyOf(keys);
+    }
+
     private String resolvePackagingUnit(String code) {
         if (code == null || code.isBlank()) {
             return null;

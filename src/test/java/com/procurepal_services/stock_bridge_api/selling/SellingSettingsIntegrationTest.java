@@ -270,7 +270,7 @@ class SellingSettingsIntegrationTest {
                             .name(name + " " + UUID.randomUUID().toString().substring(0, 6))
                             .sku("LEG-" + UUID.randomUUID().toString().substring(0, 8))
                             .legacyUnitPrice(new BigDecimal(legacyPrice))
-                            .quantityOnHand(0)
+                            .quantityOnHand(BigDecimal.valueOf(0))
                             .active(true)
                             .build())
                     .getId();

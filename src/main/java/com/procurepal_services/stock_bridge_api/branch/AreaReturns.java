@@ -44,7 +44,7 @@ class AreaReturns {
                     String name = rs.getString("full_name") != null ? rs.getString("full_name") : rs.getString("username");
                     found.computeIfAbsent(rs.getObject("move_id", UUID.class), key -> new HashMap<>())
                             .computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new ArrayList<>())
-                            .add(new AreaMoveResponse.Return(rs.getString("kind"), rs.getInt("quantity"),
+                            .add(new AreaMoveResponse.Return(rs.getString("kind"), rs.getBigDecimal("quantity"),
                                     rs.getString("reason"), rs.getString("note"), name,
                                     rs.getObject("occurred_at", java.time.OffsetDateTime.class)));
                 });

@@ -31,11 +31,11 @@ public record VendorProductPriceResponse(
         String sku,
         String unitOfMeasure,
         String imageUrl,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         int incomingQuantity,
         /* What was actually paid per unit on the most recent qualifying order line. Null - see above. */
         BigDecimal lastPurchaseUnitPrice,
-        Integer lastPurchaseQuantity,
+        BigDecimal lastPurchaseQuantity,
         OffsetDateTime lastPurchasedAt,
         /* The order that price came from, so the buyer can open it rather than take our word for it. */
         UUID lastPurchaseOrderId,

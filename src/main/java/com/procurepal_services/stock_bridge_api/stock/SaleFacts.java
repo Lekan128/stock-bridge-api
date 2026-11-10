@@ -41,8 +41,8 @@ final class SaleFacts {
         if (request.unitPrice() != null) {
             return request.unitPrice();
         }
-        if (request.lineTotal() != null && request.quantity() != null && request.quantity() > 0) {
-            return request.lineTotal().divide(BigDecimal.valueOf(request.quantity()), 2, RoundingMode.HALF_UP);
+        if (request.lineTotal() != null && request.quantity() != null && request.quantity().signum() > 0) {
+            return request.lineTotal().divide(request.quantity(), 2, RoundingMode.HALF_UP);
         }
         return null;
     }
@@ -58,7 +58,7 @@ final class SaleFacts {
             return request.lineTotal().setScale(2, RoundingMode.HALF_UP);
         }
         if (request.unitPrice() != null && request.quantity() != null) {
-            return request.unitPrice().multiply(BigDecimal.valueOf(request.quantity())).setScale(2, RoundingMode.HALF_UP);
+            return request.unitPrice().multiply(request.quantity()).setScale(2, RoundingMode.HALF_UP);
         }
         return null;
     }
@@ -69,7 +69,7 @@ final class SaleFacts {
     }
 
     /** One delivery a stock-out drew on and how much - the input {@link #costOf} needs. */
-    record Draw(StockMovement lot, int quantity) {
+    record Draw(StockMovement lot, BigDecimal quantity) {
     }
 
     /**
@@ -83,10 +83,10 @@ final class SaleFacts {
      *     note on {@code StockManagementService.resolveFifoAllocations}).
      * @param averageCost the product's weighted-average cost per stock unit now; may be null.
      */
-    static Cost costOf(List<Draw> draws, int quantity, BigDecimal averageCost) {
+    static Cost costOf(List<Draw> draws, BigDecimal quantity, BigDecimal averageCost) {
         BigDecimal total = BigDecimal.ZERO;
         boolean usedAverage = false;
-        int drawn = 0;
+        BigDecimal drawn = BigDecimal.ZERO;
         for (Draw draw : draws) {
             BigDecimal price = draw.lot().getUnitPriceAtTime();
             if (price == null) {
@@ -96,15 +96,15 @@ final class SaleFacts {
                 price = averageCost;
                 usedAverage = true;
             }
-            total = total.add(price.multiply(BigDecimal.valueOf(draw.quantity())));
-            drawn += draw.quantity();
+            total = total.add(price.multiply(draw.quantity()));
+            drawn = drawn.add(draw.quantity());
         }
-        int shortfall = quantity - drawn;
-        if (shortfall > 0) {
+        BigDecimal shortfall = quantity.subtract(drawn);
+        if (shortfall.signum() > 0) {
             if (averageCost == null) {
                 return Cost.UNKNOWN;
             }
-            total = total.add(averageCost.multiply(BigDecimal.valueOf(shortfall)));
+            total = total.add(averageCost.multiply(shortfall));
             usedAverage = true;
         }
         return new Cost(total.setScale(2, RoundingMode.HALF_UP), usedAverage ? CostBasis.AVERAGE : CostBasis.FIFO);

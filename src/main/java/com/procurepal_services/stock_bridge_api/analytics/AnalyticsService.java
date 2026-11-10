@@ -80,8 +80,8 @@ public class AnalyticsService {
 
         BigDecimal totalInValue = stockMovementRepository.sumValue(clientId, MovementType.IN, range[0], range[1], scope, areas);
         BigDecimal totalOutValue = stockMovementRepository.sumValue(clientId, MovementType.OUT, range[0], range[1], scope, areas);
-        long totalUnitsIn = stockMovementRepository.sumQuantity(clientId, MovementType.IN, range[0], range[1], scope, areas);
-        long totalUnitsOut = stockMovementRepository.sumQuantity(clientId, MovementType.OUT, range[0], range[1], scope, areas);
+        BigDecimal totalUnitsIn = stockMovementRepository.sumQuantity(clientId, MovementType.IN, range[0], range[1], scope, areas);
+        BigDecimal totalUnitsOut = stockMovementRepository.sumQuantity(clientId, MovementType.OUT, range[0], range[1], scope, areas);
         long lowStockProductCount;
         long activeProductCount = productRepository.countByClientIdAndActive(clientId, true);
         long outOfStockProductCount;
@@ -248,13 +248,13 @@ public class AnalyticsService {
                 (String) row[0],
                 (BigDecimal) row[1],
                 (BigDecimal) row[2],
-                ((Number) row[3]).longValue(),
-                ((Number) row[4]).longValue());
+                com.procurepal_services.stock_bridge_api.product.unit.Quantities.of(row[3]),
+                com.procurepal_services.stock_bridge_api.product.unit.Quantities.of(row[4]));
     }
 
     private TopProductEntry toTopProductEntry(Object[] row) {
         return new TopProductEntry(
-                (UUID) row[0], (String) row[1], (String) row[2], (BigDecimal) row[3], ((Number) row[4]).longValue());
+                (UUID) row[0], (String) row[1], (String) row[2], (BigDecimal) row[3], com.procurepal_services.stock_bridge_api.product.unit.Quantities.of(row[4]));
     }
 
     private UUID requireTenantId() {

@@ -45,20 +45,25 @@ public class StockTransferLine {
     private Product product;
 
     @Column(name = "quantity_sent", nullable = false, updatable = false)
-    private int quantitySent;
+    @Builder.Default
+    private BigDecimal quantitySent = BigDecimal.ZERO;
 
     @Column(name = "quantity_received", nullable = false)
-    private int quantityReceived;
+    @Builder.Default
+    private BigDecimal quantityReceived = BigDecimal.ZERO;
 
     @Column(name = "quantity_missing", nullable = false)
-    private int quantityMissing;
+    @Builder.Default
+    private BigDecimal quantityMissing = BigDecimal.ZERO;
 
     @Column(name = "quantity_damaged", nullable = false)
-    private int quantityDamaged;
+    @Builder.Default
+    private BigDecimal quantityDamaged = BigDecimal.ZERO;
 
     /** Reported missing, then found and put back on a shelf (V54). No longer missing. */
     @Column(name = "quantity_found", nullable = false)
-    private int quantityFound;
+    @Builder.Default
+    private BigDecimal quantityFound = BigDecimal.ZERO;
 
     /** As typed, for the waybill: display only (V21's rule for entered_*). */
     @Column(name = "entered_unit", length = 32, updatable = false)
@@ -72,11 +77,11 @@ public class StockTransferLine {
     private UUID outMovementId;
 
     /** How much of this line has been received, reported missing or damaged, or found again. */
-    public int accounted() {
-        return quantityReceived + quantityMissing + quantityDamaged + quantityFound;
+    public BigDecimal accounted() {
+        return quantityReceived.add(quantityMissing).add(quantityDamaged).add(quantityFound);
     }
 
-    public int onTheWay() {
-        return quantitySent - accounted();
+    public BigDecimal onTheWay() {
+        return quantitySent.subtract(accounted());
     }
 }

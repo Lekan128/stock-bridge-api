@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -26,12 +27,26 @@ import java.util.UUID;
  *     what the area says - used where stock is worked with (a kitchen), missing where it's stored.
  */
 public record StockCountRequest(
-        @NotNull @Min(0) Integer countedQuantity,
+        @NotNull @Min(0) BigDecimal countedQuantity,
         OffsetDateTime countedAt,
         @Size(max = 1000) String note,
         UUID branchId,
         UUID areaId,
-        ShortAs shortAs) {
+        ShortAs shortAs,
+        @Size(max = 8) java.util.List<@jakarta.validation.Valid CountedLine> countedAs) {
+
+    /**
+     * One box of the count as it was typed (V85): "1" in "BAG:15". The total above is what's recorded; these are kept
+     * so the count reads back as it was made - "1 bag + 2 kg".
+     */
+    public record CountedLine(@NotNull @Size(max = 40) String unit, @NotNull @Min(0) BigDecimal quantity) {
+    }
+
+    /** The shape before {@code countedAs} (V85). */
+    public StockCountRequest(
+            BigDecimal countedQuantity, OffsetDateTime countedAt, String note, UUID branchId, UUID areaId, ShortAs shortAs) {
+        this(countedQuantity, countedAt, note, branchId, areaId, shortAs, null);
+    }
 
     /** What a count's shortfall was (Part 3.5, D-A12). */
     public enum ShortAs {
@@ -40,22 +55,22 @@ public record StockCountRequest(
     }
 
     /** The shape before {@code shortAs} (areas, Part 3.5). */
-    public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note, UUID branchId, UUID areaId) {
-        this(countedQuantity, countedAt, note, branchId, areaId, null);
+    public StockCountRequest(BigDecimal countedQuantity, OffsetDateTime countedAt, String note, UUID branchId, UUID areaId) {
+        this(countedQuantity, countedAt, note, branchId, areaId, null, null);
     }
 
     /** The shape before {@code areaId} (areas, Part 0). */
-    public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note, UUID branchId) {
-        this(countedQuantity, countedAt, note, branchId, null, null);
+    public StockCountRequest(BigDecimal countedQuantity, OffsetDateTime countedAt, String note, UUID branchId) {
+        this(countedQuantity, countedAt, note, branchId, null, null, null);
     }
 
     /** The shape before {@code branchId} (multiple branches, Phase 0). */
-    public StockCountRequest(Integer countedQuantity, OffsetDateTime countedAt, String note) {
-        this(countedQuantity, countedAt, note, null, null, null);
+    public StockCountRequest(BigDecimal countedQuantity, OffsetDateTime countedAt, String note) {
+        this(countedQuantity, countedAt, note, null, null, null, null);
     }
 
     /** This count, at {@code branch} - how a caller states the branch it has resolved. */
     public StockCountRequest withBranchId(UUID branch) {
-        return new StockCountRequest(countedQuantity, countedAt, note, branch, areaId, shortAs);
+        return new StockCountRequest(countedQuantity, countedAt, note, branch, areaId, shortAs, countedAs);
     }
 }

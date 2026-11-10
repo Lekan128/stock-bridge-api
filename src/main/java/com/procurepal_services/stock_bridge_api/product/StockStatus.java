@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product;
 
+import java.math.BigDecimal;
 /**
  * The three-way cut `GET /api/products?stockStatus=` filters on and
  * `AnalyticsSummaryResponse`'s counts partition by — see
@@ -24,11 +25,11 @@ public enum StockStatus {
      * The value {@code ProductSpecifications.stockStatusPredicate} filters on, computed for one
      * product - so the sync feed (A3) labels each row exactly the way the list filter selects it.
      */
-    public static StockStatus of(int quantityOnHand, Integer lowStockThreshold) {
-        if (quantityOnHand <= 0) {
+    public static StockStatus of(BigDecimal quantityOnHand, Integer lowStockThreshold) {
+        if (quantityOnHand.signum() <= 0) {
             return OUT;
         }
-        if (lowStockThreshold != null && quantityOnHand <= lowStockThreshold) {
+        if (isLowStock(quantityOnHand, lowStockThreshold)) {
             return LOW;
         }
         return OK;
@@ -39,7 +40,7 @@ public enum StockStatus {
      * not the same as {@code of(...) == LOW} - see this enum's javadoc for why the badge and the
      * filter disagree at zero.
      */
-    public static boolean isLowStock(int quantityOnHand, Integer lowStockThreshold) {
-        return lowStockThreshold != null && quantityOnHand <= lowStockThreshold;
+    public static boolean isLowStock(BigDecimal quantityOnHand, Integer lowStockThreshold) {
+        return lowStockThreshold != null && quantityOnHand.compareTo(BigDecimal.valueOf(lowStockThreshold)) <= 0;
     }
 }

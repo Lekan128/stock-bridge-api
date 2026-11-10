@@ -41,7 +41,7 @@ public interface StockMovementAllocationRepository extends JpaRepository<StockMo
      * mid-transaction.
      */
     @Query("SELECT COALESCE(SUM(a.quantity), 0) FROM StockMovementAllocation a WHERE a.inMovement.id = :inMovementId")
-    int sumQuantityByInMovementId(@Param("inMovementId") UUID inMovementId);
+    java.math.BigDecimal sumQuantityByInMovementId(@Param("inMovementId") UUID inMovementId);
 
     /**
      * Whether anything has EVER drawn on this delivery - the question to ask before deleting it.

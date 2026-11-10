@@ -55,7 +55,7 @@ public record StockMovementResponse(
         /** The product's stock unit - the unit {@code quantity} is counted in. */
         String unitOfMeasure,
         MovementType movementType,
-        int quantity,
+        BigDecimal quantity,
         BigDecimal unitPriceAtTime,
         String note,
         UUID createdByUserId,
@@ -157,6 +157,6 @@ public record StockMovementResponse(
 
     private static BigDecimal lineValue(StockMovement movement) {
         BigDecimal unitPrice = movement.getUnitPriceAtTime();
-        return unitPrice == null ? null : unitPrice.multiply(BigDecimal.valueOf(movement.getQuantity()));
+        return unitPrice == null ? null : unitPrice.multiply(movement.getQuantity());
     }
 }

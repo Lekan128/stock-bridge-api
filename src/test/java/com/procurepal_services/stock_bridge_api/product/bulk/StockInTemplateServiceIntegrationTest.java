@@ -210,7 +210,7 @@ class StockInTemplateServiceIntegrationTest {
                 .unitOfMeasure(unitOfMeasure)
                 .packagingUnit(packagingUnit)
                 .packagingSize(packagingSize)
-                .quantityOnHand(quantityOnHand)
+                .quantityOnHand(BigDecimal.valueOf(quantityOnHand))
                 .lowStockThreshold(lowStockThreshold)
                 .active(true)
                 .build();

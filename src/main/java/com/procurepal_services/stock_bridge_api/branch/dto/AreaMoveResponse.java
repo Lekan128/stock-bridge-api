@@ -57,12 +57,12 @@ public record AreaMoveResponse(
      * @param returnable what's left of it to give back or report: what was used, less those.
      */
     public record Line(
-            UUID productId, String productName, int quantity, BigDecimal enteredQuantity, String enteredUnit,
-            boolean used, Integer got, int damaged, String unitOfMeasure, String restReason, List<Return> returns,
-            int returnable) {
+            UUID productId, String productName, BigDecimal quantity, BigDecimal enteredQuantity, String enteredUnit,
+            boolean used, BigDecimal got, BigDecimal damaged, String unitOfMeasure, String restReason, List<Return> returns,
+            BigDecimal returnable) {
     }
 
     /** Given back, or reported spoilt / expired / damaged / other (Part 6). {@code quantity} in the stock unit. */
-    public record Return(String kind, int quantity, String reason, String note, String byName, OffsetDateTime at) {
+    public record Return(String kind, BigDecimal quantity, String reason, String note, String byName, OffsetDateTime at) {
     }
 }

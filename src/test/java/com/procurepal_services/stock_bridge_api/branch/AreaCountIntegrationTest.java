@@ -61,6 +61,80 @@ class AreaCountIntegrationTest {
     @Autowired
     private RoleRepository roleRepository;
 
+    /**
+     * STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 5: a count marks the area counted even when it finds nothing to change,
+     * and the product's area figures say when - so it leaves every phone's "To count" list, the other cooks' too.
+     */
+    @Test
+    void aCountThatMatchesStillMarksTheAreaCountedAndTheFiguresSayWhen() {
+        Session s = session("Counted Today");
+        stockIn(s, 10, "100");
+        Areas a = kitchen(s);
+        move(s, a.store(), a.other(), 6);
+        assertThat(lastCounted(s, a.other())).isNull();
+
+        count(s, a.other(), 6, null, null);
+        assertThat(areaFigure(a.other(), s)).isEqualTo(6);
+        OffsetDateTime first = lastCounted(s, a.other());
+        assertThat(first).isNotNull();
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other()))
+                .singleElement().satisfies(figure -> assertThat(figure.lastCountedAt()).isNotNull());
+        // A late count from an offline phone isn't the latest.
+        count(s, a.other(), 6, null, hoursAgo(5));
+        assertThat(lastCounted(s, a.other())).isEqualTo(first);
+    }
+
+    @Test
+    void aCountKeepsHowItWasTypedAndALateOneDoesNotReplaceIt() {
+        Session s = session("Counted As");
+        stockIn(s, 10, "100");
+        Areas a = kitchen(s);
+        move(s, a.store(), a.other(), 6);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("countedQuantity", 6);
+        body.put("areaId", a.other().toString());
+        body.put("countedAs", List.of(Map.of("unit", "PIECE", "quantity", 4), Map.of("unit", "PIECE:2", "quantity", 1)));
+        assertThat(post(s, "/api/products/" + s.productId() + "/stock/count", body, Map.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other())).singleElement()
+                .satisfies(figure -> assertThat(figure.lastCountedAs()).extracting(line -> line.unit() + "=" + line.quantity().stripTrailingZeros().toPlainString())
+                        .containsExactly("PIECE=4", "PIECE:2=1"));
+
+        // A late offline count, sent as a total only, leaves the latest one's lines.
+        count(s, a.other(), 6, null, hoursAgo(5));
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other())).singleElement()
+                .satisfies(figure -> assertThat(figure.lastCountedAs()).hasSize(2));
+        // A new count sent as a total only: nothing to read back, the total is said instead.
+        count(s, a.other(), 6, null, null);
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other())).singleElement()
+                .satisfies(figure -> assertThat(figure.lastCountedAs()).isNull());
+    }
+
+    @Test
+    void aBranchWithOneAreaKnowsWhatWasCountedTodayToo() {
+        Session s = session("One Area Count");
+        stockIn(s, 10, "100");
+        Map<String, Object> body = new HashMap<>();
+        body.put("countedQuantity", 9);
+        body.put("countedAs", List.of(Map.of("unit", "PIECE", "quantity", 9)));
+        assertThat(post(s, "/api/products/" + s.productId() + "/stock/count", body, Map.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+        // The phone's catalogue says so: the branch's one area, when, and as typed.
+        ResponseEntity<Map> snapshot = restTemplate.exchange(
+                "/api/products/sync/snapshot", HttpMethod.GET, new HttpEntity<>(auth(s)), Map.class);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) snapshot.getBody().get("products");
+        Map<String, Object> row = rows.stream().filter(r -> s.productId().toString().equals(r.get("id"))).findFirst().orElseThrow();
+        List<Map<String, Object>> counts = (List<Map<String, Object>>) row.get("counts");
+        assertThat(counts).singleElement().satisfies(mark -> {
+            assertThat(mark.get("at")).isNotNull();
+            assertThat((List<?>) mark.get("countedAs")).hasSize(1);
+        });
+    }
+
+    private OffsetDateTime lastCounted(Session s, UUID areaId) {
+        return jdbc.queryForObject("SELECT last_counted_at FROM area_stock WHERE area_id = :a AND product_id = :p",
+                new MapSqlParameterSource().addValue("a", areaId).addValue("p", s.productId()), OffsetDateTime.class);
+    }
+
     @Test
     void aKitchensShortCountIsUsedThereCostedAndCountingAgainAddsNothing() {
         Session s = session("Count Kitchen");
@@ -74,7 +148,7 @@ class AreaCountIntegrationTest {
                         + " WHERE product_id = :p AND is_count",
                 new MapSqlParameterSource("p", s.productId()));
         assertThat(used).containsEntry("movement_type", "OUT").containsEntry("out_reason", "USED")
-                .containsEntry("quantity", 2).containsEntry("is_count", true).containsEntry("area_id", a.other());
+                .containsEntry("quantity", new BigDecimal("2.000")).containsEntry("is_count", true).containsEntry("area_id", a.other());
         assertThat((BigDecimal) used.get("cost_amount")).isEqualByComparingTo("200");
         assertThat(areaFigure(a.other(), s)).isEqualTo(4);
         assertThat(branchFigure(s)).isEqualTo(8);
@@ -98,7 +172,7 @@ class AreaCountIntegrationTest {
     }
 
     @Test
-    void aStoresShortCountIsMissingAndTheSheetCanSayOtherwiseForOneCount() {
+    void aStoresShortCountIsAlwaysMissingAndAKitchensCanBeMissingForOneCount() {
         Session s = session("Count Store");
         stockIn(s, 10, "100");
         Areas a = kitchen(s);
@@ -107,11 +181,12 @@ class AreaCountIntegrationTest {
         count(s, a.store(), 3, null, null);
         assertThat(usedCount(s)).isZero();
         assertThat(areaFigure(a.store(), s)).isEqualTo(3);
-        // This one went missing from the kitchen; and this one was used from the store.
+        // This one went missing from the kitchen, for this count only.
         count(s, a.other(), 5, "MISSING", null);
         assertThat(usedCount(s)).isZero();
+        // Used is only an answer where stock is used bit by bit (owner, 2026-11-09): a Store's short is missing.
         count(s, a.store(), 2, "USED", null);
-        assertThat(usedCount(s)).isEqualTo(1);
+        assertThat(usedCount(s)).isZero();
         assertThat(areaFigure(a.store(), s)).isEqualTo(2);
         assertThat(areaFigure(a.other(), s)).isEqualTo(5);
         assertThat(areaHealthService.health().healthy()).isTrue();

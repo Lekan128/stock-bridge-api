@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.branch.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
 import jakarta.validation.constraints.Size;
@@ -20,7 +21,7 @@ public record AreaReturnRequest(
         @NotNull UUID id,
         @NotNull UUID productId,
         @NotNull Kind kind,
-        @NotNull @Positive Integer quantity,
+        @NotNull @Positive BigDecimal quantity,
         @Size(max = 32) String unit,
         Reason reason,
         @Size(max = 500) String note,

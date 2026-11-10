@@ -57,8 +57,8 @@ public record PurchaseHistoryEntry(
             String productSku,
             String unitOfMeasure,
             BigDecimal unitPrice,
-            int quantity,
-            int receivedQuantity,
+            BigDecimal quantity,
+            BigDecimal receivedQuantity,
             BigDecimal lineTotal) {
 
         static PurchaseHistoryLine fromOrderItem(OrderItem item) {
@@ -70,14 +70,14 @@ public record PurchaseHistoryEntry(
                     item.getProductSku(),
                     item.getUnitOfMeasure(),
                     item.getUnitPrice(),
-                    item.getQuantity(),
-                    item.getReceivedQuantity(),
+                    BigDecimal.valueOf(item.getQuantity()),
+                    BigDecimal.valueOf(item.getReceivedQuantity()),
                     item.getLineTotal());
         }
 
         static PurchaseHistoryLine fromStockMovement(StockMovement movement) {
             BigDecimal unitPrice = movement.getUnitPriceAtTime();
-            BigDecimal lineTotal = unitPrice == null ? null : unitPrice.multiply(BigDecimal.valueOf(movement.getQuantity()));
+            BigDecimal lineTotal = unitPrice == null ? null : unitPrice.multiply(movement.getQuantity());
             return new PurchaseHistoryLine(
                     null,
                     movement.getId(),

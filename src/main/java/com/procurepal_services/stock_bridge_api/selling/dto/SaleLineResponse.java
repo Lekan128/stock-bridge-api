@@ -19,7 +19,7 @@ public record SaleLineResponse(
         UUID movementId,
         UUID productId,
         String productName,
-        int quantity,
+        BigDecimal quantity,
         String enteredUnit,
         BigDecimal enteredQuantity,
         BigDecimal unitPriceAtTime,

@@ -49,8 +49,8 @@ public record ProductLotResponse(
         OffsetDateTime occurredAt,
         UUID companyVendorId,
         String companyVendorName,
-        int quantity,
-        int remaining,
+        BigDecimal quantity,
+        BigDecimal remaining,
         BigDecimal unitPriceAtTime,
         String label) {
 

@@ -102,7 +102,7 @@ public class BranchTableService {
                     Builder to = byId.get(rs.getObject("to_branch_id", UUID.class));
                     if (open && from != null) from.onTheWayOut++;
                     if (open && to != null) to.onTheWayIn++;
-                    if (rs.getTimestamp("missing_checked_at") == null && to != null) to.missing += rs.getLong("lost");
+                    if (rs.getTimestamp("missing_checked_at") == null && to != null) to.missing += rs.getBigDecimal("lost").setScale(0, java.math.RoundingMode.CEILING).longValue();
                 });
 
         jdbc.query("""

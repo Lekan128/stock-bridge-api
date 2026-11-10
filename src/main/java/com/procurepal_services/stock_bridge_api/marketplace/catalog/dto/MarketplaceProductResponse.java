@@ -49,7 +49,7 @@ public record MarketplaceProductResponse(
         String packagingUnit,
         BigDecimal packagingSize,
         int minOrderQuantity,
-        int quantityOnHand,
+        BigDecimal quantityOnHand,
         boolean inStock,
         UUID categoryId,
         String categoryName,
@@ -87,7 +87,7 @@ public record MarketplaceProductResponse(
                 product.getPackagingUnit(),
                 product.getPackagingSize(),
                 product.getMinOrderQuantity(),
-                availableToSell,
+                BigDecimal.valueOf(availableToSell),
                 // Stock is client-wide in this pass (contract §4.2: no per-branch
                 // stock yet), so "in stock" is simply "there is at least one left to
                 // sell". Deliberately NOT availableToSell >= minOrderQuantity: a buyer

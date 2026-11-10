@@ -602,7 +602,7 @@ class ProductManagementIntegrationTest {
                     .name("Low")
                     .sku("LOW-1")
                     .unitPrice(new BigDecimal("5.00"))
-                    .quantityOnHand(2)
+                    .quantityOnHand(BigDecimal.valueOf(2))
                     .lowStockThreshold(10)
                     .active(true)
                     .build());
@@ -610,7 +610,7 @@ class ProductManagementIntegrationTest {
                     .name("Healthy")
                     .sku("HEALTHY-1")
                     .unitPrice(new BigDecimal("5.00"))
-                    .quantityOnHand(50)
+                    .quantityOnHand(BigDecimal.valueOf(50))
                     .lowStockThreshold(10)
                     .active(true)
                     .build());

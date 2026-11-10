@@ -385,7 +385,7 @@ class MarketplaceOrderIntegrationTest {
 
         Product afterReceipt = productRepository.findById(buyerProduct.getId()).orElseThrow();
         assertThat(afterReceipt.getIncomingQuantity()).isZero();
-        assertThat(afterReceipt.getQuantityOnHand()).isEqualTo(quantity);
+        assertThat(afterReceipt.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(quantity));
         assertThat(stockMovementsFor(buyer)).isEqualTo(quantity);
 
         // The seller's own code for this item lands on the ProductVendor pairing's default
@@ -426,7 +426,7 @@ class MarketplaceOrderIntegrationTest {
 
         assertThat(received.status()).isEqualTo(OrderStatus.RECEIVED);
         Product buyerProduct = buyerProductFor(buyer, catalogProduct);
-        assertThat(branchStockService.quantityAt(buyerProduct, main)).isEqualTo(quantity);
+        assertThat(branchStockService.quantityAt(buyerProduct, main)).isEqualByComparingTo(BigDecimal.valueOf(quantity));
         assertThat(branchStockService.quantityAt(buyerProduct, oshodi)).isZero();
     }
 
@@ -460,7 +460,7 @@ class MarketplaceOrderIntegrationTest {
         assertThat(line.outstandingQuantity()).isEqualTo(quantity - half);
 
         Product buyerProduct = buyerProductFor(buyer, catalogProduct);
-        assertThat(buyerProduct.getQuantityOnHand()).isEqualTo(half);
+        assertThat(buyerProduct.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(half));
         assertThat(buyerProduct.getIncomingQuantity()).isEqualTo(quantity - half);
 
         // Finishing it off closes the order.
@@ -468,7 +468,7 @@ class MarketplaceOrderIntegrationTest {
         assertThat(complete.status()).isEqualTo(OrderStatus.RECEIVED);
         Product settled = productRepository.findById(buyerProduct.getId()).orElseThrow();
         assertThat(settled.getIncomingQuantity()).isZero();
-        assertThat(settled.getQuantityOnHand()).isEqualTo(quantity);
+        assertThat(settled.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(quantity));
     }
 
     /**
@@ -556,7 +556,7 @@ class MarketplaceOrderIntegrationTest {
         assertThat(received.items().getFirst().buyerProductId()).isEqualTo(existingProduct.getId());
 
         Product merged = productRepository.findById(existingProduct.getId()).orElseThrow();
-        assertThat(merged.getQuantityOnHand()).isEqualTo(10 + quantity);
+        assertThat(merged.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(10 + quantity));
         assertThat(merged.getIncomingQuantity()).isZero();
         assertThat(merged.getSourceProductId()).isEqualTo(catalogProduct.getId());
 
@@ -610,7 +610,7 @@ class MarketplaceOrderIntegrationTest {
         // The whole attempt rolled back - neither product moved, the auto-created row is still
         // there, and the line is still unreceived and still open to try again.
         Product untouchedExisting = productRepository.findById(existingProduct.getId()).orElseThrow();
-        assertThat(untouchedExisting.getQuantityOnHand()).isEqualTo(10);
+        assertThat(untouchedExisting.getQuantityOnHand()).isEqualByComparingTo("10");
         assertThat(untouchedExisting.getIncomingQuantity()).isZero();
         Product untouchedAutoCreated = productRepository.findById(autoCreated.getId()).orElseThrow();
         assertThat(untouchedAutoCreated.getIncomingQuantity()).isEqualTo(quantity);
@@ -657,7 +657,7 @@ class MarketplaceOrderIntegrationTest {
 
         Product merged = productRepository.findById(existingProduct.getId()).orElseThrow();
         int expectedLiters = litersPerBag.intValue() * quantity;
-        assertThat(merged.getQuantityOnHand()).isEqualTo(10 + expectedLiters);
+        assertThat(merged.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(10 + expectedLiters));
         assertThat(merged.getIncomingQuantity()).isZero();
     }
 
@@ -1854,7 +1854,7 @@ class MarketplaceOrderIntegrationTest {
                 .name(name)
                 .sku("OWN-" + unique)
                 .unitPrice(new BigDecimal("1000.00"))
-                .quantityOnHand(10)
+                .quantityOnHand(BigDecimal.valueOf(10))
                 .active(true)
                 .marketplaceListed(false)
                 .unitOfMeasure(unitOfMeasure)
@@ -1887,7 +1887,7 @@ class MarketplaceOrderIntegrationTest {
                 .slug("pp-test-" + unique)
                 .description("Planted by MarketplaceOrderIntegrationTest.")
                 .unitPrice(new BigDecimal("12000.00"))
-                .quantityOnHand(quantityOnHand)
+                .quantityOnHand(BigDecimal.valueOf(quantityOnHand))
                 .active(true)
                 .marketplaceListed(true)
                 // ProcurePal's own catalogue is auto-approved (ProductModerationRules),
@@ -1910,7 +1910,7 @@ class MarketplaceOrderIntegrationTest {
     }
 
     private int catalogOnHand(UUID catalogProductId) {
-        return productRepository.findById(catalogProductId).orElseThrow().getQuantityOnHand();
+        return productRepository.findById(catalogProductId).orElseThrow().getQuantityOnHand().intValueExact();
     }
 
     /** Counts ledger rows for ONE product, so a neighbouring test's movements cannot be miscounted. */
@@ -1958,7 +1958,7 @@ class MarketplaceOrderIntegrationTest {
                 OffsetDateTime.now().minusDays(1),
                 OffsetDateTime.now().plusDays(1),
                 // Every branch the buyer has (V51): this counts the company's stock-ins.
-                branchStockService.allBranchIds(buyer.clientId()));
+                branchStockService.allBranchIds(buyer.clientId())).longValueExact();
     }
 
     private CartResponse addToCart(Buyer buyer, Product product, int quantity) {
@@ -2162,7 +2162,7 @@ class MarketplaceOrderIntegrationTest {
                 .slug("sell-" + unique)
                 .description("Planted by MarketplaceOrderIntegrationTest.")
                 .unitPrice(new BigDecimal(unitPrice))
-                .quantityOnHand(quantityOnHand)
+                .quantityOnHand(BigDecimal.valueOf(quantityOnHand))
                 .active(true)
                 .marketplaceListed(true)
                 .approvalStatus(ProductApprovalStatus.APPROVED)

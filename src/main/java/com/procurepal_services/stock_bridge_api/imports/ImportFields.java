@@ -25,6 +25,8 @@ public final class ImportFields {
 
     /** The barcode on the box (BULK_IMPORT_CX_PLAN.md task 3.3). */
     public static final String BARCODE = "barcode";
+    /** A product's own units and what one holds (UNITS_PLAN.md Part 5): "Derica=0.6; Cup=0.2". */
+    public static final String ALSO_USED_IN = "also_used_in";
 
     public static final String UNIT_PRICE = "unit_price";
     public static final String COST_PRICE = "cost_price";

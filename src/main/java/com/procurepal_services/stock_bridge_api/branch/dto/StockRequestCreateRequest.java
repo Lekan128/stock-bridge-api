@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.branch.dto;
 
+import java.math.BigDecimal;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -28,6 +29,6 @@ public record StockRequestCreateRequest(
         @NotEmpty @Size(max = 200) List<@Valid Line> lines) {
 
     /** @param quantity in {@code unit}, or the stock unit when it is absent - whole numbers, as on every sheet. */
-    public record Line(@NotNull UUID productId, @NotNull @Positive Integer quantity, String unit) {
+    public record Line(@NotNull UUID productId, @NotNull @Positive BigDecimal quantity, String unit) {
     }
 }

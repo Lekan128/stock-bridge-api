@@ -324,7 +324,7 @@ public class ProductVendorService {
             BigDecimal costPrice,
             String packagingUnit,
             BigDecimal packagingSize,
-            int quantityReceivedBaseUnits,
+            BigDecimal quantityReceivedBaseUnits,
             boolean saveAsSupplierDefault) {
         UUID tenantId = requireTenantId();
         CompanyVendor companyVendor =
@@ -343,16 +343,16 @@ public class ProductVendorService {
                     .product(product)
                     .companyVendor(companyVendor)
                     .isPreferred(existingCount == 0)
-                    .quantityOnHandFromVendor(0)
-                    .totalQuantityReceived(0)
+                    .quantityOnHandFromVendor(BigDecimal.ZERO)
+                    .totalQuantityReceived(BigDecimal.ZERO)
                     .build());
         }
 
         PackChange packChange =
                 applyReceiptToPack(vendor, vendorSku, costPrice, packagingUnit, packagingSize, saveAsSupplierDefault);
 
-        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor() + quantityReceivedBaseUnits);
-        vendor.setTotalQuantityReceived(vendor.getTotalQuantityReceived() + quantityReceivedBaseUnits);
+        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor().add(quantityReceivedBaseUnits));
+        vendor.setTotalQuantityReceived(vendor.getTotalQuantityReceived().add(quantityReceivedBaseUnits));
 
         return new ReceiptResult(productVendorRepository.saveAndFlush(vendor), vendorIsNewToProduct, packChange);
     }
@@ -426,8 +426,8 @@ public class ProductVendorService {
 
     /** Decrements the cached display rollup when a stock-out draws from this vendor's lots. */
     @Transactional
-    public void recordAllocationDrawdown(ProductVendor vendor, int quantityDrawn) {
-        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor() - quantityDrawn);
+    public void recordAllocationDrawdown(ProductVendor vendor, BigDecimal quantityDrawn) {
+        vendor.setQuantityOnHandFromVendor(vendor.getQuantityOnHandFromVendor().subtract(quantityDrawn));
     }
 
     /**
@@ -559,6 +559,23 @@ public class ProductVendorService {
         if (packagingSize != null && packagingSize.signum() <= 0) {
             throw new InvalidProductVendorPackException("packagingSize must be greater than zero.");
         }
+    }
+
+    /**
+     * A supplier linked to the product with nothing received yet (2026-11-10: the product form's Suppliers, several at
+     * once): its pack from them and its price per stock unit, both optional. Already linked: its pack and price are
+     * brought up to date, as a delivery would.
+     */
+    @Transactional
+    public ProductVendor link(
+            UUID productId, UUID companyVendorId, String vendorSku, BigDecimal costPrice, String packagingUnit,
+            BigDecimal packagingSize) {
+        UUID tenantId = requireTenantId();
+        Product product = productRepository.findByIdAndClientId(productId, tenantId).orElseThrow(ProductNotFoundException::new);
+        validatePackagingPair(packagingUnit, packagingSize);
+        return findOrCreateForReceipt(
+                product, companyVendorId, vendorSku == null || vendorSku.isBlank() ? null : vendorSku.trim(), costPrice,
+                packagingUnit, packagingUnit == null ? null : packagingSize, BigDecimal.ZERO, true).vendor();
     }
 
     private void requireProduct(UUID tenantId, UUID productId) {

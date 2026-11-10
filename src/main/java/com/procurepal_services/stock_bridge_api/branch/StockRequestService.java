@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.branch;
 
+import com.procurepal_services.stock_bridge_api.product.unit.Quantities;
 import com.procurepal_services.stock_bridge_api.branch.dto.NoneInStoreLine;
 import com.procurepal_services.stock_bridge_api.branch.dto.StockRequestCreateRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.StockRequestResponse;
@@ -287,7 +288,7 @@ public class StockRequestService {
                 100).stream()
                 .filter(StockRequestResponse::canFill)
                 // A line the store said it has none of is answered; only those still to move ask anything of it.
-                .filter(request -> request.lines().stream().anyMatch(line -> !line.noneInStore() && line.moved() < line.quantity()))
+                .filter(request -> request.lines().stream().anyMatch(line -> !line.noneInStore() && line.moved().compareTo(line.quantity()) < 0))
                 .toList();
     }
 
@@ -318,9 +319,9 @@ public class StockRequestService {
                         .addValue("branchIds", branches.toArray(UUID[]::new))
                         .addValue("since", OffsetDateTime.now().minus(NONE_IN_STORE_SHOWN)),
                 (rs, n) -> {
-                    int left = rs.getInt("left");
+                    java.math.BigDecimal left = rs.getBigDecimal("left");
                     // As typed, unless part of it was moved since.
-                    boolean asTyped = left == rs.getInt("quantity");
+                    boolean asTyped = left.compareTo(rs.getBigDecimal("quantity")) == 0;
                     String full = rs.getString("full_name");
                     return new NoneInStoreLine(
                             rs.getObject("id", UUID.class),
@@ -372,7 +373,7 @@ public class StockRequestService {
                 "SELECT quantity, quantity_moved, none_in_store FROM stock_request_lines WHERE request_id = :id",
                 new MapSqlParameterSource("id", requestId));
         long whole = lines.stream()
-                .filter(line -> ((Number) line.get("quantity_moved")).intValue() >= ((Number) line.get("quantity")).intValue())
+                .filter(line -> Quantities.of(line.get("quantity_moved")).compareTo(Quantities.of(line.get("quantity"))) >= 0)
                 .count();
         String from = areaName((UUID) request.get("from_area_id"));
         String title = whole == lines.size()
@@ -430,10 +431,10 @@ public class StockRequestService {
                                     rs.getObject("product_id", UUID.class),
                                     rs.getString("name"),
                                     rs.getString("unit_of_measure"),
-                                    rs.getInt("quantity"),
+                                    rs.getBigDecimal("quantity"),
                                     rs.getBigDecimal("entered_quantity"),
                                     rs.getString("entered_unit"),
-                                    rs.getInt("quantity_moved"),
+                                    rs.getBigDecimal("quantity_moved"),
                                     rs.getBoolean("none_in_store")));
                 });
         // What this person may do with an open request: worked out once, not per request.
@@ -448,7 +449,7 @@ public class StockRequestService {
             List<StockRequestResponse.Line> lines = linesByRequest.getOrDefault(id, List.of());
             boolean canFill = open && mayStockOut && limits.worksIn(branchId, (UUID) r.get("from_area_id"))
                     && branchAccessService.mayRecordAt(userId, branchId);
-            boolean canCancel = open && lines.stream().allMatch(line -> line.moved() == 0) && limits != null
+            boolean canCancel = open && lines.stream().allMatch(line -> line.moved().signum() == 0) && limits != null
                     && (userId.equals(r.get("asked_by")) || limits.worksIn(branchId, (UUID) r.get("to_area_id")));
             String name = r.get("full_name") != null ? (String) r.get("full_name") : (String) r.get("username");
             // Phone numbers only to the person who asked, and only while there's something to move.

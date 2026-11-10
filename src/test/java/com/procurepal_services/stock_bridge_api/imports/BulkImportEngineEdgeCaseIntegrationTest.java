@@ -393,7 +393,7 @@ class BulkImportEngineEdgeCaseIntegrationTest {
         assertThat(session.errorCount()).isZero();
         commit(tenant, session.id());
         assertThat(productRepository.findByClientIdAndSku(clientId, "UNITS-1").orElseThrow().getQuantityOnHand())
-                .isEqualTo(3);
+                .isEqualByComparingTo("3");
     }
 
     // ----------------------------------------------------------------- helpers

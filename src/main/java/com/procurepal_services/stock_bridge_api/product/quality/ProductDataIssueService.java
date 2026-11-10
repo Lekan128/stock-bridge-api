@@ -90,8 +90,10 @@ public class ProductDataIssueService {
         }
         if (product.getUnitOfMeasure() == null || product.getUnitOfMeasure().isBlank()) {
             issues.add(new Issue("NO_STOCK_UNIT",
-                    "%s has no unit, so the %d in stock are just \"%d\". Choose what it is counted in - kg, litres, pieces."
-                            .formatted(product.getName(), product.getQuantityOnHand(), product.getQuantityOnHand()),
+                    "%s has no unit, so the %s in stock are just \"%s\". Choose what it is counted in - kg, litres, pieces."
+                            .formatted(product.getName(),
+                                    com.procurepal_services.stock_bridge_api.imports.ImportCopy.count(product.getQuantityOnHand()),
+                                    com.procurepal_services.stock_bridge_api.imports.ImportCopy.count(product.getQuantityOnHand())),
                     null));
         }
         ProductSetupChecks.lengthUnitWarning(product.getName(), product.getUnitOfMeasure())

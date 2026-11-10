@@ -41,7 +41,7 @@ public final class ImportCopy {
             return count(trimmed.longValue());
         }
         NumberFormat format = NumberFormat.getNumberInstance(Locale.US);
-        format.setMaximumFractionDigits(2);
+        format.setMaximumFractionDigits(3);
         return format.format(trimmed);
     }
 
@@ -191,7 +191,7 @@ public final class ImportCopy {
      * @param totalsByStockUnitSymbol stock-unit symbol ("kg", "pieces") to the total counted in
      *     it. Insertion-ordered by the caller so the biggest contributor reads first.
      */
-    public static String quantityTotals(java.util.Map<String, Long> totalsByStockUnitSymbol) {
+    public static String quantityTotals(java.util.Map<String, BigDecimal> totalsByStockUnitSymbol) {
         return andList(totalsByStockUnitSymbol.entrySet().stream()
                 .map(entry -> count(entry.getValue()) + " " + entry.getKey())
                 .toList());
@@ -236,7 +236,7 @@ public final class ImportCopy {
      *     {@code UnitOptions} uses for that product's single placeholder option, so the grid and
      *     the picker say the same thing.
      */
-    public static String baseQuantityText(long baseQuantity, String stockUnitCode) {
+    public static String baseQuantityText(BigDecimal baseQuantity, String stockUnitCode) {
         String symbol = com.procurepal_services.stock_bridge_api.product.unit.UnitOptions.symbolOf(stockUnitCode);
         return "= " + count(baseQuantity) + " "
                 + (symbol.isEmpty()

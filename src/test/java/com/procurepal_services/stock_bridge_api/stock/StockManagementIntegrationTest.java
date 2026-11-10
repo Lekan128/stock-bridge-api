@@ -66,10 +66,10 @@ class StockManagementIntegrationTest {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         StockMutationResponse body = response.getBody();
         assertThat(body).isNotNull();
-        assertThat(body.product().quantityOnHand()).isEqualTo(15);
+        assertThat(body.product().quantityOnHand()).isEqualByComparingTo("15");
         assertThat(body.movement()).isNotNull();
         assertThat(body.movement().movementType()).isEqualTo(MovementType.IN);
-        assertThat(body.movement().quantity()).isEqualTo(15);
+        assertThat(body.movement().quantity()).isEqualByComparingTo("15");
         assertThat(body.movement().unitPriceAtTime()).isEqualByComparingTo("2.50");
 
         List<StockMovementResponse> history = history(admin, product.id());
@@ -86,7 +86,7 @@ class StockManagementIntegrationTest {
         ResponseEntity<ApiError> response = restTemplate.exchange(
                 "/api/products/" + product.id() + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(10, null, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(10), null, null), authHeaders(admin)),
                 ApiError.class);
 
         // V19: insufficient-stock is now a 409 (a conflict with the resource's current state),
@@ -95,7 +95,7 @@ class StockManagementIntegrationTest {
 
         ResponseEntity<ProductResponse> unchanged = restTemplate.exchange(
                 "/api/products/" + product.id(), HttpMethod.GET, new HttpEntity<>(authHeaders(admin)), ProductResponse.class);
-        assertThat(unchanged.getBody().quantityOnHand()).isEqualTo(5);
+        assertThat(unchanged.getBody().quantityOnHand()).isEqualByComparingTo("5");
     }
 
     @Test
@@ -107,14 +107,14 @@ class StockManagementIntegrationTest {
         ResponseEntity<StockMutationResponse> response = restTemplate.exchange(
                 "/api/products/" + product.id() + "/stock/adjustment",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockAdjustmentRequest(13, "stock count correction"), authHeaders(admin)),
+                new HttpEntity<>(new StockAdjustmentRequest(BigDecimal.valueOf(13), "stock count correction"), authHeaders(admin)),
                 StockMutationResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         StockMutationResponse body = response.getBody();
-        assertThat(body.product().quantityOnHand()).isEqualTo(13);
+        assertThat(body.product().quantityOnHand()).isEqualByComparingTo("13");
         assertThat(body.movement().movementType()).isEqualTo(MovementType.ADJUSTMENT);
-        assertThat(body.movement().quantity()).isEqualTo(-7);
+        assertThat(body.movement().quantity()).isEqualByComparingTo("-7");
     }
 
     @Test
@@ -148,7 +148,7 @@ class StockManagementIntegrationTest {
 
             ResponseEntity<ProductResponse> finalState = restTemplate.exchange(
                     "/api/products/" + product.id(), HttpMethod.GET, new HttpEntity<>(authHeaders(admin)), ProductResponse.class);
-            assertThat(finalState.getBody().quantityOnHand()).isEqualTo(3);
+            assertThat(finalState.getBody().quantityOnHand()).isEqualByComparingTo("3");
         } catch (Exception e) {
             throw new RuntimeException(e);
         } finally {
@@ -192,7 +192,7 @@ class StockManagementIntegrationTest {
         return restTemplate.exchange(
                 "/api/products/" + productId + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(quantity, null, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(quantity), null, null), authHeaders(admin)),
                 String.class);
     }
 

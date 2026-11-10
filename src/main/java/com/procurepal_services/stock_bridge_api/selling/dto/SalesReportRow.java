@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.selling.dto;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 /**
@@ -16,7 +17,7 @@ import java.time.OffsetDateTime;
 public record SalesReportRow(
         String key,
         String label,
-        Long quantity,
+        BigDecimal quantity,
         String unitOfMeasure,
         OffsetDateTime occurredAt,
         SalesTotals totals,

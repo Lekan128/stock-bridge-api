@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
@@ -65,7 +66,7 @@ public record StockMutationResponse(
             UUID inMovementId,
             UUID companyVendorId,
             String companyVendorName,
-            int quantity,
+            BigDecimal quantity,
             java.time.OffsetDateTime inMovementCreatedAt,
             java.time.OffsetDateTime inMovementOccurredAt,
             String label) {

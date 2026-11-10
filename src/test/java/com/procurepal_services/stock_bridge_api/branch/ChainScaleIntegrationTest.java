@@ -73,7 +73,7 @@ class ChainScaleIntegrationTest {
         assertThat(ids(low)).as("4 against a level of 10, at that branch").containsExactly(rice.toString());
         assertThat(ids(out)).as("Head Office holds no beans").containsExactly(beans.toString());
         Map<String, Object> riceRow = row(all, rice);
-        assertThat(riceRow).containsEntry("quantityOnHand", 4).containsEntry("isLowStock", true);
+        assertThat(riceRow).containsEntry("quantityOnHand", 4.0).containsEntry("isLowStock", true);
         assertThat((List<?>) riceRow.get("branchStock")).hasSize(2);
     }
 
@@ -125,7 +125,7 @@ class ChainScaleIntegrationTest {
         List<Map<String, Object>> small = figures(group.owner(), "");
 
         assertThat(atBranch).singleElement().satisfies(figure -> {
-            assertThat(figure).containsEntry("branchId", chain.branches().get(3).toString()).containsEntry("quantityOnHand", 7);
+            assertThat(figure).containsEntry("branchId", chain.branches().get(3).toString()).containsEntry("quantityOnHand", 7.0);
         });
         assertThat(inAll).as("All branches at a chain: the company figure only").isNull();
         assertThat(small).as("three branches: every one").hasSize(3);

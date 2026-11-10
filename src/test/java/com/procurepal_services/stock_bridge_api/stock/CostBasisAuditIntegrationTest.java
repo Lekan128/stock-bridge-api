@@ -289,7 +289,7 @@ class CostBasisAuditIntegrationTest {
         TenantContext.set(product.getClientId());
         try {
             product.setCostPrice(perPackPrice);
-            product.setQuantityOnHand(quantityBaseUnits);
+            product.setQuantityOnHand(BigDecimal.valueOf(quantityBaseUnits));
             productRepository.saveAndFlush(product);
 
             stockMovementRepository.saveAndFlush(StockMovement.builder()
@@ -300,7 +300,7 @@ class CostBasisAuditIntegrationTest {
                             .orElseThrow()
                             .getId())
                     .movementType(MovementType.IN)
-                    .quantity(quantityBaseUnits)
+                    .quantity(BigDecimal.valueOf(quantityBaseUnits))
                     // The price NOT converted - the whole of P0-1 in one field.
                     .unitPriceAtTime(perPackPrice)
                     // The pack snapshot the old stockIn wrote, and no entered_unit, because the

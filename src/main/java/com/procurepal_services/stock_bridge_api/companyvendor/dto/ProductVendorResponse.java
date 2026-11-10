@@ -59,8 +59,8 @@ public record ProductVendorResponse(
         String defaultPackagingUnit,
         BigDecimal defaultPackagingSize,
         boolean isPreferred,
-        int quantityOnHandFromVendor,
-        int totalQuantityReceived,
+        BigDecimal quantityOnHandFromVendor,
+        BigDecimal totalQuantityReceived,
         List<ProductVendorPackResponse> packs,
         List<UnitOption> unitOptions,
         List<ProductVendorPriceTierResponse> priceTiers,
@@ -118,7 +118,8 @@ public record ProductVendorResponse(
                         vendor.getProduct().getPackagingSize(),
                         packs.stream()
                                 .map(pack -> new UnitOptions.PackSpec(pack.getPackagingUnit(), pack.getPackagingSize()))
-                                .toList()),
+                                .toList(),
+                        vendor.getProduct().getMeasures()),
                 defaultPackTiers,
                 vendor.getCreatedAt(),
                 vendor.getUpdatedAt());

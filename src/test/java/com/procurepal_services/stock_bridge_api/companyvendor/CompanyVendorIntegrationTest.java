@@ -491,7 +491,7 @@ class CompanyVendorIntegrationTest {
         VendorProductPriceResponse supplied = detail.products().getFirst();
         assertThat(supplied.sku()).isEqualTo(catalogProduct.getSku());
         assertThat(supplied.lastPurchaseUnitPrice()).isEqualByComparingTo(new BigDecimal("9250.00"));
-        assertThat(supplied.lastPurchaseQuantity()).isEqualTo(7);
+        assertThat(supplied.lastPurchaseQuantity()).isEqualByComparingTo("7");
         assertThat(supplied.lastPurchasedAt()).isNotNull();
         assertThat(supplied.lastPurchaseOrderNumber()).isNotBlank();
 
@@ -527,7 +527,7 @@ class CompanyVendorIntegrationTest {
         assertThat(newest.source()).isEqualTo(PurchaseSource.MARKETPLACE_ORDER);
         assertThat(newest.occurredAt()).isNotNull();
         assertThat(newest.lines()).hasSize(1);
-        assertThat(newest.lines().getFirst().quantity()).isEqualTo(3);
+        assertThat(newest.lines().getFirst().quantity()).isEqualByComparingTo("3");
         assertThat(newest.lines().getFirst().productSku()).isEqualTo(catalogProduct.getSku());
         assertThat(newest.total()).isGreaterThan(BigDecimal.ZERO);
     }
@@ -584,7 +584,7 @@ class CompanyVendorIntegrationTest {
         assertThat(entry.note()).isEqualTo("First delivery");
         assertThat(entry.occurredAt()).isNotNull();
         assertThat(entry.lines()).hasSize(1);
-        assertThat(entry.lines().getFirst().quantity()).isEqualTo(10);
+        assertThat(entry.lines().getFirst().quantity()).isEqualByComparingTo("10");
         assertThat(entry.lines().getFirst().unitPrice()).isEqualByComparingTo(new BigDecimal("4500.00"));
         assertThat(entry.total()).isEqualByComparingTo(new BigDecimal("45000.00"));
 
@@ -841,7 +841,7 @@ class CompanyVendorIntegrationTest {
         Product product = Product.builder()
                 .name(sku + " product")
                 .sku(sku + "-" + unique)
-                .quantityOnHand(0)
+                .quantityOnHand(BigDecimal.valueOf(0))
                 .active(true)
                 .marketplaceListed(false)
                 .unitOfMeasure(unitOfMeasure)
@@ -1037,7 +1037,7 @@ class CompanyVendorIntegrationTest {
                 .slug("cv-test-" + unique)
                 .description("Planted by CompanyVendorIntegrationTest.")
                 .unitPrice(new BigDecimal("12000.00"))
-                .quantityOnHand(quantityOnHand)
+                .quantityOnHand(BigDecimal.valueOf(quantityOnHand))
                 .active(true)
                 .marketplaceListed(true)
                 .unitOfMeasure("bag (25kg)")

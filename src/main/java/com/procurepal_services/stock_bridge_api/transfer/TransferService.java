@@ -26,6 +26,7 @@ import com.procurepal_services.stock_bridge_api.transfer.dto.FoundRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.ReceiptRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferRequest;
 import com.procurepal_services.stock_bridge_api.transfer.dto.TransferResponse;
+import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
@@ -139,18 +140,18 @@ public class TransferService {
             TransferRequest.Line line = byProduct.get(productId);
             Product product = productRepository.findByIdAndClientIdForUpdate(productId, clientId)
                     .orElseThrow(ProductNotFoundException::new);
-            int quantity = stockManagementService.toStockUnitQuantity(product, line.quantity(), line.unit());
+            BigDecimal quantity = stockManagementService.toStockUnitQuantity(product, line.quantity(), line.unit());
             boolean typedInAnotherUnit = line.unit() != null && !line.unit().equalsIgnoreCase(product.getUnitOfMeasure());
             StockMovement out = stockManagementService.transferOut(
                     product, from, quantity, transfer.getId(), sentAt, "Sent to " + toName + " on " + waybill,
                     typedInAnotherUnit ? line.unit() : null,
-                    typedInAnotherUnit ? BigDecimal.valueOf(line.quantity()) : null,
+                    typedInAnotherUnit ? line.quantity() : null,
                     userId);
             transfer.addLine(StockTransferLine.builder()
                     .product(product)
                     .quantitySent(quantity)
                     .enteredUnit(typedInAnotherUnit ? line.unit() : null)
-                    .enteredQuantity(typedInAnotherUnit ? BigDecimal.valueOf(line.quantity()) : null)
+                    .enteredQuantity(typedInAnotherUnit ? line.quantity() : null)
                     .outMovementId(out.getId())
                     .build());
         }
@@ -194,52 +195,53 @@ public class TransferService {
             }
         }
         String waybill = waybillOf(transfer);
-        int losses = 0;
+        BigDecimal losses = BigDecimal.ZERO;
         for (StockTransferLine line : linesInLockOrder(transfer)) {
             ReceiptRequest.Line got = asked.get(line.getProduct().getId());
             if (got == null) {
                 continue;
             }
-            int received = valueOf(got.received());
-            int missing = valueOf(got.missing());
-            int damaged = valueOf(got.damaged());
-            int remaining = line.onTheWay();
-            int surplus = 0;
-            if (received + missing + damaged > remaining) {
-                if (missing + damaged > 0) {
+            BigDecimal received = valueOf(got.received());
+            BigDecimal missing = valueOf(got.missing());
+            BigDecimal damaged = valueOf(got.damaged());
+            BigDecimal lost = missing.add(damaged);
+            BigDecimal remaining = line.onTheWay();
+            BigDecimal surplus = BigDecimal.ZERO;
+            if (received.add(lost).compareTo(remaining) > 0) {
+                if (lost.signum() > 0) {
                     throw new TransferRefusedException(line.getProduct().getName() + ": that is more than is still on the way ("
-                            + remaining + "). Check the numbers.");
+                            + ImportCopy.count(remaining) + "). Check the numbers.");
                 }
                 // "Sent too many": the sending branch had more than its books said.
-                surplus = received - remaining;
+                surplus = received.subtract(remaining);
                 received = remaining;
             }
             Product product = productRepository.findByIdAndClientIdForUpdate(line.getProduct().getId(), clientId)
                     .orElseThrow(ProductNotFoundException::new);
             StockMovement out = outMovementOf(line);
-            int offset = line.accounted();
+            BigDecimal offset = line.accounted();
             stockManagementService.transferIn(product, transfer.getToBranchId(),
                     stockManagementService.transferPieces(out, offset, received), transfer.getId(), at,
                     "Received from " + branchName(transfer.getFromBranchId()) + " on " + waybill, userId);
-            if (missing + damaged > 0) {
+            if (lost.signum() > 0) {
                 stockManagementService.transferLoss(product,
-                        stockManagementService.transferPieces(out, offset + received, missing + damaged));
+                        stockManagementService.transferPieces(out, offset.add(received), lost));
             }
-            if (surplus > 0) {
+            if (surplus.signum() > 0) {
                 stockManagementService.transferSurplus(product, transfer.getFromBranchId(), transfer.getToBranchId(), surplus,
                         transfer.getId(), waybill, at, userId);
             }
-            if (surplus > 0) {
+            if (surplus.signum() > 0) {
                 // The extra came on this waybill too: what left is now what was sent, and the line stays whole.
                 adjustSentForSurplus(line, surplus);
             }
-            line.setQuantityReceived(line.getQuantityReceived() + received + surplus);
-            line.setQuantityMissing(line.getQuantityMissing() + missing);
-            line.setQuantityDamaged(line.getQuantityDamaged() + damaged);
-            losses += missing + damaged;
+            line.setQuantityReceived(line.getQuantityReceived().add(received).add(surplus));
+            line.setQuantityMissing(line.getQuantityMissing().add(missing));
+            line.setQuantityDamaged(line.getQuantityDamaged().add(damaged));
+            losses = losses.add(lost);
         }
         settle(transfer, at, userId, request.id());
-        if (losses > 0) {
+        if (losses.signum() > 0) {
             notifyShort(transfer, waybill, userId);
         }
         return respond(transfer);
@@ -260,21 +262,21 @@ public class TransferService {
                 && branchAccessService.mayRecordAt(userId, transfer.getToBranchId()))) {
             throw new TransferRefusedException("Only the sender, or someone who works at both branches, can close this.");
         }
-        int losses = 0;
+        BigDecimal losses = BigDecimal.ZERO;
         for (StockTransferLine line : linesInLockOrder(transfer)) {
-            int remaining = line.onTheWay();
-            if (remaining <= 0) {
+            BigDecimal remaining = line.onTheWay();
+            if (remaining.signum() <= 0) {
                 continue;
             }
             Product product = productRepository.findByIdAndClientIdForUpdate(line.getProduct().getId(), clientId)
                     .orElseThrow(ProductNotFoundException::new);
             stockManagementService.transferLoss(product,
                     stockManagementService.transferPieces(outMovementOf(line), line.accounted(), remaining));
-            line.setQuantityMissing(line.getQuantityMissing() + remaining);
-            losses += remaining;
+            line.setQuantityMissing(line.getQuantityMissing().add(remaining));
+            losses = losses.add(remaining);
         }
         settle(transfer, OffsetDateTime.now(), null, null);
-        if (losses > 0) {
+        if (losses.signum() > 0) {
             notifyShort(transfer, waybillOf(transfer), userId);
         }
         return respond(transfer);
@@ -293,7 +295,7 @@ public class TransferService {
             return respond(transfer);
         }
         if (transfer.getStatus() != StockTransferStatus.ON_THE_WAY
-                || transfer.getLines().stream().anyMatch(line -> line.accounted() > 0)) {
+                || transfer.getLines().stream().anyMatch(line -> line.accounted().signum() > 0)) {
             throw new TransferRefusedException("Some of this has already been received, so it can't be cancelled. "
                     + "Close what's left as missing, or send the stock back on a new transfer.");
         }
@@ -361,22 +363,22 @@ public class TransferService {
         if (line == null) {
             throw new TransferRefusedException("That product isn't on this waybill.");
         }
-        int quantity = request.quantity();
-        if (quantity > line.getQuantityMissing()) {
-            throw new TransferRefusedException(line.getProduct().getName() + ": only " + line.getQuantityMissing()
-                    + " is missing on this waybill.");
+        BigDecimal quantity = request.quantity();
+        if (quantity.compareTo(line.getQuantityMissing()) > 0) {
+            throw new TransferRefusedException(line.getProduct().getName() + ": only "
+                    + ImportCopy.count(line.getQuantityMissing()) + " is missing on this waybill.");
         }
         Product product = productRepository.findByIdAndClientIdForUpdate(line.getProduct().getId(), clientId)
                 .orElseThrow(ProductNotFoundException::new);
         OffsetDateTime at = request.occurredAt() != null ? request.occurredAt() : OffsetDateTime.now();
         // Which pieces went missing isn't recorded; found stock is taken from the end of the line, so
         // successive finds never take the same piece twice.
-        int offset = line.getQuantitySent() - line.getQuantityFound() - quantity;
+        BigDecimal offset = line.getQuantitySent().subtract(line.getQuantityFound()).subtract(quantity);
         stockManagementService.transferFound(product, request.branchId(),
                 stockManagementService.transferPieces(outMovementOf(line), offset, quantity), transfer.getId(), at,
                 "Found, missing from " + waybillOf(transfer), userId);
-        line.setQuantityMissing(line.getQuantityMissing() - quantity);
-        line.setQuantityFound(line.getQuantityFound() + quantity);
+        line.setQuantityMissing(line.getQuantityMissing().subtract(quantity));
+        line.setQuantityFound(line.getQuantityFound().add(quantity));
         if (transfer.isAccountedFor()) {
             transfer.setStatus(transfer.hasLosses() ? StockTransferStatus.RECEIVED_SHORT : StockTransferStatus.RECEIVED);
         }
@@ -415,8 +417,8 @@ public class TransferService {
         UUID clientId = transfer.getClientId();
         String note = "Received from " + branchName(transfer.getFromBranchId()) + " on " + waybillOf(transfer);
         for (StockTransferLine line : linesInLockOrder(transfer)) {
-            int remaining = line.onTheWay();
-            if (remaining <= 0) {
+            BigDecimal remaining = line.onTheWay();
+            if (remaining.signum() <= 0) {
                 continue;
             }
             Product product = productRepository.findByIdAndClientIdForUpdate(line.getProduct().getId(), clientId)
@@ -424,7 +426,7 @@ public class TransferService {
             stockManagementService.transferIn(product, transfer.getToBranchId(),
                     stockManagementService.transferPieces(outMovementOf(line), line.accounted(), remaining),
                     transfer.getId(), at, note, userId);
-            line.setQuantityReceived(line.getQuantityReceived() + remaining);
+            line.setQuantityReceived(line.getQuantityReceived().add(remaining));
         }
         settle(transfer, at, userId, receiptId);
     }
@@ -432,7 +434,7 @@ public class TransferService {
     private void settle(StockTransfer transfer, OffsetDateTime at, UUID userId, UUID receiptId) {
         if (transfer.isAccountedFor()) {
             transfer.setStatus(transfer.hasLosses() ? StockTransferStatus.RECEIVED_SHORT : StockTransferStatus.RECEIVED);
-        } else if (transfer.getLines().stream().anyMatch(line -> line.accounted() > 0)) {
+        } else if (transfer.getLines().stream().anyMatch(line -> line.accounted().signum() > 0)) {
             transfer.setStatus(StockTransferStatus.PARTLY_RECEIVED);
         }
         if (userId != null) {
@@ -457,10 +459,10 @@ public class TransferService {
      * (received never exceeds sent - the table's own check). The sending branch's books were corrected
      * by the same receipt ({@code transferSurplus}).
      */
-    private void adjustSentForSurplus(StockTransferLine line, int surplus) {
+    private void adjustSentForSurplus(StockTransferLine line, BigDecimal surplus) {
         jdbc.update("UPDATE stock_transfer_lines SET quantity_sent = quantity_sent + :surplus WHERE id = :id",
                 new MapSqlParameterSource().addValue("surplus", surplus).addValue("id", line.getId()));
-        line.setQuantitySent(line.getQuantitySent() + surplus);
+        line.setQuantitySent(line.getQuantitySent().add(surplus));
     }
 
     private void requireOpen(StockTransfer transfer) {
@@ -546,11 +548,12 @@ public class TransferService {
                 new MapSqlParameterSource("clientId", transfer.getClientId()), UUID.class));
         if (transfer.getSentBy() != null) people.add(transfer.getSentBy());
         people.remove(receiverId);
-        int missing = transfer.getLines().stream().mapToInt(StockTransferLine::getQuantityMissing).sum();
-        int damaged = transfer.getLines().stream().mapToInt(StockTransferLine::getQuantityDamaged).sum();
+        BigDecimal missing = transfer.getLines().stream().map(StockTransferLine::getQuantityMissing).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal damaged = transfer.getLines().stream().map(StockTransferLine::getQuantityDamaged).reduce(BigDecimal.ZERO, BigDecimal::add);
         String title = waybill + " arrived short at " + branchName(transfer.getToBranchId());
-        String body = (missing > 0 ? missing + " missing" : "") + (missing > 0 && damaged > 0 ? ", " : "")
-                + (damaged > 0 ? damaged + " damaged" : "");
+        String body = (missing.signum() > 0 ? ImportCopy.count(missing) + " missing" : "")
+                + (missing.signum() > 0 && damaged.signum() > 0 ? ", " : "")
+                + (damaged.signum() > 0 ? ImportCopy.count(damaged) + " damaged" : "");
         for (UUID person : people) {
             notificationService.notifyClient(transfer.getClientId(), person, NotificationType.TRANSFER_RECEIVED_SHORT,
                     title, body, "/app/transfers/" + transfer.getId(), null);
@@ -574,8 +577,10 @@ public class TransferService {
                     line.getQuantitySent(), line.getQuantityReceived(), line.getQuantityMissing(), line.getQuantityDamaged(),
                     line.getQuantityFound(), line.onTheWay(), line.getEnteredUnit(), line.getEnteredQuantity(), sentText(line, product)));
         }
-        int missing = transfer.getMissingCheckedAt() != null ? 0
-                : transfer.getLines().stream().mapToInt(line -> line.getQuantityMissing() + line.getQuantityDamaged()).sum();
+        BigDecimal missing = transfer.getMissingCheckedAt() != null ? BigDecimal.ZERO
+                : transfer.getLines().stream()
+                        .map(line -> line.getQuantityMissing().add(line.getQuantityDamaged()))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
         String sentBy = transfer.getSentBy() == null ? null : displayName(transfer.getSentBy());
         return new TransferResponse(
                 transfer.getId(), waybill, transfer.getNumber(),
@@ -621,12 +626,12 @@ public class TransferService {
             String word = UnitOptions.sizeUnitWord(line.getEnteredUnit(), line.getEnteredQuantity());
             return line.getEnteredQuantity().stripTrailingZeros().toPlainString() + (word.isEmpty() ? "" : " " + word);
         }
-        String word = UnitOptions.sizeUnitWord(product.getUnitOfMeasure(), BigDecimal.valueOf(line.getQuantitySent()));
-        return line.getQuantitySent() + (word.isEmpty() ? "" : " " + word);
+        String word = UnitOptions.sizeUnitWord(product.getUnitOfMeasure(), line.getQuantitySent());
+        return ImportCopy.count(line.getQuantitySent()) + (word.isEmpty() ? "" : " " + word);
     }
 
-    private static int valueOf(Integer value) {
-        return value == null ? 0 : value;
+    private static BigDecimal valueOf(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
     }
 
     private static String blankToNull(String value) {
