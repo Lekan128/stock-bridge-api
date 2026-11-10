@@ -84,6 +84,32 @@ class AreaCountIntegrationTest {
         assertThat(lastCounted(s, a.other())).isEqualTo(first);
     }
 
+    @Test
+    void aCountKeepsHowItWasTypedAndALateOneDoesNotReplaceIt() {
+        Session s = session("Counted As");
+        stockIn(s, 10, "100");
+        Areas a = kitchen(s);
+        move(s, a.store(), a.other(), 6);
+
+        Map<String, Object> body = new HashMap<>();
+        body.put("countedQuantity", 6);
+        body.put("areaId", a.other().toString());
+        body.put("countedAs", List.of(Map.of("unit", "PIECE", "quantity", 4), Map.of("unit", "PIECE:2", "quantity", 1)));
+        assertThat(post(s, "/api/products/" + s.productId() + "/stock/count", body, Map.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other())).singleElement()
+                .satisfies(figure -> assertThat(figure.lastCountedAs()).extracting(line -> line.unit() + "=" + line.quantity().stripTrailingZeros().toPlainString())
+                        .containsExactly("PIECE=4", "PIECE:2=1"));
+
+        // A late offline count, sent as a total only, leaves the latest one's lines.
+        count(s, a.other(), 6, null, hoursAgo(5));
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other())).singleElement()
+                .satisfies(figure -> assertThat(figure.lastCountedAs()).hasSize(2));
+        // A new count sent as a total only: nothing to read back, the total is said instead.
+        count(s, a.other(), 6, null, null);
+        assertThat(product(s).areaStock()).filteredOn(figure -> figure.areaId().equals(a.other())).singleElement()
+                .satisfies(figure -> assertThat(figure.lastCountedAs()).isNull());
+    }
+
     private OffsetDateTime lastCounted(Session s, UUID areaId) {
         return jdbc.queryForObject("SELECT last_counted_at FROM area_stock WHERE area_id = :a AND product_id = :p",
                 new MapSqlParameterSource().addValue("a", areaId).addValue("p", s.productId()), OffsetDateTime.class);

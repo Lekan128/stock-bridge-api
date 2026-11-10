@@ -387,6 +387,20 @@ public class BranchStockService {
                                 .put(rs.getObject("area_id", UUID.class), at);
                     }
                 });
+        // How each last count was typed (V85): "1 bag + 2 kg".
+        Map<UUID, Map<UUID, List<com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine>>> countedAs =
+                new HashMap<>();
+        jdbc.query("""
+                SELECT s.product_id, s.area_id, e->>'unit' AS unit, (e->>'quantity')::numeric AS quantity
+                FROM area_stock s, jsonb_array_elements(s.last_counted_as) WITH ORDINALITY AS x(e, i)
+                WHERE s.product_id = ANY(:productIds) AND s.area_id = ANY(:areaIds) AND s.last_counted_as IS NOT NULL
+                ORDER BY s.product_id, s.area_id, x.i
+                """, params, rs -> {
+                    countedAs.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
+                            .computeIfAbsent(rs.getObject("area_id", UUID.class), key -> new ArrayList<>())
+                            .add(new com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine(
+                                    rs.getString("unit"), rs.getBigDecimal("quantity")));
+                });
         // Moved there and not confirmed yet (Part 4): on its way in, in neither area's figure.
         Map<UUID, Map<UUID, BigDecimal>> waiting = new HashMap<>();
         jdbc.query("""
@@ -403,10 +417,12 @@ public class BranchStockService {
             Map<UUID, BigDecimal> at = held.getOrDefault(product, Map.of());
             Map<UUID, BigDecimal> coming = waiting.getOrDefault(product, Map.of());
             Map<UUID, java.time.OffsetDateTime> countedAt = counted.getOrDefault(product, Map.of());
+            Map<UUID, List<com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine>> typed =
+                    countedAs.getOrDefault(product, Map.of());
             figures.put(product, areas.stream()
                     .map(area -> new com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure(
                             area[0], area[1], at.getOrDefault(area[0], BigDecimal.ZERO), countedAt.get(area[0]),
-                            at.containsKey(area[0]), coming.getOrDefault(area[0], BigDecimal.ZERO)))
+                            at.containsKey(area[0]), coming.getOrDefault(area[0], BigDecimal.ZERO), typed.get(area[0])))
                     .toList());
         }
         return figures;
@@ -532,21 +548,36 @@ public class BranchStockService {
      * the count found nothing to change: the row's change is what tells the other phones it was counted, so it leaves
      * every one's "To count" list. Only ever moves later - an offline count arriving late is not the latest.
      */
-    public void markCounted(Product product, UUID branchId, UUID areaId, java.time.OffsetDateTime countedAt) {
+    public void markCounted(
+            Product product, UUID branchId, UUID areaId, java.time.OffsetDateTime countedAt,
+            List<com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine> countedAs) {
         if (areaId == null || !isAreaMode(branchId)) {
             return;
         }
+        List<com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine> lines =
+                countedAs == null ? List.of() : countedAs;
+        // How it was typed (V85) goes with the latest count only; a late offline count leaves the newer one's.
         jdbc.update("""
-                INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand, last_counted_at)
-                VALUES (:clientId, :areaId, :branchId, :productId, 0, :at)
+                INSERT INTO area_stock (client_id, area_id, branch_id, product_id, quantity_on_hand, last_counted_at,
+                                        last_counted_as)
+                VALUES (:clientId, :areaId, :branchId, :productId, 0, :at,
+                        (SELECT jsonb_agg(jsonb_build_object('unit', u, 'quantity', q) ORDER BY i)
+                         FROM unnest(CAST(:units AS text[]), CAST(:quantities AS numeric[])) WITH ORDINALITY AS t(u, q, i)))
                 ON CONFLICT (area_id, product_id) DO UPDATE
-                    SET last_counted_at = GREATEST(area_stock.last_counted_at, EXCLUDED.last_counted_at)
+                    SET last_counted_as = CASE
+                            WHEN area_stock.last_counted_at IS NULL OR EXCLUDED.last_counted_at >= area_stock.last_counted_at
+                            THEN EXCLUDED.last_counted_as ELSE area_stock.last_counted_as END,
+                        last_counted_at = GREATEST(area_stock.last_counted_at, EXCLUDED.last_counted_at)
                 """, new MapSqlParameterSource()
                         .addValue("clientId", product.getClientId())
                         .addValue("areaId", areaId)
                         .addValue("branchId", branchId)
                         .addValue("productId", product.getId())
-                        .addValue("at", countedAt));
+                        .addValue("at", countedAt)
+                        .addValue("units", lines.stream().map(line -> line.unit().trim()).toArray(String[]::new))
+                        .addValue("quantities", lines.stream()
+                                .map(com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine::quantity)
+                                .toArray(BigDecimal[]::new)));
     }
 
     public BigDecimal moveNetAfter(UUID productId, UUID branchId, UUID areaId, java.time.OffsetDateTime after) {

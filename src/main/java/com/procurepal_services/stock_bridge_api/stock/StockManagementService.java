@@ -579,7 +579,7 @@ public class StockManagementService {
         boolean usedHere = branchStockService.isAreaMode(branchId) && branchStockService.isShortUsed(areaId);
         boolean shortUsed = delta.signum() < 0 && usedHere && request.shortAs() != StockCountRequest.ShortAs.MISSING;
         // Counted here now, whatever it found (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 5).
-        branchStockService.markCounted(product, branchId, areaId, countedAt);
+        branchStockService.markCounted(product, branchId, areaId, countedAt, request.countedAs());
         if (shortUsed) {
             StockMovement used = recordUsedByCount(product, branchId, areaId, delta.negate(), countedAt, note, actingUserId);
             return StockMutationResponse.of(product, used);
