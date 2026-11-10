@@ -213,7 +213,8 @@ public class ProductSyncService {
                         branchStock == null ? null : branchStock.get(product.getId()),
                         areaStock == null ? null : areaStock.get(product.getId()),
                         product.getMeasures() == null || product.getMeasures().isEmpty() ? null : product.getMeasures(),
-                        product.getUsedInUnit()))
+                        product.getUsedInUnit(),
+                        product.getCountIn() == null || product.getCountIn().isEmpty() ? null : product.getCountIn()))
                 .toList();
     }
 

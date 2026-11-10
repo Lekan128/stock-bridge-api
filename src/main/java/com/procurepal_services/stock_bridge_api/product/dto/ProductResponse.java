@@ -119,7 +119,9 @@ public record ProductResponse(
         // UNITS_PLAN.md Part 1-2 (V82): the product's own units ("1 Derica = 0.6 kg"), hidden ones flagged, and
         // where a stock-out or count starts for it. unitOptions above already offers the visible measures.
         List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
-        String usedInUnit) {
+        String usedInUnit,
+        // V84: the units a count of it opens in, as unit keys. Empty: its pack and its stock unit.
+        List<String> countIn) {
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -186,7 +188,8 @@ public record ProductResponse(
                 null,
                 null,
                 product.getMeasures() == null ? List.of() : List.copyOf(product.getMeasures()),
-                product.getUsedInUnit());
+                product.getUsedInUnit(),
+                product.getCountIn() == null ? List.of() : List.copyOf(product.getCountIn()));
     }
 
     /**
@@ -200,7 +203,7 @@ public record ProductResponse(
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock, measures, usedInUnit);
+                branchStock, areaStock, measures, usedInUnit, countIn);
     }
 
     /**
@@ -213,7 +216,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, figure.lowStockThreshold(), brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, figure.isLowStock(), createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock, measures, usedInUnit);
+                branchStock, areaStock, measures, usedInUnit, countIn);
     }
 
     /** The same product with its figure at each branch the person sees (V52) - the product page only. */
@@ -223,7 +226,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                figures, areaStock, measures, usedInUnit);
+                figures, areaStock, measures, usedInUnit, countIn);
     }
 
     /** The same product with its figure in each area (V60) of the branches the person sees that have areas. */
@@ -233,6 +236,6 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, figures, measures, usedInUnit);
+                branchStock, figures, measures, usedInUnit, countIn);
     }
 }

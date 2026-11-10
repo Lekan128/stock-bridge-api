@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.product;
 
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOptions;
+import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.InvalidMeasureException;
 import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures;
 import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure;
@@ -523,6 +524,7 @@ public class ProductManagementService {
                 .companyCategory(request.categoryId() == null ? null : companyCategoryService.require(request.categoryId()))
                 .build();
         product.setUsedInUnit(usedInUnit(product, request.usedInUnit()));
+        product.setCountIn(new ArrayList<>(countIn(product, request.countIn())));
         // After the units are set: a price typed per carton is converted by this product's own pack.
         // Without CHANGE_SELLING_PRICES (V52) the product is created without a price - "No price yet",
         // which selling already allows - rather than refused: the rest of what was typed is still wanted.
@@ -686,6 +688,14 @@ public class ProductManagementService {
                 && UnitOptions.resolveKey(UnitOptions.forProduct(product), product.getUsedInUnit()).isEmpty()) {
             // Its unit was taken off or hidden: stock-outs start in the stock unit again.
             product.setUsedInUnit(null);
+        }
+        if (request.countIn() != null) {
+            product.setCountIn(new ArrayList<>(countIn(product, request.countIn())));
+        } else if (product.getCountIn() != null && !product.getCountIn().isEmpty()) {
+            // A count unit taken off or hidden drops out; none left is the default again.
+            List<UnitOption> options = UnitOptions.forProduct(product);
+            product.setCountIn(new ArrayList<>(product.getCountIn().stream()
+                    .filter(key -> UnitOptions.resolveKey(options, key).isPresent()).toList()));
         }
         // The selling price, after the units: a price typed per carton converts by the pack as it
         // now stands, and a pack that changed size re-derives the per-piece price from what was
@@ -1037,6 +1047,27 @@ public class ProductManagementService {
                 .filter(option -> !option.isStockUnit())
                 .map(UnitOptions::key)
                 .orElseThrow(() -> new InvalidMeasureException("“" + requested.trim() + "” isn't one of this product's units."));
+    }
+
+    /**
+     * The units a count of the product opens in (V84), each one of its units, as unit keys, in the order given and
+     * once each. Empty: its pack and its stock unit.
+     */
+    private List<String> countIn(Product product, List<String> requested) {
+        if (requested == null || requested.isEmpty()) {
+            return List.of();
+        }
+        List<UnitOption> options = UnitOptions.forProduct(product);
+        java.util.LinkedHashSet<String> keys = new java.util.LinkedHashSet<>();
+        for (String raw : requested) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            keys.add(UnitOptions.resolveKey(options, raw.trim())
+                    .map(UnitOptions::key)
+                    .orElseThrow(() -> new InvalidMeasureException("“" + raw.trim() + "” isn't one of this product's units.")));
+        }
+        return List.copyOf(keys);
     }
 
     private String resolvePackagingUnit(String code) {

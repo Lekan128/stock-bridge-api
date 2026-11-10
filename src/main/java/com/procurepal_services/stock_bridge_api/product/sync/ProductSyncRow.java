@@ -49,5 +49,7 @@ public record ProductSyncRow(
         // UNITS_PLAN.md Part 1-2 (V82): the product's own units and where its stock-outs and counts start, so the
         // phone offers "Derica" offline.
         List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
-        String usedInUnit) {
+        String usedInUnit,
+        // V84: the units a count of it opens in, so an offline count opens in them too. Absent: the default.
+        List<String> countIn) {
 }

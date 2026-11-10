@@ -104,7 +104,29 @@ public record CreateProductRequest(
         /** The product's own units, each with what one holds (UNITS_PLAN.md Part 1): "1 Derica = 0.6 kg". */
         java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
         /** Where stock-outs and counts start for this product (Part 2): a measure, a unit or a pack key. */
-        String usedInUnit) {
+        String usedInUnit,
+        /** The units a count of it opens in (V84), as unit keys. Absent or empty: its pack and its stock unit. */
+        java.util.List<String> countIn) {
+
+    /** The shape before the count units (V84). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, null);
+    }
 
     /** The shape before a product's own units (V82). */
     public CreateProductRequest(
@@ -121,7 +143,7 @@ public record CreateProductRequest(
             String barcode,
             String unitPriceUnit) {
         this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
-                initialVendor, categoryId, barcode, unitPriceUnit, null, null);
+                initialVendor, categoryId, barcode, unitPriceUnit, null, null, null);
     }
 
     /** The shape before the price unit (V47) - a price per stock unit. */

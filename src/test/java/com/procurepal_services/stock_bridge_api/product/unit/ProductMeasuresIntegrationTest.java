@@ -94,6 +94,30 @@ class ProductMeasuresIntegrationTest {
     }
 
     @Test
+    void aProductKnowsTheUnitsItIsCountedInAndOneTakenOffDropsOut() {
+        TenantLoginResponse owner = signup("Count In Kitchen");
+        CreateProductRequest request = new CreateProductRequest("Rice", "PM-" + UUID.randomUUID().toString().substring(0, 8),
+                null, null, null, "KG", "BAG", new BigDecimal("80"), null, null, null, null,
+                List.of(new ProductMeasure("Derica", new BigDecimal("0.6"))), null, List.of("bag:80", "Derica", "Derica"));
+        ResponseEntity<ProductResponse> created =
+                restTemplate.exchange("/api/products", HttpMethod.POST, multipart(owner, request), ProductResponse.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        ProductResponse rice = created.getBody();
+        // Stored as unit keys, once each, in the order chosen.
+        assertThat(rice.countIn()).containsExactly("BAG:80", "Derica");
+
+        UpdateProductRequest unknown = new UpdateProductRequest(null, null, null, null, null, null, null, null, null, null,
+                null, null, null, null, null, null, null, List.of("Mudu"));
+        ResponseEntity<ApiError> refused = restTemplate.exchange(
+                "/api/products/" + rice.id(), HttpMethod.PUT, multipart(owner, unknown), ApiError.class);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(refused.getBody().message()).contains("Mudu");
+
+        // The derica is taken off: it drops out of the count units, the bag stays.
+        assertThat(update(owner, rice.id(), List.of(), null).countIn()).containsExactly("BAG:80");
+    }
+
+    @Test
     void aMeasureMustHaveASizeANameOfItsOwnAndAStockUnitToBeANumberOf() {
         TenantLoginResponse owner = signup("Measure Rules");
         assertThat(createRefused(owner, "KG", List.of(new ProductMeasure("Bag", new BigDecimal("50")))).message())

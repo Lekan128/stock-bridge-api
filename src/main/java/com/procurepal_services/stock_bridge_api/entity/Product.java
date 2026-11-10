@@ -277,6 +277,15 @@ public class Product extends TenantAwareEntity {
     private String usedInUnit;
 
     /**
+     * The units a count of this product opens in (V84), as unit keys: ["BAG:80", "KG"]. Empty: its pack and its
+     * stock unit. The counter can tap another on or off for one count; this is where the next one starts again.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "count_in", nullable = false)
+    @Builder.Default
+    private List<String> countIn = new java.util.ArrayList<>();
+
+    /**
      * Minimum purchasable quantity, mirroring the column default of 1 so an
      * ordinary tenant product built by the existing product endpoints (which know
      * nothing about the marketplace) never lands on 0 and trips the
