@@ -344,6 +344,54 @@ class MultiVendorInventoryIntegrationTest {
     // Helpers
     // -----------------------------------------------------------------------------------
 
+    @Test
+    void aProductIsAddedWithSeveralSuppliersAndItsOpeningStockFromOneOfThemOrNone() {
+        TenantLoginResponse admin = signup("Several Suppliers Co");
+        CompanyVendorResponse mama = createCompanyVendor(admin, "Mama");
+        CompanyVendorResponse alaba = createCompanyVendor(admin, "Alaba");
+        CreateProductRequest request = new CreateProductRequest(
+                "Rice MS", "MS-1", null, null, null, "KG", "BAG", new BigDecimal("80"), null, null, null, null, null, null,
+                null,
+                List.of(
+                        new CreateProductRequest.SupplierLink(mama.id(), null, new BigDecimal("1000"), "BAG", new BigDecimal("80")),
+                        new CreateProductRequest.SupplierLink(alaba.id(), null, null, "BAG", new BigDecimal("50"))),
+                new CreateProductRequest.OpeningStock(new BigDecimal("160"), mama.id(), null));
+        ResponseEntity<ProductResponse> created =
+                restTemplate.exchange("/api/products", HttpMethod.POST, multipartEntity(admin, request), ProductResponse.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        ProductResponse product = created.getBody();
+        // Both linked, the first preferred; the opening stock came from Mama, at her price.
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("160");
+        assertThat(product.preferredVendorName()).isEqualTo(mama.name());
+        assertThat(listVendors(admin, product.id())).extracting(ProductVendorResponse::companyVendorId)
+                .containsExactlyInAnyOrder(mama.id(), alaba.id());
+        assertThat(findVendorLine(admin, product.id(), alaba.id()).totalQuantityReceived()).isEqualByComparingTo("0");
+        assertThat(findVendorLine(admin, product.id(), mama.id()).totalQuantityReceived()).isEqualByComparingTo("160");
+        StockMovementResponse opening = history(admin, product.id()).get(0);
+        assertThat(opening.unitPriceAtTime()).isEqualByComparingTo("1000");
+        assertThat(opening.companyVendorId()).isEqualTo(mama.id());
+
+        // Opening stock from nobody named, and no suppliers at all.
+        CreateProductRequest bare = new CreateProductRequest(
+                "Salt MS", "MS-2", null, null, null, "KG", null, null, null, null, null, null, null, null, null, null,
+                new CreateProductRequest.OpeningStock(new BigDecimal("3.5"), null, null));
+        ResponseEntity<ProductResponse> salt =
+                restTemplate.exchange("/api/products", HttpMethod.POST, multipartEntity(admin, bare), ProductResponse.class);
+        assertThat(salt.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(salt.getBody().quantityOnHand()).isEqualByComparingTo("3.5");
+        assertThat(listVendors(admin, salt.getBody().id())).isEmpty();
+
+        // A supplier linked later, from the edit page, with nothing received.
+        CompanyVendorResponse third = createCompanyVendor(admin, "Third");
+        ResponseEntity<ProductVendorResponse> linked = restTemplate.exchange(
+                "/api/products/" + salt.getBody().id() + "/vendors", HttpMethod.POST,
+                new HttpEntity<>(java.util.Map.of("companyVendorId", third.id(), "cost", 400), authHeaders(admin)),
+                ProductVendorResponse.class);
+        assertThat(linked.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(linked.getBody().isPreferred()).isTrue();
+        assertThat(linked.getBody().totalQuantityReceived()).isEqualByComparingTo("0");
+    }
+
     private ResponseEntity<String> stockOutRaw(TenantLoginResponse admin, UUID productId, int quantity, CountDownLatch startLatch) {
         try {
             startLatch.await(10, TimeUnit.SECONDS);

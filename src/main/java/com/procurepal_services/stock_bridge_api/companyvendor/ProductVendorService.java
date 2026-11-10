@@ -561,6 +561,23 @@ public class ProductVendorService {
         }
     }
 
+    /**
+     * A supplier linked to the product with nothing received yet (2026-11-10: the product form's Suppliers, several at
+     * once): its pack from them and its price per stock unit, both optional. Already linked: its pack and price are
+     * brought up to date, as a delivery would.
+     */
+    @Transactional
+    public ProductVendor link(
+            UUID productId, UUID companyVendorId, String vendorSku, BigDecimal costPrice, String packagingUnit,
+            BigDecimal packagingSize) {
+        UUID tenantId = requireTenantId();
+        Product product = productRepository.findByIdAndClientId(productId, tenantId).orElseThrow(ProductNotFoundException::new);
+        validatePackagingPair(packagingUnit, packagingSize);
+        return findOrCreateForReceipt(
+                product, companyVendorId, vendorSku == null || vendorSku.isBlank() ? null : vendorSku.trim(), costPrice,
+                packagingUnit, packagingUnit == null ? null : packagingSize, BigDecimal.ZERO, true).vendor();
+    }
+
     private void requireProduct(UUID tenantId, UUID productId) {
         if (productRepository.findByIdAndClientId(productId, tenantId).isEmpty()) {
             throw new ProductNotFoundException();

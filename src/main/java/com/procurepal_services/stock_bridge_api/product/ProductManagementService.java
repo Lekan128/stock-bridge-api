@@ -118,6 +118,8 @@ public class ProductManagementService {
      * the one that drifts. See {@link #create}.
      */
     private final StockManagementService stockManagementService;
+    /** Links a new product's suppliers, several at once, each with its pack and price (2026-11-10). */
+    private final com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService productVendorService;
     /**
      * The tenant's own supplier directory. Two uses, both added with the per-tenant template: the
      * {@code vendor_name} dropdown a template is generated with, and resolving what an imported
@@ -545,6 +547,52 @@ public class ProductManagementService {
         product = productRepository.saveAndFlush(product);
 
         String preferredVendorName = null;
+        // Its suppliers, several at once (2026-11-10): each linked with its pack and price, nothing received. The
+        // first is preferred, as the first linked always is.
+        java.util.Map<UUID, CreateProductRequest.SupplierLink> linked = new java.util.LinkedHashMap<>();
+        for (CreateProductRequest.SupplierLink link : request.suppliers() == null ? List.<CreateProductRequest.SupplierLink>of() : request.suppliers()) {
+            if (linked.containsKey(link.companyVendorId())) {
+                continue;
+            }
+            String linkPack = resolvePackagingUnit(link.packagingUnit());
+            requirePackagingUnitAndSizePaired(linkPack, link.packagingSize());
+            productVendorService.findOrCreateForReceipt(
+                    product, link.companyVendorId(), link.vendorSku() == null || link.vendorSku().isBlank() ? null : link.vendorSku().trim(), link.cost(), linkPack,
+                    linkPack == null ? null : link.packagingSize(), BigDecimal.ZERO, true);
+            linked.put(link.companyVendorId(), link);
+        }
+        // What's on the shelf now, separately: from one of them (their pack and price), or from nobody named.
+        if (request.openingStock() != null) {
+            CreateProductRequest.OpeningStock opening = request.openingStock();
+            CreateProductRequest.SupplierLink from =
+                    opening.companyVendorId() == null ? null : linked.get(opening.companyVendorId());
+            UUID openingBranchId = branchStockService.resolveForWrite(opening.branchId(), actingUserId);
+            branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
+            String fromPack = from == null ? null : resolvePackagingUnit(from.packagingUnit());
+            stockManagementService.stockIn(
+                    product.getId(),
+                    new StockInRequest(
+                            opening.quantity(),
+                            from == null ? null : from.cost(),
+                            "Opening stock",
+                            null,
+                            opening.companyVendorId(),
+                            fromPack,
+                            fromPack == null ? null : from.packagingSize(),
+                            null,
+                            false,
+                            null,
+                            null,
+                            openingBranchId,
+                            null),
+                    actingUserId);
+        }
+        if (!linked.isEmpty() || request.openingStock() != null) {
+            preferredVendorName = productVendorRepository
+                    .findByClientIdAndProductIdAndIsPreferredTrue(tenantId, product.getId())
+                    .map(vendor -> vendor.getCompanyVendor().getName())
+                    .orElse(null);
+        }
         if (request.initialVendor() != null) {
             CreateProductRequest.InitialVendor initialVendor = request.initialVendor();
             // Reused, not reimplemented: stockIn already owns the ledger write, the weighted-
