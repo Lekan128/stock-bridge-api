@@ -110,6 +110,26 @@ class AreaCountIntegrationTest {
                 .satisfies(figure -> assertThat(figure.lastCountedAs()).isNull());
     }
 
+    @Test
+    void aBranchWithOneAreaKnowsWhatWasCountedTodayToo() {
+        Session s = session("One Area Count");
+        stockIn(s, 10, "100");
+        Map<String, Object> body = new HashMap<>();
+        body.put("countedQuantity", 9);
+        body.put("countedAs", List.of(Map.of("unit", "PIECE", "quantity", 9)));
+        assertThat(post(s, "/api/products/" + s.productId() + "/stock/count", body, Map.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+        // The phone's catalogue says so: the branch's one area, when, and as typed.
+        ResponseEntity<Map> snapshot = restTemplate.exchange(
+                "/api/products/sync/snapshot", HttpMethod.GET, new HttpEntity<>(auth(s)), Map.class);
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) snapshot.getBody().get("products");
+        Map<String, Object> row = rows.stream().filter(r -> s.productId().toString().equals(r.get("id"))).findFirst().orElseThrow();
+        List<Map<String, Object>> counts = (List<Map<String, Object>>) row.get("counts");
+        assertThat(counts).singleElement().satisfies(mark -> {
+            assertThat(mark.get("at")).isNotNull();
+            assertThat((List<?>) mark.get("countedAs")).hasSize(1);
+        });
+    }
+
     private OffsetDateTime lastCounted(Session s, UUID areaId) {
         return jdbc.queryForObject("SELECT last_counted_at FROM area_stock WHERE area_id = :a AND product_id = :p",
                 new MapSqlParameterSource().addValue("a", areaId).addValue("p", s.productId()), OffsetDateTime.class);

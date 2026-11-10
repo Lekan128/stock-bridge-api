@@ -51,5 +51,8 @@ public record ProductSyncRow(
         List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
         String usedInUnit,
         // V84: the units a count of it opens in, so an offline count opens in them too. Absent: the default.
-        List<String> countIn) {
+        List<String> countIn,
+        // When each area of the branches carried above last counted it - a branch's only area too - and how it was
+        // typed (2026-11-10): the count list's "Counted today" at any branch. Absent when never counted there.
+        List<com.procurepal_services.stock_bridge_api.branch.dto.CountMark> counts) {
 }

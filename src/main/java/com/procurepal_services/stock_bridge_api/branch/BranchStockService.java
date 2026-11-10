@@ -551,7 +551,10 @@ public class BranchStockService {
     public void markCounted(
             Product product, UUID branchId, UUID areaId, java.time.OffsetDateTime countedAt,
             List<com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine> countedAs) {
-        if (areaId == null || !isAreaMode(branchId)) {
+        // A branch with one area too (owner, 2026-11-10: "if the branch only has one area the count must be there"):
+        // its count list needs to know what was counted today just the same. Its area's figure isn't read until it
+        // has a second area, when the switch copies the branch's figures over it.
+        if (areaId == null) {
             return;
         }
         List<com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine> lines =
@@ -578,6 +581,51 @@ public class BranchStockService {
                         .addValue("quantities", lines.stream()
                                 .map(com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine::quantity)
                                 .toArray(BigDecimal[]::new)));
+    }
+
+    /**
+     * When each area of {@code branchIds} last counted each product, and how it was typed - every area, a branch's
+     * only one included (2026-11-10): the count list's "Counted today" on the phone, at any branch. Products never
+     * counted there are left out.
+     */
+    public Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.CountMark>> countMarks(
+            Collection<UUID> productIds, List<UUID> branchIds) {
+        if (productIds.isEmpty() || branchIds.isEmpty()) {
+            return Map.of();
+        }
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("productIds", productIds.toArray(UUID[]::new))
+                .addValue("branchIds", branchIds.toArray(UUID[]::new));
+        Map<UUID, Map<UUID, java.time.OffsetDateTime>> at = new HashMap<>();
+        jdbc.query("""
+                SELECT s.product_id, s.area_id, s.last_counted_at FROM area_stock s
+                WHERE s.product_id = ANY(:productIds) AND s.branch_id = ANY(:branchIds) AND s.last_counted_at IS NOT NULL
+                """, params, rs -> {
+                    at.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new java.util.LinkedHashMap<>())
+                            .put(rs.getObject("area_id", UUID.class), rs.getObject("last_counted_at", java.time.OffsetDateTime.class));
+                });
+        if (at.isEmpty()) {
+            return Map.of();
+        }
+        Map<UUID, Map<UUID, List<com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine>>> typed =
+                new HashMap<>();
+        jdbc.query("""
+                SELECT s.product_id, s.area_id, e->>'unit' AS unit, (e->>'quantity')::numeric AS quantity
+                FROM area_stock s, jsonb_array_elements(s.last_counted_as) WITH ORDINALITY AS x(e, i)
+                WHERE s.product_id = ANY(:productIds) AND s.branch_id = ANY(:branchIds) AND s.last_counted_as IS NOT NULL
+                ORDER BY s.product_id, s.area_id, x.i
+                """, params, rs -> {
+                    typed.computeIfAbsent(rs.getObject("product_id", UUID.class), key -> new HashMap<>())
+                            .computeIfAbsent(rs.getObject("area_id", UUID.class), key -> new ArrayList<>())
+                            .add(new com.procurepal_services.stock_bridge_api.stock.dto.StockCountRequest.CountedLine(
+                                    rs.getString("unit"), rs.getBigDecimal("quantity")));
+                });
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.CountMark>> marks = new HashMap<>();
+        at.forEach((product, byArea) -> marks.put(product, byArea.entrySet().stream()
+                .map(entry -> new com.procurepal_services.stock_bridge_api.branch.dto.CountMark(
+                        entry.getKey(), entry.getValue(), typed.getOrDefault(product, Map.of()).get(entry.getKey())))
+                .toList()));
+        return marks;
     }
 
     public BigDecimal moveNetAfter(UUID productId, UUID branchId, UUID areaId, java.time.OffsetDateTime after) {

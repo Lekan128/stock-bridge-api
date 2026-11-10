@@ -186,6 +186,10 @@ public class ProductSyncService {
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaFigure>> areaStock = userId == null
                 ? null
                 : branchStockService.areaFigures(thresholds.keySet(), carried);
+        // Every area's last count of each product, a one-area branch's too. A one-branch company carries its branch.
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.CountMark>> counts = userId == null
+                ? Map.of()
+                : branchStockService.countMarks(thresholds.keySet(), carried);
 
         return products.stream()
                 .map(product -> new ProductSyncRow(
@@ -214,7 +218,8 @@ public class ProductSyncService {
                         areaStock == null ? null : areaStock.get(product.getId()),
                         product.getMeasures() == null || product.getMeasures().isEmpty() ? null : product.getMeasures(),
                         product.getUsedInUnit(),
-                        product.getCountIn() == null || product.getCountIn().isEmpty() ? null : product.getCountIn()))
+                        product.getCountIn() == null || product.getCountIn().isEmpty() ? null : product.getCountIn(),
+                        counts.get(product.getId())))
                 .toList();
     }
 
