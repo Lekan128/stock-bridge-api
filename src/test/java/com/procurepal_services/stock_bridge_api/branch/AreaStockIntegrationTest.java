@@ -97,7 +97,16 @@ class AreaStockIntegrationTest {
                 "SELECT DISTINCT area_id FROM stock_movements WHERE product_id = :p",
                 new MapSqlParameterSource("p", s.productId()), UUID.class);
         assertThat(areas).containsExactly(store);
-        assertThat(areaRows(s)).as("a branch with one area keeps its figure on the branch row only").isZero();
+        // Its figure stays on the branch row; its one area's row only remembers when it was counted (2026-11-10: the
+        // count list's "Counted today" at a branch with one area), holding no figure.
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM area_stock WHERE product_id = :p AND quantity_on_hand <> 0",
+                new MapSqlParameterSource("p", s.productId()), Long.class))
+                .as("a branch with one area keeps its figure on the branch row only").isZero();
+        assertThat(jdbc.queryForObject(
+                "SELECT COUNT(*) FROM area_stock WHERE product_id = :p AND area_id = :a AND last_counted_at IS NOT NULL",
+                new MapSqlParameterSource().addValue("p", s.productId()).addValue("a", store), Long.class))
+                .as("its count is remembered on its one area").isEqualTo(1L);
     }
 
     // -------------------------------------------------------------------------------- two areas
@@ -342,11 +351,6 @@ class AreaStockIntegrationTest {
                 new MapSqlParameterSource().addValue("a", areaId).addValue("p", s.productId()),
                 Integer.class);
         return found.isEmpty() ? 0 : found.getFirst();
-    }
-
-    private long areaRows(Session s) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM area_stock WHERE product_id = :p",
-                new MapSqlParameterSource("p", s.productId()), Long.class);
     }
 
     private StockMutationResponse stockIn(Session s, Map<String, Object> body) {
