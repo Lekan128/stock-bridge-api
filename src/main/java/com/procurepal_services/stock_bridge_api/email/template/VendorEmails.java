@@ -103,7 +103,7 @@ public final class VendorEmails {
             OffsetDateTime submittedAt,
             String appBaseUrl) {
         String address = joinNonBlank(", ", addressLine1, addressLine2, city, state);
-        String body = paragraphHtml("A business has applied to sell on the ProcurePal marketplace.")
+        String body = paragraphHtml("A business has applied to sell on the Procurepaddy marketplace.")
                 + detailTable(List.of(
                         new Detail("Business", businessName),
                         new Detail("Email", email),
@@ -115,7 +115,7 @@ public final class VendorEmails {
                         + "their vendor account; rejecting sends them your note.")
                 + button("Review the waitlist", waitlistUrl(appBaseUrl));
 
-        String text = "A business has applied to sell on the ProcurePal marketplace.\n\n"
+        String text = "A business has applied to sell on the Procurepaddy marketplace.\n\n"
                 + "Business: " + businessName + "\n"
                 + "Email: " + email + "\n"
                 + "Phone: " + contactPhone + "\n"
@@ -142,22 +142,22 @@ public final class VendorEmails {
      */
     public static EmailMessage applicationReceived(List<String> to, String businessName) {
         String body = paragraphHtml("Thanks - we have your application for " + bold(escape(businessName)) + ".")
-                + paragraph("Somebody on the ProcurePal team reads every application. We will look at "
+                + paragraph("Somebody on the Procurepaddy team reads every application. We will look at "
                         + "yours and email you either way.")
                 + callout("This is a waitlist, not an account. There is nothing to sign in to yet - if we "
                         + "approve you we will send you your login details in a separate email.")
                 + paragraph("If we need anything else from you, we will reply to this address.");
 
         String text = "Thanks - we have your application for " + businessName + ".\n\n"
-                + "Somebody on the ProcurePal team reads every application. We will look at yours and "
+                + "Somebody on the Procurepaddy team reads every application. We will look at yours and "
                 + "email you either way.\n\n"
                 + "This is a waitlist, not an account. There is nothing to sign in to yet - if we approve "
                 + "you we will send you your login details in a separate email.\n\n"
                 + "If we need anything else from you, we will reply to this address.\n";
 
-        return new EmailMessage(to, "We have your ProcurePal vendor application",
+        return new EmailMessage(to, "We have your Procurepaddy vendor application",
                 page("We have your application",
-                        "Your application to sell on ProcurePal is with our team.", body),
+                        "Your application to sell on Procurepaddy is with our team.", body),
                 text, EmailKind.VERIFICATION);
     }
 
@@ -186,7 +186,7 @@ public final class VendorEmails {
             String verificationUrl,
             String expiresIn) {
         String body = paragraphHtml("Good news - " + bold(escape(businessName))
-                        + " has been approved to sell on the ProcurePal marketplace.")
+                        + " has been approved to sell on the Procurepaddy marketplace.")
                 + detailTable(List.of(
                         new Detail("Business", businessName),
                         new Detail("Your username", username)))
@@ -196,9 +196,9 @@ public final class VendorEmails {
                 + verificationBlockHtml(verificationUrl, expiresIn)
                 + paragraph("From here you can list your products, set your stock, add the addresses we "
                         + "collect from, and see the orders companies place with you.")
-                + button("Sign in to ProcurePal", signInUrl(appBaseUrl));
+                + button("Sign in to Procurepaddy", signInUrl(appBaseUrl));
 
-        String text = "Good news - " + businessName + " has been approved to sell on the ProcurePal "
+        String text = "Good news - " + businessName + " has been approved to sell on the Procurepaddy "
                 + "marketplace.\n\n"
                 + "Business: " + businessName + "\nYour username: " + username + "\n\n"
                 + "Your password is not in this email - whoever set up your account will give it to you "
@@ -207,8 +207,8 @@ public final class VendorEmails {
                 + verificationBlockText(verificationUrl, expiresIn)
                 + textLink(signInUrl(appBaseUrl));
 
-        return new EmailMessage(to, "You have been approved to sell on ProcurePal",
-                page("You have been approved to sell on ProcurePal",
+        return new EmailMessage(to, "You have been approved to sell on Procurepaddy",
+                page("You have been approved to sell on Procurepaddy",
                         "Your vendor account for " + businessName + " is ready.", body),
                 text, EmailKind.VERIFICATION);
     }
@@ -223,21 +223,21 @@ public final class VendorEmails {
      * better information, and an applicant who does not know that will not.
      */
     public static EmailMessage applicationRejected(List<String> to, String businessName, String reviewNote) {
-        String body = paragraphHtml("Thanks for applying to sell on ProcurePal. We are not able to take "
+        String body = paragraphHtml("Thanks for applying to sell on Procurepaddy. We are not able to take "
                         + bold(escape(businessName)) + " on at the moment.")
                 + reviewNoteBlockHtml(reviewNote, "Why")
                 + paragraph("This is not permanent. If something changes - or if there is more you can "
                         + "tell us about your business - you are welcome to apply again.");
 
-        String text = "Thanks for applying to sell on ProcurePal. We are not able to take " + businessName
+        String text = "Thanks for applying to sell on Procurepaddy. We are not able to take " + businessName
                 + " on at the moment.\n"
                 + reviewNoteBlockText(reviewNote, "Why")
                 + "\nThis is not permanent. If something changes - or if there is more you can tell us "
                 + "about your business - you are welcome to apply again.\n";
 
-        return new EmailMessage(to, "Your ProcurePal vendor application",
+        return new EmailMessage(to, "Your Procurepaddy vendor application",
                 page("About your vendor application",
-                        "An update on your application to sell on ProcurePal.", body),
+                        "An update on your application to sell on Procurepaddy.", body),
                 text, EmailKind.VERIFICATION);
     }
 

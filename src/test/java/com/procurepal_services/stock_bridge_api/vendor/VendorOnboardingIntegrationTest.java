@@ -179,7 +179,7 @@ class VendorOnboardingIntegrationTest {
                 .contains("12 Murtala Way")
                 .contains("cartons and shrink wrap");
 
-        EmailMessage toApplicant = onlyEmailWhoseSubjectContains(sent, "We have your ProcurePal vendor application");
+        EmailMessage toApplicant = onlyEmailWhoseSubjectContains(sent, "We have your Procurepaddy vendor application");
         assertThat(toApplicant.to()).containsExactly(email);
         assertThat(toApplicant.kind())
                 .as("TRANSACTIONAL would be dropped by EmailEligibility rule 7 - the applicant has no "
@@ -430,7 +430,7 @@ class VendorOnboardingIntegrationTest {
                 .as("nothing was created, and chk_vendor_waitlist_approved_has_client only binds APPROVED rows")
                 .isNull();
 
-        EmailMessage message = onlyEmailWhoseSubjectContains(dispatchedEmails(), "Your ProcurePal vendor application");
+        EmailMessage message = onlyEmailWhoseSubjectContains(dispatchedEmails(), "Your Procurepaddy vendor application");
         assertThat(message.to()).containsExactly(email);
         assertThat(message.kind()).isEqualTo(EmailKind.VERIFICATION);
         assertThat(message.htmlBody()).contains("We only onboard registered businesses for now.");
