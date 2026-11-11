@@ -1220,6 +1220,10 @@ class VendorSettlementIntegrationTest {
         // The order context resolves for the operator too - it is served by a different
         // scoping path, and a null order number here would mean that path is not joining.
         assertThat(asOperator.lines()).allSatisfy(line -> assertThat(line.orderNumber()).isNotBlank());
+        // And for the vendor: its lines join the BUYER's orders, which the vendor's own tenant
+        // filter would hide if that join were filtered.
+        assertThat(asVendor.lines()).isNotEmpty()
+                .allSatisfy(line -> assertThat(line.orderNumber()).isNotBlank());
         assertThat(asOperator.escrow().heldBalance()).isEqualByComparingTo(asVendor.escrow().heldBalance());
     }
 

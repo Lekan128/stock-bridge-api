@@ -53,7 +53,8 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <h2>Two things that make this correct rather than merely working</h2>
  * <b>Locking.</b> Every mutation of incoming_quantity goes through
- * {@code ProductRepository.findByIdForUpdate}, so a duplicated webhook and a
+ * {@code ProductRepository.findByIdAndClientIdForUpdate} (scoped to the buyer, the
+ * order's client_id), so a duplicated webhook and a
  * concurrent receipt serialise on the row instead of racing on a read-modify-write.
  * Order-level idempotency (the status transition guard in OrderLifecycleService) is
  * what stops a re-delivered webhook applying twice; the row lock is what stops two
@@ -111,7 +112,7 @@ public class IncomingStockService {
             for (OrderItem item : orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(order.getId())) {
                 BuyerProductMatch match = matchOrCreateBuyerProduct(order.getClientId(), item);
                 Product locked = productRepository
-                        .findByIdForUpdate(match.product().getId())
+                        .findByIdAndClientIdForUpdate(match.product().getId(), order.getClientId())
                         .orElseThrow(() -> new IllegalStateException(
                                 "Buyer product vanished while applying incoming stock: " + match.product().getId()));
                 locked.setIncomingQuantity(locked.getIncomingQuantity() + item.getQuantity());
@@ -169,7 +170,7 @@ public class IncomingStockService {
             }
 
             Product locked = productRepository
-                    .findByIdForUpdate(buyerProductId)
+                    .findByIdAndClientIdForUpdate(buyerProductId, order.getClientId())
                     .orElseThrow(() -> new IllegalStateException(
                             "Buyer product vanished while receiving an order line: " + item.getId()));
 
@@ -199,8 +200,11 @@ public class IncomingStockService {
                     && item.isBuyerProductNewlyCreated()
                     && item.getReceivedQuantity() == 0
                     && !linkToExistingProductId.equals(locked.getId())) {
+                // The id comes from the request: only one of the buyer's own products may be picked.
+                // Unscoped, another company's product was locked and had its incoming quantity
+                // bumped, and only stockIn's own check further down rolled that back.
                 Product target = productRepository
-                        .findByIdForUpdate(linkToExistingProductId)
+                        .findByIdAndClientIdForUpdate(linkToExistingProductId, order.getClientId())
                         .orElseThrow(ProductNotFoundException::new);
                 stockInUnit = item.getUnitOfMeasure();
                 // incomingQuantity carries no price, so converting it here (rather than deferring
@@ -313,7 +317,7 @@ public class IncomingStockService {
                 if (outstanding <= 0 || item.getBuyerProductId() == null) {
                     continue;
                 }
-                productRepository.findByIdForUpdate(item.getBuyerProductId()).ifPresent(product ->
+                productRepository.findByIdAndClientIdForUpdate(item.getBuyerProductId(), order.getClientId()).ifPresent(product ->
                         product.setIncomingQuantity(Math.max(0, product.getIncomingQuantity() - outstanding)));
             }
         });

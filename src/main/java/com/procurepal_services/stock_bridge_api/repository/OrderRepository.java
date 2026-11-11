@@ -32,15 +32,23 @@ public interface OrderRepository extends TenantScopedRepository<Order, UUID>, Jp
 
     Optional<Order> findByOrderNumber(String orderNumber);
 
-    boolean existsByOrderNumber(String orderNumber);
+    /**
+     * Order numbers are platform-wide, so this and {@link #countByOrderNumberStartingWith} must
+     * see every company's orders. Native SQL on purpose: the Hibernate tenant filter does not
+     * apply to it, where a derived query run during a buyer's checkout would count only that
+     * buyer's orders and hand every company's first order PP-YYYY-000001.
+     */
+    @Query(value = "SELECT EXISTS (SELECT 1 FROM orders WHERE order_number = :orderNumber)", nativeQuery = true)
+    boolean existsByOrderNumber(@Param("orderNumber") String orderNumber);
 
     /**
      * Feeds order-number allocation (e.g. count of 'PP-2026-' rows + 1). A count is
      * good enough because uq_orders_order_number is the real guard: a concurrent
      * allocation collides on insert and the caller retries, rather than two orders
-     * quietly sharing a number.
+     * quietly sharing a number. Native, across every company - see {@link #existsByOrderNumber}.
      */
-    long countByOrderNumberStartingWith(String prefix);
+    @Query(value = "SELECT count(*) FROM orders WHERE order_number LIKE :prefix || '%'", nativeQuery = true)
+    long countByOrderNumberStartingWith(@Param("prefix") String prefix);
 
     Page<Order> findAllByClientIdOrderByCreatedAtDesc(UUID clientId, Pageable pageable);
 
