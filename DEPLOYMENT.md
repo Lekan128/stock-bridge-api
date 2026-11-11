@@ -815,6 +815,16 @@ Add an `application-staging.yml` only if staging ever needs a different *rule* (
 value): a different `ddl-auto`, an extra Flyway location, a debug endpoint production must not
 expose.
 
+## Off switch - tenant filter
+
+The Hibernate tenant filter (layer 1 of tenant isolation) runs on every company request since
+2026-11 (`tenant/RequestSessionConfig`, `TenantResolutionFilter`). If a screen misbehaves after a
+deploy - a list unexpectedly empty, a cross-company view missing rows - set
+`TENANT_HIBERNATE_FILTER=false` on the service and restart. Requests then run exactly as they did
+before: isolated by the explicit `client_id` predicates in every query, which
+`TenantScopedRepositoryRulesTest` enforces. No data is touched either way. Public paths,
+`/api/marketplace/admin/**` and super admin never use the filter.
+
 ## Branching
 
 `staging` branches from `develop` and merges into `main`:

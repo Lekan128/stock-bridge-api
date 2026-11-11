@@ -174,6 +174,11 @@ public class SecurityConfig {
         "/swagger-ui/**"
     };
 
+    /** The paths anyone may call; TenantResolutionFilter leaves the Hibernate filter off on them. */
+    public static String[] permitAllPaths() {
+        return PERMIT_ALL_PATHS.clone();
+    }
+
     private final TenantResolutionFilter tenantResolutionFilter;
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final CorsProperties corsProperties;

@@ -132,15 +132,6 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
     /** "Pending delivery" section of the buyer's inventory: bought, paid for, not yet in hand. */
     List<Product> findAllByClientIdAndIncomingQuantityGreaterThan(UUID clientId, int quantity);
 
-    /**
-     * Row-locks the buyer's product while incoming quantity is adjusted. Payment
-     * confirmation and receipt confirmation both read-modify-write
-     * incoming_quantity, and a duplicated webhook must not be able to double it -
-     * same rationale as findByIdAndClientIdForUpdate does for quantity_on_hand.
-     */
-    @Lock(LockModeType.PESSIMISTIC_WRITE)
-    @Query("SELECT p FROM Product p WHERE p.id = :id")
-    Optional<Product> findByIdForUpdate(@Param("id") UUID id);
 
     // ------------------------------------------------------------------------
     // The buyer-side vendor directory (M5).
