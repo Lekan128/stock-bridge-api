@@ -104,6 +104,10 @@ public final class SheetUnitOptions {
         if (option.code() == null || option.code().isBlank()) {
             return "Units";
         }
+        // A product's own unit (UNITS_PLAN.md Part 1) is its name alone: "Derica".
+        if (option.isMeasure()) {
+            return option.label();
+        }
         Optional<UnitOfMeasure> unit = UnitOfMeasure.fromCode(option.code());
         if (unit.isPresent() && unit.get().category() == UnitOfMeasureCategory.COUNT) {
             return unit.get().label();

@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.selling.dto;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 /**
@@ -16,9 +17,11 @@ import java.time.OffsetDateTime;
 public record SalesReportRow(
         String key,
         String label,
-        Long quantity,
+        BigDecimal quantity,
         String unitOfMeasure,
         OffsetDateTime occurredAt,
         SalesTotals totals,
-        String detail) {
+        String detail,
+        /** The branch a sale was recorded at (V51): on the "sale" grouping, at a multi-branch company. */
+        String branch) {
 }

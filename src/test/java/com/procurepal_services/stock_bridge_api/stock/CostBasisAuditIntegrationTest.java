@@ -11,6 +11,7 @@ import com.procurepal_services.stock_bridge_api.entity.Product;
 import com.procurepal_services.stock_bridge_api.entity.StockMovement;
 import com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest;
 import com.procurepal_services.stock_bridge_api.product.dto.ProductResponse;
+import com.procurepal_services.stock_bridge_api.repository.BranchRepository;
 import com.procurepal_services.stock_bridge_api.repository.ProductRepository;
 import com.procurepal_services.stock_bridge_api.repository.StockMovementRepository;
 import com.procurepal_services.stock_bridge_api.stock.dto.CostBasisAnomalyResponse;
@@ -67,6 +68,9 @@ class CostBasisAuditIntegrationTest {
 
     @Autowired
     private StockMovementRepository stockMovementRepository;
+
+    @Autowired
+    private BranchRepository branchRepository;
 
     /**
      * The brief, exactly: one product carrying a 50x-inflated cost written through the old path,
@@ -285,13 +289,18 @@ class CostBasisAuditIntegrationTest {
         TenantContext.set(product.getClientId());
         try {
             product.setCostPrice(perPackPrice);
-            product.setQuantityOnHand(quantityBaseUnits);
+            product.setQuantityOnHand(BigDecimal.valueOf(quantityBaseUnits));
             productRepository.saveAndFlush(product);
 
             stockMovementRepository.saveAndFlush(StockMovement.builder()
                     .product(product)
+                    // Every movement is at a branch (V51); a one-branch company's are at its only one.
+                    .branchId(branchRepository
+                            .findByClientIdAndDefaultBranchTrue(product.getClientId())
+                            .orElseThrow()
+                            .getId())
                     .movementType(MovementType.IN)
-                    .quantity(quantityBaseUnits)
+                    .quantity(BigDecimal.valueOf(quantityBaseUnits))
                     // The price NOT converted - the whole of P0-1 in one field.
                     .unitPriceAtTime(perPackPrice)
                     // The pack snapshot the old stockIn wrote, and no entered_unit, because the

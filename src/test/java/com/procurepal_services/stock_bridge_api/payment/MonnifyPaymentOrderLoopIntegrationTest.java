@@ -259,7 +259,7 @@ class MonnifyPaymentOrderLoopIntegrationTest {
                             .name("Loop test rice " + unique)
                             .sku("PP-LOOP-" + unique)
                             .unitPrice(UNIT_PRICE)
-                            .quantityOnHand(500)
+                            .quantityOnHand(BigDecimal.valueOf(500))
                             .active(true)
                             .unitOfMeasure("bag (50kg)")
                             .build())

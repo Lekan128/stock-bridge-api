@@ -43,7 +43,9 @@ public record CompanyVendorResponse(
         boolean editable,
         boolean active,
         OffsetDateTime createdAt,
-        OffsetDateTime updatedAt) {
+        OffsetDateTime updatedAt,
+        /* Whether "email the order to this supplier" should start switched on. */
+        boolean emailOrders) {
 
     public static CompanyVendorResponse from(CompanyVendor vendor) {
         return new CompanyVendorResponse(
@@ -65,6 +67,7 @@ public record CompanyVendorResponse(
                 vendor.isEditableByOwningCompany(),
                 vendor.isActive(),
                 vendor.getCreatedAt(),
-                vendor.getUpdatedAt());
+                vendor.getUpdatedAt(),
+                vendor.isEmailOrders());
     }
 }

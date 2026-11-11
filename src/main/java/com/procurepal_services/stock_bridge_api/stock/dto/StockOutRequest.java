@@ -58,7 +58,7 @@ import java.util.UUID;
  * section 5.3). Null or blank means the stock unit, unchanged from today.
  */
 public record StockOutRequest(
-        @NotNull @Positive Integer quantity,
+        @NotNull @Positive BigDecimal quantity,
         @DecimalMin(value = "0", inclusive = true) BigDecimal unitPrice,
         @Size(max = 1000) String note,
         String unit,
@@ -77,11 +77,52 @@ public record StockOutRequest(
         UUID saleId,
         // What the customer paid for this whole line, when the seller typed a total ("the six for
         // 10,800") rather than a price each. Stored exactly as the sale amount.
-        @DecimalMin(value = "0", inclusive = true) BigDecimal lineTotal) {
+        @DecimalMin(value = "0", inclusive = true) BigDecimal lineTotal,
+        // Multiple branches (V51): where this was recorded. Absent means the company's only branch;
+        // refused at a company with several (BranchStockService.resolveForWrite). Left out of the
+        // idempotency hash when absent, so a write queued before this field existed replays as before.
+        UUID branchId,
+        // Areas inside a branch (V60): the area this happened in. Absent means the branch's only area that
+        // keeps stock, else its delivery area for a delivery, else refused (BranchStockService
+        // .resolveAreaForWrite). Left out of the idempotency hash when absent, like branchId.
+        UUID areaId) {
+
+    /** The shape before {@code areaId} (areas, Part 0). */
+    public StockOutRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            List<Allocation> allocations,
+            OffsetDateTime occurredAt,
+            Boolean recordedOffline,
+            OutReason reason,
+            UUID saleId,
+            BigDecimal lineTotal,
+            UUID branchId) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                branchId, null);
+    }
+
+    /** The shape before {@code branchId} (multiple branches, Phase 0). */
+    public StockOutRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            List<Allocation> allocations,
+            OffsetDateTime occurredAt,
+            Boolean recordedOffline,
+            OutReason reason,
+            UUID saleId,
+            BigDecimal lineTotal) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                null, null);
+    }
 
     /** The shape before V46's reason, sale id and line total. */
     public StockOutRequest(
-            Integer quantity,
+            BigDecimal quantity,
             BigDecimal unitPrice,
             String note,
             String unit,
@@ -92,12 +133,12 @@ public record StockOutRequest(
     }
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */
-    public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note) {
+    public StockOutRequest(BigDecimal quantity, BigDecimal unitPrice, String note) {
         this(quantity, unitPrice, note, null, null);
     }
 
     /** The shape before {@code occurredAt} and {@code recordedOffline} (A4). */
-    public StockOutRequest(Integer quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations) {
+    public StockOutRequest(BigDecimal quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations) {
         this(quantity, unitPrice, note, unit, allocations, null, null, null, null, null);
     }
 
@@ -105,7 +146,19 @@ public record StockOutRequest(
         return Boolean.TRUE.equals(recordedOffline);
     }
 
+    /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
+    public StockOutRequest withBranchId(UUID branch) {
+        return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
+                saleId, lineTotal, branch, areaId);
+    }
+
+    /** This request, recorded in {@code area} - how a caller states the area it has resolved. */
+    public StockOutRequest withAreaId(UUID area) {
+        return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
+                saleId, lineTotal, branchId, area);
+    }
+
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */
-    public record Allocation(@NotNull UUID inMovementId, @NotNull @Positive Integer quantity) {
+    public record Allocation(@NotNull UUID inMovementId, @NotNull @Positive BigDecimal quantity) {
     }
 }

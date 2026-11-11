@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
+import com.procurepal_services.stock_bridge_api.imports.ImportCopy;
+import java.math.BigDecimal;
 import com.procurepal_services.stock_bridge_api.stock.dto.ProductLotResponse;
 import java.time.OffsetDateTime;
 
@@ -59,8 +61,8 @@ public class InvalidStockAllocationException extends RuntimeException {
      * @param companyVendorName who it came from, or null for a lot with no supplier on file.
      */
     public static InvalidStockAllocationException notEnoughInLot(
-            int remainingBaseUnits,
-            int requestedBaseUnits,
+            BigDecimal remainingBaseUnits,
+            BigDecimal requestedBaseUnits,
             String unitSymbol,
             OffsetDateTime occurredAt,
             String companyVendorName) {
@@ -68,9 +70,9 @@ public class InvalidStockAllocationException extends RuntimeException {
         String from = companyVendorName == null || companyVendorName.isBlank()
                 ? ""
                 : " from " + companyVendorName;
-        return new InvalidStockAllocationException("Only " + remainingBaseUnits + " " + unit + " left from the "
-                + ProductLotResponse.labelDate(occurredAt) + " delivery" + from + " — you asked for "
-                + requestedBaseUnits + " " + unit + ".");
+        return new InvalidStockAllocationException("Only " + ImportCopy.count(remainingBaseUnits) + " " + unit
+                + " left from the " + ProductLotResponse.labelDate(occurredAt) + " delivery" + from + " — you asked for "
+                + ImportCopy.count(requestedBaseUnits) + " " + unit + ".");
     }
 
     /**
@@ -83,10 +85,11 @@ public class InvalidStockAllocationException extends RuntimeException {
      * states what the numbers are counted in.
      */
     public static InvalidStockAllocationException totalMismatch(
-            int allocatedBaseUnits, int requestedBaseUnits, String unitSymbol) {
+            BigDecimal allocatedBaseUnits, BigDecimal requestedBaseUnits, String unitSymbol) {
         String unit = unitSymbol == null || unitSymbol.isBlank() ? "units" : unitSymbol;
-        return new InvalidStockAllocationException("The deliveries you chose add up to " + allocatedBaseUnits + " "
-                + unit + ", but you are taking out " + requestedBaseUnits + " " + unit
+        return new InvalidStockAllocationException("The deliveries you chose add up to "
+                + ImportCopy.count(allocatedBaseUnits) + " " + unit + ", but you are taking out "
+                + ImportCopy.count(requestedBaseUnits) + " " + unit
                 + " — adjust them until the two match.");
     }
 }

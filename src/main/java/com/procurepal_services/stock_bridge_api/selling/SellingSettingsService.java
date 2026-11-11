@@ -49,6 +49,8 @@ public class SellingSettingsService {
     /** How the change is attributed to support on the owner's screen - never the account's own name. */
     static final String SUPPORT_NAME = "ProcurePal support";
 
+    /** Who may set a selling price (V52). */
+    private final SellingPricePermission sellingPricePermission;
     private final ClientRepository clientRepository;
     private final ClientSettingChangeRepository changeRepository;
     private final UserRepository userRepository;
@@ -197,6 +199,8 @@ public class SellingSettingsService {
      */
     @Transactional
     public int adoptLegacyPrices(AdoptLegacyPricesRequest request, UUID actingUserId) {
+        // Turning old prices into selling prices sets selling prices (V52, UX section 5.14).
+        sellingPricePermission.require(actingUserId);
         Client client = currentClient();
         if (!sellingPolicy.showsSellingPrice(client)) {
             throw new SellingNotAvailableException("Turn on selling first, then choose which old prices to use.");

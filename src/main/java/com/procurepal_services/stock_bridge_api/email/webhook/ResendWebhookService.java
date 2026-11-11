@@ -57,6 +57,8 @@ public class ResendWebhookService {
     private final EmailSuppressionService suppressionService;
     private final SesNotificationEventRepository eventRepository;
     private final ResendProperties properties;
+    /** A purchase order's email is reported on the order, not just logged here. */
+    private final com.procurepal_services.stock_bridge_api.expected.PurchaseOrderEmailOutcomes purchaseOrderEmails;
 
     @PostConstruct
     void warnIfUnconfigured() {
@@ -131,6 +133,7 @@ public class ResendWebhookService {
             for (String address : recipients) {
                 demoted += suppressionService.suppressPermanentBounce(address, svixId, diagnostic);
             }
+            purchaseOrderEmails.bounced(text(data, "email_id"));
             note = "Permanent bounce (" + subType + "): suppressed " + recipients.size() + " address(es), unverified "
                     + demoted + " user row(s)";
             log.info("Applied a permanent Resend bounce to {} address(es) (subType={})", recipients.size(), subType);
@@ -144,6 +147,7 @@ public class ResendWebhookService {
 
     private void handleComplaint(String svixId, String type, JsonNode data, String rawBody) {
         List<String> recipients = recipients(data);
+        purchaseOrderEmails.complained(text(data, "email_id"));
         int optedOut = 0;
         for (String address : recipients) {
             // Resend carries no feedback type, so there is no "not-spam" endorsement
@@ -167,6 +171,7 @@ public class ResendWebhookService {
     private void handleFailed(String svixId, String type, JsonNode data, String rawBody) {
         String reason = text(data == null ? null : data.get("failed"), "reason");
         List<String> recipients = recipients(data);
+        purchaseOrderEmails.failed(text(data, "email_id"));
         log.error("Resend could not send \"{}\" to {} recipient(s): {}. Nothing was suppressed - check the "
                         + "Resend dashboard (quota, API key, domain verification).",
                 text(data, "subject"), recipients.size(), reason == null ? "no reason given" : reason);

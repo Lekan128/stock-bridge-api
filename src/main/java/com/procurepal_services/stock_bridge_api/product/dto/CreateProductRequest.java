@@ -100,7 +100,96 @@ public record CreateProductRequest(
          * Which of the product's units {@code unitPrice} is per (V47) - "CARTON" for "5,000 a carton".
          * Absent is the stock unit, which is what every caller before it meant.
          */
-        String unitPriceUnit) {
+        String unitPriceUnit,
+        /** The product's own units, each with what one holds (UNITS_PLAN.md Part 1): "1 Derica = 0.6 kg". */
+        java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+        /** Where stock-outs and counts start for this product (Part 2): a measure, a unit or a pack key. */
+        String usedInUnit,
+        /** The units a count of it opens in (V84), as unit keys. Absent or empty: its pack and its stock unit. */
+        java.util.List<String> countIn,
+        /**
+         * Its suppliers, as many as are known, each with the pack it comes in from them and what it costs (owner,
+         * 2026-11-10: "add multiple suppliers to a product at once"). The first is the preferred one. Nothing is
+         * received: that's {@code openingStock}.
+         */
+        @Size(max = 20) java.util.List<@Valid SupplierLink> suppliers,
+        /** What's on the shelf as it's added, and from which supplier if any - separate from the suppliers above. */
+        @Valid OpeningStock openingStock) {
+
+    /** One supplier of the product: its pack from them, and its price per stock unit, both optional. */
+    public record SupplierLink(
+            @NotNull UUID companyVendorId,
+            String vendorSku,
+            @DecimalMin(value = "0", inclusive = true) BigDecimal cost,
+            String packagingUnit,
+            @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
+    }
+
+    /**
+     * Stock on the shelf as the product is added, in the stock unit. {@code companyVendorId} says who it was bought
+     * from (one of the suppliers above, whose pack and price it takes); absent, from nobody named.
+     */
+    public record OpeningStock(@NotNull @Positive BigDecimal quantity, UUID companyVendorId, UUID branchId) {
+    }
+
+    /** The shape before several suppliers at once (2026-11-10). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit,
+            java.util.List<String> countIn) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, null, null);
+    }
+
+    /** The shape before the count units (V84). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, null);
+    }
+
+    /** The shape before a product's own units (V82). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, null, null, null);
+    }
 
     /** The shape before the price unit (V47) - a price per stock unit. */
     public CreateProductRequest(
@@ -165,6 +254,20 @@ public record CreateProductRequest(
             @NotNull @DecimalMin(value = "0", inclusive = true) BigDecimal cost,
             @NotNull @Positive Integer quantity,
             String packagingUnit,
-            @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize) {
+            @DecimalMin(value = "0", inclusive = true) BigDecimal packagingSize,
+            // Multiple branches (V52): where the opening stock is. Absent means the company's only
+            // branch, or the one branch the person works at.
+            UUID branchId) {
+
+        /** The shape before {@code branchId} (multiple branches, Phase 1). */
+        public InitialVendor(
+                UUID companyVendorId,
+                String vendorSku,
+                BigDecimal cost,
+                Integer quantity,
+                String packagingUnit,
+                BigDecimal packagingSize) {
+            this(companyVendorId, vendorSku, cost, quantity, packagingUnit, packagingSize, null);
+        }
     }
 }

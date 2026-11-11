@@ -1,5 +1,9 @@
 package com.procurepal_services.stock_bridge_api.user;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchAccessService;
+import com.procurepal_services.stock_bridge_api.branch.BranchChangeRefusedException;
+import com.procurepal_services.stock_bridge_api.branch.BranchService;
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.email.EmailNotificationService;
 import com.procurepal_services.stock_bridge_api.email.verification.EmailVerificationService;
 import com.procurepal_services.stock_bridge_api.email.verification.VerificationLink;
@@ -50,15 +54,20 @@ public class UserManagementService {
     private final EmailNotificationService emailNotificationService;
     private final EmailVerificationService emailVerificationService;
     private final VendorSingleAccountRule vendorSingleAccountRule;
+    /** Where people work (V52, MULTI_BRANCH_UX_PLAN.md section 5.10). */
+    private final BranchService branchService;
+    private final BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.branch.AreaAccessService areaAccessService;
+    private final BranchStockService branchStockService;
 
     @Transactional(readOnly = true)
     public Page<UserSummaryResponse> list(Pageable pageable) {
-        return userRepository.findAllForCurrentTenant(pageable).map(UserSummaryResponse::from);
+        return userRepository.findAllForCurrentTenant(pageable).map(this::withBranches);
     }
 
     @Transactional(readOnly = true)
     public UserSummaryResponse get(UUID id) {
-        return UserSummaryResponse.from(findTenantUserOrThrow(id));
+        return withBranches(findTenantUserOrThrow(id));
     }
 
     @Transactional
@@ -74,6 +83,11 @@ public class UserManagementService {
         }
 
         Role role = resolveRole(request.roleId());
+        boolean placed = request.branchIds() != null && !request.branchIds().isEmpty();
+        // Before the user exists, like the rules above: a refusal leaves no row and sends no email.
+        if (!placed && branchStockService.isMultiBranch(tenantId) && !branchAccessService.roleRecordsEverywhere(role.getId())) {
+            throw new BranchChangeRefusedException("Choose at least one branch for them to work at.");
+        }
 
         User user = userRepository.save(User.builder()
                 .username(request.username())
@@ -89,6 +103,14 @@ public class UserManagementService {
                 .phone(normalize(request.phone()))
                 .jobTitle(normalize(request.jobTitle()))
                 .build());
+        // Written now: the branch reads below are SQL, and so is the user_branches row's foreign key.
+        userRepository.flush();
+        if (placed) {
+            branchService.assign(user.getId(), request.branchIds());
+        }
+        if (request.areaIds() != null && !request.areaIds().isEmpty()) {
+            areaAccessService.assign(tenantId, user.getId(), request.areaIds());
+        }
 
         // Tells the new user their account exists and what to sign in as. It cannot
         // tell them the password the admin just typed - see AccountEmails for why
@@ -106,7 +128,7 @@ public class UserManagementService {
         VerificationLink verificationLink = emailVerificationService.issueLink(user);
         emailNotificationService.userInvited(user, role.getName(), verificationLink);
 
-        return UserSummaryResponse.from(user);
+        return withBranches(user);
     }
 
     @Transactional
@@ -137,7 +159,19 @@ public class UserManagementService {
         user.setRole(newRole);
         user.setActive(newActive);
         applyProfilePatch(user, request);
-        return UserSummaryResponse.from(user);
+        if (request.branchIds() != null) {
+            if (request.branchIds().isEmpty() && branchAccessService.roleRecordsEverywhere(newRole.getId())) {
+                // Works everywhere by role: no list to keep.
+                branchService.clearAssignments(user.getId());
+            } else {
+                branchService.assign(user.getId(), request.branchIds());
+            }
+        }
+        if (request.areaIds() != null) {
+            areaAccessService.assign(user.getClientId(), user.getId(), request.areaIds());
+        }
+        userRepository.flush();
+        return withBranches(user);
     }
 
     /**
@@ -248,5 +282,16 @@ public class UserManagementService {
             throw new IllegalStateException("No tenant context set");
         }
         return tenantId;
+    }
+
+    /** A user with where they record now - what the Users screen's "Works at" shows and edits. */
+    private UserSummaryResponse withBranches(User user) {
+        boolean everywhere = user.isRoot() || branchAccessService.roleRecordsEverywhere(user.getRole().getId());
+        return UserSummaryResponse.from(
+                user,
+                branchAccessService.writeBranchIds(user.getId()),
+                everywhere,
+                // A role that works everywhere works in every area: a list left from before says nothing.
+                everywhere ? null : areaAccessService.listed(user.getId()));
     }
 }

@@ -53,7 +53,8 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <h2>Two things that make this correct rather than merely working</h2>
  * <b>Locking.</b> Every mutation of incoming_quantity goes through
- * {@code ProductRepository.findByIdForUpdate}, so a duplicated webhook and a
+ * {@code ProductRepository.findByIdAndClientIdForUpdate} (scoped to the buyer, the
+ * order's client_id), so a duplicated webhook and a
  * concurrent receipt serialise on the row instead of racing on a read-modify-write.
  * Order-level idempotency (the status transition guard in OrderLifecycleService) is
  * what stops a re-delivered webhook applying twice; the row lock is what stops two
@@ -98,6 +99,7 @@ public class IncomingStockService {
      */
     private final ProductSkuSettingsService productSkuSettingsService;
     private final SkuGenerationService skuGenerationService;
+    private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
 
     /**
      * Called exactly once per order, on the transition into PLACED. Callers must
@@ -110,7 +112,7 @@ public class IncomingStockService {
             for (OrderItem item : orderItemRepository.findAllByOrderIdOrderByCreatedAtAsc(order.getId())) {
                 BuyerProductMatch match = matchOrCreateBuyerProduct(order.getClientId(), item);
                 Product locked = productRepository
-                        .findByIdForUpdate(match.product().getId())
+                        .findByIdAndClientIdForUpdate(match.product().getId(), order.getClientId())
                         .orElseThrow(() -> new IllegalStateException(
                                 "Buyer product vanished while applying incoming stock: " + match.product().getId()));
                 locked.setIncomingQuantity(locked.getIncomingQuantity() + item.getQuantity());
@@ -168,7 +170,7 @@ public class IncomingStockService {
             }
 
             Product locked = productRepository
-                    .findByIdForUpdate(buyerProductId)
+                    .findByIdAndClientIdForUpdate(buyerProductId, order.getClientId())
                     .orElseThrow(() -> new IllegalStateException(
                             "Buyer product vanished while receiving an order line: " + item.getId()));
 
@@ -198,8 +200,11 @@ public class IncomingStockService {
                     && item.isBuyerProductNewlyCreated()
                     && item.getReceivedQuantity() == 0
                     && !linkToExistingProductId.equals(locked.getId())) {
+                // The id comes from the request: only one of the buyer's own products may be picked.
+                // Unscoped, another company's product was locked and had its incoming quantity
+                // bumped, and only stockIn's own check further down rolled that back.
                 Product target = productRepository
-                        .findByIdForUpdate(linkToExistingProductId)
+                        .findByIdAndClientIdForUpdate(linkToExistingProductId, order.getClientId())
                         .orElseThrow(ProductNotFoundException::new);
                 stockInUnit = item.getUnitOfMeasure();
                 // incomingQuantity carries no price, so converting it here (rather than deferring
@@ -208,10 +213,12 @@ public class IncomingStockService {
                 // packagingUnit/packagingSize extend target's unit set identically for both this
                 // bookkeeping conversion and the ledger write below, so a buyer-supplied "1 bag =
                 // 25 kg" answer resolves the SAME way in both places.
-                int outstandingInTargetUnit = stockManagementService.toStockUnitQuantity(
-                        target, item.getQuantity(), item.getUnitOfMeasure(), packagingUnit, packagingSize);
-                quantityInLockedUnit = stockManagementService.toStockUnitQuantity(
-                        target, quantity, stockInUnit, packagingUnit, packagingSize);
+                // incomingQuantity stays whole (marketplace orders are whole items): rounded once, here.
+                int outstandingInTargetUnit = wholeUnits(stockManagementService.toStockUnitQuantity(
+                        target, java.math.BigDecimal.valueOf(item.getQuantity()), item.getUnitOfMeasure(), packagingUnit,
+                        packagingSize));
+                quantityInLockedUnit = wholeUnits(stockManagementService.toStockUnitQuantity(
+                        target, java.math.BigDecimal.valueOf(quantity), stockInUnit, packagingUnit, packagingSize));
                 locked.setIncomingQuantity(Math.max(0, locked.getIncomingQuantity() - item.getQuantity()));
                 target.setIncomingQuantity(target.getIncomingQuantity() + outstandingInTargetUnit);
                 if (target.getSourceProductId() == null) {
@@ -269,7 +276,12 @@ public class IncomingStockService {
                             packagingSize,
                             null,
                             saveAsSupplierDefault,
-                            item.getProductSku()),
+                            item.getProductSku())
+                            // At the branch the order was going to (V52); null on an order from before
+                            // branches, which the company's only branch then receives. A branch closed
+                            // since the order was placed can't take it: the main branch does, as
+                            // checkout does for an address whose branch has closed.
+                            .withBranchId(receivingBranch(order)),
                     actingUserId);
 
             item.setReceivedQuantity(item.getReceivedQuantity() + quantity);
@@ -281,7 +293,7 @@ public class IncomingStockService {
             // above, not the one it still carried before this method ran.
             if (orphanedDuplicate != null) {
                 orderItemRepository.flush();
-                if (orphanedDuplicate.getQuantityOnHand() == 0
+                if (orphanedDuplicate.getQuantityOnHand().signum() == 0
                         && orphanedDuplicate.getIncomingQuantity() == 0
                         && !orderItemRepository.existsByBuyerProductId(orphanedDuplicate.getId())) {
                     productRepository.delete(orphanedDuplicate);
@@ -305,7 +317,7 @@ public class IncomingStockService {
                 if (outstanding <= 0 || item.getBuyerProductId() == null) {
                     continue;
                 }
-                productRepository.findByIdForUpdate(item.getBuyerProductId()).ifPresent(product ->
+                productRepository.findByIdAndClientIdForUpdate(item.getBuyerProductId(), order.getClientId()).ifPresent(product ->
                         product.setIncomingQuantity(Math.max(0, product.getIncomingQuantity() - outstanding)));
             }
         });
@@ -376,7 +388,7 @@ public class IncomingStockService {
                 // (SELLING_PRICE_PLAN.md section 1, problem 1). A company that sells this item
                 // gives it its own price.
                 .costPrice(item.getUnitPrice())
-                .quantityOnHand(0)
+                .quantityOnHand(java.math.BigDecimal.ZERO)
                 .incomingQuantity(0)
                 .imageUrl(item.getImageUrl())
                 .active(true)
@@ -455,4 +467,20 @@ public class IncomingStockService {
             return suggestions;
         });
     }
+
+    private UUID receivingBranch(Order order) {
+        UUID branchId = order.getBranchId();
+        if (branchId == null) {
+            return null;
+        }
+        boolean open = branchRepository.findById(branchId).map(branch -> branch.isActive()).orElse(false);
+        return open ? branchId
+                : branchRepository.findByClientIdAndDefaultBranchTrue(order.getClientId()).map(branch -> branch.getId()).orElse(null);
+    }
+
+    /** A stock-unit quantity as the whole number {@code incomingQuantity} keeps. */
+    private static int wholeUnits(java.math.BigDecimal quantity) {
+        return quantity.setScale(0, java.math.RoundingMode.HALF_UP).intValueExact();
+    }
+
 }

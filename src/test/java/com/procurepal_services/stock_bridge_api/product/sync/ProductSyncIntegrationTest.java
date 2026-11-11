@@ -116,7 +116,7 @@ class ProductSyncIntegrationTest {
 
         ProductChangesPage changes = changes(admin, cursor);
         assertThat(changes.products()).extracting(ProductSyncRow::id).containsExactly(rice);
-        assertThat(changes.products().get(0).quantityOnHand()).isEqualTo(25);
+        assertThat(changes.products().get(0).quantityOnHand()).isEqualByComparingTo("25");
         assertThat(changes.cursor()).isNotEqualTo(cursor);
 
         ProductChangesPage nothingNew = changes(admin, changes.cursor());
@@ -166,7 +166,10 @@ class ProductSyncIntegrationTest {
         UUID clientId = jdbc.queryForObject("SELECT client_id FROM products WHERE id = ?", UUID.class, rice);
 
         UUID delivery = jdbc.queryForObject(
-                "INSERT INTO expected_deliveries (client_id) VALUES (?) RETURNING id", UUID.class, clientId);
+                // Every expected delivery is going to a branch (V52); this company has one.
+                "INSERT INTO expected_deliveries (client_id, branch_id) "
+                        + "SELECT ?, id FROM branches WHERE client_id = ? AND is_default RETURNING id",
+                UUID.class, clientId, clientId);
         jdbc.update(
                 "INSERT INTO expected_delivery_lines (expected_delivery_id, product_id, unit, quantity) VALUES (?, ?, 'KG', 500)",
                 delivery, rice);
@@ -245,7 +248,7 @@ class ProductSyncIntegrationTest {
         assertThat(rowsForRice).isEqualTo(1);
         ProductChangesPage changes = changes(admin, cursor);
         assertThat(changes.products()).extracting(ProductSyncRow::id).containsExactly(rice);
-        assertThat(changes.products().get(0).quantityOnHand()).isEqualTo(6);
+        assertThat(changes.products().get(0).quantityOnHand()).isEqualByComparingTo("6");
     }
 
     @Test

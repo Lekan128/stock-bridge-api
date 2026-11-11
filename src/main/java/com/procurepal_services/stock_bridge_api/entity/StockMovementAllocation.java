@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.entity;
 
+import java.math.BigDecimal;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.FetchType;
@@ -80,7 +81,7 @@ public class StockMovementAllocation {
      * of a lot that was itself received as a whole number.
      */
     @Column(nullable = false, updatable = false)
-    private int quantity;
+    private BigDecimal quantity;
 
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)

@@ -32,7 +32,26 @@ import java.util.regex.Pattern;
  * silently wrong gating rather than a compile error.
  */
 public record EmailMessage(
-        List<String> to, String subject, String htmlBody, String textBody, EmailKind kind) {
+        List<String> to,
+        String subject,
+        String htmlBody,
+        String textBody,
+        EmailKind kind,
+        List<Attachment> attachments,
+        String replyTo,
+        String fromName) {
+
+    /**
+     * A file that travels with the message. Only used by purchase orders so far; the provider
+     * transport that cannot carry one says so rather than dropping it silently.
+     */
+    public record Attachment(String filename, String contentType, byte[] content) {
+    }
+
+    /** The shape before attachments: every existing sender. */
+    public EmailMessage(List<String> to, String subject, String htmlBody, String textBody, EmailKind kind) {
+        this(to, subject, htmlBody, textBody, kind, List.of(), null, null);
+    }
 
     /**
      * Deliberately loose. This is not validating an address a user typed - the form
@@ -57,6 +76,9 @@ public record EmailMessage(
         // without a stated purpose is gated rather than waved through. A message
         // that must bypass the verified check has to say so explicitly.
         kind = kind == null ? EmailKind.TRANSACTIONAL : kind;
+        attachments = attachments == null ? List.of() : List.copyOf(attachments);
+        replyTo = replyTo == null || replyTo.isBlank() ? null : replyTo.trim();
+        fromName = fromName == null || fromName.isBlank() ? null : fromName.trim();
         to = to == null
                 ? List.of()
                 : to.stream()
@@ -101,7 +123,7 @@ public record EmailMessage(
         if (narrowed.equals(to)) {
             return this;
         }
-        return new EmailMessage(narrowed, subject, htmlBody, textBody, kind);
+        return new EmailMessage(narrowed, subject, htmlBody, textBody, kind, attachments, replyTo, fromName);
     }
 
     /**

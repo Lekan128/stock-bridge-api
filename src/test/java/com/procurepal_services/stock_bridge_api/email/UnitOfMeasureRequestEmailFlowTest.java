@@ -63,7 +63,7 @@ class UnitOfMeasureRequestEmailFlowTest {
         EmailDispatcher dispatcher = new EmailDispatcher(emailSender, eligibility);
 
         emailNotificationService =
-                new EmailNotificationService(dispatcher, recipients, properties, orderItemRepository, clientRepository);
+                new EmailNotificationService(dispatcher, recipients, properties, orderItemRepository, clientRepository, null);
     }
 
     /**

@@ -91,6 +91,9 @@ class MarketplaceOrderIntegrationTest {
     private static final String PASSWORD = "correct-horse-battery-staple";
 
     @Autowired
+    private com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+
+    @Autowired
     private TestRestTemplate restTemplate;
 
     @Autowired
@@ -382,12 +385,49 @@ class MarketplaceOrderIntegrationTest {
 
         Product afterReceipt = productRepository.findById(buyerProduct.getId()).orElseThrow();
         assertThat(afterReceipt.getIncomingQuantity()).isZero();
-        assertThat(afterReceipt.getQuantityOnHand()).isEqualTo(quantity);
+        assertThat(afterReceipt.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(quantity));
         assertThat(stockMovementsFor(buyer)).isEqualTo(quantity);
 
         // The seller's own code for this item lands on the ProductVendor pairing's default
         // pack - never on the buyer's own Product.sku, which this receipt must not touch.
         assertThat(defaultPackVendorSku(buyer, afterReceipt.getId())).isEqualTo(catalogProduct.getSku());
+    }
+
+    /**
+     * Multiple branches: an order going to a branch that closes before it arrives is received at the
+     * main branch - a closed branch takes no stock, and the order must not be stuck.
+     */
+    @Test
+    void anOrderForABranchClosedSinceItWasPlacedIsReceivedAtTheMainBranch() {
+        Buyer buyer = signupBuyerAllowedPayOnDelivery("Closed Branch Order Co");
+        UUID main = branchStockService.allBranchIds(buyer.clientId()).getFirst();
+        UUID oshodi = (UUID) java.util.Objects.requireNonNull(restTemplate.exchange("/api/branches", HttpMethod.POST,
+                new HttpEntity<>(java.util.Map.of("name", "Oshodi"), buyer.headers()),
+                com.procurepal_services.stock_bridge_api.branch.dto.BranchResponse.class).getBody()).id();
+        Product catalogProduct = plantCatalogProduct(40, 1);
+        int quantity = catalogProduct.getMinOrderQuantity();
+        addToCart(buyer, catalogProduct, quantity);
+        DeliveryAddressRequest atOshodi = addressRequest("Oshodi store");
+        DeliveryAddressResponse address = restTemplate.exchange("/api/delivery-addresses", HttpMethod.POST,
+                new HttpEntity<>(new DeliveryAddressRequest(atOshodi.label(), atOshodi.contactName(), atOshodi.contactPhone(),
+                        atOshodi.addressLine1(), atOshodi.addressLine2(), atOshodi.city(), atOshodi.state(),
+                        atOshodi.landmark(), atOshodi.deliveryNotes(), oshodi, null), buyer.headers()),
+                DeliveryAddressResponse.class).getBody();
+        OrderResponse order = placeOrder(buyer, PaymentMethod.PAY_ON_DELIVERY, address.id());
+        assertThat(restTemplate.exchange("/api/branches/" + oshodi + "/close", HttpMethod.POST,
+                new HttpEntity<>(buyer.headers()), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+
+        Buyer operator = loginAsPlatformOwner();
+        advance(operator, order.id(), OrderStatus.CONFIRMED);
+        advance(operator, order.id(), OrderStatus.PROCESSING);
+        advance(operator, order.id(), OrderStatus.OUT_FOR_DELIVERY);
+        advance(operator, order.id(), OrderStatus.DELIVERED);
+        OrderResponse received = receive(buyer, order.id(), null);
+
+        assertThat(received.status()).isEqualTo(OrderStatus.RECEIVED);
+        Product buyerProduct = buyerProductFor(buyer, catalogProduct);
+        assertThat(branchStockService.quantityAt(buyerProduct, main)).isEqualByComparingTo(BigDecimal.valueOf(quantity));
+        assertThat(branchStockService.quantityAt(buyerProduct, oshodi)).isZero();
     }
 
     /** 8 of 10 bags today, 2 tomorrow: the order stays DELIVERED and the remainder stays incoming. */
@@ -420,7 +460,7 @@ class MarketplaceOrderIntegrationTest {
         assertThat(line.outstandingQuantity()).isEqualTo(quantity - half);
 
         Product buyerProduct = buyerProductFor(buyer, catalogProduct);
-        assertThat(buyerProduct.getQuantityOnHand()).isEqualTo(half);
+        assertThat(buyerProduct.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(half));
         assertThat(buyerProduct.getIncomingQuantity()).isEqualTo(quantity - half);
 
         // Finishing it off closes the order.
@@ -428,7 +468,7 @@ class MarketplaceOrderIntegrationTest {
         assertThat(complete.status()).isEqualTo(OrderStatus.RECEIVED);
         Product settled = productRepository.findById(buyerProduct.getId()).orElseThrow();
         assertThat(settled.getIncomingQuantity()).isZero();
-        assertThat(settled.getQuantityOnHand()).isEqualTo(quantity);
+        assertThat(settled.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(quantity));
     }
 
     /**
@@ -516,7 +556,7 @@ class MarketplaceOrderIntegrationTest {
         assertThat(received.items().getFirst().buyerProductId()).isEqualTo(existingProduct.getId());
 
         Product merged = productRepository.findById(existingProduct.getId()).orElseThrow();
-        assertThat(merged.getQuantityOnHand()).isEqualTo(10 + quantity);
+        assertThat(merged.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(10 + quantity));
         assertThat(merged.getIncomingQuantity()).isZero();
         assertThat(merged.getSourceProductId()).isEqualTo(catalogProduct.getId());
 
@@ -570,7 +610,7 @@ class MarketplaceOrderIntegrationTest {
         // The whole attempt rolled back - neither product moved, the auto-created row is still
         // there, and the line is still unreceived and still open to try again.
         Product untouchedExisting = productRepository.findById(existingProduct.getId()).orElseThrow();
-        assertThat(untouchedExisting.getQuantityOnHand()).isEqualTo(10);
+        assertThat(untouchedExisting.getQuantityOnHand()).isEqualByComparingTo("10");
         assertThat(untouchedExisting.getIncomingQuantity()).isZero();
         Product untouchedAutoCreated = productRepository.findById(autoCreated.getId()).orElseThrow();
         assertThat(untouchedAutoCreated.getIncomingQuantity()).isEqualTo(quantity);
@@ -617,7 +657,7 @@ class MarketplaceOrderIntegrationTest {
 
         Product merged = productRepository.findById(existingProduct.getId()).orElseThrow();
         int expectedLiters = litersPerBag.intValue() * quantity;
-        assertThat(merged.getQuantityOnHand()).isEqualTo(10 + expectedLiters);
+        assertThat(merged.getQuantityOnHand()).isEqualByComparingTo(BigDecimal.valueOf(10 + expectedLiters));
         assertThat(merged.getIncomingQuantity()).isZero();
     }
 
@@ -1814,7 +1854,7 @@ class MarketplaceOrderIntegrationTest {
                 .name(name)
                 .sku("OWN-" + unique)
                 .unitPrice(new BigDecimal("1000.00"))
-                .quantityOnHand(10)
+                .quantityOnHand(BigDecimal.valueOf(10))
                 .active(true)
                 .marketplaceListed(false)
                 .unitOfMeasure(unitOfMeasure)
@@ -1847,7 +1887,7 @@ class MarketplaceOrderIntegrationTest {
                 .slug("pp-test-" + unique)
                 .description("Planted by MarketplaceOrderIntegrationTest.")
                 .unitPrice(new BigDecimal("12000.00"))
-                .quantityOnHand(quantityOnHand)
+                .quantityOnHand(BigDecimal.valueOf(quantityOnHand))
                 .active(true)
                 .marketplaceListed(true)
                 // ProcurePal's own catalogue is auto-approved (ProductModerationRules),
@@ -1870,7 +1910,7 @@ class MarketplaceOrderIntegrationTest {
     }
 
     private int catalogOnHand(UUID catalogProductId) {
-        return productRepository.findById(catalogProductId).orElseThrow().getQuantityOnHand();
+        return productRepository.findById(catalogProductId).orElseThrow().getQuantityOnHand().intValueExact();
     }
 
     /** Counts ledger rows for ONE product, so a neighbouring test's movements cannot be miscounted. */
@@ -1916,7 +1956,9 @@ class MarketplaceOrderIntegrationTest {
                 buyer.clientId(),
                 MovementType.IN,
                 OffsetDateTime.now().minusDays(1),
-                OffsetDateTime.now().plusDays(1));
+                OffsetDateTime.now().plusDays(1),
+                // Every branch the buyer has (V51): this counts the company's stock-ins.
+                branchStockService.allBranchIds(buyer.clientId())).longValueExact();
     }
 
     private CartResponse addToCart(Buyer buyer, Product product, int quantity) {
@@ -2120,7 +2162,7 @@ class MarketplaceOrderIntegrationTest {
                 .slug("sell-" + unique)
                 .description("Planted by MarketplaceOrderIntegrationTest.")
                 .unitPrice(new BigDecimal(unitPrice))
-                .quantityOnHand(quantityOnHand)
+                .quantityOnHand(BigDecimal.valueOf(quantityOnHand))
                 .active(true)
                 .marketplaceListed(true)
                 .approvalStatus(ProductApprovalStatus.APPROVED)

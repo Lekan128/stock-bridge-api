@@ -332,7 +332,7 @@ class SuperAdminClientManagementIntegrationTest {
         restTemplate.exchange(
                 "/api/products/" + productId + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(quantity, unitPrice, null), authHeaders(admin.tokens().accessToken())),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(quantity), unitPrice, null), authHeaders(admin.tokens().accessToken())),
                 StockMutationResponse.class);
     }
 

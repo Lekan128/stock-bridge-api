@@ -55,6 +55,7 @@ public class EmailNotificationService {
     private final EmailProperties emailProperties;
     private final OrderItemRepository orderItemRepository;
     private final ClientRepository clientRepository;
+    private final com.procurepal_services.stock_bridge_api.repository.UserRepository userRepository;
 
     /**
      * To the SELLER of one order - ProcurePal or the vendor - the moment it becomes real.
@@ -406,6 +407,17 @@ public class EmailNotificationService {
         return order.getSellerClientId() == null
                 ? null
                 : clientRepository.findById(order.getSellerClientId()).map(Client::getName).orElse(null);
+    }
+
+    /** The owner's evening digest of every branch, to someone who turned it on (multi-branch section 5.13). */
+    public void branchDigest(UUID userId, UUID clientId,
+            com.procurepal_services.stock_bridge_api.analytics.dto.BranchTableResponse table) {
+        com.procurepal_services.stock_bridge_api.entity.User user = userRepository.findById(userId).orElse(null);
+        if (user == null) {
+            return;
+        }
+        dispatcher.dispatchQuietly(() -> com.procurepal_services.stock_bridge_api.email.template.BranchEmails.dailyDigest(
+                recipients.forUser(user), clientNameOf(clientId), table, baseUrl()));
     }
 
     private String clientNameOf(UUID clientId) {

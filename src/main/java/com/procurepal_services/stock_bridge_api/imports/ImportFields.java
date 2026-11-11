@@ -25,6 +25,8 @@ public final class ImportFields {
 
     /** The barcode on the box (BULK_IMPORT_CX_PLAN.md task 3.3). */
     public static final String BARCODE = "barcode";
+    /** A product's own units and what one holds (UNITS_PLAN.md Part 5): "Derica=0.6; Cup=0.2". */
+    public static final String ALSO_USED_IN = "also_used_in";
 
     public static final String UNIT_PRICE = "unit_price";
     public static final String COST_PRICE = "cost_price";
@@ -168,6 +170,12 @@ public final class ImportFields {
      * without needing the header comment to say so.
      */
     public static final String WAYBILL_OR_INVOICE_NO = "waybill_or_invoice_no";
+
+    /**
+     * Optional, stock sheets only (MULTI_BRANCH_UX_PLAN.md section 5.12): which branch a line arrived
+     * at, for one sheet covering several sites. Empty means the branch chosen when uploading.
+     */
+    public static final String BRANCH = "branch";
 
     /**
      * Reserved keys inside {@code import_session_rows.normalized}.

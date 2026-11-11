@@ -157,6 +157,7 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.SKU, "your_code", "code", "item_code", "product_code", "sku_code", "stock_code", "part_number", "barcode", "item_no");
         put(aliases, ImportFields.DESCRIPTION, "notes", "desc", "details", "remarks");
         put(aliases, ImportFields.BARCODE, "bar_code", "ean", "upc", "gtin", "scan_code", "product_barcode");
+        put(aliases, ImportFields.ALSO_USED_IN, "also_used_in", "used_in", "other_units", "measures", "own_units");
         put(aliases, ImportFields.CATEGORY, "categories", "product_category", "group", "product_group");
         put(aliases, ImportFields.UNIT_PRICE, "selling_price_for_one", "selling_price", "price", "sale_price", "sales_price", "list_price", "rrp");
         put(aliases, ImportFields.COST_PRICE, "price_you_pay_for_one", "price_you_pay", "cost", "buying_price", "purchase_price", "cost_per_unit", "unit_cost", "buy_price");
@@ -201,6 +202,10 @@ public class ImportColumnMapper {
         put(aliases, ImportFields.RECEIVED_DATE, "date", "received", "delivery_date", "date_received", "invoice_date", "receipt_date");
         put(aliases, ImportFields.WAYBILL_OR_INVOICE_NO,
                 "reference", "invoice", "invoice_no", "invoice_number", "waybill", "waybill_no", "reference_no", "doc_no");
+        // A distributor's weekly report from all its sites names the site in its own words.
+        // Only headers that say "branch": "Location" or "Store" on a delivery sheet is as often a shelf
+        // or the supplier's shop, and a wrong guess here fails every row.
+        put(aliases, ImportFields.BRANCH, "branch", "branch_name", "to_branch", "for_branch");
         return Map.copyOf(aliases);
     }
 

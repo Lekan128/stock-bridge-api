@@ -72,7 +72,24 @@ public final class UnitOptions {
      * calling it while mapping a page of products costs nothing.
      */
     public static List<UnitOption> forProduct(Product product) {
-        return forProduct(product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize());
+        return forProduct(product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize(),
+                ProductMeasures.offered(product.getMeasures()));
+    }
+
+    /**
+     * {@link #forProduct(Product)} with the product's hidden measures too (UNITS_PLAN.md Part 3): what a stock write
+     * is resolved against, so "5 cups" saved on a phone before the cup was hidden still records when it arrives.
+     * Never what a form offers.
+     */
+    public static List<UnitOption> forRecording(Product product) {
+        return build(product.getUnitOfMeasure(), product.getPackagingUnit(), product.getPackagingSize(), List.of(),
+                product.getMeasures() == null ? List.of() : product.getMeasures());
+    }
+
+    /** {@link #forProduct(String, String, BigDecimal)} with the product's own measures (Part 1), for a sheet's rows. */
+    public static List<UnitOption> forProduct(
+            String stockUnitCode, String packagingUnit, BigDecimal packagingSize, List<ProductMeasure> measures) {
+        return build(stockUnitCode, packagingUnit, packagingSize, List.of(), measures);
     }
 
     /**
@@ -87,7 +104,7 @@ public final class UnitOptions {
      * @param packagingSize how many stock units one pack holds - the factor of the pack option.
      */
     public static List<UnitOption> forProduct(String stockUnitCode, String packagingUnit, BigDecimal packagingSize) {
-        return build(stockUnitCode, packagingUnit, packagingSize, List.of());
+        return build(stockUnitCode, packagingUnit, packagingSize, List.of(), List.of());
     }
 
     /**
@@ -115,7 +132,17 @@ public final class UnitOptions {
             String packagingUnit,
             BigDecimal packagingSize,
             List<PackSpec> supplierPacks) {
-        return build(stockUnitCode, packagingUnit, packagingSize, supplierPacks);
+        return build(stockUnitCode, packagingUnit, packagingSize, supplierPacks, List.of());
+    }
+
+    /** {@link #forProductAndSupplier(String, String, BigDecimal, List)} with the product's own measures (Part 1). */
+    public static List<UnitOption> forProductAndSupplier(
+            String stockUnitCode,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            List<PackSpec> supplierPacks,
+            List<ProductMeasure> measures) {
+        return build(stockUnitCode, packagingUnit, packagingSize, supplierPacks, ProductMeasures.offered(measures));
     }
 
     /** One pack's container and size - the two fields {@link #build} step 3 needs per pack,
@@ -232,8 +259,14 @@ public final class UnitOptions {
         if (stockUnitCode == null || stockUnitCode.isBlank()) {
             return "";
         }
-        Optional<UnitOfMeasure> unit = UnitOfMeasure.fromCode(stockUnitCode);
-        if (unit.isEmpty() || unit.get().hasSymbolAbbreviation()) {
+        // A product's own unit may be a standard one kept under its short name ("L", "Piece").
+        Optional<UnitOfMeasure> unit = UnitOfMeasure.fromCode(stockUnitCode).or(() -> UnitOfMeasure.fromCodeOrLabel(stockUnitCode));
+        if (unit.isEmpty()) {
+            // A product's own measure (Part 1), named by the kitchen: "5 dericas", "1 small bowl".
+            String word = stockUnitCode.toLowerCase(Locale.ROOT);
+            return size != null && size.compareTo(BigDecimal.ONE) == 0 ? word : pluralise(word);
+        }
+        if (unit.get().hasSymbolAbbreviation()) {
             return symbolOf(stockUnitCode);
         }
         String word = unit.get().label().toLowerCase(Locale.ROOT);
@@ -409,7 +442,11 @@ public final class UnitOptions {
     // ---------------------------------------------------------------------------------------
 
     private static List<UnitOption> build(
-            String stockUnitCode, String packagingUnit, BigDecimal packagingSize, List<PackSpec> supplierPacks) {
+            String stockUnitCode,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            List<PackSpec> supplierPacks,
+            List<ProductMeasure> measures) {
 
         Optional<UnitOfMeasure> stockUnit = UnitOfMeasure.fromCode(stockUnitCode);
         boolean hasOwnPack = isRealPack(packagingUnit, packagingSize);
@@ -440,6 +477,18 @@ public final class UnitOptions {
         // ---- 2. the product's own pack.
         if (hasOwnPack) {
             putPack(byKey, packagingUnit, packagingSize, stockUnitCode, true);
+        }
+
+        // ---- 2b. the product's own measures (UNITS_PLAN.md Part 1): "Derica", one 0.6 kg of this rice. Named by
+        // their name alone - a measure is the same every time - and only where there's a stock unit to be a number of.
+        if (stockUnitCode != null && !stockUnitCode.isBlank()) {
+            for (ProductMeasure measure : measures) {
+                if (measure.size() == null || measure.size().signum() <= 0 || measure.name() == null) {
+                    continue;
+                }
+                byKey.putIfAbsent("M|" + measure.name().toLowerCase(Locale.ROOT), new UnitOption(
+                        measure.name(), measure.name(), normalise(measure.size()), false, false, false, true));
+            }
         }
 
         // ---- 3. every one of this supplier's packs that differs from what's already in the set.

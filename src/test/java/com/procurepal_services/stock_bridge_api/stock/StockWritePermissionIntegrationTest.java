@@ -154,7 +154,8 @@ class StockWritePermissionIntegrationTest {
         return restTemplate
                 .exchange("/api/products/" + productId, HttpMethod.GET, new HttpEntity<>(authHeaders(as)), ProductResponse.class)
                 .getBody()
-                .quantityOnHand();
+                .quantityOnHand()
+                .intValueExact();
     }
 
     private ProductResponse createProduct(TenantLoginResponse asOwner, String sku) {

@@ -19,5 +19,7 @@ public interface BranchRepository extends TenantScopedRepository<Branch, UUID> {
 
     long countByClientId(UUID clientId);
 
+    long countByClientIdAndActiveTrue(UUID clientId);
+
     long countByClientIdAndDefaultBranchTrue(UUID clientId);
 }

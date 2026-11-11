@@ -147,7 +147,12 @@ public class CatalogStockService {
      */
     @Transactional(readOnly = true)
     public int availableToSell(Product catalogProduct) {
-        return Math.max(0, catalogProduct.getQuantityOnHand() - committedQuantity(catalogProduct.getId()));
+        // Whole items only: a buyer can't put 2.4 of something in a cart (V81 lets stock hold a fraction).
+        return catalogProduct.getQuantityOnHand()
+                .subtract(java.math.BigDecimal.valueOf(committedQuantity(catalogProduct.getId())))
+                .max(java.math.BigDecimal.ZERO)
+                .setScale(0, java.math.RoundingMode.FLOOR)
+                .intValueExact();
     }
 
     /**
@@ -313,8 +318,9 @@ public class CatalogStockService {
                 // van. Refusing to record a dispatch because the book count disagrees
                 // would block a real delivery to fix a bookkeeping problem, and the
                 // order-creation guard means this should be unreachable anyway.
-                int quantity = Math.min(item.getQuantity(), catalogProduct.getQuantityOnHand());
-                if (quantity < item.getQuantity()) {
+                java.math.BigDecimal quantity =
+                        java.math.BigDecimal.valueOf(item.getQuantity()).min(catalogProduct.getQuantityOnHand());
+                if (quantity.compareTo(java.math.BigDecimal.valueOf(item.getQuantity())) < 0) {
                     log.warn(
                             "Order {} dispatched {} of {} units of {} - the seller's recorded stock was short",
                             order.getOrderNumber(),
@@ -322,7 +328,7 @@ public class CatalogStockService {
                             item.getQuantity(),
                             catalogProduct.getSku());
                 }
-                if (quantity <= 0) {
+                if (quantity.signum() <= 0) {
                     continue;
                 }
                 // Reused rather than reimplemented, exactly as the buyer-side receipt
@@ -334,7 +340,9 @@ public class CatalogStockService {
                                 quantity,
                                 item.getUnitPrice(),
                                 "Dispatched on marketplace order " + order.getOrderNumber()),
-                        actingUserId);
+                        actingUserId,
+                        // From the seller's delivery area, never refused for want of one (areas, D-E10).
+                        com.procurepal_services.stock_bridge_api.branch.BranchStockService.AreaUse.DISPATCH);
             }
         });
     }

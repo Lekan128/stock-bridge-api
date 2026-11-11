@@ -66,7 +66,7 @@ class ProductUnitOfMeasureIntegrationTest {
                     .unitOfMeasure("KG")
                     .packagingUnit("BAG")
                     .packagingSize(new BigDecimal("0.50"))
-                    .quantityOnHand(10)
+                    .quantityOnHand(BigDecimal.valueOf(10))
                     .active(true)
                     .build());
             savedId = saved.getId();

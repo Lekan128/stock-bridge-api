@@ -21,8 +21,8 @@ import java.time.OffsetDateTime;
 public record AnalyticsSummaryResponse(
         BigDecimal totalInValue,
         BigDecimal totalOutValue,
-        long totalUnitsIn,
-        long totalUnitsOut,
+        BigDecimal totalUnitsIn,
+        BigDecimal totalUnitsOut,
         long lowStockProductCount,
         long activeProductCount,
         long outOfStockProductCount,

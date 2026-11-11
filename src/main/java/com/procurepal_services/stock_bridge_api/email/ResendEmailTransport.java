@@ -136,7 +136,7 @@ public class ResendEmailTransport implements EmailTransport {
      */
     private Map<String, Object> buildRequest(EmailMessage message, String unsubscribeUrl) {
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("from", emailProperties.formattedFrom());
+        request.put("from", emailProperties.formattedFrom(message.fromName()));
         request.put("to", message.to());
         request.put("subject", message.subject());
         if (notBlank(message.htmlBody())) {
@@ -145,8 +145,18 @@ public class ResendEmailTransport implements EmailTransport {
         if (notBlank(message.textBody())) {
             request.put("text", message.textBody());
         }
-        if (notBlank(emailProperties.replyToAddress())) {
+        if (notBlank(message.replyTo())) {
+            // A purchase order: the supplier's reply goes to the buyer, not to us.
+            request.put("reply_to", message.replyTo());
+        } else if (notBlank(emailProperties.replyToAddress())) {
             request.put("reply_to", emailProperties.replyToAddress().trim());
+        }
+        if (!message.attachments().isEmpty()) {
+            request.put("attachments", message.attachments().stream()
+                    .map(file -> Map.of(
+                            "filename", file.filename(),
+                            "content", java.util.Base64.getEncoder().encodeToString(file.content())))
+                    .toList());
         }
         if (unsubscribeUrl != null) {
             // The same two RFC 8058 headers SES sends, and the same rule: only on

@@ -107,7 +107,7 @@ class ProductBulkVendorColumnIntegrationTest {
         assertThat(result.createdCount()).isEqualTo(1);
         assertThat(result.movementsCreated()).isEqualTo(1);
         ProductResponse product = productBySku(tenant, "VND-RICE-50");
-        assertThat(product.quantityOnHand()).isEqualTo(40);
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("40");
 
         List<ProductVendorResponse> lines = restTemplate.exchange(
                         "/api/products/" + product.id() + "/vendors",
@@ -123,7 +123,7 @@ class ProductBulkVendorColumnIntegrationTest {
             // product's own row is its main supplier - there is no separate flag to honour.
             assertThat(line.lastCostPrice()).isEqualByComparingTo("42000");
             assertThat(line.isPreferred()).isTrue();
-            assertThat(line.totalQuantityReceived()).isEqualTo(40);
+            assertThat(line.totalQuantityReceived()).isEqualByComparingTo("40");
         });
     }
 
@@ -148,7 +148,7 @@ class ProductBulkVendorColumnIntegrationTest {
         ProductResponse product = productBySku(tenant, "VND-GARRI-25");
         // The quantity still landed through the ledger - the vendor being unknown must not cost the
         // user their stock.
-        assertThat(product.quantityOnHand()).isEqualTo(12);
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("12");
 
         List<ProductVendorResponse> lines = restTemplate.exchange(
                         "/api/products/" + product.id() + "/vendors",
@@ -212,7 +212,7 @@ class ProductBulkVendorColumnIntegrationTest {
         ProductResponse csvProduct = productBySku(csvTenant, "FMT-RICE-50");
         ProductResponse xlsxProduct = productBySku(xlsxTenant, "FMT-RICE-50");
         assertThat(csvProduct.name()).isEqualTo(xlsxProduct.name());
-        assertThat(csvProduct.quantityOnHand()).isEqualTo(40).isEqualTo(xlsxProduct.quantityOnHand());
+        assertThat(csvProduct.quantityOnHand()).isEqualByComparingTo("40").isEqualTo(xlsxProduct.quantityOnHand());
         assertThat(csvProduct.unitOfMeasure()).isEqualTo(xlsxProduct.unitOfMeasure());
         assertThat(csvProduct.costPrice()).isEqualByComparingTo(xlsxProduct.costPrice());
     }

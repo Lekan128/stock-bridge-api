@@ -60,13 +60,20 @@ final class StockMovementSpecifications {
             OffsetDateTime from,
             OffsetDateTime to,
             MovementType movementType) {
-        return forTenant(clientId, productId, companyVendorId, from, to, movementType, null, false);
+        return forTenant(clientId, productId, companyVendorId, from, to, movementType, null, false, false);
     }
+
+    /** The stock-out reasons that write stock off: it went, and nothing came of it. */
+    static final java.util.Set<OutReason> WRITE_OFF_REASONS = java.util.EnumSet.of(OutReason.DAMAGED, OutReason.EXPIRED, OutReason.LOST);
 
     /**
      * The same, narrowed by why a stock-out happened (V46): {@code outReason} keeps the stock-outs
      * with that reason; {@code noReason} keeps the stock-outs where none was given. Mirrored exactly
      * by {@code StockMovementRepository.summarise}, so the report's footer never disagrees with it.
+     *
+     * <p>{@code adjustments} keeps the stock adjustments: counts that changed the figure, and
+     * stock-outs given as damaged, expired or lost ({@link #WRITE_OFF_REASONS}). Not the other
+     * ADJUSTMENT rows - a cancelled sale or a price added later is a fix to a sale, not stock gone.
      */
     static Specification<StockMovement> forTenant(
             UUID clientId,
@@ -76,7 +83,8 @@ final class StockMovementSpecifications {
             OffsetDateTime to,
             MovementType movementType,
             OutReason outReason,
-            boolean noReason) {
+            boolean noReason,
+            boolean adjustments) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             predicates.add(cb.equal(root.get("clientId"), clientId));
@@ -109,6 +117,14 @@ final class StockMovementSpecifications {
                 predicates.add(cb.equal(root.get("movementType"), MovementType.OUT));
                 predicates.add(cb.isNull(root.get("outReason")));
             }
+            if (adjustments) {
+                predicates.add(cb.or(
+                        cb.and(cb.equal(root.get("movementType"), MovementType.ADJUSTMENT),
+                                cb.isTrue(root.get("count")),
+                                cb.notEqual(root.get("quantity"), 0)),
+                        cb.and(cb.equal(root.get("movementType"), MovementType.OUT),
+                                root.get("outReason").in(WRITE_OFF_REASONS))));
+            }
 
             return cb.and(predicates.toArray(new Predicate[0]));
         };
@@ -132,14 +148,43 @@ final class StockMovementSpecifications {
      * {@link #forTenant} above needs no such guard because it fetches nothing.
      */
     static Specification<StockMovement> lotsForProduct(UUID clientId, UUID productId) {
+        return lotsForProduct(clientId, productId, null);
+    }
+
+    /**
+     * One branch's lots (V51, V53): what is on that shelf to draw from - deliveries, and stock that
+     * arrived there on a waybill (a TRANSFER_IN is a lot of its own). {@code branchId} null: every branch.
+     */
+    static Specification<StockMovement> lotsForProduct(UUID clientId, UUID productId, UUID branchId) {
         return (root, query, cb) -> {
             if (query != null && query.getResultType() != Long.class && query.getResultType() != long.class) {
                 root.fetch("companyVendor", JoinType.LEFT);
             }
-            return cb.and(
+            jakarta.persistence.criteria.Predicate lots = cb.and(
                     cb.equal(root.get("clientId"), clientId),
                     cb.equal(root.get("product").get("id"), productId),
-                    cb.equal(root.get("movementType"), MovementType.IN));
+                    root.get("movementType").in(MovementType.IN, MovementType.TRANSFER_IN));
+            return branchId == null ? lots : cb.and(lots, cb.equal(root.get("branchId"), branchId));
         };
+    }
+
+    /**
+     * Only movements at these branches (V51) - the branch filter, and the D-U3 rule that people see
+     * only the branches they may: a caller passes the branches the person sees, narrowed to one when
+     * they ask for one.
+     */
+    public static Specification<StockMovement> atBranches(java.util.Collection<UUID> branchIds) {
+        return (root, query, cb) -> root.get("branchId").in(branchIds);
+    }
+
+    /**
+     * Only in these areas (Part 3.6): a row's own area, or - for a row from before areas - its branch's original
+     * area, when that is one of them (D-E3).
+     */
+    public static Specification<StockMovement> inAreas(com.procurepal_services.stock_bridge_api.branch.AreaScope areas) {
+        return (root, query, cb) -> cb.or(
+                root.get("areaId").in(com.procurepal_services.stock_bridge_api.branch.AreaScope.areaIds(areas)),
+                cb.and(cb.isNull(root.get("areaId")),
+                        root.get("branchId").in(com.procurepal_services.stock_bridge_api.branch.AreaScope.originalBranchIds(areas))));
     }
 }

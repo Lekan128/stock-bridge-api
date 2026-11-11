@@ -54,12 +54,12 @@ class OutReasonReportIntegrationTest {
 
         List<StockMovementResponse> expired = rows(owner, "outReason=EXPIRED");
         assertThat(expired).hasSize(2).allSatisfy(row -> assertThat(row.outReason()).isEqualTo(OutReason.EXPIRED));
-        assertThat(summary(owner, "outReason=EXPIRED").outQuantity()).isEqualTo(5);
+        assertThat(summary(owner, "outReason=EXPIRED").outQuantity()).isEqualByComparingTo("5");
 
         List<StockMovementResponse> none = rows(owner, "noReason=true");
         assertThat(none).singleElement().satisfies(row -> {
             assertThat(row.outReason()).isNull();
-            assertThat(row.quantity()).isEqualTo(4);
+            assertThat(row.quantity()).isEqualByComparingTo("4");
         });
         StockMovementSummaryResponse noneSummary = summary(owner, "noReason=true");
         assertThat(noneSummary.outMovementCount()).isEqualTo(1);

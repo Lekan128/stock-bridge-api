@@ -74,7 +74,7 @@ class BulkImportRoundTripIntegrationTest {
     private static final List<String> CATALOG_TEMPLATE_HEADERS = List.of(
             "Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
             "How many you have now", "Price you pay for one (₦)", "Warn me when I have",
-            "Category", "Notes", "Supplier's code for it", "Barcode");
+            "Category", "Notes", "Supplier's code for it", "Barcode", "Also used in");
 
     /** The stock sheet as it is downloaded today (BULK_IMPORT_CX_PLAN.md task 1.4). */
     private static final List<String> STOCK_IN_TEMPLATE_HEADERS = List.of(
@@ -224,7 +224,7 @@ class BulkImportRoundTripIntegrationTest {
         assertThat(productBySku(tenant, "RT-1").packagingSize())
                 .as("\"50 kg\" beside Bag is a 50 kg bag")
                 .isEqualByComparingTo("50");
-        assertThat(productBySku(tenant, "RT-1").quantityOnHand()).as("20 bags of 50 kg").isEqualTo(1000);
+        assertThat(productBySku(tenant, "RT-1").quantityOnHand()).as("20 bags of 50 kg").isEqualByComparingTo("1000");
         assertThat(productBySku(tenant, "RT-1").costPrice()).as("N42,000 a bag is N840 a kg").isEqualByComparingTo("840");
         assertThat(productBySku(tenant, "RT-1").categoryName()).isEqualTo("Grains");
         assertThat(productBySku(tenant, "RT-2").categoryName()).isEqualTo("Grains");
@@ -350,7 +350,7 @@ class BulkImportRoundTripIntegrationTest {
         ImportResultResponse result = commit(tenant, session.id());
         assertThat(result.movementsCreated()).isEqualTo(1);
         assertThat(result.skippedCount()).as("the row we did not receive").isEqualTo(1);
-        assertThat(productBySku(tenant, "SRT-1").quantityOnHand()).isEqualTo(30);
+        assertThat(productBySku(tenant, "SRT-1").quantityOnHand()).isEqualByComparingTo("30");
         assertThat(productBySku(tenant, "SRT-2").quantityOnHand()).isZero();
 
         try (XSSFWorkbook report = open(report(tenant, session.id()))) {

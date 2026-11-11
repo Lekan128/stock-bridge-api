@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.imports.handler;
 
+import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.imports.NameSimilarity;
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductRefs;
 import com.procurepal_services.stock_bridge_api.product.quality.ProductSetupChecks;
@@ -40,6 +41,9 @@ import com.procurepal_services.stock_bridge_api.marketplace.moderation.ProductMo
 import com.procurepal_services.stock_bridge_api.product.bulk.ProductExcelService;
 import com.procurepal_services.stock_bridge_api.product.sku.ProductSkuSettingsService;
 import com.procurepal_services.stock_bridge_api.product.sku.SkuGenerationService;
+import com.procurepal_services.stock_bridge_api.product.unit.InvalidMeasureException;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasures;
+import com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOfMeasure;
 import com.procurepal_services.stock_bridge_api.product.unit.UnitOption;
 import com.procurepal_services.stock_bridge_api.product.unit.PackContents;
@@ -129,10 +133,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     /** The note on the ledger row an opening balance writes. Matches the pre-V20 wording exactly. */
     private static final String OPENING_BALANCE_NOTE = "Opening balance (imported)";
 
+    /** Whether this import's person may set selling prices (V52). */
+    private final com.procurepal_services.stock_bridge_api.selling.SellingPricePermission sellingPricePermission;
     private final ProductRepository productRepository;
     private final ProductVendorRepository productVendorRepository;
     private final com.procurepal_services.stock_bridge_api.repository.ImportSessionRowRepository importSessionRowRepository;
     private final StockMovementRepository stockMovementRepository;
+    /** Undo puts stock back at the branch the import put it at (V51). */
+    private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final StockManagementService stockManagementService;
     private final ProductVendorService productVendorService;
@@ -219,6 +228,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 "Anything you want shown on the product page."));
         fields.add(ImportFieldDescriptor.text(ImportFields.BARCODE, "Barcode",
                 "The barcode on the box, if it has one. Lets you scan it when a delivery arrives."));
+        fields.add(ImportFieldDescriptor.text(ImportFields.ALSO_USED_IN, "Also used in",
+                "Your own units and what one holds, in its stock unit - Derica=0.6; Cup=0.2."));
         fields.add(ImportFieldDescriptor.text(ImportFields.CATEGORY, "Category",
                 "One of your categories, or a new one - we add any you don't have yet."));
         // Kept although new templates no longer carry the column - PACK_ENTRY_REDESIGN.md section
@@ -406,6 +417,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         validatePackagingCoherence(ctx, out, subject, unitOfMeasure, packagingUnit, packagingSize);
+        validateMeasures(ctx, out, existing, unitOfMeasure, packagingUnit);
         warnAboutImplausibleSetup(ctx, out, name == null ? subject : name, unitOfMeasure, packagingUnit, packagingSize);
         if (creating && !looksLikeContinuation && name != null) {
             warnAboutPossibleDuplicate(ctx, out, name);
@@ -428,6 +440,32 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
 
         return out.build();
+    }
+
+    /**
+     * The "Also used in" cell (UNITS_PLAN.md Part 5): "Derica=0.6; Cup=0.2", each size in the row's stock unit. Read
+     * and checked here, by the same rules the product form uses, and written back in its canonical spelling.
+     */
+    private void validateMeasures(
+            RowContext ctx, RowValidation.Builder out, Product existing, String unitOfMeasure, String packagingUnit) {
+        String cell = ctx.text(ImportFields.ALSO_USED_IN);
+        if (cell == null) {
+            return;
+        }
+        String stockUnit = unitOfMeasure != null ? unitOfMeasure : existing == null ? null : existing.getUnitOfMeasure();
+        String pack = packagingUnit != null ? packagingUnit : existing == null ? null : existing.getPackagingUnit();
+        try {
+            List<ProductMeasure> measures = ProductMeasures.validate(ProductMeasures.parse(cell), stockUnit, pack);
+            out.value(ImportFields.ALSO_USED_IN, ProductMeasures.format(measures));
+        } catch (InvalidMeasureException unusable) {
+            out.error(ImportFields.ALSO_USED_IN, "MEASURES_INVALID", unusable.getMessage());
+        }
+    }
+
+    /** The row's measures, as validate left them; none when the cell was blank. */
+    private static List<ProductMeasure> measuresOf(ImportRowState state) {
+        String cell = state.text(ImportFields.ALSO_USED_IN);
+        return cell == null ? List.of() : ProductMeasures.parse(cell);
     }
 
     // ---------------------------------------------------------- sense checks (task 1.7)
@@ -707,22 +745,21 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (entered == null) {
             return null;
         }
-        Integer stockUnits = toStockUnits(countedIn, entered);
+        BigDecimal stockUnits = toStockUnits(countedIn, entered);
         if (stockUnits == null) {
             out.error(field, "NUMBER_TOO_LARGE",
                     "%s is larger than we can record for %s.".formatted(label, subject));
             out.value(field, null);
             return null;
         }
-        if (stockUnits == 0 && entered.signum() > 0) {
+        if (stockUnits.signum() == 0 && entered.signum() > 0) {
             out.error(field, "ROUNDS_TO_ZERO",
-                    "%s of %s is less than one whole %s, and we can only record whole ones - enter a larger "
-                            .formatted(ImportCopy.count(entered), spokenOf(countedIn), symbolOrUnits(stockUnitCode))
-                            + "amount, or count " + subject + " in a smaller unit.");
+                    "%s of %s is too little to record - the smallest amount is 0.001 %s."
+                            .formatted(ImportCopy.count(entered), spokenOf(countedIn), symbolOrUnits(stockUnitCode)));
             out.value(field, null);
             return null;
         }
-        if (primary && !countedIn.isStockUnit() && stockUnits > 0) {
+        if (primary && !countedIn.isStockUnit() && stockUnits.signum() > 0) {
             out.value(ImportFields.BASE_QUANTITY_TEXT, ImportCopy.baseQuantityText(stockUnits, stockUnitCode));
         }
         return entered;
@@ -797,9 +834,15 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return countedIn(state).toStockUnitPrice(entered);
     }
 
-    private Integer stockUnitsOf(ImportRowState state, String field) {
+    private BigDecimal stockUnitsOf(ImportRowState state, String field) {
         BigDecimal entered = decimalOf(state, field);
         return entered == null ? null : toStockUnits(countedIn(state), entered);
+    }
+
+    /** {@link #stockUnitsOf} for a low-stock level, which stays a whole number of the stock unit. */
+    private Integer wholeStockUnitsOf(ImportRowState state, String field) {
+        BigDecimal stockUnits = stockUnitsOf(state, field);
+        return stockUnits == null ? null : stockUnits.setScale(0, java.math.RoundingMode.HALF_UP).intValueExact();
     }
 
     /**
@@ -820,12 +863,13 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
      *
      * @return the amount in stock units, or null when it does not fit an int.
      */
-    private static Integer toStockUnits(UnitOption option, BigDecimal entered) {
-        BigDecimal converted = option.factorToStockUnit().multiply(entered);
+    private static BigDecimal toStockUnits(UnitOption option, BigDecimal entered) {
+        BigDecimal converted = option.toStockUnitQuantity(entered);
+        // numeric(14, 3), and a level must still fit an int.
         if (converted.compareTo(BigDecimal.valueOf(Integer.MAX_VALUE)) > 0) {
             return null;
         }
-        return converted.setScale(0, java.math.RoundingMode.HALF_UP).intValue();
+        return converted;
     }
 
     /** "kegs", "kg" - one option as it reads inside a sentence. */
@@ -897,7 +941,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         // actually asks for a different figure. A downloaded sheet carries today's stock on every
         // row, and warning about all of them would bury the one that changed.
         if (quantity != null && quantity.signum() > 0
-                && !sameNumber(quantity, BigDecimal.valueOf(existing.getQuantityOnHand()).divide(factor, 3, java.math.RoundingMode.HALF_UP))) {
+                && !sameNumber(quantity, existing.getQuantityOnHand().divide(factor, 3, java.math.RoundingMode.HALF_UP))) {
             out.warning(ImportFields.OPENING_STOCK, "QUANTITY_IGNORED_ON_UPDATE",
                     "Stock can't be changed from this sheet, so this number is ignored. Use Record a delivery for "
                             + "what arrived, or a stock adjustment after a count.");
@@ -1187,6 +1231,14 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                     "Opening balance of %s recorded across %s"
                             .formatted(quantityPhrase(tally), ImportCopy.products(tally.openingProducts)));
         }
+        // Multi-branch (UX section 5.14): a price set here is the price at every branch - said before
+        // the import, not discovered after. Only when the person's prices will actually be applied.
+        int branches = branchCount(ctx.tenantId());
+        if (tally.priced > 0 && branches > 1 && sellingPricePermission.allows(ctx.actingUserId())) {
+            preview.always("prices", "Prices", tally.priced,
+                    "%s, at all %d branches".formatted(
+                            tally.priced == 1 ? "1 price is set" : tally.priced + " prices are set", branches));
+        }
         if (total == 0) {
             preview.blockedReason("There is nothing left to import - every row is either skipped or still has "
                     + "something to fix.");
@@ -1220,6 +1272,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         return ImportCopy.quantityTotals(tally.openingByStockUnit);
     }
 
+    private int branchCount(java.util.UUID clientId) {
+        return (int) branchRepository.findAllByClientId(clientId).stream().filter(branch -> branch.isActive()).count();
+    }
+
     private static final class Tally {
         int creates;
         int updates;
@@ -1227,8 +1283,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         int vendorsToCreate;
         int categoriesToCreate;
         int openingProducts;
+        /** Rows that set a selling price: one price serves every branch (multi-branch section 5.14). */
+        int priced;
         /** Stock-unit symbol to the opening stock counted in it. Insertion-ordered by file order. */
-        final Map<String, Long> openingByStockUnit = new LinkedHashMap<>();
+        final Map<String, BigDecimal> openingByStockUnit = new LinkedHashMap<>();
     }
 
     private Tally tally(BatchContext ctx) {
@@ -1241,17 +1299,20 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             if (!state.isCommittable() || state.getContinuationOf() != null) {
                 continue;
             }
+            if (state.text(ImportFields.UNIT_PRICE) != null) {
+                tally.priced++;
+            }
             if (state.getResolvedEntityId() == null) {
                 tally.creates++;
                 // Summed in LEDGER terms - section 6.3 - which since section 9.1 means
                 // converting the row's pack count first. A preview that added up bags and
                 // millilitres because both cells happen to hold a bare number would be the exact
                 // "bare sum of mixed entered quantities" 6.3 forbids.
-                Integer quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
-                if (quantity != null && quantity > 0) {
+                BigDecimal quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
+                if (quantity != null && quantity.signum() > 0) {
                     tally.openingProducts++;
                     tally.openingByStockUnit.merge(
-                            symbolOrUnits(state.text(ImportFields.STOCK_UNIT)), (long) quantity, Long::sum);
+                            symbolOrUnits(state.text(ImportFields.STOCK_UNIT)), quantity, BigDecimal::add);
                 }
             } else {
                 tally.updates++;
@@ -1475,7 +1536,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private Product createProduct(BatchContext ctx, ImportRowState state, UUID batchId) {
         // One lookup, two questions: the price (SellingPolicy) and the moderation status below.
         Client owner = sellerDirectory.findSellerOfRecord(ctx.tenantId()).orElse(null);
-        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner);
+        // A sheet's selling prices need CHANGE_SELLING_PRICES (V52, UX section 5.14); without it the row
+        // still imports, without its price.
+        boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner)
+                && sellingPricePermission.allows(ctx.actingUserId());
         boolean perPack = keepsSellingPrice && sellingPricePerPack(ctx.tenantId(), ctx.cache());
         Product created = productRepository.save(Product.builder()
                 .name(state.text(ImportFields.NAME))
@@ -1487,13 +1551,14 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 // Zero, always. Contract section 8.1: no quantity reaches quantity_on_hand
                 // without a StockMovement, and the opening-balance stockIn below is the only
                 // thing allowed to move it.
-                .quantityOnHand(0)
+                .quantityOnHand(BigDecimal.ZERO)
                 .incomingQuantity(0)
                 // Section 9.1: the cell counts packs when the row declares one, and
                 // products.low_stock_threshold is compared against quantity_on_hand, which is in
                 // stock units. Converting here rather than storing what was typed is what stops
                 // a 5-keg alert firing at 5 ml.
-                .lowStockThreshold(stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT))
+                .lowStockThreshold(wholeStockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT))
+                .measures(new ArrayList<>(measuresOf(state)))
                 .unitOfMeasure(state.text(ImportFields.STOCK_UNIT))
                 .packagingUnit(state.text(ImportFields.PACK))
                 .packagingSize(packSizeOf(state))
@@ -1535,6 +1600,10 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         before.put(ImportFields.SKU, product.getSku());
         before.put(ImportFields.DESCRIPTION, product.getDescription());
         before.put(ImportFields.BARCODE, product.getBarcode());
+        before.put(ImportFields.ALSO_USED_IN, product.getMeasures() == null ? List.of() : product.getMeasures().stream()
+                .map(measure -> Map.of("name", measure.name(), "size", measure.size().toPlainString(),
+                        "hidden", measure.hiddenNow()))
+                .toList());
         before.put(ImportFields.UNIT_PRICE, product.getUnitPrice() == null ? null : product.getUnitPrice().toPlainString());
         before.put(BEFORE_PRICE_ENTERED, product.getUnitPriceEntered() == null ? null : product.getUnitPriceEntered().toPlainString());
         before.put(BEFORE_PRICE_ENTERED_UNIT, product.getUnitPriceEnteredUnit());
@@ -1572,7 +1641,17 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         if (state.text(ImportFields.BARCODE) != null) {
             product.setBarcode(state.text(ImportFields.BARCODE));
         }
-        Integer alertAt = stockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
+        // A sheet adds or re-weighs the units it names and never takes one off (UNITS_PLAN.md Part 5): a blank cell, or
+        // one left out, says nothing about it. Taking one off is the product page's, where a used one is kept hidden.
+        if (state.text(ImportFields.ALSO_USED_IN) != null) {
+            List<ProductMeasure> merged = new ArrayList<>(product.getMeasures() == null ? List.of() : product.getMeasures());
+            for (ProductMeasure named : measuresOf(state)) {
+                merged.removeIf(measure -> measure.name().equalsIgnoreCase(named.name()));
+                merged.add(named);
+            }
+            product.setMeasures(merged);
+        }
+        Integer alertAt = wholeStockUnitsOf(state, ImportFields.LOW_STOCK_ALERT_AT);
         if (alertAt != null) {
             product.setLowStockThreshold(alertAt);
         }
@@ -1587,7 +1666,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         }
         // After the pack, so a price per carton is converted by the carton this row describes.
         SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
-        if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
+        if (keepsSellingPrice && decimalOf(state, ImportFields.UNIT_PRICE) != null
+                && sellingPricePermission.allows(ctx.actingUserId())) {
             // Through the one writer, so the typed price and the change log stay in step (V47).
             sellingPriceService.apply(product, decimalOf(state, ImportFields.UNIT_PRICE),
                     sellingPricePerPack(ctx.tenantId(), ctx.cache()) ? sellingPriceUnitOf(state) : null);
@@ -1656,8 +1736,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                     // MULTI_VENDOR_INVENTORY_DESIGN.md 5.1/7.3 states and findOrCreateForReceipt
                     // already implements, restated here rather than diverged from.
                     .isPreferred(existingLines == 0)
-                    .quantityOnHandFromVendor(0)
-                    .totalQuantityReceived(0)
+                    .quantityOnHandFromVendor(BigDecimal.ZERO)
+                    .totalQuantityReceived(BigDecimal.ZERO)
                     .build();
             // Persisted before its pack is touched below - a pack's FK needs a parent id, and
             // vendorSku/lastCostPrice no longer live on this row itself (V24).
@@ -1735,14 +1815,14 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             Map<String, CompanyVendor> createdVendors,
             UUID batchId) {
         // In STOCK units, converted once, here. Section 9.1's cell counts packs.
-        Integer quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
-        if (product == null || quantity == null || quantity <= 0) {
+        BigDecimal quantity = stockUnitsOf(state, ImportFields.OPENING_STOCK);
+        if (product == null || quantity == null || quantity.signum() <= 0) {
             return false;
         }
         CompanyVendor vendor = resolveVendor(ctx, state, createdVendors);
         if (vendor == null) {
-            // stockIn refuses a receipt with no supplier once the product has vendor lines, and
-            // a continuation row may have added one even though the parent named none.
+            // A continuation row may have added a supplier even though the parent named none: the opening
+            // stock is theirs, as it always was.
             vendor = productVendorRepository
                     .findByClientIdAndProductIdAndIsPreferredTrue(ctx.tenantId(), product.getId())
                     .map(ProductVendor::getCompanyVendor)
@@ -1777,7 +1857,11 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                         vendor == null ? null : vendor.getId(),
                         null,
                         null,
-                        OffsetDateTime.now()),
+                        OffsetDateTime.now(),
+                        null,
+                        null)
+                        // Opening quantities land at the branch the sheet was uploaded for (V52).
+                        .withBranchId(ctx.session().getBranchId()),
                 ctx.actingUserId(),
                 batchId);
         return true;
@@ -1876,11 +1960,13 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             if (product == null) {
                 continue;
             }
-            product.setQuantityOnHand(product.getQuantityOnHand() - movement.getQuantity());
+            branchStockService.apply(
+                    product, movement.getBranchId(), branchStockService.areaOf(movement), movement.getQuantity().negate());
             stockMovementRepository.save(StockMovement.builder()
                     .product(product)
+                    .branchId(movement.getBranchId())
                     .movementType(MovementType.ADJUSTMENT)
-                    .quantity(-movement.getQuantity())
+                    .quantity(movement.getQuantity().negate())
                     .note("Reversing an import that was undone")
                     .companyVendor(movement.getCompanyVendor())
                     .occurredAt(OffsetDateTime.now())
@@ -1892,8 +1978,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                                 tenantId, product.getId(), movement.getCompanyVendor().getId())
                         .ifPresent(line -> {
                             line.setQuantityOnHandFromVendor(
-                                    line.getQuantityOnHandFromVendor() - movement.getQuantity());
-                            line.setTotalQuantityReceived(line.getTotalQuantityReceived() - movement.getQuantity());
+                                    line.getQuantityOnHandFromVendor().subtract(movement.getQuantity()));
+                            line.setTotalQuantityReceived(line.getTotalQuantityReceived().subtract(movement.getQuantity()));
                         });
             }
             reversed++;
@@ -1924,6 +2010,18 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
             // so an undo of an older import does not quietly strip a barcode added since.
             if (snapshot.containsKey(ImportFields.BARCODE)) {
                 product.setBarcode(asString(snapshot.get(ImportFields.BARCODE)));
+            }
+            // Only snapshots taken since a product's own units existed (V82) carry them.
+            if (snapshot.get(ImportFields.ALSO_USED_IN) instanceof List<?> before) {
+                List<ProductMeasure> restored = new ArrayList<>();
+                for (Object entry : before) {
+                    if (entry instanceof Map<?, ?> measure) {
+                        restored.add(new ProductMeasure(String.valueOf(measure.get("name")),
+                                new BigDecimal(String.valueOf(measure.get("size"))),
+                                Boolean.TRUE.equals(measure.get("hidden")) ? Boolean.TRUE : null));
+                    }
+                }
+                product.setMeasures(restored);
             }
             SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
             product.setUnitPrice(asDecimal(snapshot.get(ImportFields.UNIT_PRICE)));

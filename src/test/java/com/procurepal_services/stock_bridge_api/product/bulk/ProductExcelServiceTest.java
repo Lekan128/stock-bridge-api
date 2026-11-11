@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product.bulk;
 
+import java.math.BigDecimal;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.procurepal_services.stock_bridge_api.entity.Product;
@@ -57,7 +58,7 @@ class ProductExcelServiceTest {
         assertThat(headersOf(service.generateTemplate(new ProductTemplateContext(true, VENDORS, false, List.of()))))
                 .containsExactly("Product name *", "Your code *", "Comes in", "Size of one", "Supplier",
                         "How many you have now", "Price you pay for one (₦)", "Selling price (₦) *",
-                        "Warn me when I have", "Category", "Notes", "Supplier's code for it", "Barcode");
+                        "Warn me when I have", "Category", "Notes", "Supplier's code for it", "Barcode", "Also used in");
     }
 
     @Test
@@ -227,7 +228,7 @@ class ProductExcelServiceTest {
         rice.setUnitOfMeasure("KG");
         rice.setPackagingUnit("BAG");
         rice.setPackagingSize(new java.math.BigDecimal("50"));
-        rice.setQuantityOnHand(1000);
+        rice.setQuantityOnHand(BigDecimal.valueOf(1000));
         rice.setLowStockThreshold(100);
 
         byte[] bytes = service.exportProducts(List.of(rice));
@@ -249,7 +250,7 @@ class ProductExcelServiceTest {
         bolts.setName("Bolts");
         bolts.setSku("BOLT-1");
         bolts.setUnitOfMeasure("PIECE");
-        bolts.setQuantityOnHand(600);
+        bolts.setQuantityOnHand(BigDecimal.valueOf(600));
 
         byte[] bytes = service.exportProducts(List.of(bolts));
         List<String> headers = headersOf(bytes);

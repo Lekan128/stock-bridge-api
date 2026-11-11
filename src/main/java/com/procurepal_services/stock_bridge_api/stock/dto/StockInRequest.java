@@ -44,13 +44,9 @@ import java.util.UUID;
  * (UNIT_UX_REMEDIATION_PLAN.md section 3, P0-1). A request that omits {@code unit} has factor 1
  * and so divides by nothing, which is why closing that hole changed no existing caller.
  *
- * <h2>companyVendorId - conditionally required, and not by an annotation</h2>
- * Which supplier this delivery came from. {@code @NotNull} does not appear here deliberately:
- * it is required once the product already has at least one {@code ProductVendor} row (see
- * {@code CompanyVendorRequiredException}), and optional - the product simply has no vendors yet
- * - otherwise. That is a database lookup, not something the shape of this request alone can
- * express, the same reasoning {@code CreateProductRequest.unitPrice}'s javadoc gives for why
- * its own conditional requirement is not a static annotation either.
+ * <h2>companyVendorId - optional</h2>
+ * Which supplier this delivery came from, or null for none in particular
+ * (STOCK_SHEETS_AND_AREA_COUNT_PLAN.md Part 3: it used to be required once the product had a supplier).
  *
  * <h2>packagingUnit / packagingSize - this DELIVERY's pack, snapshotted</h2>
  * Both optional. Frozen onto the resulting {@code StockMovement} row rather than only updating
@@ -119,7 +115,50 @@ public record StockInRequest(
         // A4: this delivery was recorded on a phone while offline and is arriving late. Only such
         // a write is checked against stock counts taken since - see StockManagementService. Absent
         // and false both mean "recorded now", which is every caller before A4.
-        Boolean recordedOffline) {
+        Boolean recordedOffline,
+        // Multiple branches (V51): where this was recorded. Absent means the company's only branch;
+        // refused at a company with several (BranchStockService.resolveForWrite). Left out of the
+        // idempotency hash when absent, so a write queued before this field existed replays as before.
+        UUID branchId,
+        // Areas inside a branch (V60): the area this happened in. Absent means the branch's only area that
+        // keeps stock, else its delivery area for a delivery, else refused (BranchStockService
+        // .resolveAreaForWrite). Left out of the idempotency hash when absent, like branchId.
+        UUID areaId) {
+
+    /** The shape before {@code areaId} (areas, Part 0). */
+    public StockInRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt,
+            Boolean saveAsSupplierDefault,
+            String vendorSku,
+            Boolean recordedOffline,
+            UUID branchId) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+                saveAsSupplierDefault, vendorSku, recordedOffline, branchId, null);
+    }
+
+    /** The shape before {@code branchId} (multiple branches, Phase 0). */
+    public StockInRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            UUID companyVendorId,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            OffsetDateTime occurredAt,
+            Boolean saveAsSupplierDefault,
+            String vendorSku,
+            Boolean recordedOffline) {
+        this(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize, occurredAt,
+                saveAsSupplierDefault, vendorSku, recordedOffline, null, null);
+    }
 
     /** The shape before {@code recordedOffline} (A4); every server-side caller still uses it. */
     public StockInRequest(
@@ -139,6 +178,18 @@ public record StockInRequest(
 
     public boolean isRecordedOffline() {
         return Boolean.TRUE.equals(recordedOffline);
+    }
+
+    /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
+    public StockInRequest withBranchId(UUID branch) {
+        return new StockInRequest(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize,
+                occurredAt, saveAsSupplierDefault, vendorSku, recordedOffline, branch, areaId);
+    }
+
+    /** This request, recorded in {@code area} - how a caller states the area it has resolved. */
+    public StockInRequest withAreaId(UUID area) {
+        return new StockInRequest(quantity, unitPrice, note, unit, companyVendorId, packagingUnit, packagingSize,
+                occurredAt, saveAsSupplierDefault, vendorSku, recordedOffline, branchId, area);
     }
 
     /** Convenience for callers that only ever supplied the pre-V19 three fields. */

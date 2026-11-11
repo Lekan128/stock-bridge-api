@@ -24,16 +24,43 @@ public record DeliveryRequest(
         @Size(max = 200) String invoiceNo,
         UUID vendorId,
         UUID expectedDeliveryId,
-        @NotEmpty @Valid List<Line> lines) {
+        @NotEmpty @Valid List<Line> lines,
+        // Multiple branches (V52): the branch it arrived at - see ImportSession.branchId.
+        UUID branchId) {
+
+    /** The shape before {@code branchId} (multiple branches, Phase 1). */
+    public DeliveryRequest(
+            String deliveryDate, String invoiceNo, UUID vendorId, UUID expectedDeliveryId, List<Line> lines) {
+        this(deliveryDate, invoiceNo, vendorId, expectedDeliveryId, lines, null);
+    }
 
     /**
      * @param unit the line's {@code unit} from {@link DeliveryLineResponse}.
+     * @param quantity how many are taken in - what becomes stock. Zero only when all of what came was
+     *     sent back.
      * @param price the price of ONE of {@code unit}; absent means the last price paid.
+     * @param sentBack how many of what came went back with the driver (V79, plan section 11.6). Never
+     *     stock, and still owed on the order. Absent or zero: none.
+     * @param sentBackReason WRONG_ITEM, DAMAGED, EXPIRED, NOT_ORDERED, PRICE or OTHER; needed with {@code sentBack}.
+     * @param sentBackNote what else to say about it (needed with OTHER).
      */
     public record Line(
             @NotNull UUID productId,
             String unit,
-            @NotNull @Positive BigDecimal quantity,
-            @DecimalMin(value = "0", inclusive = true) BigDecimal price) {
+            @NotNull @jakarta.validation.constraints.PositiveOrZero BigDecimal quantity,
+            @DecimalMin(value = "0", inclusive = true) BigDecimal price,
+            @jakarta.validation.constraints.PositiveOrZero BigDecimal sentBack,
+            @jakarta.validation.constraints.Pattern(regexp = "WRONG_ITEM|DAMAGED|EXPIRED|NOT_ORDERED|PRICE|OTHER")
+                    String sentBackReason,
+            @Size(max = 200) String sentBackNote) {
+
+        /** The shape before sending back (V79). */
+        public Line(UUID productId, String unit, BigDecimal quantity, BigDecimal price) {
+            this(productId, unit, quantity, price, null, null, null);
+        }
+
+        public boolean sendsBack() {
+            return sentBack != null && sentBack.signum() > 0;
+        }
     }
 }

@@ -91,6 +91,12 @@ public class ProductManagementExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
     }
 
+    @ExceptionHandler(com.procurepal_services.stock_bridge_api.product.unit.InvalidMeasureException.class)
+    public ResponseEntity<ApiError> handleInvalidMeasure(
+            com.procurepal_services.stock_bridge_api.product.unit.InvalidMeasureException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
     @ExceptionHandler(PackagingRequiresUnitOfMeasureException.class)
     public ResponseEntity<ApiError> handlePackagingRequiresUnitOfMeasure(PackagingRequiresUnitOfMeasureException ex) {
         return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));

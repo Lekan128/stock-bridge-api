@@ -7,11 +7,12 @@ spring:
     default-property-inclusion: non_null
     time-zone: UTC
   jpa:
-    # true: a single Hibernate Session spans the whole request, which is what
-    # lets TenantResolutionFilter enable the tenant filter once per request and
-    # have it apply to every repository call made later in that request. See
-    # TenantResolutionFilter for the full rationale and the tradeoff this accepts.
-    open-in-view: true
+    # false: Boot's open-in-view interceptor opens the request's Session inside the
+    # DispatcherServlet, too late for TenantResolutionFilter (a security filter) to
+    # enable the tenant filter on it. tenant/RequestSessionConfig registers an
+    # OpenEntityManagerInViewFilter ahead of Spring Security instead, so one Session
+    # still spans the whole request. See TenantResolutionFilter.
+    open-in-view: false
     show-sql: false
     hibernate:
       ddl-auto: validate
@@ -39,11 +40,29 @@ server:
     min-response-size: 2KB
 
 app:
+  tenancy:
+    # Layer 1 of tenant isolation (TenantResolutionFilter, RequestSessionConfig). false is the
+    # off switch for a production surprise: requests then rely on explicit client_id predicates
+    # alone, as they all did before 2026-11. Restart to apply.
+    hibernate-filter: ${TENANT_HIBERNATE_FILTER:true}
+  push:
+    # Web Push (STOCK_AREAS_PART_5.md): who push services contact about our messages. The key pair
+    # itself is made on first use and kept in the database (push_vapid); nothing else to set.
+    subject: ${PUSH_SUBJECT:mailto:support@procurepaddy.com}
   selling:
     # SELLING_PRICE_PLAN.md Phase 7. "pilot": only ProcurePal and companies support has turned
     # selling on for are offered it. "open": every company - the launch. Defaults to pilot so a
     # deploy that forgets it launches nothing.
     rollout: ${SELLING_ROLLOUT:pilot}
+  branches:
+    # MULTI_BRANCH_BUILD_PLAN.md D-B12. "pilot": only companies support has enabled may add a second
+    # branch. "open": every company. Defaults to pilot, like selling.
+    rollout: ${MULTI_BRANCH_ROLLOUT:pilot}
+  areas:
+    # STOCK_AREAS_BUILD_PLAN.md D-E12. "open" (default): every company may add areas inside a branch -
+    # they are free. "off": nobody may; the switch for hiding the feature without a deploy. Gates adding
+    # only, never a stock write.
+    rollout: ${AREAS_ROLLOUT:open}
   jwt:
     secret: ${JWT_SECRET}
     access-token-expiration-ms: ${JWT_ACCESS_TOKEN_EXPIRATION_MS:900000}

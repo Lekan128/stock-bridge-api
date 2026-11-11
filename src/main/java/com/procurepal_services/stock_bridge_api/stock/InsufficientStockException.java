@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
+import java.math.BigDecimal;
 import lombok.Getter;
 
 /**
@@ -33,10 +34,12 @@ import lombok.Getter;
 @Getter
 public class InsufficientStockException extends RuntimeException {
 
-    private final int availableQuantity;
-    private final int requestedQuantity;
+    private final BigDecimal availableQuantity;
+    private final BigDecimal requestedQuantity;
+    /** Which product, where a write names several (a waybill): the phone offers "Send 8 instead" for it. */
+    private java.util.UUID productId;
 
-    public InsufficientStockException(int available, int requested) {
+    public InsufficientStockException(BigDecimal available, BigDecimal requested) {
         this(available, requested, null);
     }
 
@@ -47,11 +50,22 @@ public class InsufficientStockException extends RuntimeException {
      *     different things, which is the P1-4 defect one layer up.
      * @param unitSymbol the stock unit's short symbol ("kg"), or null for a product with none.
      */
-    public InsufficientStockException(int available, int requested, String unitSymbol) {
-        super("Only " + available + " " + symbolOrUnits(unitSymbol) + " available — you asked for " + requested + " "
+    public InsufficientStockException(BigDecimal available, BigDecimal requested, String unitSymbol) {
+        super("Only " + com.procurepal_services.stock_bridge_api.imports.ImportCopy.count(available) + " "
+                + symbolOrUnits(unitSymbol) + " available — you asked for "
+                + com.procurepal_services.stock_bridge_api.imports.ImportCopy.count(requested) + " "
                 + symbolOrUnits(unitSymbol) + ".");
         this.availableQuantity = available;
         this.requestedQuantity = requested;
+    }
+
+    public InsufficientStockException forProduct(java.util.UUID productId) {
+        this.productId = productId;
+        return this;
+    }
+
+    public java.util.UUID getProductId() {
+        return productId;
     }
 
     private static String symbolOrUnits(String unitSymbol) {

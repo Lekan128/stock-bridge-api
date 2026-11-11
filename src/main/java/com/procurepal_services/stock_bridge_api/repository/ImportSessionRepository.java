@@ -90,4 +90,8 @@ public interface ImportSessionRepository extends TenantScopedRepository<ImportSe
      * filter, so neither has to issue one query per session.
      */
     List<ImportSession> findAllByClientIdAndIdIn(UUID clientId, Collection<UUID> ids);
+
+    /** The deliveries received against one purchase order, oldest first - the order page's history. */
+    List<ImportSession> findAllByClientIdAndExpectedDeliveryIdAndStatusOrderByCommittedAtAsc(
+            UUID clientId, UUID expectedDeliveryId, ImportStatus status);
 }

@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.product.quality.dto;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
 
@@ -10,7 +11,7 @@ import java.util.UUID;
  *     missing unit, because choosing one decides what that number means.
  */
 public record ProductDataIssueResponse(
-        UUID productId, String name, String sku, int quantityOnHand, List<Issue> issues) {
+        UUID productId, String name, String sku, BigDecimal quantityOnHand, List<Issue> issues) {
 
     /**
      * @param code {@code DAMAGED_CODE}, {@code NO_STOCK_UNIT}, {@code UNIT_LOOKS_WRONG} or

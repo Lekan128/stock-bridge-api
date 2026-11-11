@@ -122,9 +122,9 @@ class DeliveryAndReimportIntegrationTest {
                 "/api/imports/" + session.id() + "/commit", HttpMethod.POST, new HttpEntity<>(json(tenant)),
                 ImportResultResponse.class).getBody();
         assertThat(result.movementsCreated()).isEqualTo(2);
-        assertThat(get(tenant, rice.id()).quantityOnHand()).as("1 + 2.5 bags of 50").isEqualTo(175);
+        assertThat(get(tenant, rice.id()).quantityOnHand()).as("1 + 2.5 bags of 50").isEqualByComparingTo("175");
         assertThat(get(tenant, rice.id()).costPrice()).as("a blank price is the last one: N840 a kg").isEqualByComparingTo("840");
-        assertThat(get(tenant, onion.id()).quantityOnHand()).isEqualTo(90);
+        assertThat(get(tenant, onion.id()).quantityOnHand()).isEqualByComparingTo("90");
     }
 
     @Test
@@ -169,7 +169,7 @@ class DeliveryAndReimportIntegrationTest {
 
         commit(tenant, session.id());
         ProductResponse after = get(tenant, rice.id());
-        assertThat(after.quantityOnHand()).isEqualTo(200);
+        assertThat(after.quantityOnHand()).isEqualByComparingTo("200");
         assertThat(after.costPrice()).isEqualByComparingTo("840");
         assertThat(after.packagingSize()).isEqualByComparingTo("50");
         assertThat(after.preferredVendorName()).isEqualTo("Tony Stores");

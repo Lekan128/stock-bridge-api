@@ -110,6 +110,9 @@ public class ImportSessionService {
             ImportStatus.PARSING, ImportStatus.NEEDS_REVIEW, ImportStatus.READY,
             ImportStatus.FAILED, ImportStatus.EXPIRED);
 
+    /** The branch an import is for (V52) - see {@link #branchForImport}. */
+    private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final ImportSessionRepository importSessionRepository;
     private final ImportSessionRowRepository importSessionRowRepository;
     private final ProductVendorPackRepository productVendorPackRepository;
@@ -175,7 +178,15 @@ public class ImportSessionService {
     @Transactional
     public ImportSessionResponse create(
             MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
-        return createFromTable(read(file), filenameOf(file), kind, mode, actingUserId, delivery);
+        return create(file, kind, mode, actingUserId, delivery, null);
+    }
+
+    /** @param branchId the branch the sheet is for (V52) - see {@link #branchForImport}. */
+    @Transactional
+    public ImportSessionResponse create(
+            MultipartFile file, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID branchId) {
+        return createFromTable(read(file), filenameOf(file), kind, mode, actingUserId, delivery, null, branchId);
     }
 
     /**
@@ -187,6 +198,14 @@ public class ImportSessionService {
     public ImportSessionResponse createDelivery(
             List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery,
             UUID expectedDeliveryId) {
+        return createDelivery(lines, title, actingUserId, delivery, expectedDeliveryId, null);
+    }
+
+    /** @param branchId the branch it arrived at (V52) - see {@link #branchForImport}. */
+    @Transactional
+    public ImportSessionResponse createDelivery(
+            List<DeliveryLine> lines, String title, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID expectedDeliveryId, UUID branchId) {
         if (lines == null || lines.isEmpty()) {
             throw new ImportExceptions.BadFile("Add at least one thing that arrived.");
         }
@@ -227,7 +246,7 @@ public class ImportSessionService {
             rows.add(new SheetRow(line++, cells));
         }
         return createFromTable(new SheetTable(headers, indexes, rows), title, ImportKind.STOCK_IN,
-                ImportMode.CREATE_ONLY, actingUserId, delivery, expectedDeliveryId);
+                ImportMode.CREATE_ONLY, actingUserId, delivery, expectedDeliveryId, branchId);
     }
 
     /**
@@ -241,14 +260,23 @@ public class ImportSessionService {
     @Transactional
     public ImportSessionResponse createFromPaste(
             String text, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery) {
+        return createFromPaste(text, kind, mode, actingUserId, delivery, null);
+    }
+
+    /** @param branchId the branch the rows are for (V52) - see {@link #branchForImport}. */
+    @Transactional
+    public ImportSessionResponse createFromPaste(
+            String text, ImportKind kind, ImportMode mode, UUID actingUserId, ImportDeliveryDetails delivery,
+            UUID branchId) {
         ImportRowHandler handler = handlerFor(kind);
+        List<ImportFieldDescriptor> fields = shownFields(handler.fields(), TenantContext.get());
         SheetTable table = PastedText.read(
-                text, cell -> columnMapper.recognisesHeader(cell, kind, handler.fields()));
+                text, cell -> columnMapper.recognisesHeader(cell, kind, fields));
         if (table.rows().isEmpty()) {
             throw new ImportExceptions.BadFile(
                     "We could not find any rows in that. Paste the lines themselves, one per row.");
         }
-        return createFromTable(table, pasteTitle(kind), kind, mode, actingUserId, delivery);
+        return createFromTable(table, pasteTitle(kind), kind, mode, actingUserId, delivery, null, branchId);
     }
 
     /** What the recent-imports list calls a paste, since there is no filename to show. */
@@ -266,15 +294,24 @@ public class ImportSessionService {
             UUID productId, String productName, String sku, String unit, BigDecimal quantity, BigDecimal price) {
     }
 
-    private ImportSessionResponse createFromTable(
-            SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
-            ImportDeliveryDetails delivery) {
-        return createFromTable(table, filename, kind, mode, actingUserId, delivery, null);
+    /**
+     * The branch an import's stock lands at (V52), decided when it is created so a commit never has to
+     * guess: the one named, or the person's only branch - and they must work there now. Null, decided at
+     * commit as the company's only branch, when none was named at a one-branch company.
+     */
+    private UUID branchForImport(UUID requested, UUID actingUserId) {
+        if (requested == null && !branchStockService.isMultiBranch(TenantContext.get())) {
+            return null;
+        }
+        UUID branchId = branchStockService.resolveForWrite(requested, actingUserId);
+        branchAccessService.requireMayRecordAt(actingUserId, branchId);
+        return branchId;
     }
 
     private ImportSessionResponse createFromTable(
             SheetTable table, String filename, ImportKind kind, ImportMode mode, UUID actingUserId,
-            ImportDeliveryDetails delivery, UUID expectedDeliveryId) {
+            ImportDeliveryDetails delivery, UUID expectedDeliveryId, UUID requestedBranchId) {
+        UUID branchId = branchForImport(requestedBranchId, actingUserId);
         // Mode is meaningless for STOCK_IN (contract section 1) - persisted as CREATE_ONLY and
         // ignored, rather than left null, so the CHECK constraint and every later read see a
         // legal value.
@@ -283,7 +320,9 @@ public class ImportSessionService {
                 : (mode == null ? ImportMode.CREATE_ONLY : mode);
 
         ImportRowHandler handler = handlerFor(kind);
-        ImportColumnMapper.Mapping mapping = columnMapper.autoMap(table, kind, handler.fields());
+        // Only the fields this company has: a one-branch shop's sheet never maps a Branch column it
+        // can't see, and so can't unmap.
+        ImportColumnMapper.Mapping mapping = columnMapper.autoMap(table, kind, shownFields(handler.fields(), TenantContext.get()));
         // A company's bare "Price" column is asked about, not guessed (SELLING_PRICE_PLAN.md 6.8).
         Map<String, String> columnMapping = new LinkedHashMap<>(mapping.columnMapping());
         List<String> unmappedHeaders = new ArrayList<>(mapping.unmappedHeaders());
@@ -304,6 +343,7 @@ public class ImportSessionService {
                 .valueMappings(new LinkedHashMap<>())
                 .rowDefaults(kind == ImportKind.STOCK_IN ? rowDefaultsOf(delivery) : null)
                 .expectedDeliveryId(expectedDeliveryId)
+                .branchId(branchId)
                 .rowCount(dataRows.size())
                 .validCount(0)
                 .errorCount(0)
@@ -1512,7 +1552,7 @@ public class ImportSessionService {
     @Transactional(readOnly = true)
     public byte[] report(UUID id) {
         ImportSession session = require(id);
-        List<ImportFieldDescriptor> fields = handlerFor(session.getKind()).fields();
+        List<ImportFieldDescriptor> fields = shownFields(handlerFor(session.getKind()).fields(), session.getClientId());
 
         List<ImportResultReport.Column> columns = fields.stream()
                 .map(field -> new ImportResultReport.Column(field.key(), field.label()))
@@ -1721,10 +1761,18 @@ public class ImportSessionService {
                 defaults.get(ImportFields.VENDOR_NAME));
     }
 
+    /** No Branch column at a one-branch company: not on the grid, the mapping or the result file (rule 1). */
+    private List<ImportFieldDescriptor> shownFields(List<ImportFieldDescriptor> fields, UUID clientId) {
+        if (clientId != null && branchStockService.isMultiBranch(clientId)) {
+            return fields;
+        }
+        return fields.stream().filter(field -> !ImportFields.BRANCH.equals(field.key())).toList();
+    }
+
     private ImportSessionResponse toResponse(
             ImportSession session, List<String> unmappedHeaders, List<String> requiredFieldsMissing) {
         ImportRowHandler handler = handlerFor(session.getKind());
-        List<ImportFieldDescriptor> fields = handler.fields();
+        List<ImportFieldDescriptor> fields = shownFields(handler.fields(), session.getClientId());
         Map<String, String> mapping = session.getColumnMapping() == null ? Map.of() : session.getColumnMapping();
 
         List<String> missing = requiredFieldsMissing != null

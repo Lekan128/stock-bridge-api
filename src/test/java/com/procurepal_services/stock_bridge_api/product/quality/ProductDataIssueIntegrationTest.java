@@ -103,7 +103,7 @@ class ProductDataIssueIntegrationTest {
                 ProductResponse.class);
         assertThat(unitSet.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(unitSet.getBody().unitOfMeasure()).isEqualTo("KG");
-        assertThat(unitSet.getBody().quantityOnHand()).isEqualTo(7);
+        assertThat(unitSet.getBody().quantityOnHand()).isEqualByComparingTo("7");
 
         // ...but a unit it has cannot be swapped once stock is recorded.
         ResponseEntity<String> swap = restTemplate.exchange(

@@ -57,9 +57,9 @@ class StockCountIntegrationTest {
 
         StockMutationResponse counted = count(s, 13, null);
 
-        assertThat(counted.product().quantityOnHand()).isEqualTo(13);
+        assertThat(counted.product().quantityOnHand()).isEqualByComparingTo("13");
         assertThat(counted.movement().movementType()).isEqualTo(MovementType.ADJUSTMENT);
-        assertThat(counted.movement().quantity()).isEqualTo(-7);
+        assertThat(counted.movement().quantity()).isEqualByComparingTo("-7");
     }
 
     /** It still counts as a look at the shelf, so it is kept - later writes are judged against it. */
@@ -70,7 +70,7 @@ class StockCountIntegrationTest {
 
         StockMutationResponse counted = count(s, 20, null);
 
-        assertThat(counted.product().quantityOnHand()).isEqualTo(20);
+        assertThat(counted.product().quantityOnHand()).isEqualByComparingTo("20");
         assertThat(counted.movement()).isNotNull();
         assertThat(counted.movement().quantity()).isZero();
     }
@@ -84,7 +84,7 @@ class StockCountIntegrationTest {
 
         StockMutationResponse counted = count(s, 15, hoursAgo(1)); // counted an hour ago, arriving now
 
-        assertThat(counted.product().quantityOnHand()).isEqualTo(10);
+        assertThat(counted.product().quantityOnHand()).isEqualByComparingTo("10");
     }
 
     @Test
@@ -96,7 +96,7 @@ class StockCountIntegrationTest {
         StockMutationResponse older = count(s, 30, hoursAgo(1));
 
         assertThat(older.movement()).as("superseded: nothing recorded").isNull();
-        assertThat(older.product().quantityOnHand()).isEqualTo(12);
+        assertThat(older.product().quantityOnHand()).isEqualByComparingTo("12");
     }
 
     @Test
@@ -119,15 +119,15 @@ class StockCountIntegrationTest {
 
         StockMutationResponse sale = stockOut(s, 5, hoursAgo(2), true);
 
-        assertThat(sale.product().quantityOnHand()).isEqualTo(15);
+        assertThat(sale.product().quantityOnHand()).isEqualByComparingTo("15");
         List<StockMovementResponse> history = history(s);
         assertThat(history).anySatisfy(m -> {
             assertThat(m.movementType()).isEqualTo(MovementType.OUT);
-            assertThat(m.quantity()).isEqualTo(5);
+            assertThat(m.quantity()).isEqualByComparingTo("5");
         });
         assertThat(history).anySatisfy(m -> {
             assertThat(m.movementType()).isEqualTo(MovementType.ADJUSTMENT);
-            assertThat(m.quantity()).isEqualTo(5);
+            assertThat(m.quantity()).isEqualByComparingTo("5");
         });
     }
 
@@ -152,7 +152,7 @@ class StockCountIntegrationTest {
 
         StockMutationResponse delivery = stockIn(s, 10, hoursAgo(2), true);
 
-        assertThat(delivery.product().quantityOnHand()).isEqualTo(30);
+        assertThat(delivery.product().quantityOnHand()).isEqualByComparingTo("30");
     }
 
     /** Only late writes from the outbox are judged against counts; a backdated online write is not. */
@@ -164,7 +164,7 @@ class StockCountIntegrationTest {
 
         StockMutationResponse sale = stockOut(s, 5, hoursAgo(2), false);
 
-        assertThat(sale.product().quantityOnHand()).isEqualTo(10);
+        assertThat(sale.product().quantityOnHand()).isEqualByComparingTo("10");
     }
 
     @Test
@@ -175,7 +175,7 @@ class StockCountIntegrationTest {
 
         StockMutationResponse sale = stockOut(s, 5, hoursAgo(1), true);
 
-        assertThat(sale.product().quantityOnHand()).isEqualTo(10);
+        assertThat(sale.product().quantityOnHand()).isEqualByComparingTo("10");
     }
 
     @Test

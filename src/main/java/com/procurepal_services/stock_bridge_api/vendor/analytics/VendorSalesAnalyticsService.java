@@ -297,7 +297,7 @@ public class VendorSalesAnalyticsService {
                     // Floored at zero for the same reason CatalogStockService floors
                     // it: an oversold product is at zero available, and a negative
                     // number here would read as something the seller could act on.
-                    int available = Math.max(0, product.getQuantityOnHand() - committedQuantity);
+                    BigDecimal available = product.getQuantityOnHand().subtract(BigDecimal.valueOf(committedQuantity)).max(BigDecimal.ZERO);
                     return new VendorStockOutEntry(
                             product.getId(),
                             product.getName(),
@@ -310,12 +310,12 @@ public class VendorSalesAnalyticsService {
                 })
                 // A threshold of null still qualifies at zero: a vendor who never set
                 // one has still run out, and silence is the worst possible answer.
-                .filter(entry -> entry.availableToSell() == 0
+                .filter(entry -> entry.availableToSell().signum() == 0
                         || (entry.lowStockThreshold() != null
-                                && entry.availableToSell() <= entry.lowStockThreshold()))
+                                && entry.availableToSell().compareTo(BigDecimal.valueOf(entry.lowStockThreshold())) <= 0))
                 .sorted(Comparator.comparing(VendorStockOutEntry::listed)
                         .reversed()
-                        .thenComparingInt(VendorStockOutEntry::availableToSell)
+                        .thenComparing(VendorStockOutEntry::availableToSell)
                         .thenComparing(VendorStockOutEntry::name, String.CASE_INSENSITIVE_ORDER))
                 .limit(effectiveLimit(limit))
                 .toList();

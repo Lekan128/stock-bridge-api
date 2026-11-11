@@ -65,6 +65,25 @@ public class ProductVendorController {
                 .toList();
     }
 
+    /** A supplier linked with nothing received (2026-11-10): the product form's "+ Add another supplier". */
+    @PostMapping
+    @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
+    public ResponseEntity<ProductVendorResponse> link(@PathVariable UUID productId, @Valid @RequestBody LinkSupplierRequest request) {
+        ProductVendor vendor = productVendorService.link(
+                productId, request.companyVendorId(), request.vendorSku(), request.cost(), request.packagingUnit(),
+                request.packagingSize());
+        return ResponseEntity.status(HttpStatus.CREATED).body(toResponse(vendor));
+    }
+
+    /** {@code POST .../vendors}: who, and optionally the pack from them and the price per stock unit. */
+    public record LinkSupplierRequest(
+            @jakarta.validation.constraints.NotNull UUID companyVendorId,
+            String vendorSku,
+            @jakarta.validation.constraints.DecimalMin(value = "0", inclusive = true) java.math.BigDecimal cost,
+            String packagingUnit,
+            @jakarta.validation.constraints.DecimalMin(value = "0", inclusive = true) java.math.BigDecimal packagingSize) {
+    }
+
     @PatchMapping("/{vendorId}")
     @PreAuthorize("hasAuthority('MANAGE_VENDORS')")
     public ProductVendorResponse update(

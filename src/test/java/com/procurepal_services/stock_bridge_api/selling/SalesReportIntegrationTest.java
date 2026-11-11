@@ -118,7 +118,7 @@ class SalesReportIntegrationTest {
 
         SalesReportRow rice = report(shop, "product").rows().stream()
                 .filter(row -> "Rice".equals(row.label())).findFirst().orElseThrow();
-        assertThat(rice.quantity()).isEqualTo(4);
+        assertThat(rice.quantity()).isEqualByComparingTo("4");
         assertThat(rice.totals().salesAmount()).isEqualByComparingTo("550.00");
         assertThat(rice.totals().cancelledLineCount()).isEqualTo(1);
     }

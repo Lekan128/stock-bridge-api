@@ -72,8 +72,8 @@ class AnalyticsIntegrationTest {
         assertThat(body.totalInValue()).isEqualByComparingTo("20.00");
         assertThat(body.totalOutValue()).isEqualByComparingTo("12.00");
         // quantity sums count every movement, priced or not: 10 (priced) + 7 (unpriced) in.
-        assertThat(body.totalUnitsIn()).isEqualTo(17);
-        assertThat(body.totalUnitsOut()).isEqualTo(4);
+        assertThat(body.totalUnitsIn()).isEqualByComparingTo("17");
+        assertThat(body.totalUnitsOut()).isEqualByComparingTo("4");
         assertThat(body.activeProductCount()).isGreaterThanOrEqualTo(2);
         // priced starts at 5, +10 -4 = 11, no threshold set -> not low stock; just assert it doesn't error.
         assertThat(body.lowStockProductCount()).isGreaterThanOrEqualTo(0);
@@ -98,8 +98,8 @@ class AnalyticsIntegrationTest {
         MovementsOverTimePoint today = points.get(0);
         assertThat(today.inValue()).isEqualByComparingTo("9.00");
         assertThat(today.outValue()).isEqualByComparingTo("5.00");
-        assertThat(today.inQuantity()).isEqualTo(6);
-        assertThat(today.outQuantity()).isEqualTo(2);
+        assertThat(today.inQuantity()).isEqualByComparingTo("6");
+        assertThat(today.outQuantity()).isEqualByComparingTo("2");
     }
 
     @Test
@@ -130,7 +130,7 @@ class AnalyticsIntegrationTest {
 
         List<TopProductEntry> byQuantityIn = topProducts(admin, "quantity", "in", 10);
         assertThat(byQuantityIn.get(0).sku()).isEqualTo("TP-CHEAP");
-        assertThat(byQuantityIn.get(0).quantity()).isEqualTo(100);
+        assertThat(byQuantityIn.get(0).quantity()).isEqualByComparingTo("100");
 
         List<TopProductEntry> byValueIn = topProducts(admin, "value", "in", 10);
         assertThat(byValueIn.get(0).sku()).isEqualTo("TP-EXPENSIVE");
@@ -139,7 +139,7 @@ class AnalyticsIntegrationTest {
         List<TopProductEntry> byQuantityOut = topProducts(admin, "quantity", "out", 10);
         assertThat(byQuantityOut).hasSize(1);
         assertThat(byQuantityOut.get(0).sku()).isEqualTo("TP-CHEAP");
-        assertThat(byQuantityOut.get(0).quantity()).isEqualTo(10);
+        assertThat(byQuantityOut.get(0).quantity()).isEqualByComparingTo("10");
     }
 
     @Test
@@ -172,7 +172,7 @@ class AnalyticsIntegrationTest {
 
         ResponseEntity<AnalyticsSummaryResponse> summaryAsA = restTemplate.exchange(
                 "/api/analytics/summary?" + wideRange(), HttpMethod.GET, new HttpEntity<>(authHeaders(tenantA)), AnalyticsSummaryResponse.class);
-        assertThat(summaryAsA.getBody().totalUnitsIn()).isEqualTo(10);
+        assertThat(summaryAsA.getBody().totalUnitsIn()).isEqualByComparingTo("10");
         assertThat(summaryAsA.getBody().totalInValue()).isEqualByComparingTo("50.00");
 
         List<TopProductEntry> topAsA = topProducts(tenantA, "quantity", "in", 10);
@@ -205,7 +205,7 @@ class AnalyticsIntegrationTest {
         restTemplate.exchange(
                 "/api/products/" + productId + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(quantity, unitPrice, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(quantity), unitPrice, null), authHeaders(admin)),
                 StockMutationResponse.class);
     }
 

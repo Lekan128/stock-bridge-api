@@ -4,7 +4,11 @@ import com.procurepal_services.stock_bridge_api.company.dto.CompanyResponse;
 import com.procurepal_services.stock_bridge_api.company.dto.UpdateCompanyRequest;
 import com.procurepal_services.stock_bridge_api.entity.Client;
 import com.procurepal_services.stock_bridge_api.repository.ClientRepository;
+import com.procurepal_services.stock_bridge_api.storage.S3ImageService;
+import com.procurepal_services.stock_bridge_api.storage.UploadResult;
 import com.procurepal_services.stock_bridge_api.tenant.TenantContext;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.multipart.MultipartFile;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -44,6 +48,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class CompanyService {
 
     private final ClientRepository clientRepository;
+    private final S3ImageService s3ImageService;
 
     @Transactional(readOnly = true)
     public CompanyResponse get() {
@@ -76,6 +81,42 @@ public class CompanyService {
      * they cannot have asked for anything at all. Same reasoning ProfileService
      * uses for a user with no client.
      */
+    /**
+     * Sets the company's logo (PURCHASE_ORDER_PLAN.md section 3.6). The words in every refusal are
+     * the ones the settings page shows, so none of them mentions a bucket or a content type.
+     */
+    @Transactional
+    public CompanyResponse setLogo(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new CompanyLogoException(HttpStatus.BAD_REQUEST, "Choose a picture first.");
+        }
+        if (!s3ImageService.isConfigured()) {
+            throw new CompanyLogoException(HttpStatus.SERVICE_UNAVAILABLE, "Logos can't be saved on this server yet.");
+        }
+        UploadResult result = s3ImageService.uploadCompanyLogo(file);
+        if (!result.success()) {
+            String reason = result.failureReason() == null ? "" : result.failureReason();
+            if (reason.startsWith("File exceeds")) {
+                throw new CompanyLogoException(HttpStatus.BAD_REQUEST, "That file is too big (limit 5 MB).");
+            }
+            if (reason.startsWith("Unsupported")) {
+                throw new CompanyLogoException(HttpStatus.BAD_REQUEST, "Use a JPG, PNG or WebP picture.");
+            }
+            throw new CompanyLogoException(HttpStatus.BAD_GATEWAY, "We couldn't save that. Try again.");
+        }
+        Client company = requireCompany();
+        company.setLogoUrl(result.url());
+        return CompanyResponse.from(clientRepository.saveAndFlush(company));
+    }
+
+    /** Takes the logo off. The file stays in storage - an order already sent still shows it. */
+    @Transactional
+    public CompanyResponse removeLogo() {
+        Client company = requireCompany();
+        company.setLogoUrl(null);
+        return CompanyResponse.from(clientRepository.saveAndFlush(company));
+    }
+
     private Client requireCompany() {
         UUID tenantId = requireTenantId();
         return clientRepository

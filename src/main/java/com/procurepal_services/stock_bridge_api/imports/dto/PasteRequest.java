@@ -17,5 +17,12 @@ public record PasteRequest(
         String mode,
         String deliveryDate,
         @Size(max = 200) String invoiceNo,
-        String vendorId) {
+        String vendorId,
+        // Multiple branches (V52): the branch this is for - see ImportSession.branchId.
+        UUID branchId) {
+
+    /** The shape before {@code branchId} (multiple branches, Phase 1). */
+    public PasteRequest(String text, String kind, String mode, String deliveryDate, String invoiceNo, String vendorId) {
+        this(text, kind, mode, deliveryDate, invoiceNo, vendorId, null);
+    }
 }

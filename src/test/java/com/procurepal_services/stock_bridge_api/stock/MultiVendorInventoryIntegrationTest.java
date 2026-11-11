@@ -68,7 +68,7 @@ class MultiVendorInventoryIntegrationTest {
 
         ProductResponse product = createProductWithInitialVendor(admin, "MV-1", vendorA.id(), new BigDecimal("100.00"), 50);
 
-        assertThat(product.quantityOnHand()).isEqualTo(50);
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("50");
         assertThat(product.costPrice()).isEqualByComparingTo("100.00");
         assertThat(product.preferredVendorName()).isEqualTo(vendorA.name());
 
@@ -78,15 +78,15 @@ class MultiVendorInventoryIntegrationTest {
         assertThat(line.companyVendorId()).isEqualTo(vendorA.id());
         assertThat(line.isPreferred()).isTrue();
         assertThat(line.lastCostPrice()).isEqualByComparingTo("100.00");
-        assertThat(line.quantityOnHandFromVendor()).isEqualTo(50);
-        assertThat(line.totalQuantityReceived()).isEqualTo(50);
+        assertThat(line.quantityOnHandFromVendor()).isEqualByComparingTo("50");
+        assertThat(line.totalQuantityReceived()).isEqualByComparingTo("50");
         assertThat(line.priceTiers()).isEmpty();
 
         List<StockMovementResponse> history = history(admin, product.id());
         assertThat(history).hasSize(1);
         StockMovementResponse opening = history.get(0);
         assertThat(opening.movementType()).isEqualTo(MovementType.IN);
-        assertThat(opening.quantity()).isEqualTo(50);
+        assertThat(opening.quantity()).isEqualByComparingTo("50");
         assertThat(opening.unitPriceAtTime()).isEqualByComparingTo("100.00");
         assertThat(opening.companyVendorId()).isEqualTo(vendorA.id());
         assertThat(opening.companyVendorName()).isEqualTo(vendorA.name());
@@ -106,7 +106,7 @@ class MultiVendorInventoryIntegrationTest {
 
         // (50*100 + 50*200) / 100 = 150.00
         assertThat(afterSecondStockIn.product().costPrice()).isEqualByComparingTo("150.00");
-        assertThat(afterSecondStockIn.product().quantityOnHand()).isEqualTo(100);
+        assertThat(afterSecondStockIn.product().quantityOnHand()).isEqualByComparingTo("100");
         assertThat(afterSecondStockIn.vendorIsNewToProduct()).isTrue();
 
         List<ProductVendorResponse> vendors = listVendors(admin, product.id());
@@ -158,35 +158,35 @@ class MultiVendorInventoryIntegrationTest {
         ResponseEntity<StockMutationResponse> outResponse = restTemplate.exchange(
                 "/api/products/" + product.id() + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(40, null, "sale"), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(40), null, "sale"), authHeaders(admin)),
                 StockMutationResponse.class);
         assertThat(outResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
         StockMutationResponse body = outResponse.getBody();
-        assertThat(body.product().quantityOnHand()).isEqualTo(10);
+        assertThat(body.product().quantityOnHand()).isEqualByComparingTo("10");
 
         List<StockMutationResponse.AllocationBreakdown> breakdown = body.breakdown();
         assertThat(breakdown).hasSize(2);
         assertThat(breakdown.get(0).inMovementId()).isEqualTo(lotA.id());
-        assertThat(breakdown.get(0).quantity()).isEqualTo(30);
+        assertThat(breakdown.get(0).quantity()).isEqualByComparingTo("30");
         assertThat(breakdown.get(0).companyVendorId()).isEqualTo(vendorA.id());
         assertThat(breakdown.get(1).inMovementId()).isEqualTo(lotB.id());
-        assertThat(breakdown.get(1).quantity()).isEqualTo(10);
+        assertThat(breakdown.get(1).quantity()).isEqualByComparingTo("10");
         assertThat(breakdown.get(1).companyVendorId()).isEqualTo(vendorB.id());
 
         // Cached per-vendor rollups reflect the drawdown.
-        assertThat(findVendorLine(admin, product.id(), vendorA.id()).quantityOnHandFromVendor()).isEqualTo(0);
-        assertThat(findVendorLine(admin, product.id(), vendorB.id()).quantityOnHandFromVendor()).isEqualTo(10);
+        assertThat(findVendorLine(admin, product.id(), vendorA.id()).quantityOnHandFromVendor()).isEqualByComparingTo("0");
+        assertThat(findVendorLine(admin, product.id(), vendorB.id()).quantityOnHandFromVendor()).isEqualByComparingTo("10");
 
         // Forward trace: lot A's delivery funded exactly this one sale, for 30 units.
         List<AllocationResponse> allocationsForLotA = allocations(admin, lotA.id());
         assertThat(allocationsForLotA).hasSize(1);
         assertThat(allocationsForLotA.get(0).outMovementId()).isEqualTo(body.movement().id());
-        assertThat(allocationsForLotA.get(0).quantity()).isEqualTo(30);
+        assertThat(allocationsForLotA.get(0).quantity()).isEqualByComparingTo("30");
 
         List<AllocationResponse> allocationsForLotB = allocations(admin, lotB.id());
         assertThat(allocationsForLotB).hasSize(1);
         assertThat(allocationsForLotB.get(0).outMovementId()).isEqualTo(body.movement().id());
-        assertThat(allocationsForLotB.get(0).quantity()).isEqualTo(10);
+        assertThat(allocationsForLotB.get(0).quantity()).isEqualByComparingTo("10");
     }
 
     @Test
@@ -219,7 +219,7 @@ class MultiVendorInventoryIntegrationTest {
 
             ResponseEntity<ProductResponse> finalState = restTemplate.exchange(
                     "/api/products/" + product.id(), HttpMethod.GET, new HttpEntity<>(authHeaders(admin)), ProductResponse.class);
-            assertThat(finalState.getBody().quantityOnHand()).isEqualTo(3);
+            assertThat(finalState.getBody().quantityOnHand()).isEqualByComparingTo("3");
 
             // No lost update at the lot-allocation layer either: exactly 7 units were allocated
             // in total against the single lot, never 14 and never 0.
@@ -228,7 +228,7 @@ class MultiVendorInventoryIntegrationTest {
                     .toList();
             assertThat(lots).hasSize(1);
             List<AllocationResponse> allocationsForTheLot = allocations(admin, lots.get(0).id());
-            int totalAllocated = allocationsForTheLot.stream().mapToInt(AllocationResponse::quantity).sum();
+            int totalAllocated = allocationsForTheLot.stream().mapToInt(a -> a.quantity().intValueExact()).sum();
             assertThat(totalAllocated).isEqualTo(7);
         } catch (Exception e) {
             throw new RuntimeException(e);
@@ -246,21 +246,21 @@ class MultiVendorInventoryIntegrationTest {
         ResponseEntity<InsufficientStockErrorResponse> response = restTemplate.exchange(
                 "/api/products/" + product.id() + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(10, null, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(10), null, null), authHeaders(admin)),
                 InsufficientStockErrorResponse.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
         InsufficientStockErrorResponse body = response.getBody();
         assertThat(body).isNotNull();
         assertThat(body.status()).isEqualTo(409);
-        assertThat(body.availableQuantity()).isEqualTo(5);
-        assertThat(body.requestedQuantity()).isEqualTo(10);
+        assertThat(body.availableQuantity()).isEqualByComparingTo("5");
+        assertThat(body.requestedQuantity()).isEqualByComparingTo("10");
         assertThat(body.message()).contains("5").contains("10");
 
         // Never went negative.
         ResponseEntity<ProductResponse> unchanged = restTemplate.exchange(
                 "/api/products/" + product.id(), HttpMethod.GET, new HttpEntity<>(authHeaders(admin)), ProductResponse.class);
-        assertThat(unchanged.getBody().quantityOnHand()).isEqualTo(5);
+        assertThat(unchanged.getBody().quantityOnHand()).isEqualByComparingTo("5");
     }
 
     @Test
@@ -344,6 +344,54 @@ class MultiVendorInventoryIntegrationTest {
     // Helpers
     // -----------------------------------------------------------------------------------
 
+    @Test
+    void aProductIsAddedWithSeveralSuppliersAndItsOpeningStockFromOneOfThemOrNone() {
+        TenantLoginResponse admin = signup("Several Suppliers Co");
+        CompanyVendorResponse mama = createCompanyVendor(admin, "Mama");
+        CompanyVendorResponse alaba = createCompanyVendor(admin, "Alaba");
+        CreateProductRequest request = new CreateProductRequest(
+                "Rice MS", "MS-1", null, null, null, "KG", "BAG", new BigDecimal("80"), null, null, null, null, null, null,
+                null,
+                List.of(
+                        new CreateProductRequest.SupplierLink(mama.id(), null, new BigDecimal("1000"), "BAG", new BigDecimal("80")),
+                        new CreateProductRequest.SupplierLink(alaba.id(), null, null, "BAG", new BigDecimal("50"))),
+                new CreateProductRequest.OpeningStock(new BigDecimal("160"), mama.id(), null));
+        ResponseEntity<ProductResponse> created =
+                restTemplate.exchange("/api/products", HttpMethod.POST, multipartEntity(admin, request), ProductResponse.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        ProductResponse product = created.getBody();
+        // Both linked, the first preferred; the opening stock came from Mama, at her price.
+        assertThat(product.quantityOnHand()).isEqualByComparingTo("160");
+        assertThat(product.preferredVendorName()).isEqualTo(mama.name());
+        assertThat(listVendors(admin, product.id())).extracting(ProductVendorResponse::companyVendorId)
+                .containsExactlyInAnyOrder(mama.id(), alaba.id());
+        assertThat(findVendorLine(admin, product.id(), alaba.id()).totalQuantityReceived()).isEqualByComparingTo("0");
+        assertThat(findVendorLine(admin, product.id(), mama.id()).totalQuantityReceived()).isEqualByComparingTo("160");
+        StockMovementResponse opening = history(admin, product.id()).get(0);
+        assertThat(opening.unitPriceAtTime()).isEqualByComparingTo("1000");
+        assertThat(opening.companyVendorId()).isEqualTo(mama.id());
+
+        // Opening stock from nobody named, and no suppliers at all.
+        CreateProductRequest bare = new CreateProductRequest(
+                "Salt MS", "MS-2", null, null, null, "KG", null, null, null, null, null, null, null, null, null, null,
+                new CreateProductRequest.OpeningStock(new BigDecimal("3.5"), null, null));
+        ResponseEntity<ProductResponse> salt =
+                restTemplate.exchange("/api/products", HttpMethod.POST, multipartEntity(admin, bare), ProductResponse.class);
+        assertThat(salt.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(salt.getBody().quantityOnHand()).isEqualByComparingTo("3.5");
+        assertThat(listVendors(admin, salt.getBody().id())).isEmpty();
+
+        // A supplier linked later, from the edit page, with nothing received.
+        CompanyVendorResponse third = createCompanyVendor(admin, "Third");
+        ResponseEntity<ProductVendorResponse> linked = restTemplate.exchange(
+                "/api/products/" + salt.getBody().id() + "/vendors", HttpMethod.POST,
+                new HttpEntity<>(java.util.Map.of("companyVendorId", third.id(), "cost", 400), authHeaders(admin)),
+                ProductVendorResponse.class);
+        assertThat(linked.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(linked.getBody().isPreferred()).isTrue();
+        assertThat(linked.getBody().totalQuantityReceived()).isEqualByComparingTo("0");
+    }
+
     private ResponseEntity<String> stockOutRaw(TenantLoginResponse admin, UUID productId, int quantity, CountDownLatch startLatch) {
         try {
             startLatch.await(10, TimeUnit.SECONDS);
@@ -353,7 +401,7 @@ class MultiVendorInventoryIntegrationTest {
         return restTemplate.exchange(
                 "/api/products/" + productId + "/stock/stock-out",
                 HttpMethod.POST,
-                new HttpEntity<>(new StockOutRequest(quantity, null, null), authHeaders(admin)),
+                new HttpEntity<>(new StockOutRequest(BigDecimal.valueOf(quantity), null, null), authHeaders(admin)),
                 String.class);
     }
 

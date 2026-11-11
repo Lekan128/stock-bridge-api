@@ -35,11 +35,15 @@ public class SalesExportService {
             case "product" -> "Product";
             case "day" -> "Day";
             case "user" -> "Person";
+            case "branch" -> "Branch";
             default -> "Category";
         });
+        // V51: at a multi-branch company each sale says where it was made.
+        boolean branchColumn = grouping.equals("sale") && report.rows().stream().anyMatch(line -> line.branch() != null);
         if (grouping.equals("sale")) {
             headers.add("Recorded by");
             headers.add("Items");
+            if (branchColumn) headers.add("Branch");
         } else if (grouping.equals("product")) {
             headers.add("Sold");
         } else {
@@ -60,6 +64,7 @@ public class SalesExportService {
                     row.createCell(col++).setCellValue(line.occurredAt() == null ? "" : TIME.format(line.occurredAt().atZoneSameInstant(LAGOS)));
                     row.createCell(col++).setCellValue(line.label() == null ? "" : line.label());
                     row.createCell(col++).setCellValue(line.detail() == null ? "" : line.detail());
+                    if (branchColumn) row.createCell(col++).setCellValue(line.branch() == null ? "" : line.branch());
                 } else if (grouping.equals("product")) {
                     row.createCell(col++).setCellValue(line.label() == null ? "" : line.label());
                     row.createCell(col++).setCellValue((line.quantity() == null ? 0 : line.quantity())

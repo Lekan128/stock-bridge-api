@@ -35,9 +35,9 @@ public record StockMovementSummaryResponse(
         /** Money recorded against priced OUT movements in range. Never null. */
         BigDecimal outValue,
         /** Units received, in each product's own stock unit, priced or not. */
-        long inQuantity,
+        BigDecimal inQuantity,
         /** Units issued, in each product's own stock unit, priced or not. */
-        long outQuantity,
+        BigDecimal outQuantity,
         long inMovementCount,
         long outMovementCount,
         /** IN movements in range with no price on file - the gap between inQuantity and inValue. */
@@ -55,5 +55,23 @@ public record StockMovementSummaryResponse(
         Long unpricedSaleCount,
         /** Every other stock-out in range, at what the stock cost: "₦18,300 other stock out". */
         BigDecimal otherOutCost,
-        long otherOutCount) {
+        long otherOutCount,
+        /**
+         * Stock moved here from another branch, and from here to another (V53, MULTI_BRANCH_BUILD_PLAN.md
+         * section 4.3): their own figures, never part of stock in / stock out. Across every branch the
+         * two are equal once everything has arrived - a move is neither a purchase nor a sale.
+         */
+        BigDecimal movedInQuantity,
+        BigDecimal movedOutQuantity,
+        long movedInCount,
+        long movedOutCount,
+        /**
+         * Stock adjustments in range, net, at cost: stock-outs given as damaged, expired or lost, and
+         * counts at the product's cost - short adds, over takes off. Entries with no cost are left out
+         * of it and counted in {@code writtenOffUnpricedCount}.
+         */
+        BigDecimal writtenOffCost,
+        /** The same, in units: net units written off. */
+        BigDecimal writtenOffQuantity,
+        long writtenOffUnpricedCount) {
 }

@@ -55,7 +55,7 @@ public record StockMovementResponse(
         /** The product's stock unit - the unit {@code quantity} is counted in. */
         String unitOfMeasure,
         MovementType movementType,
-        int quantity,
+        BigDecimal quantity,
         BigDecimal unitPriceAtTime,
         String note,
         UUID createdByUserId,
@@ -81,7 +81,22 @@ public record StockMovementResponse(
         BigDecimal costAmount,
         CostBasis costBasis,
         UUID reversesMovementId,
-        UUID correctsMovementId) {
+        UUID correctsMovementId,
+        // Multiple branches (V51): where it happened.
+        UUID branchId,
+        // Areas (V60): the area of that branch it happened in; null on rows from before areas, which are
+        // the branch's first area's. A give to an area that uses what it's given (V63) also names it.
+        UUID areaId,
+        UUID usedAreaId,
+        // A move between areas (movementType MOVE, V63): where it went - areaId is where it came from - the
+        // move it is a line of, and both areas by name. Absent on every ledger row.
+        UUID toAreaId,
+        UUID moveId,
+        String areaName,
+        String toAreaName,
+        // Written by a stock count (Part 3.5): a kitchen's count records what it found short as a Used stock-out,
+        // and the list says "Used at Kitchen · count". Absent on everything else.
+        Boolean count) {
 
     public static StockMovementResponse from(StockMovement movement) {
         return new StockMovementResponse(
@@ -117,7 +132,15 @@ public record StockMovementResponse(
                 movement.getCostAmount(),
                 movement.getCostBasis(),
                 movement.getReversesMovementId(),
-                movement.getCorrectsMovementId());
+                movement.getCorrectsMovementId(),
+                movement.getBranchId(),
+                movement.getAreaId(),
+                movement.getUsedAreaId(),
+                null,
+                null,
+                null,
+                null,
+                movement.isCount() ? Boolean.TRUE : null);
     }
 
     /** Null, not zero, when the movement recorded no price - see the class doc. */
@@ -134,6 +157,6 @@ public record StockMovementResponse(
 
     private static BigDecimal lineValue(StockMovement movement) {
         BigDecimal unitPrice = movement.getUnitPriceAtTime();
-        return unitPrice == null ? null : unitPrice.multiply(BigDecimal.valueOf(movement.getQuantity()));
+        return unitPrice == null ? null : unitPrice.multiply(movement.getQuantity());
     }
 }

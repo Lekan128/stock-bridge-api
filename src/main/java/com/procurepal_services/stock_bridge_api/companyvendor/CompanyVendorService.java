@@ -134,6 +134,19 @@ public class CompanyVendorService {
         return CompanyVendorResponse.from(companyVendorRepository.saveAndFlush(vendor));
     }
 
+    /** Sets the email alone. A different address has not been tried, so "email orders to them" goes back off. */
+    @Transactional
+    public CompanyVendorResponse setEmail(UUID id, String email) {
+        CompanyVendor vendor = companyVendorLookup.require(id);
+        requireEditable(vendor);
+        String next = email.trim();
+        if (vendor.getEmail() == null || !vendor.getEmail().equalsIgnoreCase(next)) {
+            vendor.setEmailOrders(false);
+        }
+        vendor.setEmail(next);
+        return CompanyVendorResponse.from(companyVendorRepository.saveAndFlush(vendor));
+    }
+
     @Transactional
     public CompanyVendorResponse update(UUID id, CompanyVendorRequest request) {
         CompanyVendor vendor = companyVendorLookup.require(id);
@@ -142,7 +155,13 @@ public class CompanyVendorService {
 
         vendor.setName(request.name().trim());
         vendor.setContactPhone(request.contactPhone().trim());
-        vendor.setEmail(blankToNull(request.email()));
+        String newEmail = blankToNull(request.email());
+        if (!java.util.Objects.equals(
+                newEmail == null ? null : newEmail.toLowerCase(), vendor.getEmail() == null ? null : vendor.getEmail().toLowerCase())) {
+            // A corrected or new address has not been proven yet: emailing orders to it asks again.
+            vendor.setEmailOrders(false);
+        }
+        vendor.setEmail(newEmail);
         vendor.setAddressLine1(blankToNull(request.addressLine1()));
         vendor.setAddressLine2(blankToNull(request.addressLine2()));
         vendor.setCity(blankToNull(request.city()));

@@ -1,5 +1,14 @@
 package com.procurepal_services.stock_bridge_api.stock;
 
+import com.procurepal_services.stock_bridge_api.branch.AreaClosedException;
+import com.procurepal_services.stock_bridge_api.branch.AreaKeepsNoStockException;
+import com.procurepal_services.stock_bridge_api.branch.AreaNotAllowedException;
+import com.procurepal_services.stock_bridge_api.branch.AreaNotFoundException;
+import com.procurepal_services.stock_bridge_api.branch.AreaRequiredException;
+import com.procurepal_services.stock_bridge_api.branch.BranchClosedException;
+import com.procurepal_services.stock_bridge_api.branch.BranchNotAllowedException;
+import com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException;
+import com.procurepal_services.stock_bridge_api.branch.BranchRequiredException;
 import com.procurepal_services.stock_bridge_api.auth.ApiError;
 import com.procurepal_services.stock_bridge_api.product.ProductNotFoundException;
 import com.procurepal_services.stock_bridge_api.stock.dto.InsufficientStockErrorResponse;
@@ -8,13 +17,44 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
-/** Scoped to StockController only - see ClientSignupExceptionHandler for why. */
-@RestControllerAdvice(assignableTypes = StockController.class)
+/**
+ * Scoped to StockController, and TransferController and AreaMoveController whose sends, receipts and
+ * moves are stock writes too - see ClientSignupExceptionHandler for why.
+ */
+@RestControllerAdvice(assignableTypes = {StockController.class, com.procurepal_services.stock_bridge_api.transfer.TransferController.class,
+        com.procurepal_services.stock_bridge_api.branch.AreaMoveController.class,
+        com.procurepal_services.stock_bridge_api.branch.StockRequestController.class})
 public class StockManagementExceptionHandler {
 
     @ExceptionHandler(ProductNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(ProductNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    @ExceptionHandler({BranchNotFoundException.class, AreaNotFoundException.class})
+    public ResponseEntity<ApiError> handleBranchNotFound(RuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));
+    }
+
+    /**
+     * 409, like {@link InsufficientStockException}: the same write was fine before the branch or area
+     * closed. An area that uses what it's given is the same answer: nothing there to record against.
+     */
+    @ExceptionHandler({BranchClosedException.class, AreaClosedException.class, AreaKeepsNoStockException.class})
+    public ResponseEntity<ApiError> handleBranchClosed(RuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+
+    /** 400: the request is missing the branch or area it needs (D-B10, D-E10). The phone shows it as "needs you". */
+    @ExceptionHandler({BranchRequiredException.class, AreaRequiredException.class})
+    public ResponseEntity<ApiError> handleBranchRequired(RuntimeException ex) {
+        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+    }
+
+    /** 403, like a permission taken away: the phone keeps the write as "needs you" with the reason. Areas too (D-E9). */
+    @ExceptionHandler({BranchNotAllowedException.class, AreaNotAllowedException.class})
+    public ResponseEntity<ApiError> handleBranchNotAllowed(RuntimeException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(new ApiError(ex.getMessage()));
     }
 
     @ExceptionHandler(StockMovementNotFoundException.class)
@@ -37,12 +77,8 @@ public class StockManagementExceptionHandler {
     public ResponseEntity<InsufficientStockErrorResponse> handleInsufficientStock(InsufficientStockException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new InsufficientStockErrorResponse(
-                        HttpStatus.CONFLICT.value(), ex.getMessage(), ex.getAvailableQuantity(), ex.getRequestedQuantity()));
-    }
-
-    @ExceptionHandler(CompanyVendorRequiredException.class)
-    public ResponseEntity<ApiError> handleCompanyVendorRequired(CompanyVendorRequiredException ex) {
-        return ResponseEntity.badRequest().body(new ApiError(ex.getMessage()));
+                        HttpStatus.CONFLICT.value(), ex.getMessage(), ex.getAvailableQuantity(), ex.getRequestedQuantity(),
+                        ex.getProductId()));
     }
 
     @ExceptionHandler(InvalidStockAllocationException.class)
