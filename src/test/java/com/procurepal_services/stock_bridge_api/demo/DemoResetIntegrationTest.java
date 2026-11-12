@@ -66,6 +66,24 @@ class DemoResetIntegrationTest {
         assertThat(tables).as("tables with a client_id the demo reset doesn't know about").isEmpty();
     }
 
+    /** The guard that keeps a reset away from real customers: a company that has been used can't become a demo. */
+    @Test
+    void aCompanyWithDataCannotBeMadeADemo() {
+        String token = superAdminToken();
+        TenantLoginResponse owner = signup("Real Customer");
+        UUID clientId = clientIdOf(owner);
+        String slug = owner.user().clientIdentifier();
+        UUID ownerRole = jdbc.queryForObject("SELECT id FROM roles WHERE name = 'OWNER' AND client_id IS NULL", UUID.class);
+        addUser(owner, "staff-" + UUID.randomUUID() + "@example.com", ownerRole);
+
+        assertThat(restTemplate.exchange("/api/superadmin/clients/" + clientId, HttpMethod.GET,
+                new HttpEntity<>(null, bearer(token)), SuperAdminClientDetail.class).getBody().canBecomeDemo()).isFalse();
+        ResponseEntity<ApiError> refused = setDemoError(token, clientId, true, slug);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(refused.getBody().message()).contains("Only a brand-new, empty company");
+        assertThat(jdbc.queryForObject("SELECT is_demo FROM clients WHERE id = ?", Boolean.class, clientId)).isFalse();
+    }
+
     @Test
     void anOrdinaryCompanyCannotBeReset() {
         String token = superAdminToken();
@@ -87,10 +105,14 @@ class DemoResetIntegrationTest {
         UUID clientId = clientIdOf(owner);
         String slug = owner.user().clientIdentifier();
 
-        SuperAdminClientDetail marked = restTemplate.exchange(
-                "/api/superadmin/clients/" + clientId + "/demo", HttpMethod.PUT,
-                new HttpEntity<>(Map.of("demo", true), bearer(token)), SuperAdminClientDetail.class).getBody();
-        assertThat(marked.demo()).isTrue();
+        // Not without the company's code typed back.
+        assertThat(setDemo(token, clientId, true, "wrong").getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(restTemplate.exchange("/api/superadmin/clients/" + clientId, HttpMethod.GET,
+                new HttpEntity<>(null, bearer(token)), SuperAdminClientDetail.class).getBody().canBecomeDemo()).isTrue();
+        assertThat(setDemo(token, clientId, true, slug).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(count("""
+                SELECT count(*) FROM client_setting_changes WHERE client_id = ? AND setting = 'DEMO' AND new_value = 'true'
+                """, clientId)).isEqualTo(1);
 
         // A wrong code is refused before anything happens.
         ResponseEntity<ApiError> unconfirmed = restTemplate.exchange(
@@ -167,6 +189,11 @@ class DemoResetIntegrationTest {
                 "SELECT provider_message_id FROM purchase_order_emails WHERE expected_delivery_id = ? ORDER BY created_at DESC LIMIT 1",
                 String.class, orderId)).isEqualTo("demo");
 
+        // Switched back to an ordinary company and on again: allowed, though it now has data, because
+        // that data is the demo's own.
+        assertThat(setDemo(token, clientId, false, slug).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(setDemo(token, clientId, true, slug).getStatusCode()).isEqualTo(HttpStatus.OK);
+
         // Reset again: same company, same people, a fresh demo.
         Map<String, Object> again = resetAndWait(token, clientId, slug);
         assertThat(again.get("state")).as(String.valueOf(again)).isEqualTo("DONE");
@@ -203,6 +230,16 @@ class DemoResetIntegrationTest {
             }
         }
         throw new AssertionError("The demo reset didn't finish in time");
+    }
+
+    private ResponseEntity<String> setDemo(String token, UUID clientId, boolean demo, String confirm) {
+        return restTemplate.exchange("/api/superadmin/clients/" + clientId + "/demo", HttpMethod.PUT,
+                new HttpEntity<>(Map.of("demo", demo, "confirm", confirm), bearer(token)), String.class);
+    }
+
+    private ResponseEntity<ApiError> setDemoError(String token, UUID clientId, boolean demo, String confirm) {
+        return restTemplate.exchange("/api/superadmin/clients/" + clientId + "/demo", HttpMethod.PUT,
+                new HttpEntity<>(Map.of("demo", demo, "confirm", confirm), bearer(token)), ApiError.class);
     }
 
     private UserSummaryResponse addUser(TenantLoginResponse as, String email, UUID roleId) {

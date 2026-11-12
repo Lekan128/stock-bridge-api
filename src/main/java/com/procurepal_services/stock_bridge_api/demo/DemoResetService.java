@@ -81,26 +81,78 @@ public class DemoResetService {
     });
 
     /**
-     * Marks a company as the demo, or back to an ordinary company. Never the platform owner or a marketplace
-     * seller, and never a company with marketplace orders: those are real.
+     * Marks a company as the demo, or back to an ordinary company - the step that makes a company's data
+     * resettable, so it is guarded here and not only on the screen (owner, 2026-11-12: "if someone
+     * mistakenly makes a customer's store demo that will be a disaster").
+     *
+     * <ul>
+     *   <li>The company's code must be typed back, both ways.</li>
+     *   <li>Only an EMPTY company can become a demo: no products, no stock records, no marketplace orders,
+     *       nobody but the account holder. A customer who has used the app can never be made one, so a
+     *       reset can never reach a real customer's data. The one exception is a company that was a demo
+     *       before and was switched back - its data is the demo's own.</li>
+     *   <li>Never the platform owner or a marketplace seller.</li>
+     *   <li>Every change is written to {@code client_setting_changes}: who, when, and the reason.</li>
+     * </ul>
      */
     @org.springframework.transaction.annotation.Transactional
-    public void setDemo(UUID clientId, boolean demo) {
+    public void setDemo(UUID clientId, boolean demo, String confirmation, UUID superAdminId) {
         Client client = clientRepository.findById(clientId)
                 .orElseThrow(com.procurepal_services.stock_bridge_api.superadmin.ClientNotFoundException::new);
+        if (confirmation == null || !confirmation.trim().equalsIgnoreCase(client.getSlug())) {
+            throw new DemoActionNotAllowedException("Type " + client.getSlug() + " to confirm.");
+        }
+        if (client.isDemo() == demo) {
+            return;
+        }
         if (demo) {
-            if (client.isPlatformOwner() || client.isVendor()) {
-                throw new DemoActionNotAllowedException(client.getName() + " sells on the marketplace, so it can't be a demo.");
-            }
-            long orders = count("SELECT count(*) FROM orders WHERE client_id = :clientId OR seller_client_id = :clientId", clientId);
-            if (orders > 0) {
-                throw new DemoActionNotAllowedException(client.getName()
-                        + " has marketplace orders, so it's a real company and can't be a demo.");
+            String refusal = whyNotDemo(client);
+            if (refusal != null) {
+                throw new DemoActionNotAllowedException(refusal);
             }
         }
         client.setDemo(demo);
         clientRepository.save(client);
-        log.warn("Company {} ({}) is {} a demo", client.getSlug(), clientId, demo ? "now" : "no longer");
+        String username = jdbc.query("SELECT username FROM super_admins WHERE id = :id",
+                new MapSqlParameterSource("id", superAdminId), (rs, n) -> rs.getString("username"))
+                .stream().findFirst().orElse("support");
+        jdbc.update("""
+                INSERT INTO client_setting_changes (id, client_id, setting, old_value, new_value, source, changed_by,
+                                                    changed_by_kind, changed_by_username, reason, changed_at)
+                VALUES (gen_random_uuid(), :clientId, 'DEMO', :old, :new, 'SUPPORT', :by, 'SUPER_ADMIN', :username,
+                        :reason, now())
+                """, params(clientId)
+                .addValue("old", Boolean.toString(!demo)).addValue("new", Boolean.toString(demo))
+                .addValue("by", superAdminId).addValue("username", username)
+                .addValue("reason", demo ? "Made the shared demo company" : "No longer a demo company"));
+        log.warn("Company {} ({}) is {} a demo - by super admin {}", client.getSlug(), clientId,
+                demo ? "now" : "no longer", username);
+    }
+
+    /** Whether this company may be made a demo: null when it may, otherwise the sentence saying why not. */
+    public String whyNotDemo(Client client) {
+        if (client.isPlatformOwner() || client.isVendor()) {
+            return client.getName() + " sells on the marketplace, so it can't be a demo.";
+        }
+        UUID clientId = client.getId();
+        if (count("SELECT count(*) FROM orders WHERE client_id = :clientId OR seller_client_id = :clientId", clientId) > 0) {
+            return client.getName() + " has marketplace orders. It's a real customer and can't be a demo.";
+        }
+        boolean wasDemo = count("""
+                SELECT count(*) FROM client_setting_changes
+                WHERE client_id = :clientId AND setting = 'DEMO' AND new_value = 'true'
+                """, clientId) > 0;
+        if (wasDemo) {
+            return null;
+        }
+        boolean used = count("SELECT count(*) FROM products WHERE client_id = :clientId", clientId) > 0
+                || count("SELECT count(*) FROM stock_movements WHERE client_id = :clientId", clientId) > 0
+                || count("SELECT count(*) FROM users WHERE client_id = :clientId", clientId) > 1;
+        if (used) {
+            return client.getName() + " already has products, stock or staff. Only a brand-new, empty company "
+                    + "can become a demo - sign up a new one for it.";
+        }
+        return null;
     }
 
     public Status status(UUID clientId) {
