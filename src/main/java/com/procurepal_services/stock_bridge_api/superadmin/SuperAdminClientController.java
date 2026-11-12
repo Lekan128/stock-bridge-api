@@ -93,12 +93,15 @@ public class SuperAdminClientController {
 
     /** Marks the company as the shared demo prospects try (V86), or back to an ordinary company. */
     @PutMapping("/{id}/demo")
-    public SuperAdminClientDetail updateDemo(@PathVariable UUID id, @RequestBody DemoRequest request) {
-        demoResetService.setDemo(id, request.demo());
+    public SuperAdminClientDetail updateDemo(
+            @PathVariable UUID id, @RequestBody DemoRequest request,
+            @AuthenticationPrincipal SuperAdminPrincipal principal) {
+        demoResetService.setDemo(id, request.demo(), request.confirm(), principal.getSuperAdminId());
         return superAdminClientService.get(id);
     }
 
-    public record DemoRequest(boolean demo) {
+    /** {@code confirm}: the company's code, typed - required both ways. */
+    public record DemoRequest(boolean demo, String confirm) {
     }
 
     /** How the last "Reset demo" went, or 204 when none has run since the server started. */

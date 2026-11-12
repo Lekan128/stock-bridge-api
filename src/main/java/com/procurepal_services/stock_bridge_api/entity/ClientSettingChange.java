@@ -33,6 +33,9 @@ public class ClientSettingChange {
     /** The only setting so far. A name rather than a column so the next switch logs here too. */
     public static final String SELLS_STOCK = "SELLS_STOCK";
 
+    /** SuperAdmin marking a company as the shared demo, or back (V86). Always SUPPORT, with the reason. */
+    public static final String DEMO = "DEMO";
+
     /** Who made a change: a tenant user ({@code users.id}) or support ({@code super_admins.id}). */
     public enum ChangedByKind {
         TENANT_USER,
