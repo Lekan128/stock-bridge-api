@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard;
 import com.procurepal_services.stock_bridge_api.email.verification.VerifiedEmailGuard;
 import com.procurepal_services.stock_bridge_api.address.DeliveryAddressService;
 import com.procurepal_services.stock_bridge_api.cart.CartService;
@@ -51,6 +52,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class OrderService {
 
+    private final DemoCompanyGuard demoCompanyGuard;
     private final OrderRepository orderRepository;
     private final OrderItemRepository orderItemRepository;
     private final BranchRepository branchRepository;
@@ -105,6 +107,7 @@ public class OrderService {
         // and the checkout quote has already told them why (see CheckoutService.quote).
         verifiedEmailGuard.requireVerified(actingUserId);
         UUID clientId = requireTenantId();
+        demoCompanyGuard.refuseIfDemo(clientId, DemoCompanyGuard.NOTHING_LEAVES);
         Client client = checkoutService.requireClient();
         CheckoutService.PricedCart priced = checkoutService.price();
 

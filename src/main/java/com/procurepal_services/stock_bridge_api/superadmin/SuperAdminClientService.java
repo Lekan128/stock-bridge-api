@@ -29,6 +29,8 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class SuperAdminClientService {
 
+    private final com.procurepal_services.stock_bridge_api.demo.DemoResetService demoResetService;
+
     private final ClientRepository clientRepository;
     private final UserRepository userRepository;
     private final ProductRepository productRepository;
@@ -152,7 +154,8 @@ public class SuperAdminClientService {
                 userCount,
                 productCount,
                 client.getCreatedAt(),
-                client.isSellsStock());
+                client.isSellsStock(),
+                client.isDemo());
     }
 
     /**
@@ -185,7 +188,9 @@ public class SuperAdminClientService {
                 client.getPhone(),
                 client.isPlatformOwner(),
                 client.getPaymentTerms(),
-                client.isSellsStock());
+                client.isSellsStock(),
+                client.isDemo(),
+                !client.isDemo() && demoResetService.whyNotDemo(client) == null);
     }
 
     private Client findOrThrow(UUID id) {

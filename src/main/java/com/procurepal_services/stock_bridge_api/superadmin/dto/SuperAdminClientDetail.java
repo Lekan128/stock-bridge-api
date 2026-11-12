@@ -58,5 +58,9 @@ public record SuperAdminClientDetail(
         PaymentTerms paymentTerms,
         // The selling switch (V45). Support can change it on the company's behalf - see
         // PUT /api/superadmin/clients/{id}/selling.
-        boolean sellsStock) {
+        boolean sellsStock,
+        // The shared demo company prospects try (V86): nothing leaves it, and SuperAdmin can reset it.
+        boolean demo,
+        // Whether it may be made a demo now: only a brand-new, empty company may. False for a demo.
+        boolean canBecomeDemo) {
 }

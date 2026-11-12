@@ -82,4 +82,8 @@ public interface ClientRepository extends JpaRepository<Client, UUID>, JpaSpecif
             value = "SELECT count(*) FROM clients WHERE lower(admin_contact_email) = :address",
             nativeQuery = true)
     long countByLowercasedAdminContactEmail(@Param("address") String address);
+
+    /** Whether a company is the shared demo (V86). A plain column read, cheap enough to ask per request. */
+    @Query("SELECT c.demo FROM Client c WHERE c.id = :id")
+    java.util.Optional<Boolean> findDemoFlagById(@org.springframework.data.repository.query.Param("id") UUID id);
 }

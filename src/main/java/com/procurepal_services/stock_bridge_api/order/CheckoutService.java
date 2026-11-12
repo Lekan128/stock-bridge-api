@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.order;
 
+import com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard;
 import com.procurepal_services.stock_bridge_api.email.verification.VerifiedEmailGuard;
 import com.procurepal_services.stock_bridge_api.address.dto.DeliveryAddressResponse;
 import com.procurepal_services.stock_bridge_api.address.DeliveryAddressService;
@@ -82,6 +83,7 @@ import org.springframework.transaction.annotation.Transactional;
 @RequiredArgsConstructor
 public class CheckoutService {
 
+    private final DemoCompanyGuard demoCompanyGuard;
     private final CartService cartService;
     private final BuyerCatalogLookup buyerCatalogLookup;
     private final MarketplaceSettingsRepository marketplaceSettingsRepository;
@@ -182,6 +184,11 @@ public class CheckoutService {
         boolean emailVerificationRequired = !verifiedEmailGuard.isVerified(actingUserId);
         if (emailVerificationRequired) {
             blockers.addFirst("Confirm your email address to place orders.");
+        }
+        // Said up front, like the email rule, so a prospect browsing the demo learns it at checkout
+        // rather than at the Place order button. OrderService.place refuses the same thing.
+        if (demoCompanyGuard.isDemo(client.getId())) {
+            blockers.addFirst(DemoCompanyGuard.NOTHING_LEAVES);
         }
         if (address == null) {
             blockers.add("Add a delivery address before checking out.");
