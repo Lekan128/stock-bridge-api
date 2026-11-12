@@ -118,7 +118,19 @@ class DemoResetIntegrationTest {
                 SELECT count(*) FROM stock_movements WHERE client_id = ? AND out_reason IN ('DAMAGED', 'EXPIRED')
                 """, clientId)).isPositive();
         assertThat(count("SELECT count(*) FROM stock_transfers WHERE client_id = ?", clientId)).isGreaterThan(3);
-        assertThat(count("SELECT count(*) FROM expected_deliveries WHERE client_id = ? AND status = 'OPEN'", clientId)).isEqualTo(3);
+        assertThat(count("SELECT count(*) FROM expected_deliveries WHERE client_id = ? AND status = 'OPEN'", clientId)).isEqualTo(4);
+        // One of each thing a fresh company has none of: an order waiting for approval, a price request two
+        // suppliers have answered, and the kitchen asking the store for stock.
+        assertThat(count("SELECT count(*) FROM expected_deliveries WHERE client_id = ? AND approval = 'WAITING'", clientId)).isEqualTo(1);
+        assertThat(count("""
+                SELECT count(*) FROM price_request_suppliers s JOIN price_requests r ON r.id = s.request_id
+                WHERE r.client_id = ? AND s.replied_at IS NOT NULL
+                """, clientId)).isEqualTo(2);
+        assertThat(count("SELECT count(*) FROM stock_requests WHERE client_id = ?", clientId)).isEqualTo(1);
+        // The history is recorded by the kitchen staff, not all by the owner.
+        assertThat(count("""
+                SELECT count(DISTINCT m.created_by) FROM stock_movements m WHERE m.client_id = ?
+                """, clientId)).isGreaterThanOrEqualTo(3);
         // Some things are low, so the reorder screens have something to say.
         assertThat(count("""
                 SELECT count(*) FROM branch_stock bs JOIN products p ON p.id = bs.product_id
@@ -148,7 +160,7 @@ class DemoResetIntegrationTest {
 
         // A purchase order "sent" by email from the demo is marked sent, and nothing is handed to the provider.
         UUID orderId = jdbc.queryForObject(
-                "SELECT id FROM expected_deliveries WHERE client_id = ? AND sent_at IS NULL LIMIT 1", UUID.class, clientId);
+                "SELECT id FROM expected_deliveries WHERE client_id = ? AND sent_at IS NULL AND approval IS DISTINCT FROM 'WAITING' LIMIT 1", UUID.class, clientId);
         restTemplate.exchange("/api/expected-deliveries/" + orderId + "/email", HttpMethod.POST,
                 new HttpEntity<>(null, bearer(owner.tokens().accessToken())), String.class);
         assertThat(jdbc.queryForObject(
@@ -160,7 +172,10 @@ class DemoResetIntegrationTest {
         assertThat(again.get("state")).as(String.valueOf(again)).isEqualTo("DONE");
         assertThat(count("SELECT count(*) FROM products WHERE client_id = ?", clientId)).isEqualTo(DemoCatalog.ITEMS.size());
         assertThat(count("SELECT count(*) FROM purchase_order_emails WHERE client_id = ?", clientId)).isZero();
-        assertThat(count("SELECT count(*) FROM users WHERE client_id = ?", clientId)).isEqualTo(4);
+        // The owner, the three sample staff (made once, not again) and the three people added here.
+        assertThat(count("SELECT count(*) FROM users WHERE client_id = ?", clientId)).isEqualTo(7);
+        assertThat(count("SELECT count(*) FROM user_branches WHERE client_id = ?", clientId))
+                .isEqualTo(count("SELECT count(DISTINCT (user_id, branch_id)) FROM user_branches WHERE client_id = ?", clientId));
         assertThat(login(slug, prospect.username()).tokens().accessToken()).isNotBlank();
     }
 

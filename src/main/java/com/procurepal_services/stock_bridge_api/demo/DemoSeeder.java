@@ -2,6 +2,13 @@ package com.procurepal_services.stock_bridge_api.demo;
 
 import com.procurepal_services.stock_bridge_api.branch.AreaMoveService;
 import com.procurepal_services.stock_bridge_api.branch.AreaService;
+import com.procurepal_services.stock_bridge_api.branch.StockRequestService;
+import com.procurepal_services.stock_bridge_api.branch.dto.StockRequestCreateRequest;
+import com.procurepal_services.stock_bridge_api.expected.PriceRequestService;
+import com.procurepal_services.stock_bridge_api.user.RoleManagementService;
+import com.procurepal_services.stock_bridge_api.user.UserManagementService;
+import com.procurepal_services.stock_bridge_api.user.dto.CreateRoleRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
 import com.procurepal_services.stock_bridge_api.branch.BranchService;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaMoveRequest;
 import com.procurepal_services.stock_bridge_api.branch.dto.AreaRequest;
@@ -111,6 +118,10 @@ public class DemoSeeder {
     private final ExpectedDeliveryService expectedDeliveryService;
     private final SellingSettingsService sellingSettingsService;
     private final S3ImageService s3ImageService;
+    private final RoleManagementService roleManagementService;
+    private final UserManagementService userManagementService;
+    private final PriceRequestService priceRequestService;
+    private final StockRequestService stockRequestService;
     private final NamedParameterJdbcTemplate jdbc;
 
     @PersistenceContext
@@ -134,7 +145,8 @@ public class DemoSeeder {
     }
 
     /** What was made, for the SuperAdmin screen. */
-    public record Result(int products, int suppliers, int pictures, long movements, int transfers, int purchaseOrders) {
+    public record Result(int products, int suppliers, int pictures, long movements, int transfers, int purchaseOrders,
+            int staff) {
     }
 
     /** One branch while the history is played. */
@@ -145,6 +157,8 @@ public class DemoSeeder {
         final Map<Home, UUID> homeAreas = new HashMap<>();
         UUID kitchen;
         UUID bar;
+        /** Who records this branch's day-to-day stock: its storekeeper. */
+        UUID recorder;
         final Set<String> lowAtEnd;
 
         BranchPlan(UUID id, String name, BigDecimal share, Set<String> lowAtEnd) {
@@ -183,6 +197,11 @@ public class DemoSeeder {
         setUpAreas(main, clientId, ownerId, true);
         setUpAreas(second, clientId, ownerId, false);
         List<BranchPlan> branches = List.of(main, second);
+
+        progress.accept("Adding the kitchen staff");
+        Staff staff = ensureStaff(clientId, ownerId, main, second);
+        main.recorder = staff.mainStore();
+        second.recorder = staff.secondStore();
 
         progress.accept("Adding suppliers and products");
         Map<String, UUID> categories = new HashMap<>();
@@ -269,7 +288,7 @@ public class DemoSeeder {
                 if (branch.main() && day % 2 == 1) {
                     OffsetDateTime at = at(date, 22, 30, now);
                     if (at != null) {
-                        countKitchen(branch, products, stock, random, at, ownerId);
+                        countKitchen(branch, products, stock, random, at, staff.chef());
                     }
                 }
 
@@ -314,13 +333,16 @@ public class DemoSeeder {
         progress.accept("Adding purchase orders");
         int purchaseOrders = createPurchaseOrders(main, second, products, suppliers, now, ownerId);
 
+        progress.accept("Adding a price request, an approval and a kitchen request");
+        purchaseOrders += addExamples(main, products, suppliers, staff, now, ownerId);
+
         progress.accept("Setting the dates");
         entityManager.flush();
         backdate(clientId, start);
 
         long movements = jdbc.queryForObject(
                 "SELECT count(*) FROM stock_movements WHERE client_id = :clientId", params(clientId), Long.class);
-        return new Result(products.size(), suppliers.size(), pictures, movements, transfers, purchaseOrders);
+        return new Result(products.size(), suppliers.size(), pictures, movements, transfers, purchaseOrders, 3);
     }
 
     // ------------------------------------------------------------------------------------------- set-up
@@ -450,7 +472,7 @@ public class DemoSeeder {
         String note = day == 0 ? "Opening stock" : null;
         stockManagementService.stockIn(productId, new StockInRequest(
                 quantity, price, note, unit, suppliers.get(supplierKey), null, null, at, null, null, null,
-                branch.id, area), ownerId);
+                branch.id, area), branch.recorder);
         written();
         stock.merge(key, stockUnits, BigDecimal::add);
     }
@@ -502,13 +524,13 @@ public class DemoSeeder {
         for (Map.Entry<UUID, List<AreaMoveRequest.Line>> move : byArea.entrySet()) {
             areaMoveService.move(new AreaMoveRequest(
                     UUID.randomUUID(), branch.id, move.getKey(), branch.kitchen, at, false,
-                    "Morning issue", move.getValue()), ownerId);
+                    "Morning issue", move.getValue()), branch.recorder);
             written();
         }
     }
 
     private void countKitchen(BranchPlan branch, Map<String, UUID> products, Map<String, BigDecimal> stock,
-            Random random, OffsetDateTime at, UUID ownerId) {
+            Random random, OffsetDateTime at, UUID chefId) {
         for (Item item : DemoCatalog.ITEMS) {
             if (!KEPT_IN_KITCHEN.contains(item.key())) {
                 continue;
@@ -521,7 +543,7 @@ public class DemoSeeder {
             BigDecimal used = item.dailyUse().multiply(BigDecimal.valueOf(2 * (0.85 + random.nextDouble() * 0.3)));
             BigDecimal counted = roundHalf(have.subtract(used).max(BigDecimal.ZERO));
             stockManagementService.count(products.get(item.key()),
-                    new StockCountRequest(counted, at, null, branch.id, branch.kitchen), ownerId);
+                    new StockCountRequest(counted, at, null, branch.id, branch.kitchen), chefId);
             written();
             stock.put(key, counted);
         }
@@ -549,7 +571,7 @@ public class DemoSeeder {
             }
             stockManagementService.stockOut(products.get(item.key()), new StockOutRequest(
                     quantity, item.sellPrice(), null, item.stockUnit(), null, at, null, OutReason.SALE, saleId,
-                    null, branch.id, branch.bar), ownerId);
+                    null, branch.id, branch.bar), branch.recorder);
             written();
             stock.merge(key, quantity.negate(), BigDecimal::add);
         }
@@ -568,7 +590,7 @@ public class DemoSeeder {
             BigDecimal counted = have.subtract(missing).max(BigDecimal.ZERO);
             stockManagementService.count(products.get(item.key()),
                     new StockCountRequest(counted, at, missing.signum() > 0 ? "Short at the Sunday count" : null,
-                            branch.id, branch.bar), ownerId);
+                            branch.id, branch.bar), branch.recorder);
             written();
             stock.put(key, counted);
         }
@@ -588,9 +610,123 @@ public class DemoSeeder {
         OutReason reason = random.nextBoolean() ? OutReason.DAMAGED : OutReason.EXPIRED;
         stockManagementService.stockOut(products.get(item.key()), new StockOutRequest(
                 quantity, null, SPOILT_NOTES.get(random.nextInt(SPOILT_NOTES.size())), item.stockUnit(), null, at,
-                null, reason, null, null, branch.id, area), ownerId);
+                null, reason, null, null, branch.id, area), branch.recorder);
         written();
         stock.merge(key, quantity.negate(), BigDecimal::add);
+    }
+
+    /** The sample kitchen staff: made once, kept by every reset like any other user. */
+    record Staff(UUID chef, UUID mainStore, UUID secondStore) {
+    }
+
+    static final String CHEF_ROLE = "Head chef";
+
+    /**
+     * Three people the history is recorded by, so "who did this" shows names and a prospect sees roles in
+     * use. Made the first time, by the account holder, with passwords nobody knows - they exist to be seen,
+     * not to sign in. A later reset finds them and only puts them back at their branch.
+     *
+     * <p>The head chef's role is custom: it may make purchase orders but not send them, so what the chef
+     * orders waits for the owner's approval - the approval example below.
+     */
+    private Staff ensureStaff(UUID clientId, UUID ownerId, BranchPlan main, BranchPlan second) {
+        UUID chefRole = jdbc.query("SELECT id FROM roles WHERE client_id = :clientId AND name = :name",
+                params(clientId).addValue("name", CHEF_ROLE), (rs, n) -> rs.getObject("id", UUID.class))
+                .stream().findFirst().orElse(null);
+        if (chefRole == null) {
+            java.util.Set<String> codes = new java.util.HashSet<>(jdbc.queryForList("""
+                    SELECT p.code FROM roles r JOIN role_permissions rp ON rp.role_id = r.id
+                    JOIN permissions p ON p.id = rp.permission_id
+                    WHERE r.client_id IS NULL AND r.name = 'STOREKEEPER'
+                    """, new MapSqlParameterSource(), String.class));
+            codes.remove("SEND_PURCHASE_ORDER");
+            codes.add("CREATE_PURCHASE_ORDER");
+            chefRole = roleManagementService.create(new CreateRoleRequest(CHEF_ROLE,
+                    "Runs the kitchen. Makes purchase orders that wait for approval before they go.", codes)).id();
+        }
+        UUID storekeeper = jdbc.queryForObject(
+                "SELECT id FROM roles WHERE client_id IS NULL AND name = 'STOREKEEPER'", new MapSqlParameterSource(), UUID.class);
+        UUID chef = ensureUser(clientId, ownerId, "bisi.adeyemi", "Bisi", "Adeyemi", "Head chef", chefRole, main.id);
+        UUID mainStore = ensureUser(clientId, ownerId, "emeka.okafor", "Emeka", "Okafor", "Storekeeper", storekeeper, main.id);
+        UUID secondStore = ensureUser(clientId, ownerId, "halima.musa", "Halima", "Musa", "Storekeeper", storekeeper, second.id);
+        entityManager.flush();
+        return new Staff(chef, mainStore, secondStore);
+    }
+
+    private UUID ensureUser(UUID clientId, UUID ownerId, String username, String firstName, String lastName,
+            String jobTitle, UUID roleId, UUID branchId) {
+        UUID existing = jdbc.query("SELECT id FROM users WHERE client_id = :clientId AND username = :username",
+                params(clientId).addValue("username", username), (rs, n) -> rs.getObject("id", UUID.class))
+                .stream().findFirst().orElse(null);
+        if (existing != null) {
+            branchService.assign(existing, List.of(branchId));
+            return existing;
+        }
+        // Random and never shown (bcrypt reads at most 72 bytes; this is 64).
+        String password = UUID.randomUUID().toString().replace("-", "") + UUID.randomUUID().toString().replace("-", "");
+        return userManagementService.create(new CreateUserRequest(username, password, roleId, firstName, lastName,
+                null, null, jobTitle, List.of(branchId), null), ownerId).id();
+    }
+
+    /**
+     * One of each thing that is otherwise empty in a fresh company: an order the chef made that waits for
+     * the owner's approval, a price request two suppliers have answered (ready to compare and order from),
+     * and the kitchen asking the store for today's stock.
+     */
+    private int addExamples(BranchPlan main, Map<String, UUID> products, Map<String, UUID> suppliers, Staff staff,
+            OffsetDateTime now, UUID ownerId) {
+        LocalDate today = now.toLocalDate();
+        expectedDeliveryService.create(new ExpectedDeliveryRequest(
+                suppliers.get("coldchain-foods"), today.plusDays(2).toString(), null, "For the weekend",
+                List.of(line(products, "chicken", "CARTON", "4", "55000"), line(products, "turkey", "CARTON", "2", "70000")),
+                main.id, true, false, null, null, "Saturday is fully booked - we'll run out of chicken."), staff.chef());
+
+        PriceRequestService.Request asked = priceRequestService.create(new PriceRequestService.NewRequest(
+                List.of(rfqLine(products, "rice", "5"), rfqLine(products, "veg-oil", "3"), rfqLine(products, "tomato-paste", "4")),
+                List.of(suppliers.get("bodija-provisions"), suppliers.get("daleko-rice")),
+                today.plusDays(6), today.plusDays(2), main.id, "Prices for next month's dry goods"), ownerId);
+        Map<UUID, String> lineKeys = new HashMap<>();
+        for (PriceRequestService.Line line : asked.lines()) {
+            products.forEach((key, id) -> {
+                if (id.equals(line.productId())) {
+                    lineKeys.put(line.id(), key);
+                }
+            });
+        }
+        for (PriceRequestService.Supplier supplier : asked.suppliers()) {
+            boolean daleko = supplier.vendorId().equals(suppliers.get("daleko-rice"));
+            List<PriceRequestService.LineReply> replies = new ArrayList<>();
+            for (PriceRequestService.Line line : asked.lines()) {
+                String key = lineKeys.get(line.id());
+                if (daleko && key.equals("tomato-paste")) {
+                    replies.add(new PriceRequestService.LineReply(line.id(), null, true));
+                    continue;
+                }
+                BigDecimal price = item(key).packCost();
+                if (daleko) {
+                    // Cheaper rice, dearer oil: the request page shows the cheapest mix.
+                    price = key.equals("rice") ? new BigDecimal("91000") : price.add(new BigDecimal("3000"));
+                }
+                replies.add(new PriceRequestService.LineReply(line.id(), price, false));
+            }
+            priceRequestService.typeReply(asked.id(), supplier.id(), new PriceRequestService.Reply(replies,
+                    daleko ? new BigDecimal("8000") : new BigDecimal("5000"), today.plusDays(daleko ? 4 : 2),
+                    daleko ? "No tomato paste this month" : null, false), ownerId);
+        }
+
+        stockRequestService.ask(new StockRequestCreateRequest(UUID.randomUUID(), main.id, main.homeAreas.get(Home.STORE),
+                main.kitchen, now.minusMinutes(40), "For lunch service", List.of(
+                        new StockRequestCreateRequest.Line(products.get("onions"), new BigDecimal("6"), "KG"),
+                        new StockRequestCreateRequest.Line(products.get("plantain"), new BigDecimal("30"), "PIECE"),
+                        new StockRequestCreateRequest.Line(products.get("eggs"), new BigDecimal("30"), "PIECE"))),
+                staff.chef());
+        return 1;
+    }
+
+    private static PriceRequestService.NewLine rfqLine(Map<String, UUID> products, String key, String quantity) {
+        Item item = item(key);
+        return new PriceRequestService.NewLine(products.get(key),
+                item.packUnit() + ":" + item.packSize().stripTrailingZeros().toPlainString(), new BigDecimal(quantity));
     }
 
     /**
@@ -614,7 +750,7 @@ public class DemoSeeder {
                 stockManagementService.stockOut(products.get(itemKey), new StockOutRequest(
                         used, item.sold() ? item.sellPrice() : null, item.sold() ? "Event order" : null,
                         item.stockUnit(), null, at, null, reason,
-                        item.sold() ? UUID.randomUUID() : null, null, branch.id, area), ownerId);
+                        item.sold() ? UUID.randomUUID() : null, null, branch.id, area), branch.recorder);
                 written();
                 stock.merge(key, used.negate(), BigDecimal::add);
             }
