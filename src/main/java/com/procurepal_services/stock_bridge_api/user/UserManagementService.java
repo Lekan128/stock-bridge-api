@@ -1,5 +1,7 @@
 package com.procurepal_services.stock_bridge_api.user;
 
+import com.procurepal_services.stock_bridge_api.demo.DemoActionNotAllowedException;
+import com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard;
 import com.procurepal_services.stock_bridge_api.branch.BranchAccessService;
 import com.procurepal_services.stock_bridge_api.branch.BranchChangeRefusedException;
 import com.procurepal_services.stock_bridge_api.branch.BranchService;
@@ -59,6 +61,7 @@ public class UserManagementService {
     private final BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.branch.AreaAccessService areaAccessService;
     private final BranchStockService branchStockService;
+    private final DemoCompanyGuard demoCompanyGuard;
 
     @Transactional(readOnly = true)
     public Page<UserSummaryResponse> list(Pageable pageable) {
@@ -72,6 +75,12 @@ public class UserManagementService {
 
     @Transactional
     public UserSummaryResponse create(CreateUserRequest request) {
+        return create(request, null);
+    }
+
+    /** {@code callerId}: who is adding them, kept on the row (V86) - null when unknown. */
+    @Transactional
+    public UserSummaryResponse create(CreateUserRequest request, UUID callerId) {
         UUID tenantId = requireTenantId();
 
         // Before the username check and before anything is built: a refusal here must
@@ -97,6 +106,7 @@ public class UserManagementService {
                 // Stated rather than left to the column default: nothing created
                 // through this API is ever the account holder.
                 .root(false)
+                .createdBy(callerId)
                 .firstName(normalize(request.firstName()))
                 .lastName(normalize(request.lastName()))
                 .email(normalize(request.email()))
@@ -134,6 +144,9 @@ public class UserManagementService {
     @Transactional
     public UserSummaryResponse update(UUID id, UpdateUserRequest request, UUID callerId) {
         User user = findTenantUserOrThrow(id);
+        if (!user.getId().equals(callerId)) {
+            refuseOtherPeoplesAccountsInDemo(user, callerId);
+        }
 
         // Checked before the root rules so a root user editing themselves still
         // gets the more specific "you can't change your own role here" message.
@@ -188,6 +201,9 @@ public class UserManagementService {
         if (user.isRoot() && !user.getId().equals(callerId)) {
             throw new RootPasswordResetNotAllowedException();
         }
+        if (!user.getId().equals(callerId)) {
+            refuseOtherPeoplesAccountsInDemo(user, callerId);
+        }
         user.setPasswordHash(passwordEncoder.encode(request.newPassword()));
         // An alert, not a delivery. Its whole value is reaching a user whose password
         // was changed without their knowledge, so it names the account and says to
@@ -205,9 +221,28 @@ public class UserManagementService {
         if (user.isRoot()) {
             throw new RootUserDeactivationNotAllowedException();
         }
+        refuseOtherPeoplesAccountsInDemo(user, callerId);
 
         assertKeepsAtLeastOneActiveOwner(user, user.getRole().getName(), false);
         user.setActive(false);
+    }
+
+    /**
+     * The shared demo company (V86): several prospects sign in to one company, so none of them may
+     * change, reset or switch off someone else's account - only the people they added themselves.
+     * The account holder (us) still manages everyone. A real company is never affected.
+     */
+    private void refuseOtherPeoplesAccountsInDemo(User target, UUID callerId) {
+        if (!demoCompanyGuard.isDemo(target.getClientId())) {
+            return;
+        }
+        boolean callerIsRoot = callerId != null
+                && userRepository.findById(callerId).map(User::isRoot).orElse(false);
+        if (callerIsRoot || (callerId != null && callerId.equals(target.getCreatedBy()))) {
+            return;
+        }
+        throw new DemoActionNotAllowedException("This is a shared demo company, so you can change only the "
+                + "people you added yourself. Add someone new to try this out.");
     }
 
     private User findTenantUserOrThrow(UUID id) {

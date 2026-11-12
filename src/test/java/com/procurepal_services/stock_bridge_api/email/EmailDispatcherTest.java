@@ -40,6 +40,8 @@ class EmailDispatcherTest {
     private EmailEligibility eligibility;
     private EmailDispatcher dispatcher;
 
+    private com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard demoCompanyGuard;
+
     @BeforeEach
     void setUp() {
         emailSender = mock(EmailSender.class);
@@ -48,7 +50,8 @@ class EmailDispatcherTest {
         // read as they did before per-recipient gating existed.
         when(eligibility.filterEligible(anyCollection(), any()))
                 .thenAnswer(invocation -> List.copyOf(invocation.getArgument(0)));
-        dispatcher = new EmailDispatcher(emailSender, eligibility);
+        demoCompanyGuard = mock(com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard.class);
+        dispatcher = new EmailDispatcher(emailSender, eligibility, demoCompanyGuard);
     }
 
     @AfterEach
@@ -74,6 +77,19 @@ class EmailDispatcherTest {
      * order the database rolled back - and unlike an in-app notification, an email
      * cannot be taken back once SES has it.
      */
+    /** The shared demo company (V86): its notifications go nowhere, but a person's own account email does. */
+    @Test
+    void theDemoCompanySendsOnlyAccountEmails() {
+        when(demoCompanyGuard.currentIsDemo()).thenReturn(true);
+
+        dispatcher.dispatch(MESSAGE);
+        verify(emailSender, never()).sendAsync(any());
+
+        EmailMessage security = new EmailMessage(MESSAGE.to(), "Your password was changed", "<p>hi</p>", "hi", EmailKind.SECURITY);
+        dispatcher.dispatch(security);
+        verify(emailSender).sendAsync(security);
+    }
+
     @Test
     void neverSendsWhenTheTransactionRollsBack() {
         TransactionSynchronizationManager.initSynchronization();

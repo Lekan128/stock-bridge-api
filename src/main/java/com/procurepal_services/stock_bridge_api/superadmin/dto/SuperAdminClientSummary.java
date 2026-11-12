@@ -17,5 +17,7 @@ public record SuperAdminClientSummary(
         long userCount,
         long productCount,
         OffsetDateTime createdAt,
-        boolean sellsStock) {
+        boolean sellsStock,
+        // The shared demo company prospects try (V86).
+        boolean demo) {
 }

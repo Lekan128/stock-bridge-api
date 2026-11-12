@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.superadmin;
 
+import com.procurepal_services.stock_bridge_api.demo.DemoResetService;
 import com.procurepal_services.stock_bridge_api.analytics.AnalyticsService;
 import com.procurepal_services.stock_bridge_api.analytics.dto.AnalyticsSummaryResponse;
 import com.procurepal_services.stock_bridge_api.analytics.dto.MovementsOverTimePoint;
@@ -54,6 +55,7 @@ public class SuperAdminClientController {
     private final ClientCatalogResetService clientCatalogResetService;
     private final SellingSettingsService sellingSettingsService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchService branchService;
+    private final DemoResetService demoResetService;
 
     @GetMapping
     public Page<SuperAdminClientSummary> list(
@@ -87,6 +89,38 @@ public class SuperAdminClientController {
 
     /** {@code enabled}: whether this company may add branches while they are in pilot. */
     public record BranchesPilotRequest(boolean enabled) {
+    }
+
+    /** Marks the company as the shared demo prospects try (V86), or back to an ordinary company. */
+    @PutMapping("/{id}/demo")
+    public SuperAdminClientDetail updateDemo(@PathVariable UUID id, @RequestBody DemoRequest request) {
+        demoResetService.setDemo(id, request.demo());
+        return superAdminClientService.get(id);
+    }
+
+    public record DemoRequest(boolean demo) {
+    }
+
+    /** How the last "Reset demo" went, or 204 when none has run since the server started. */
+    @GetMapping("/{id}/demo-reset")
+    public org.springframework.http.ResponseEntity<DemoResetService.Status> demoResetStatus(@PathVariable UUID id) {
+        DemoResetService.Status status = demoResetService.status(id);
+        return status == null
+                ? org.springframework.http.ResponseEntity.noContent().build()
+                : org.springframework.http.ResponseEntity.ok(status);
+    }
+
+    /**
+     * Wipes the demo company and fills it again with a fresh 90 days ending today. {@code confirm} is the
+     * company's code, typed. Answers at once; the reset runs in the background (a few minutes).
+     */
+    @PostMapping("/{id}/demo-reset")
+    public org.springframework.http.ResponseEntity<DemoResetService.Status> resetDemo(
+            @PathVariable UUID id, @RequestBody DemoResetRequest request) {
+        return org.springframework.http.ResponseEntity.accepted().body(demoResetService.start(id, request.confirm()));
+    }
+
+    public record DemoResetRequest(String confirm) {
     }
 
     @GetMapping("/{id}")

@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.payment;
 
+import com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard;
 import com.procurepal_services.stock_bridge_api.email.verification.VerifiedEmailGuard;
 import com.procurepal_services.stock_bridge_api.entity.Order;
 import com.procurepal_services.stock_bridge_api.entity.OrderStatus;
@@ -35,6 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 public class MonnifyPaymentService {
 
+    private final DemoCompanyGuard demoCompanyGuard;
     private static final String PROVIDER = "MONNIFY";
     private static final String DEFAULT_CURRENCY = "NGN";
 
@@ -85,6 +87,7 @@ public class MonnifyPaymentService {
      */
     @Transactional
     public InitializePaymentResponse initialize(UUID orderId, UUID callerClientId, UUID callerUserId) {
+        demoCompanyGuard.refuseIfDemo(callerClientId, DemoCompanyGuard.NOTHING_LEAVES);
         if (!monnifyClient.isConfigured()) {
             log.warn("Checkout attempted for order {} while Monnify is unconfigured", orderId);
             throw new MonnifyNotConfiguredException();
