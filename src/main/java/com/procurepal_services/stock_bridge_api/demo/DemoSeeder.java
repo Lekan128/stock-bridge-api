@@ -19,8 +19,6 @@ import com.procurepal_services.stock_bridge_api.companyvendor.dto.CompanyVendorR
 import com.procurepal_services.stock_bridge_api.demo.DemoCatalog.Home;
 import com.procurepal_services.stock_bridge_api.demo.DemoCatalog.Item;
 import com.procurepal_services.stock_bridge_api.entity.OutReason;
-import com.procurepal_services.stock_bridge_api.entity.SettingChangeSource;
-import com.procurepal_services.stock_bridge_api.entity.StockUse;
 import com.procurepal_services.stock_bridge_api.expected.ExpectedDeliveryService;
 import com.procurepal_services.stock_bridge_api.expected.dto.ExpectedDeliveryRequest;
 import com.procurepal_services.stock_bridge_api.expected.dto.ExpectedDeliveryResponse;
@@ -185,7 +183,8 @@ public class DemoSeeder {
 
         progress.accept("Setting up branches and areas");
         branchService.setEnabledBySupport(clientId, true);
-        sellingSettingsService.update(true, SettingChangeSource.OWNER, StockUse.BOTH, ownerId);
+        // Support's switch, not the owner's: in the selling pilot a new company can't turn it on itself.
+        sellingSettingsService.turnOnForDemo(clientId);
 
         UUID mainId = jdbc.queryForObject(
                 "SELECT id FROM branches WHERE client_id = :clientId AND is_default", params(clientId), UUID.class);

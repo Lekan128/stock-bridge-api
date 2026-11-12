@@ -33,11 +33,15 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 
 /** SuperAdmin's demo company (V86): marking it, resetting it, and what a demo refuses to do. */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @AutoConfigureTestRestTemplate
 @ActiveProfiles("local")
+// Prod runs selling and branches in pilot; the local profile opens both, which hid a reset that
+// failed on every real server (2026-11-12). The demo must work in pilot.
+@TestPropertySource(properties = {"app.selling.rollout=pilot", "app.branches.rollout=pilot"})
 class DemoResetIntegrationTest {
 
     private static final String PASSWORD = "correct-horse-battery-staple";
