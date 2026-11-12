@@ -33,7 +33,8 @@ public class SuperAdminAggregateService {
 
     @Transactional(readOnly = true)
     public PlatformAggregateResponse aggregate(OffsetDateTime from, OffsetDateTime to) {
-        List<Client> clients = clientRepository.findAll();
+        // The shared demo company (V86) is not a customer: its stock and users would only inflate these.
+        List<Client> clients = clientRepository.findAll().stream().filter(client -> !client.isDemo()).toList();
 
         long totalActiveClients = 0;
         long totalActiveUsers = 0;

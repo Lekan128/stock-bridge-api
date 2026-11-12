@@ -152,7 +152,8 @@ public class SuperAdminClientService {
                 userCount,
                 productCount,
                 client.getCreatedAt(),
-                client.isSellsStock());
+                client.isSellsStock(),
+                client.isDemo());
     }
 
     /**
@@ -185,7 +186,8 @@ public class SuperAdminClientService {
                 client.getPhone(),
                 client.isPlatformOwner(),
                 client.getPaymentTerms(),
-                client.isSellsStock());
+                client.isSellsStock(),
+                client.isDemo());
     }
 
     private Client findOrThrow(UUID id) {

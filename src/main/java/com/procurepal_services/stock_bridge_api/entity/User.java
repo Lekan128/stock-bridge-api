@@ -69,6 +69,10 @@ public class User extends TenantAwareEntity {
     @Column(name = "is_root", nullable = false)
     private boolean root;
 
+    /** Who added this user (V86); null for the account holder and users added before it was kept. */
+    @Column(name = "created_by")
+    private UUID createdBy;
+
     @Column(name = "first_name", length = 100)
     private String firstName;
 

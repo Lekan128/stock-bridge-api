@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.expected;
 
+import com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard;
 import com.procurepal_services.stock_bridge_api.email.EmailEligibility;
 import com.procurepal_services.stock_bridge_api.email.EmailKind;
 import com.procurepal_services.stock_bridge_api.email.EmailMessage;
@@ -50,6 +51,7 @@ public class PurchaseOrderEmailService {
     private final PurchaseOrderPdf purchaseOrderPdf;
     private final LogoFetcher logoFetcher;
     private final EmailSender emailSender;
+    private final DemoCompanyGuard demoCompanyGuard;
     private final EmailEligibility emailEligibility;
     private final VerifiedEmailGuard verifiedEmailGuard;
     private final PurchaseOrderEmailRepository emailRepository;
@@ -80,6 +82,14 @@ public class PurchaseOrderEmailService {
 
         if (target.calledOff()) {
             record(target, address, PurchaseOrderEmailStatus.FAILED, "This order was called off, so it isn't being sent.", null, userId);
+            return;
+        }
+        if (address != null && demoCompanyGuard.currentIsDemo()) {
+            // The shared demo (V86): the order is marked sent, so a prospect sees exactly what
+            // happens next, but nothing reaches the supplier - the sample suppliers are made up,
+            // and a real address a prospect typed in must not get an order from a demo.
+            record(target, address, PurchaseOrderEmailStatus.SENT, null, "demo", userId);
+            expectedDeliveryService.recordSent(target.orderId(), "EMAIL");
             return;
         }
         if (!verifiedEmailGuard.isVerified(userId)) {

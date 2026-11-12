@@ -1,5 +1,6 @@
 package com.procurepal_services.stock_bridge_api.email;
 
+import com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -79,11 +80,22 @@ public class EmailDispatcher {
 
     private final EmailSender emailSender;
     private final EmailEligibility eligibility;
+    private final DemoCompanyGuard demoCompanyGuard;
 
     public void dispatch(EmailMessage message) {
         if (message == null || !message.hasRecipients()) {
             // Ordinary: a company with no email addresses on file. See
             // EmailMessage.hasRecipients for why this is not worth a log line.
+            return;
+        }
+
+        // The shared demo company (V86): prospects testing it must not get each other's
+        // notifications, and nothing it does reaches a supplier. Only the emails about a
+        // person's own account - confirm your address, your password changed - go out.
+        // Asked on the caller's thread, where the request's company is still known.
+        if (message.kind() != EmailKind.VERIFICATION && message.kind() != EmailKind.SECURITY
+                && demoCompanyGuard.currentIsDemo()) {
+            log.debug("Not sending {} email \"{}\" from the demo company.", message.kind(), message.subject());
             return;
         }
 

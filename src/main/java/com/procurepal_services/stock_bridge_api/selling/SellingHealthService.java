@@ -47,6 +47,8 @@ public class SellingHealthService {
                 LEFT JOIN stock_movements c ON c.corrects_movement_id = o.id
                 WHERE o.sale_id IS NOT NULL AND o.movement_type = 'OUT'
                   AND o.occurred_at >= :from AND o.occurred_at < :to
+                  -- The shared demo company (V86) is not a customer selling anything.
+                  AND o.client_id NOT IN (SELECT id FROM clients WHERE is_demo)
             )
             """;
 
@@ -79,7 +81,7 @@ public class SellingHealthService {
                     WHERE ch.client_id = cl.id AND ch.setting = 'SELLS_STOCK' AND ch.new_value = 'true'
                     ORDER BY ch.changed_at DESC LIMIT 1
                 ) last ON TRUE
-                WHERE cl.sells_stock
+                WHERE cl.sells_stock AND NOT cl.is_demo
                 GROUP BY 1 ORDER BY 2 DESC
                 """, new MapSqlParameterSource(), (ResultSet rs) -> {
             via.put(rs.getString("source"), rs.getLong("n"));
@@ -110,7 +112,7 @@ public class SellingHealthService {
                 SELECT cl.id AS client_id, cl.name AS client_name, MAX(l.occurred_at) AS last_sale_at,
                 """ + AGGREGATES.replace("sale_id", "l.sale_id") + """
                 FROM clients cl LEFT JOIN lines l ON l.client_id = cl.id
-                WHERE cl.sells_stock OR l.client_id IS NOT NULL
+                WHERE (cl.sells_stock OR l.client_id IS NOT NULL) AND NOT cl.is_demo
                 GROUP BY cl.id, cl.name
                 ORDER BY COUNT(l.sale_id) DESC, cl.name
                 LIMIT 100

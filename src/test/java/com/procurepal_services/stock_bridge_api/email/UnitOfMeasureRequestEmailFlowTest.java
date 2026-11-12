@@ -60,7 +60,9 @@ class UnitOfMeasureRequestEmailFlowTest {
         EmailRecipients recipients =
                 new EmailRecipients(clientRepository, userRepository, superAdminRepository, properties);
         emailSender = mock(EmailSender.class);
-        EmailDispatcher dispatcher = new EmailDispatcher(emailSender, eligibility);
+        com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard demoCompanyGuard =
+                mock(com.procurepal_services.stock_bridge_api.demo.DemoCompanyGuard.class);
+        EmailDispatcher dispatcher = new EmailDispatcher(emailSender, eligibility, demoCompanyGuard);
 
         emailNotificationService =
                 new EmailNotificationService(dispatcher, recipients, properties, orderItemRepository, clientRepository, null);

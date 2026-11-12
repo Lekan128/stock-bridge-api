@@ -161,6 +161,13 @@ public class Client {
     private boolean branchesEnabled;
 
     /**
+     * A demo company prospects share (V86). Nothing leaves it - no supplier emails, orders or
+     * payments - SuperAdmin's platform totals leave it out, and SuperAdmin can wipe and refill it.
+     */
+    @Column(name = "is_demo", nullable = false)
+    private boolean demo;
+
+    /**
      * The answer to the first-week question "What happens to your stock?" (V49): USE, SELL or BOTH,
      * null until answered. Kept so it is asked once on any phone. See {@code SellingSettingsService}.
      */

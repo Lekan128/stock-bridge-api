@@ -44,8 +44,11 @@ public class UserController {
     }
 
     @PostMapping
-    public ResponseEntity<UserSummaryResponse> create(@Valid @RequestBody CreateUserRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(userManagementService.create(request));
+    public ResponseEntity<UserSummaryResponse> create(
+            @Valid @RequestBody CreateUserRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(userManagementService.create(request, principal == null ? null : principal.getUserId()));
     }
 
     @PutMapping("/{id}")

@@ -57,6 +57,31 @@ public class S3ImageService {
         return upload(file, "company-logos");
     }
 
+    /**
+     * A demo company's product picture (V86), at a fixed key per company and picture. SuperAdmin's
+     * "Reset demo" refills the same pictures every time, and a fixed key means each reset overwrites
+     * the last one's files rather than leaving another set behind in the bucket.
+     */
+    public UploadResult uploadDemoImage(UUID clientId, String fileName, byte[] content, String contentType) {
+        if (!isConfigured()) {
+            return UploadResult.failure("S3 is not configured");
+        }
+        String key = normalizedKeyPrefix() + clientId + "/demo/" + fileName;
+        try {
+            s3Client.putObject(
+                    PutObjectRequest.builder()
+                            .bucket(awsProperties.s3().bucketName())
+                            .key(key)
+                            .contentType(contentType)
+                            .build(),
+                    RequestBody.fromBytes(content));
+            return UploadResult.success(buildUrl(key));
+        } catch (Exception e) {
+            log.warn("S3 upload failed for key {}: {}", key, e.getMessage());
+            return UploadResult.failure("Upload failed: " + e.getMessage());
+        }
+    }
+
     private UploadResult upload(MultipartFile file, String folder) {
         if (!isConfigured()) {
             return UploadResult.failure("S3 is not configured");
