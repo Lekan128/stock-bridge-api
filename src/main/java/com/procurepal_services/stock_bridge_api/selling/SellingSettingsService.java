@@ -124,6 +124,21 @@ public class SellingSettingsService {
         return responseFor(client);
     }
 
+    /**
+     * SuperAdmin's "Reset demo" turning selling on for the demo company, both ways of using stock. Goes
+     * through support's switch, not the owner's: in the pilot a brand-new company may not choose selling
+     * itself, and the demo is always brand new. No notice to the owner - the reset has just made
+     * everything they see. Logged like any support change.
+     */
+    @Transactional
+    public void turnOnForDemo(UUID clientId) {
+        Client client = clientRepository.findById(clientId).orElseThrow(ClientNotFoundException::new);
+        apply(client, true, SettingChangeSource.SUPPORT, null, ChangedByKind.SUPER_ADMIN, "demo reset",
+                "Demo company reset");
+        client.setStockUse(StockUse.BOTH);
+        clientRepository.save(client);
+    }
+
     /** @return whether anything changed. */
     private boolean apply(
             Client client,
