@@ -1,0 +1,17 @@
+package com.procurepal_services.stock_bridge_api.product;
+
+import com.procurepal_services.stock_bridge_api.auth.ApiError;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+/** Global on purpose: a stock write reaches a made-here item from stock, moves, transfers and deliveries alike. */
+@RestControllerAdvice
+public class MadeHereExceptionHandler {
+
+    @ExceptionHandler(MadeHereException.class)
+    public ResponseEntity<ApiError> handle(MadeHereException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
+}

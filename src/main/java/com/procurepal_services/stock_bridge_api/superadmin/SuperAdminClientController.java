@@ -78,6 +78,15 @@ public class SuperAdminClientController {
         return sellingSettingsService.updateBySupport(id, request.sellsStock(), request.reason(), principal.getSuperAdminId());
     }
 
+    /** Support turning "Sell things you make" on or off for a company (V90), with a reason; the owner is told. */
+    @PutMapping("/{id}/selling/made-here")
+    public SellingSettingsResponse updateMadeHere(
+            @PathVariable UUID id,
+            @Valid @RequestBody com.procurepal_services.stock_bridge_api.selling.dto.MadeHereSettingRequest request,
+            @AuthenticationPrincipal SuperAdminPrincipal principal) {
+        return sellingSettingsService.updateMadeHereBySupport(id, request.on(), request.reason(), principal.getSuperAdminId());
+    }
+
     /**
      * Support letting a company into the multiple-branches pilot (MULTI_BRANCH_BUILD_PLAN.md D-B12), or
      * out of it. Only gates adding a branch: a company that already has two keeps them.

@@ -148,7 +148,7 @@ public class SalesReportService {
                         SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(s.quantity_on_hand), 0) AS quantity
                         FROM products p
                         LEFT JOIN area_stock s ON s.product_id = p.id AND s.area_id IN (:scopeAreaIds)
-                        WHERE p.client_id = :clientId AND p.is_active
+                        WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
                         GROUP BY p.id, p.cost_price, p.unit_price)
                     SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
                            COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
@@ -175,7 +175,7 @@ public class SalesReportService {
                     SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(bs.quantity_on_hand), 0) AS quantity
                     FROM products p
                     LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id IN (:branchIds)
-                    WHERE p.client_id = :clientId AND p.is_active
+                    WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
                     GROUP BY p.id, p.cost_price, p.unit_price)
                 SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
                        COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
@@ -204,7 +204,7 @@ public class SalesReportService {
                        COUNT(*) FILTER (WHERE p.cost_price IS NULL) AS no_cost,
                        COUNT(*) FILTER (WHERE p.unit_price IS NULL) AS no_price
                 FROM products p
-                WHERE p.client_id = :clientId AND p.is_active
+                WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
                 """,
                 new MapSqlParameterSource("clientId", clientId),
                 (rs, n) -> new StockWorthResponse(

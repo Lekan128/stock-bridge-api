@@ -91,6 +91,7 @@ public class ProductManagementService {
     private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
     private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
+    private final com.procurepal_services.stock_bridge_api.repository.ClientRepository clientRepository;
     private final EveryBranchStockQuery everyBranchStockQuery;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
     private final S3ImageService s3ImageService;
@@ -465,6 +466,11 @@ public class ProductManagementService {
     @Transactional
     public ProductResponse create(CreateProductRequest request, MultipartFile image, UUID actingUserId) {
         UUID tenantId = requireTenantId();
+        // Made here, not kept in stock (V90): only where "Sell things you make" is on, and with nothing about stock.
+        boolean madeHere = request.isMadeHere();
+        if (madeHere && !clientRepository.findById(tenantId).map(Client::isSellsMadeHere).orElse(false)) {
+            throw new MadeHereException("Turn on \"Sell things you make\" under Company → Selling to add things you make.");
+        }
 
         // See CreateProductRequest's "sku is conditionally required" javadoc: whichever branch
         // runs, request.sku() plays no further part below - `sku` is the one value this method
@@ -508,12 +514,14 @@ public class ProductManagementService {
                 .sku(sku)
                 .barcode(assertBarcodeAvailable(tenantId, request.barcode(), null))
                 .description(request.description())
-                .lowStockThreshold(request.lowStockThreshold())
+                .lowStockThreshold(madeHere ? null : request.lowStockThreshold())
                 .unitOfMeasure(unitOfMeasure)
-                .packagingUnit(packagingUnit)
-                .packagingSize(request.packagingSize())
+                .packagingUnit(madeHere ? null : packagingUnit)
+                .packagingSize(madeHere ? null : request.packagingSize())
                 // UNITS_PLAN.md Part 1: the product's own units, each with what one holds.
-                .measures(new ArrayList<>(ProductMeasures.validate(request.measures(), unitOfMeasure, packagingUnit)))
+                .measures(madeHere ? new ArrayList<>() : new ArrayList<>(ProductMeasures.validate(request.measures(), unitOfMeasure, packagingUnit)))
+                .madeHere(madeHere)
+                .estimatedCost(madeHere ? request.estimatedCost() : null)
                 .quantityOnHand(BigDecimal.ZERO)
                 .incomingQuantity(0)
                 .active(true)
@@ -550,7 +558,7 @@ public class ProductManagementService {
         // Its suppliers, several at once (2026-11-10): each linked with its pack and price, nothing received. The
         // first is preferred, as the first linked always is.
         java.util.Map<UUID, CreateProductRequest.SupplierLink> linked = new java.util.LinkedHashMap<>();
-        for (CreateProductRequest.SupplierLink link : request.suppliers() == null ? List.<CreateProductRequest.SupplierLink>of() : request.suppliers()) {
+        for (CreateProductRequest.SupplierLink link : request.suppliers() == null || madeHere ? List.<CreateProductRequest.SupplierLink>of() : request.suppliers()) {
             if (linked.containsKey(link.companyVendorId())) {
                 continue;
             }
@@ -562,7 +570,7 @@ public class ProductManagementService {
             linked.put(link.companyVendorId(), link);
         }
         // What's on the shelf now, separately: from one of them (their pack and price), or from nobody named.
-        if (request.openingStock() != null) {
+        if (request.openingStock() != null && !madeHere) {
             CreateProductRequest.OpeningStock opening = request.openingStock();
             CreateProductRequest.SupplierLink from =
                     opening.companyVendorId() == null ? null : linked.get(opening.companyVendorId());
@@ -593,7 +601,7 @@ public class ProductManagementService {
                     .map(vendor -> vendor.getCompanyVendor().getName())
                     .orElse(null);
         }
-        if (request.initialVendor() != null) {
+        if (request.initialVendor() != null && !madeHere) {
             CreateProductRequest.InitialVendor initialVendor = request.initialVendor();
             // Reused, not reimplemented: stockIn already owns the ledger write, the weighted-
             // average cost recalculation (trivial here since quantityOnHand starts at zero -
@@ -695,8 +703,14 @@ public class ProductManagementService {
                     : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
         }
         SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
-        if (request.lowStockThreshold() != null) {
+        if (request.lowStockThreshold() != null && !product.isMadeHere()) {
             product.setLowStockThreshold(request.lowStockThreshold());
+        }
+        // A made-here item's rough cost to make one (V90).
+        if (product.isMadeHere() && Boolean.TRUE.equals(request.clearEstimatedCost())) {
+            product.setEstimatedCost(null);
+        } else if (product.isMadeHere() && request.estimatedCost() != null) {
+            product.setEstimatedCost(request.estimatedCost());
         }
         if (request.active() != null) {
             product.setActive(request.active());

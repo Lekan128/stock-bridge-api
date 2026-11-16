@@ -4,6 +4,7 @@ import com.procurepal_services.stock_bridge_api.branch.BranchStockService;
 import com.procurepal_services.stock_bridge_api.branch.BranchStockService.AreaUse;
 import com.procurepal_services.stock_bridge_api.companyvendor.ProductVendorService;
 import com.procurepal_services.stock_bridge_api.entity.CompanyVendor;
+import com.procurepal_services.stock_bridge_api.entity.CostBasis;
 import com.procurepal_services.stock_bridge_api.entity.MovementType;
 import com.procurepal_services.stock_bridge_api.entity.OutReason;
 import com.procurepal_services.stock_bridge_api.entity.Product;
@@ -203,7 +204,7 @@ public class StockManagementService {
     @Transactional
     public StockMutationResponse stockIn(
             UUID productId, StockInRequest request, UUID actingUserId, UUID importBatchId) {
-        Product product = lockProductOrThrow(productId);
+        Product product = keptInStock(lockProductOrThrow(productId));
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.RECEIVE, actingUserId);
@@ -434,6 +435,9 @@ public class StockManagementService {
     private StockMutationResponse stockOut(
             UUID productId, StockOutRequest request, UUID actingUserId, AreaUse areaUse, UUID usedAreaId, boolean forMove) {
         Product product = lockProductOrThrow(productId);
+        if (product.isMadeHere()) {
+            return madeHereSale(product, request, actingUserId);
+        }
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse,
@@ -563,7 +567,7 @@ public class StockManagementService {
      */
     @Transactional
     public StockMutationResponse count(UUID productId, StockCountRequest request, UUID actingUserId) {
-        Product product = lockProductOrThrow(productId);
+        Product product = keptInStock(lockProductOrThrow(productId));
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
         OffsetDateTime countedAt = resolveOccurredAt(request.countedAt());
@@ -742,7 +746,7 @@ public class StockManagementService {
             return new AreaMovePiece(movement.getQuantity(), movement.getEnteredUnit(), movement.getEnteredQuantity(),
                     movement.getId());
         }
-        Product product = lockProductOrThrow(productId);
+        Product product = keptInStock(lockProductOrThrow(productId));
         ResolvedEntry entry = resolveEntry(product, quantity, null, unit, null, null);
         BigDecimal base = entry.baseQuantity();
         OffsetDateTime at = resolveOccurredAt(occurredAt);
@@ -780,7 +784,7 @@ public class StockManagementService {
             OffsetDateTime occurredAt,
             boolean recordedOffline,
             UUID actingUserId) {
-        Product product = lockProductOrThrow(productId);
+        Product product = keptInStock(lockProductOrThrow(productId));
         ResolvedEntry entry = resolveEntry(product, quantity, null, unit, null, null);
         BigDecimal base = entry.baseQuantity();
         OffsetDateTime at = resolveOccurredAt(occurredAt);
@@ -838,7 +842,7 @@ public class StockManagementService {
             String usedNote,
             String restNote,
             UUID actingUserId) {
-        Product product = lockProductOrThrow(productId);
+        Product product = keptInStock(lockProductOrThrow(productId));
         OffsetDateTime at = resolveOccurredAt(occurredAt);
         branchStockService.holdInArea(product, branchId, fromAreaId, quantity);
         BigDecimal rest = quantity.subtract(got);
@@ -871,7 +875,7 @@ public class StockManagementService {
     /** Undo of a move's line between two areas that keep stock: back where it came from. The caller checked it may. */
     @Transactional
     public void moveAreaLineBack(UUID productId, UUID branchId, UUID fromAreaId, UUID toAreaId, BigDecimal quantity) {
-        Product product = lockProductOrThrow(productId);
+        Product product = keptInStock(lockProductOrThrow(productId));
         branchStockService.moveBetweenAreas(product, branchId, toAreaId, fromAreaId, quantity);
     }
 
@@ -1355,7 +1359,7 @@ public class StockManagementService {
             UUID actingUserId) {
         StockMovement used = stockMovementRepository.findById(usedMovementId)
                 .orElseThrow(() -> new IllegalStateException("No such stock-out: " + usedMovementId));
-        Product product = lockProductOrThrow(used.getProduct().getId());
+        Product product = keptInStock(lockProductOrThrow(used.getProduct().getId()));
         UUID tenantId = requireTenantId();
         OffsetDateTime at = resolveOccurredAt(occurredAt);
         UUID areaId = branchStockService.areaOf(used);
@@ -1455,6 +1459,7 @@ public class StockManagementService {
             String enteredUnit,
             BigDecimal enteredQuantity,
             UUID actingUserId) {
+        keptInStock(product);
         UUID tenantId = requireTenantId();
         // From the delivery area (D-E10) until a waybill can name its own (areas, Part 7).
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, null, AreaUse.DISPATCH);
@@ -1706,7 +1711,7 @@ public class StockManagementService {
      */
     @Transactional
     public StockMutationResponse adjust(UUID productId, StockAdjustmentRequest request, UUID actingUserId) {
-        Product product = lockProductOrThrow(productId);
+        Product product = keptInStock(lockProductOrThrow(productId));
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
         BigDecimal delta = request.newQuantity().subtract(branchStockService.quantityAt(product, branchId, areaId));
@@ -2173,6 +2178,55 @@ public class StockManagementService {
                     ProductLotResponse.label(lot.getOccurredAt(), vendorName)));
         }
         return List.copyOf(response);
+    }
+
+    /**
+     * A made-here item sold (V90, selling till Step 4): a sale line like any other - its money, its sale, how it was
+     * paid - but no stock figure moves, nothing is refused for "not enough", and no delivery is drawn from. Its cost
+     * is the rough cost to make one, until a recipe works it out (Step 5). Anything but a sale is refused.
+     */
+    private StockMutationResponse madeHereSale(Product product, StockOutRequest request, UUID actingUserId) {
+        UUID tenantId = requireTenantId();
+        if (SaleFacts.reasonOf(request) != OutReason.SALE) {
+            throw com.procurepal_services.stock_bridge_api.product.MadeHereException.noStock(product.getName());
+        }
+        UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        ResolvedEntry entry = resolveEntry(
+                product, request.quantity(), SaleFacts.enteredPrice(request), request.unit(), null, null);
+        BigDecimal quantity = entry.baseQuantity();
+        BigDecimal cost = product.getEstimatedCost() == null
+                ? null
+                : product.getEstimatedCost().multiply(quantity).setScale(2, java.math.RoundingMode.HALF_UP);
+        StockMovement line = stockMovementRepository.save(StockMovement.builder()
+                .product(product)
+                .branchId(branchId)
+                .areaId(request.areaId())
+                .movementType(MovementType.OUT)
+                .occurredAt(resolveOccurredAt(request.occurredAt()))
+                .quantity(quantity)
+                .unitPriceAtTime(entry.basePrice())
+                .note(request.note())
+                .createdBy(reference(actingUserId))
+                .enteredUnit(entry.enteredUnit())
+                .enteredQuantity(entry.enteredQuantity())
+                .enteredUnitPrice(entry.enteredUnitPrice())
+                .outReason(OutReason.SALE)
+                .saleId(request.saleId() != null ? request.saleId() : UUID.randomUUID())
+                .saleAmount(SaleFacts.saleAmount(request))
+                .usualPriceAtTime(product.getUnitPrice())
+                .costAmount(cost)
+                .costBasis(cost == null ? CostBasis.UNKNOWN : CostBasis.ESTIMATE)
+                .build());
+        salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), actingUserId);
+        return StockMutationResponse.ofStockOut(product, line, List.of());
+    }
+
+    /** Counting, receiving, moving or adjusting: none of it means anything for a made-here item (V90). */
+    private static Product keptInStock(Product product) {
+        if (product.isMadeHere()) {
+            throw com.procurepal_services.stock_bridge_api.product.MadeHereException.noStock(product.getName());
+        }
+        return product;
     }
 
     private Product lockProductOrThrow(UUID productId) {

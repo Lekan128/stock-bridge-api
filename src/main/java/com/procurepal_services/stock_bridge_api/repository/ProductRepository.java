@@ -57,7 +57,7 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
     long countLowStockByClientId(@Param("clientId") UUID clientId);
 
     /** quantityOnHand <= 0, active only - independent of whether a low-stock threshold is set. */
-    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true "
+    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true AND p.madeHere = false "
             + "AND p.quantityOnHand <= 0")
     long countOutOfStockByClientId(@Param("clientId") UUID clientId);
 
@@ -67,7 +67,7 @@ public interface ProductRepository extends TenantScopedRepository<Product, UUID>
      * below it). Written as one query, not `countLowStockByClientId + countOutOfStockByClientId`,
      * because a product at zero with a threshold set satisfies both and a sum would double-count it.
      */
-    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true "
+    @Query("SELECT COUNT(p) FROM Product p WHERE p.clientId = :clientId AND p.active = true AND p.madeHere = false "
             + "AND (p.quantityOnHand <= 0 "
             + "OR (p.lowStockThreshold IS NOT NULL AND p.quantityOnHand <= p.lowStockThreshold))")
     long countNeedsAttentionByClientId(@Param("clientId") UUID clientId);

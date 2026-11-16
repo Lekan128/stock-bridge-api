@@ -44,6 +44,15 @@ public class SellingSettingsController {
         return sellingSettingsService.update(request.sellsStock(), request.source(), request.stockUse(), principal.getUserId());
     }
 
+    /** "Sell things you make" (V90, selling till Step 4): the owner's switch, beside selling's. */
+    @PutMapping("/made-here")
+    @PreAuthorize("hasAuthority('MANAGE_COMPANY_PROFILE')")
+    public SellingSettingsResponse updateMadeHere(
+            @Valid @RequestBody com.procurepal_services.stock_bridge_api.selling.dto.MadeHereSettingRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return sellingSettingsService.updateMadeHere(request.on(), principal.getUserId());
+    }
+
     /** The old-price review (SELLING_PRICE_PLAN.md section 4.6.3): products whose only price V44 set aside. */
     @GetMapping("/legacy-prices")
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")

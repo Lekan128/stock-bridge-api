@@ -150,6 +150,18 @@ public class Product extends TenantAwareEntity {
     private boolean active;
 
     /**
+     * Made here (V90, selling till Step 4): something the company makes and sells but does not keep in stock -
+     * a meal, a mixed drink, a service. Never counted, delivered, ordered or low; its figure stays zero.
+     */
+    @Column(name = "made_here", nullable = false)
+    @Builder.Default
+    private boolean madeHere = false;
+
+    /** A made-here item's rough cost to make one, per stock unit, until a recipe works it out. Optional. */
+    @Column(name = "estimated_cost", precision = 14, scale = 2)
+    private BigDecimal estimatedCost;
+
+    /**
      * Marketplace category. Safe as a mapped association because ProductCategory
      * is global (not tenant-scoped), so no tenant filter applies to it.
      */

@@ -114,7 +114,42 @@ public record CreateProductRequest(
          */
         @Size(max = 20) java.util.List<@Valid SupplierLink> suppliers,
         /** What's on the shelf as it's added, and from which supplier if any - separate from the suppliers above. */
-        @Valid OpeningStock openingStock) {
+        @Valid OpeningStock openingStock,
+        /**
+         * Made here, not kept in stock (V90, selling till Step 4). Needs the company's "Sell things you make"; takes
+         * no units, suppliers, opening stock or low-stock level.
+         */
+        Boolean madeHere,
+        /** A made-here item's rough cost to make one. Optional. */
+        @DecimalMin(value = "0", inclusive = true) BigDecimal estimatedCost) {
+
+    /** The shape before made-here items (V90). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit,
+            java.util.List<String> countIn,
+            java.util.List<SupplierLink> suppliers,
+            OpeningStock openingStock) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers, openingStock,
+                null, null);
+    }
+
+    public boolean isMadeHere() {
+        return Boolean.TRUE.equals(madeHere);
+    }
 
     /** One supplier of the product: its pack from them, and its price per stock unit, both optional. */
     public record SupplierLink(

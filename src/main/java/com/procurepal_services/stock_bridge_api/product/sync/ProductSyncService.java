@@ -211,7 +211,10 @@ public class ProductSyncService {
                         product.getLowStockThreshold(),
                         product.isActive(),
                         StockStatus.isLowStock(product.getQuantityOnHand(), product.getLowStockThreshold()),
-                        StockStatus.of(product.getQuantityOnHand(), product.getLowStockThreshold()),
+                        // A made-here item has no stock to be out of (V90).
+                        product.isMadeHere()
+                                ? StockStatus.OK
+                                : StockStatus.of(product.getQuantityOnHand(), product.getLowStockThreshold()),
                         product.getUnitPriceEntered(),
                         product.getUnitPriceEnteredUnit(),
                         branchStock == null ? null : branchStock.get(product.getId()),
@@ -219,7 +222,8 @@ public class ProductSyncService {
                         product.getMeasures() == null || product.getMeasures().isEmpty() ? null : product.getMeasures(),
                         product.getUsedInUnit(),
                         product.getCountIn() == null || product.getCountIn().isEmpty() ? null : product.getCountIn(),
-                        counts.get(product.getId())))
+                        counts.get(product.getId()),
+                        product.isMadeHere()))
                 .toList();
     }
 

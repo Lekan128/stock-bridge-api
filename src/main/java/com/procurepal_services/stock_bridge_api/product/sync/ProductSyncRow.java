@@ -54,5 +54,7 @@ public record ProductSyncRow(
         List<String> countIn,
         // When each area of the branches carried above last counted it - a branch's only area too - and how it was
         // typed (2026-11-10): the count list's "Counted today" at any branch. Absent when never counted there.
-        List<com.procurepal_services.stock_bridge_api.branch.dto.CountMark> counts) {
+        List<com.procurepal_services.stock_bridge_api.branch.dto.CountMark> counts,
+        // V90 (selling till Step 4): made here, not kept in stock - left out of the phone's stock lists, never "out".
+        boolean madeHere) {
 }
