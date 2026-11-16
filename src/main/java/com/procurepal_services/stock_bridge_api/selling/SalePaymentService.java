@@ -52,7 +52,7 @@ public class SalePaymentService {
                 "SELECT payment_method FROM sales WHERE id = :id AND client_id = :clientId",
                 new MapSqlParameterSource().addValue("id", saleId).addValue("clientId", clientId),
                 String.class);
-        return found.isEmpty() ? Optional.empty() : Optional.of(SalePaymentMethod.valueOf(found.get(0)));
+        return found.isEmpty() || found.get(0) == null ? Optional.empty() : Optional.of(SalePaymentMethod.valueOf(found.get(0)));
     }
 
     /**
@@ -64,7 +64,7 @@ public class SalePaymentService {
         int changed = jdbc.update(
                 """
                 UPDATE sales SET payment_method = :method, payment_changed_by = :userId, payment_changed_at = :now
-                WHERE id = :id AND client_id = :clientId AND payment_method <> :method
+                WHERE id = :id AND client_id = :clientId AND payment_method IS DISTINCT FROM :method
                 """,
                 new MapSqlParameterSource()
                         .addValue("id", saleId)
@@ -75,5 +75,116 @@ public class SalePaymentService {
         if (changed == 0) {
             recordIfAbsent(clientId, saleId, branchId, method, userId);
         }
+    }
+
+    // ------------------------------------------------------------------ cancelling (Step 3) ----
+
+    /** A sale's own row as it stands: how it was paid, and where cancelling it has got to. Names already resolved. */
+    public record Header(
+            SalePaymentMethod paymentMethod,
+            String cancelState,
+            SaleCancelReason cancelReason,
+            String cancelNote,
+            UUID cancelRequestedBy,
+            String cancelRequestedByName,
+            OffsetDateTime cancelRequestedAt,
+            String cancelDecidedByName,
+            OffsetDateTime cancelDecidedAt) {
+        static final Header NONE = new Header(null, null, null, null, null, null, null, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public Header header(UUID clientId, UUID saleId) {
+        List<Header> found = jdbc.query(
+                """
+                SELECT s.payment_method, s.cancel_state, s.cancel_reason, s.cancel_note, s.cancel_requested_by,
+                       COALESCE(NULLIF(TRIM(CONCAT(r.first_name, ' ', r.last_name)), ''), r.username) AS requested_name,
+                       s.cancel_requested_at,
+                       COALESCE(NULLIF(TRIM(CONCAT(d.first_name, ' ', d.last_name)), ''), d.username) AS decided_name,
+                       s.cancel_decided_at
+                FROM sales s
+                LEFT JOIN users r ON r.id = s.cancel_requested_by
+                LEFT JOIN users d ON d.id = s.cancel_decided_by
+                WHERE s.id = :id AND s.client_id = :clientId
+                """,
+                new MapSqlParameterSource().addValue("id", saleId).addValue("clientId", clientId),
+                (rs, n) -> new Header(
+                        rs.getString("payment_method") == null ? null : SalePaymentMethod.valueOf(rs.getString("payment_method")),
+                        rs.getString("cancel_state"),
+                        rs.getString("cancel_reason") == null ? null : SaleCancelReason.valueOf(rs.getString("cancel_reason")),
+                        rs.getString("cancel_note"),
+                        rs.getObject("cancel_requested_by", UUID.class),
+                        rs.getString("requested_name"),
+                        rs.getObject("cancel_requested_at", OffsetDateTime.class),
+                        rs.getString("decided_name"),
+                        rs.getObject("cancel_decided_at", OffsetDateTime.class)));
+        return found.isEmpty() ? Header.NONE : found.get(0);
+    }
+
+    /** The whole sale was cancelled: why, by whom, when. A reason already given (on the request) is kept. */
+    @Transactional
+    public void markCancelled(UUID clientId, UUID saleId, UUID branchId, SaleCancelReason reason, String note, UUID by) {
+        jdbc.update(
+                """
+                INSERT INTO sales (id, client_id, branch_id, cancel_state, cancel_reason, cancel_note, cancel_decided_by,
+                                   cancel_decided_at)
+                VALUES (:id, :clientId, :branchId, 'CANCELLED', :reason, :note, :by, :now)
+                ON CONFLICT (id) DO UPDATE SET
+                    cancel_state = 'CANCELLED',
+                    cancel_reason = COALESCE(EXCLUDED.cancel_reason, sales.cancel_reason),
+                    cancel_note = COALESCE(EXCLUDED.cancel_note, sales.cancel_note),
+                    cancel_decided_by = EXCLUDED.cancel_decided_by,
+                    cancel_decided_at = EXCLUDED.cancel_decided_at
+                WHERE sales.client_id = EXCLUDED.client_id
+                """,
+                cancelParams(clientId, saleId, branchId, reason, note, by));
+    }
+
+    /** A cashier asks to cancel: waiting for someone who can cancel sales. Asking again replaces the reason. */
+    @Transactional
+    public void markRequested(UUID clientId, UUID saleId, UUID branchId, SaleCancelReason reason, String note, UUID by) {
+        jdbc.update(
+                """
+                INSERT INTO sales (id, client_id, branch_id, cancel_state, cancel_reason, cancel_note, cancel_requested_by,
+                                   cancel_requested_at)
+                VALUES (:id, :clientId, :branchId, 'REQUESTED', :reason, :note, :by, :now)
+                ON CONFLICT (id) DO UPDATE SET
+                    cancel_state = 'REQUESTED',
+                    cancel_reason = EXCLUDED.cancel_reason,
+                    cancel_note = EXCLUDED.cancel_note,
+                    cancel_requested_by = EXCLUDED.cancel_requested_by,
+                    cancel_requested_at = EXCLUDED.cancel_requested_at,
+                    cancel_decided_by = NULL,
+                    cancel_decided_at = NULL
+                WHERE sales.client_id = EXCLUDED.client_id
+                """,
+                cancelParams(clientId, saleId, branchId, reason, note, by));
+    }
+
+    /** The request was declined: the sale stands. */
+    @Transactional
+    public void markDeclined(UUID clientId, UUID saleId, UUID by) {
+        jdbc.update(
+                """
+                UPDATE sales SET cancel_state = 'DECLINED', cancel_decided_by = :by, cancel_decided_at = :now
+                WHERE id = :id AND client_id = :clientId AND cancel_state = 'REQUESTED'
+                """,
+                new MapSqlParameterSource()
+                        .addValue("id", saleId)
+                        .addValue("clientId", clientId)
+                        .addValue("by", by)
+                        .addValue("now", OffsetDateTime.now()));
+    }
+
+    private static MapSqlParameterSource cancelParams(
+            UUID clientId, UUID saleId, UUID branchId, SaleCancelReason reason, String note, UUID by) {
+        return new MapSqlParameterSource()
+                .addValue("id", saleId)
+                .addValue("clientId", clientId)
+                .addValue("branchId", branchId)
+                .addValue("reason", reason == null ? null : reason.name())
+                .addValue("note", note == null || note.isBlank() ? null : note.trim())
+                .addValue("by", by)
+                .addValue("now", OffsetDateTime.now());
     }
 }

@@ -108,6 +108,17 @@ public class SalesReportService {
         return new SalesReportResponse(range[0], range[1], grouping, rows, truncated, totals(clientId, range[0], range[1], filters));
     }
 
+    /**
+     * A person's own sales today, newest first, with nothing about cost - "My sales today" (selling till Step 3).
+     */
+    @Transactional(readOnly = true)
+    public SalesReportResponse mine(UUID clientId, UUID userId) {
+        SalesReportResponse report = report(clientId, null, null, "sale", new Filters(null, userId, false, false, false), MAX_ROWS);
+        return new SalesReportResponse(report.from(), report.to(), report.groupBy(),
+                report.rows().stream().map(SalesReportRow::withoutCost).toList(),
+                report.truncated(), report.totals().withoutCost());
+    }
+
     /** The totals alone - the dashboard figure and a cashier's "your sales today". */
     @Transactional(readOnly = true)
     public SalesTotals totals(UUID clientId, OffsetDateTime from, OffsetDateTime to, Filters filters) {
@@ -317,11 +328,17 @@ public class SalesReportService {
                            NULL AS unit, MIN(l.occurred_at) AS occurred_at,
                            STRING_AGG(DISTINCT p.name, ', ') AS detail, MAX(b.name) AS branch,
                            MAX(l.payment) AS payment,
+                           sx.cancel_state, sx.cancel_reason,
+                           COALESCE(NULLIF(TRIM(CONCAT(cd.first_name, ' ', cd.last_name)), ''), cd.username) AS cancel_decided_name,
+                           COALESCE(NULLIF(TRIM(CONCAT(cr.first_name, ' ', cr.last_name)), ''), cr.username) AS cancel_requested_name,
                     """ + AGGREGATES + """
 
                     FROM lines l LEFT JOIN users u ON u.id = l.created_by JOIN products p ON p.id = l.product_id
                     LEFT JOIN branches b ON b.id = l.branch_id
-                    GROUP BY l.sale_id ORDER BY MIN(l.occurred_at) DESC, l.sale_id""";
+                    LEFT JOIN sales sx ON sx.id = l.sale_id AND sx.client_id = :clientId
+                    LEFT JOIN users cd ON cd.id = sx.cancel_decided_by
+                    LEFT JOIN users cr ON cr.id = sx.cancel_requested_by
+                    GROUP BY l.sale_id, sx.id, cd.id, cr.id ORDER BY MIN(l.occurred_at) DESC, l.sale_id""";
             case "branch" -> cte + """
                     SELECT l.branch_id::text AS key, b.name AS label, NULL AS unit, NULL::timestamptz AS occurred_at,
                     """ + AGGREGATES + """
@@ -398,7 +415,11 @@ public class SalesReportService {
                 totals(rs),
                 "sale".equals(grouping) ? rs.getString("detail") : null,
                 "sale".equals(grouping) && namesBranches ? rs.getString("branch") : null,
-                "sale".equals(grouping) ? rs.getString("payment") : null);
+                "sale".equals(grouping) ? rs.getString("payment") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_state") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_reason") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_decided_name") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_requested_name") : null);
     }
 
     private static SalesTotals totals(ResultSet rs) throws SQLException {

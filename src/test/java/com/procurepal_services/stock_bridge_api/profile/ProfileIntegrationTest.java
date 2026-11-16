@@ -108,6 +108,8 @@ class ProfileIntegrationTest {
         assertThat(response.getBody().permissions())
                 .containsExactly(
                         "BROWSE_MARKETPLACE",
+                        // V89: every role that manages inventory can cancel sales.
+                        "CANCEL_SALES",
                         "MANAGE_INVENTORY",
                         "RECEIVE_DELIVERIES",
                         // V53: every role that can issue stock can send it to another branch.

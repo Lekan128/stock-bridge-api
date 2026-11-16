@@ -35,5 +35,9 @@ public enum NotificationType {
     /** To whoever sent it for approval: approved, or a change was asked for (V78). */
     PO_APPROVAL_ANSWERED,
     /** To whoever asked and those who can send: a supplier sent, changed or declined their prices (V80). */
-    PRICE_REPLY
+    PRICE_REPLY,
+    /** Selling till Step 3: a cashier asks to cancel a sale - to those who can cancel sales. */
+    SALE_CANCEL_WAITING,
+    /** ...and the answer, to the cashier who asked. */
+    SALE_CANCEL_ANSWERED
 }
