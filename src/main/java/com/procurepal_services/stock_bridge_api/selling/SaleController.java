@@ -38,6 +38,19 @@ public class SaleController {
 
     private final SaleService saleService;
     private final SalesReportService salesReportService;
+    private final SaleTilesService saleTilesService;
+
+    /**
+     * The picture tiles on Record a sale: the most-sold products first, then other priced ones. The same
+     * products the person could find by searching, so the same permissions.
+     */
+    @GetMapping("/tiles")
+    @PreAuthorize("hasAuthority('STOCK_OUT') and hasAuthority('VIEW_PRODUCTS')")
+    public java.util.List<com.procurepal_services.stock_bridge_api.product.dto.ProductResponse> tiles(
+            @RequestParam(defaultValue = "12") int limit,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return saleTilesService.tiles(principal.getClientId(), limit);
+    }
 
     /**
      * The person's own sales over a range - quick mode's "Your sales today: 14 · ₦86,500", the figure

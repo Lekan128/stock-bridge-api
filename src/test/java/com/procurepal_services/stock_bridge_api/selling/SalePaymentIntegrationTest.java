@@ -179,6 +179,29 @@ class SalePaymentIntegrationTest {
         assertThat(getSale(second, saleId).paymentMethod()).isNull();
     }
 
+    @Test
+    void tilesPutTheMostSoldFirstThenOtherPricedProducts() {
+        Shop shop = shop("Tiles Shop");
+        UUID water = product(shop, "Water");
+        UUID coke = product(shop, "Coke");
+        UUID beans = product(shop, "Beans");
+        stockIn(shop, water, 10);
+        stockIn(shop, coke, 10);
+        stockOut(shop, coke, sale(1, "500", UUID.randomUUID(), "CASH"));
+        stockOut(shop, coke, sale(1, "500", UUID.randomUUID(), "CASH"));
+        stockOut(shop, water, sale(1, "300", UUID.randomUUID(), "CARD"));
+
+        java.util.List<java.util.Map<String, Object>> tiles = restTemplate.exchange("/api/sales/tiles?limit=12",
+                        HttpMethod.GET, new HttpEntity<>(auth(shop)),
+                        new org.springframework.core.ParameterizedTypeReference<java.util.List<java.util.Map<String, Object>>>() {})
+                .getBody();
+        assertThat(tiles).extracting(tile -> tile.get("id"))
+                .containsExactly(coke.toString(), water.toString(), beans.toString());
+
+        assertThat(restTemplate.exchange("/api/sales/tiles?limit=2", HttpMethod.GET, new HttpEntity<>(auth(shop)), String.class)
+                .getBody()).doesNotContain(beans.toString());
+    }
+
     // ------------------------------------------------------------------------- helpers ----
 
     private record Shop(TenantLoginResponse login) {
