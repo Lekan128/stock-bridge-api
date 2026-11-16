@@ -23,5 +23,7 @@ public record SalesReportRow(
         SalesTotals totals,
         String detail,
         /** The branch a sale was recorded at (V51): on the "sale" grouping, at a multi-branch company. */
-        String branch) {
+        String branch,
+        /** How a sale was paid (selling till Step 1): on the "sale" grouping; absent for one from before. */
+        String paymentMethod) {
 }

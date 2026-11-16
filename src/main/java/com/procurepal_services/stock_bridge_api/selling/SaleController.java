@@ -3,6 +3,7 @@ package com.procurepal_services.stock_bridge_api.selling;
 import com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal;
 import com.procurepal_services.stock_bridge_api.selling.dto.AddSalePriceRequest;
 import com.procurepal_services.stock_bridge_api.selling.dto.CancelSaleRequest;
+import com.procurepal_services.stock_bridge_api.selling.dto.ChangeSalePaymentRequest;
 import com.procurepal_services.stock_bridge_api.selling.dto.SaleResponse;
 import com.procurepal_services.stock_bridge_api.selling.dto.SalesTotals;
 import com.procurepal_services.stock_bridge_api.selling.dto.UndoSaleResponse;
@@ -16,6 +17,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -74,6 +76,16 @@ public class SaleController {
             @RequestBody(required = false) CancelSaleRequest request,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return saleService.cancel(saleId, request == null ? null : request.lineIds(), principal.getUserId());
+    }
+
+    /** "Change how they paid" (selling till Step 1) - see {@link SaleService#changePayment}. */
+    @PutMapping("/{saleId}/payment")
+    @PreAuthorize("hasAnyAuthority('STOCK_OUT', 'MANAGE_INVENTORY')")
+    public SaleResponse changePayment(
+            @PathVariable UUID saleId,
+            @Valid @RequestBody ChangeSalePaymentRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return saleService.changePayment(saleId, request.paymentMethod(), principal.getUserId());
     }
 
     /** Add the price to a sale line saved without one. */

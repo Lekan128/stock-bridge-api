@@ -60,6 +60,10 @@ public class SaleService {
     private final StockWritePermissionGuard permissions;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+    private final SalePaymentService salePaymentService;
+
+    /** How long the person who recorded a sale may change how it was paid - the same as Undo sale (D8). */
+    static final java.time.Duration CHANGE_PAYMENT_FOR = java.time.Duration.ofMinutes(2);
 
     @Transactional(readOnly = true)
     public SaleResponse get(UUID saleId) {
@@ -154,6 +158,31 @@ public class SaleService {
         List<StockMovement> after = new ArrayList<>(rows);
         after.add(stockManagementService.addSalePrice(line, amount, actingUserId));
         return toResponse(line.getSaleId(), after);
+    }
+
+    /**
+     * "Change how they paid" (selling till Step 1): the person who recorded the sale, within two
+     * minutes of recording it - the wrong button tapped. After that, or for someone else's sale, only
+     * someone who manages inventory. Who changed it and when is kept on the sale.
+     */
+    @Transactional
+    public SaleResponse changePayment(UUID saleId, SalePaymentMethod method, UUID actingUserId) {
+        List<StockMovement> rows = rowsOf(saleId);
+        StockMovement first = linesOf(rows).get(0);
+        if (first.getBranchId() != null && branchStockService.isMultiBranch(first.getClientId())) {
+            branchAccessService.requireMayRecordAt(actingUserId, first.getBranchId());
+        }
+        if (!permissions.has(actingUserId, "MANAGE_INVENTORY")) {
+            boolean own = first.getCreatedBy() != null && first.getCreatedBy().getId().equals(actingUserId);
+            boolean recent = first.getCreatedAt().isAfter(OffsetDateTime.now().minus(CHANGE_PAYMENT_FOR));
+            if (!own || !recent || !permissions.has(actingUserId, "STOCK_OUT")) {
+                throw new AccessDeniedException(own
+                        ? "How it was paid can only be changed in the first two minutes. Ask someone who manages inventory."
+                        : "Only someone who manages inventory can change how someone else's sale was paid.");
+            }
+        }
+        salePaymentService.set(requireTenantId(), saleId, first.getBranchId(), method, actingUserId);
+        return toResponse(saleId, rows);
     }
 
     // ------------------------------------------------------------------------------ rules ----
@@ -275,7 +304,8 @@ public class SaleService {
                 total,
                 lines.size(),
                 cancelled,
-                unpriced);
+                unpriced,
+                salePaymentService.methodOf(requireTenantId(), saleId).orElse(null));
     }
 
     private static String nameOf(User user) {

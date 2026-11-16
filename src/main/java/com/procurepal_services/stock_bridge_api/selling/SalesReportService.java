@@ -267,11 +267,13 @@ public class SalesReportService {
                            COALESCE(o.sale_amount, c.sale_amount) AS amount,
                            o.cost_amount AS cost,
                            (r.id IS NOT NULL) AS cancelled,
+                           sp.payment_method AS payment,
                            (o.usual_price_at_time IS NOT NULL AND o.unit_price_at_time IS NOT NULL
                                 AND o.unit_price_at_time < o.usual_price_at_time - 0.005) AS below_usual
                     FROM stock_movements o
                     LEFT JOIN stock_movements r ON r.reverses_movement_id = o.id
                     LEFT JOIN stock_movements c ON c.corrects_movement_id = o.id
+                    LEFT JOIN sales sp ON sp.id = o.sale_id AND sp.client_id = o.client_id
                     WHERE o.client_id = :clientId
                       AND o.sale_id IS NOT NULL
                       AND o.movement_type = 'OUT'
@@ -295,7 +297,15 @@ public class SalesReportService {
             COUNT(*) FILTER (WHERE cancelled) AS cancelled_count,
             COUNT(*) FILTER (WHERE NOT cancelled AND below_usual) AS below_usual_count,
             COUNT(*) FILTER (WHERE NOT cancelled AND amount IS NOT NULL AND cost IS NOT NULL AND amount < cost) AS below_cost_count,
-            COALESCE(SUM(quantity) FILTER (WHERE NOT cancelled), 0) AS quantity""";
+            COALESCE(SUM(quantity) FILTER (WHERE NOT cancelled), 0) AS quantity,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment = 'CASH'), 0) AS cash_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment = 'CASH') AS cash_sales,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment = 'TRANSFER'), 0) AS transfer_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment = 'TRANSFER') AS transfer_sales,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment = 'CARD'), 0) AS card_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment = 'CARD') AS card_sales,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment IS NULL), 0) AS unrecorded_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment IS NULL) AS unrecorded_sales""";
 
     private static String groupQuery(String grouping, Filters filters) {
         String cte = linesCte(filters);
@@ -306,6 +316,7 @@ public class SalesReportService {
                            MAX(COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), u.username)) AS label,
                            NULL AS unit, MIN(l.occurred_at) AS occurred_at,
                            STRING_AGG(DISTINCT p.name, ', ') AS detail, MAX(b.name) AS branch,
+                           MAX(l.payment) AS payment,
                     """ + AGGREGATES + """
 
                     FROM lines l LEFT JOIN users u ON u.id = l.created_by JOIN products p ON p.id = l.product_id
@@ -386,7 +397,8 @@ public class SalesReportService {
                 occurred == null ? null : occurred.toInstant().atOffset(ZoneOffset.UTC),
                 totals(rs),
                 "sale".equals(grouping) ? rs.getString("detail") : null,
-                "sale".equals(grouping) && namesBranches ? rs.getString("branch") : null);
+                "sale".equals(grouping) && namesBranches ? rs.getString("branch") : null,
+                "sale".equals(grouping) ? rs.getString("payment") : null);
     }
 
     private static SalesTotals totals(ResultSet rs) throws SQLException {
@@ -405,7 +417,12 @@ public class SalesReportService {
                 rs.getLong("unknown_cost"),
                 rs.getLong("cancelled_count"),
                 rs.getLong("below_usual_count"),
-                rs.getLong("below_cost_count"));
+                rs.getLong("below_cost_count"),
+                new SalesTotals.ByPayment(
+                        money(rs.getBigDecimal("cash_amount")), rs.getLong("cash_sales"),
+                        money(rs.getBigDecimal("transfer_amount")), rs.getLong("transfer_sales"),
+                        money(rs.getBigDecimal("card_amount")), rs.getLong("card_sales"),
+                        money(rs.getBigDecimal("unrecorded_amount")), rs.getLong("unrecorded_sales")));
     }
 
     private static BigDecimal money(BigDecimal value) {

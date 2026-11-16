@@ -20,5 +20,7 @@ public record SaleResponse(
         BigDecimal total,
         int lineCount,
         int cancelledLineCount,
-        int unpricedLineCount) {
+        int unpricedLineCount,
+        /** How the customer paid (selling till Step 1); absent for a sale from before payments were recorded. */
+        com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod paymentMethod) {
 }

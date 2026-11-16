@@ -117,6 +117,7 @@ public class StockManagementService {
     private final ProductVendorPackRepository productVendorPackRepository;
     private final com.procurepal_services.stock_bridge_api.selling.SellingPolicy sellingPolicy;
     private final com.procurepal_services.stock_bridge_api.selling.SalesReportService salesReportService;
+    private final com.procurepal_services.stock_bridge_api.selling.SalePaymentService salePaymentService;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
      * class for why a one-branch company's figure is still {@code Product.quantityOnHand}.
@@ -502,6 +503,11 @@ public class StockManagementService {
                 .costAmount(cost.amount())
                 .costBasis(cost.basis())
                 .build());
+        if (sale) {
+            // Selling till Step 1: the sale's first line to arrive records how it was paid.
+            salePaymentService.recordIfAbsent(
+                    tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), actingUserId);
+        }
 
         List<StockMutationResponse.AllocationBreakdown> breakdown = new ArrayList<>();
         for (LotDraw draw : draws) {

@@ -28,7 +28,24 @@ public record SalesTotals(
         long unknownCostLineCount,
         long cancelledLineCount,
         long belowUsualPriceLineCount,
-        long belowCostLineCount) {
+        long belowCostLineCount,
+        /** What came in by each way of paying (selling till Step 1). */
+        ByPayment byPayment) {
+
+    /**
+     * The sales amount split by how the customer paid, with how many sales each. "Not recorded" is a
+     * sale from before payments were recorded - never guessed as cash.
+     */
+    public record ByPayment(
+            BigDecimal cashAmount,
+            long cashSales,
+            BigDecimal transferAmount,
+            long transferSales,
+            BigDecimal cardAmount,
+            long cardSales,
+            BigDecimal notRecordedAmount,
+            long notRecordedSales) {
+    }
 
     /**
      * The same figures with everything about cost taken out - for a person's own till total, which
@@ -36,6 +53,6 @@ public record SalesTotals(
      */
     public SalesTotals withoutCost() {
         return new SalesTotals(saleCount, lineCount, salesAmount, null, null, null, null,
-                unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0);
+                unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0, byPayment);
     }
 }

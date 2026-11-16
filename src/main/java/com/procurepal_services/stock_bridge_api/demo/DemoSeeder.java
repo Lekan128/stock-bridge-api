@@ -570,10 +570,21 @@ public class DemoSeeder {
             }
             stockManagementService.stockOut(products.get(item.key()), new StockOutRequest(
                     quantity, item.sellPrice(), null, item.stockUnit(), null, at, null, OutReason.SALE, saleId,
-                    null, branch.id, branch.bar), branch.recorder);
+                    null, branch.id, branch.bar, paymentFor(saleId)), branch.recorder);
             written();
             stock.merge(key, quantity.negate(), BigDecimal::add);
         }
+    }
+
+    /**
+     * How a demo sale was paid (selling till Step 1): about four in ten cash, four transfer, two card -
+     * taken from the sale id rather than the seeded random, so every other figure in the demo stays as it was.
+     */
+    private static com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod paymentFor(UUID saleId) {
+        int slot = Math.floorMod(saleId.hashCode(), 10);
+        return slot < 4 ? com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.CASH
+                : slot < 8 ? com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.TRANSFER
+                : com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.CARD;
     }
 
     private void countBar(BranchPlan branch, Map<String, UUID> products, Map<String, BigDecimal> stock,
@@ -749,7 +760,9 @@ public class DemoSeeder {
                 stockManagementService.stockOut(products.get(itemKey), new StockOutRequest(
                         used, item.sold() ? item.sellPrice() : null, item.sold() ? "Event order" : null,
                         item.stockUnit(), null, at, null, reason,
-                        item.sold() ? UUID.randomUUID() : null, null, branch.id, area), branch.recorder);
+                        item.sold() ? UUID.randomUUID() : null, null, branch.id, area,
+                        item.sold() ? com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.TRANSFER : null),
+                        branch.recorder);
                 written();
                 stock.merge(key, used.negate(), BigDecimal::add);
             }
