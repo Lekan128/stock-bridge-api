@@ -316,6 +316,56 @@ class MadeHereIntegrationTest {
         assertThat(get(shop, "/api/products/" + rice.id(), ProductResponse.class).getBody().forBranchIds()).contains(UUID.fromString(ikeja));
     }
 
+    @Test
+    void stockMovementsSaysWhatTheKitchenUsedAgainstWhatItsCountFound() {
+        Shop shop = shop("Kitchen Use Shop");
+        sellingOn(shop);
+        send(shop, HttpMethod.PUT, "/api/company/selling/made-here", Map.of("on", true), String.class);
+        String main = (String) ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        java.util.List<Map<String, Object>> areas = send(shop, HttpMethod.POST, "/api/branches/" + main + "/areas",
+                Map.of("areas", java.util.List.of(Map.of("name", "Kitchen", "keepsStock", true), Map.of("name", "Front desk", "keepsStock", true))),
+                java.util.List.class).getBody();
+        String kitchen = areas.stream().filter(area -> "Kitchen".equals(area.get("name"))).findFirst().orElseThrow().get("id").toString();
+        String frontDesk = areas.stream().filter(area -> "Front desk".equals(area.get("name"))).findFirst().orElseThrow().get("id").toString();
+        ProductResponse rice = productWith(shop, new java.util.HashMap<>(Map.of("name", "Rice", "sku", "RC-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitOfMeasure", "KG", "branchIds", java.util.List.of(main), "measures", java.util.List.of(Map.of("name", "Derica", "size", 0.6)))));
+        send(shop, HttpMethod.POST, "/api/products/" + rice.id() + "/stock/stock-in",
+                Map.of("quantity", 100, "unitPrice", 1440, "branchId", main, "areaId", kitchen), String.class);
+        ProductResponse plate = productWith(shop, new java.util.HashMap<>(Map.of("name", "Jollof rice", "sku", "JR-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitPrice", 3000, "madeHere", true, "branchIds", java.util.List.of(main))));
+        send(shop, HttpMethod.PUT, "/api/products/" + plate.id() + "/made-with", Map.of("madeIn", "Kitchen",
+                "ingredients", java.util.List.of(Map.of("productId", rice.id().toString(), "quantity", 1, "unit", "Derica"))), Map.class);
+        send(shop, HttpMethod.POST, "/api/products/" + plate.id() + "/stock/stock-out",
+                Map.of("quantity", 3, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 9000,
+                        "paymentMethod", "CASH", "branchId", main, "areaId", frontDesk), String.class);
+
+        String url = "/api/stock/movements/area-use?branchId=" + main + "&areaId=" + kitchen;
+        ResponseEntity<String> raw = get(shop, url, String.class);
+        assertThat(raw.getStatusCode().is2xxSuccessful()).as("%s %s", raw.getStatusCode(), raw.getBody()).isTrue();
+        Map<String, Object> use = get(shop, url, Map.class).getBody();
+        java.util.List<Map<String, Object>> lines = (java.util.List<Map<String, Object>>) use.get("ingredients");
+        assertThat(lines).hasSize(1);
+        assertThat(new java.math.BigDecimal(lines.get(0).get("cameIn").toString())).isEqualByComparingTo("100");
+        assertThat(new java.math.BigDecimal(lines.get(0).get("platesTook").toString())).isEqualByComparingTo("1.8");
+        assertThat(new java.math.BigDecimal(lines.get(0).get("left").toString())).isEqualByComparingTo("98.2");
+        assertThat(new java.math.BigDecimal(use.get("platesTookCost").toString())).isEqualByComparingTo("2592.00");
+        assertThat(use.get("counted")).isEqualTo(false);
+
+        // The Kitchen counted at 97 kg: 1.2 kg used on top of the plates.
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + rice.id() + "/stock/count",
+                Map.of("countedQuantity", 97, "branchId", main, "areaId", kitchen), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        use = get(shop, url, Map.class).getBody();
+        lines = (java.util.List<Map<String, Object>>) use.get("ingredients");
+        assertThat(use.get("counted")).isEqualTo(true);
+        assertThat(new java.math.BigDecimal(lines.get(0).get("usedOnTop").toString())).isEqualByComparingTo("1.2");
+        assertThat(new java.math.BigDecimal(use.get("usedOnTopCost").toString())).isEqualByComparingTo("1728.00");
+
+        // The Front desk made nothing: no line there.
+        assertThat((java.util.List<?>) get(shop, "/api/stock/movements/area-use?branchId=" + main + "&areaId=" + frontDesk, Map.class)
+                .getBody().get("ingredients")).isEmpty();
+    }
+
     private java.math.BigDecimal kitchenHas(UUID productId, String areaId) {
         return jdbcTemplate.queryForObject("SELECT COALESCE((SELECT quantity_on_hand FROM area_stock WHERE product_id = ? AND area_id = ?::uuid), 0)",
                 java.math.BigDecimal.class, productId, areaId);
