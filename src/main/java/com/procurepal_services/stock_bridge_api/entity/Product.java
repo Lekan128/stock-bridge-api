@@ -161,6 +161,10 @@ public class Product extends TenantAwareEntity {
     @Column(name = "estimated_cost", precision = 14, scale = 2)
     private BigDecimal estimatedCost;
 
+    /** Where a made-here item is made (V95), by area name: each branch's own area of that name. */
+    @Column(name = "made_in_area_name", length = 80)
+    private String madeInAreaName;
+
     /** For every branch, now and any opened later (V92); otherwise only those in product_branches. */
     @Column(name = "for_all_branches", nullable = false)
     @Builder.Default

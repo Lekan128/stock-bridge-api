@@ -15,6 +15,12 @@ public class MadeHereExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
 
+    /** A "Made with" or a product's branches that can't be saved as sent (V92, V95). */
+    @ExceptionHandler(MadeWithException.class)
+    public ResponseEntity<ApiError> handle(MadeWithException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiError(ex.getMessage()));
+    }
+
     /** A product used at a branch it isn't for (V92) - global for the same reason. */
     @ExceptionHandler(ProductNotForBranchException.class)
     public ResponseEntity<ApiError> handle(ProductNotForBranchException ex) {

@@ -120,6 +120,8 @@ public class StockManagementService {
     private final com.procurepal_services.stock_bridge_api.selling.SalesReportService salesReportService;
     private final com.procurepal_services.stock_bridge_api.selling.SalePaymentService salePaymentService;
     private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
+    private final com.procurepal_services.stock_bridge_api.product.MadeWithService madeWithService;
+    private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate costJdbc;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
      * class for why a one-branch company's figure is still {@code Product.quantityOnHand}.
@@ -1310,6 +1312,22 @@ public class StockManagementService {
      */
     @Transactional
     public StockMovement cancelSaleLine(StockMovement line, UUID actingUserId) {
+        StockMovement cancellation = reverseStockOut(line, actingUserId, line.getSaleId(), null);
+        // A made-here plate's ingredients go back to the area they came from (V95).
+        if (line.getProduct().isMadeHere()) {
+            for (StockMovement used : stockMovementRepository.findAllByUsedForMovementIdOrderByCreatedAtAsc(line.getId())) {
+                if (used.getMovementType() == MovementType.OUT) {
+                    reverseStockOut(used, actingUserId, null, line.getId());
+                }
+            }
+        }
+        log.info("Sale line cancelled: line={} sale={} product={} client={} by={}",
+                line.getId(), line.getSaleId(), line.getProduct().getId(), requireTenantId(), actingUserId);
+        return cancellation;
+    }
+
+    /** An ADJUSTMENT putting a stock-out back where it left, its delivery lots restored. */
+    private StockMovement reverseStockOut(StockMovement line, UUID actingUserId, UUID saleId, UUID usedFor) {
         Product product = lockProductOrThrow(line.getProduct().getId());
         UUID tenantId = requireTenantId();
         List<StockMovementAllocation> draws =
@@ -1326,7 +1344,8 @@ public class StockManagementService {
                 .quantity(line.getQuantity())
                 .note("Sale cancelled")
                 .createdBy(reference(actingUserId))
-                .saleId(line.getSaleId())
+                .saleId(saleId)
+                .usedForMovementId(usedFor)
                 .saleAmount(line.getSaleAmount() == null ? null : line.getSaleAmount().negate())
                 .costAmount(line.getCostAmount() == null ? null : line.getCostAmount().negate())
                 .costBasis(line.getCostBasis())
@@ -1347,8 +1366,6 @@ public class StockManagementService {
                                 vendorLine.getQuantityOnHandFromVendor().add(draw.getQuantity())));
             }
         }
-        log.info("Sale line cancelled: line={} sale={} product={} client={} by={}",
-                line.getId(), line.getSaleId(), product.getId(), tenantId, actingUserId);
         return cancellation;
     }
 
@@ -2230,8 +2247,102 @@ public class StockManagementService {
                 .costAmount(cost)
                 .costBasis(cost == null ? CostBasis.UNKNOWN : CostBasis.ESTIMATE)
                 .build());
+        // Step 5 (V95): its ingredients come out of the area it is made in at this branch, costed from the stock
+        // actually used. Never stopped by that area's figure.
+        List<com.procurepal_services.stock_bridge_api.product.MadeWithService.Use> uses = madeWithService.usesAt(product, branchId);
+        if (!uses.isEmpty()) {
+            SaleFacts.Cost used = useIngredients(line, uses, branchId, quantity, line.getOccurredAt(),
+                    request.isRecordedOffline(), actingUserId);
+            // Cost isn't updatable through the entity (a stock-out's cost is fixed once written); this is the same
+            // write, finished: the line was saved first only so its ingredients could name it.
+            stockMovementRepository.flush();
+            costJdbc.update("UPDATE stock_movements SET cost_amount = :amount, cost_basis = :basis WHERE id = :id",
+                    new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+                            .addValue("amount", used.amount()).addValue("basis", used.basis().name()).addValue("id", line.getId()));
+            line.setCostAmount(used.amount());
+            line.setCostBasis(used.basis());
+        }
         salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), actingUserId);
         return StockMutationResponse.ofStockOut(product, line, List.of());
+    }
+
+    /**
+     * Takes each ingredient of {@code sold} plates out of its area: a Used stock-out per ingredient naming the sale
+     * line, drawing the oldest deliveries first and costed at what they cost. The area's figure may go below 0 - a
+     * sale is never stopped by it (owner, 2026-11-17). Sent late behind a later count of that area: absorbed, as a
+     * late sale is. The whole plate's cost, UNKNOWN if any ingredient's is.
+     */
+    private SaleFacts.Cost useIngredients(
+            StockMovement line, List<com.procurepal_services.stock_bridge_api.product.MadeWithService.Use> uses,
+            UUID branchId, BigDecimal sold, OffsetDateTime occurredAt, boolean offline, UUID actingUserId) {
+        UUID tenantId = requireTenantId();
+        BigDecimal total = BigDecimal.ZERO;
+        boolean unknown = false;
+        boolean average = false;
+        // One lock order for every ingredient, so two sales sharing them can't wait on each other.
+        // What the Stock movements list says on each: "Used for 3 × Jollof rice & chicken · sold at Front desk".
+        String soldAt = line.getAreaId() == null ? null : costJdbc.queryForList(
+                "SELECT name FROM areas WHERE id = :id",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", line.getAreaId()), String.class)
+                .stream().findFirst().orElse(null);
+        String usedFor = "Used for " + sold.stripTrailingZeros().toPlainString() + " × " + line.getProduct().getName()
+                + (soldAt == null ? "" : " · sold at " + soldAt);
+        List<com.procurepal_services.stock_bridge_api.product.MadeWithService.Use> ordered = uses.stream()
+                .sorted(java.util.Comparator.comparing(com.procurepal_services.stock_bridge_api.product.MadeWithService.Use::ingredientId))
+                .toList();
+        for (var use : ordered) {
+            Product ingredient = lockProductOrThrow(use.ingredientId());
+            BigDecimal quantity = use.perOne().multiply(sold).setScale(3, java.math.RoundingMode.HALF_UP);
+            if (quantity.signum() <= 0) {
+                continue;
+            }
+            boolean absorbed = offline && countedAfter(ingredient.getId(), branchId, use.areaId(), occurredAt);
+            List<StockMovement> lots = stockMovementRepository.findInMovementsForUpdate(ingredient.getId(), tenantId, branchId);
+            List<LotDraw> draws = resolveFifoAllocations(lots, quantity);
+            SaleFacts.Cost cost = SaleFacts.costOf(
+                    draws.stream().map(draw -> new SaleFacts.Draw(draw.lot(), draw.quantity())).toList(),
+                    quantity, ingredient.getCostPrice());
+            if (!absorbed) {
+                branchStockService.apply(ingredient, branchId, use.areaId(), quantity.negate());
+            }
+            StockMovement out = stockMovementRepository.save(StockMovement.builder()
+                    .product(ingredient)
+                    .branchId(branchId)
+                    .areaId(use.areaId())
+                    .movementType(MovementType.OUT)
+                    .occurredAt(occurredAt)
+                    .quantity(quantity)
+                    .createdBy(reference(actingUserId))
+                    .outReason(OutReason.USED)
+                    .note(usedFor)
+                    .usedForMovementId(line.getId())
+                    .costAmount(cost.amount())
+                    .costBasis(cost.basis())
+                    .build());
+            for (LotDraw draw : draws) {
+                stockMovementAllocationRepository.save(StockMovementAllocation.builder()
+                        .outMovement(out).inMovement(draw.lot()).quantity(draw.quantity()).build());
+                CompanyVendor lotVendor = draw.lot().getCompanyVendor();
+                if (lotVendor != null) {
+                    productVendorRepository
+                            .findByClientIdAndProductIdAndCompanyVendorId(tenantId, ingredient.getId(), lotVendor.getId())
+                            .ifPresent(vendor -> productVendorService.recordAllocationDrawdown(vendor, draw.quantity()));
+                }
+            }
+            if (absorbed) {
+                recordAbsorbedByLaterCount(ingredient, branchId, use.areaId(), quantity, occurredAt, actingUserId);
+            }
+            if (cost.amount() == null) {
+                unknown = true;
+            } else {
+                total = total.add(cost.amount());
+                average |= cost.basis() == CostBasis.AVERAGE;
+            }
+        }
+        if (unknown) {
+            return SaleFacts.Cost.UNKNOWN;
+        }
+        return new SaleFacts.Cost(total.setScale(2, java.math.RoundingMode.HALF_UP), average ? CostBasis.AVERAGE : CostBasis.FIFO);
     }
 
     /** Counting, receiving, moving or adjusting: none of it means anything for a made-here item (V90). */

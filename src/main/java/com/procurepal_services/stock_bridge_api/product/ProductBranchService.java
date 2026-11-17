@@ -52,7 +52,11 @@ public class ProductBranchService {
     /** The product's own branches (empty when it is for all of them). */
     @Transactional(readOnly = true)
     public List<UUID> branchesOf(UUID productId) {
-        return jdbc.queryForList("SELECT branch_id FROM product_branches WHERE product_id = :productId ORDER BY created_at",
+        // Open branches only: a closed one shows nowhere (it can be reopened, and its rows come back with it).
+        return jdbc.queryForList("""
+                SELECT pb.branch_id FROM product_branches pb JOIN branches b ON b.id = pb.branch_id AND b.is_active
+                WHERE pb.product_id = :productId ORDER BY pb.created_at
+                """,
                 new MapSqlParameterSource("productId", productId), UUID.class);
     }
 
@@ -63,7 +67,10 @@ public class ProductBranchService {
         if (productIds.isEmpty()) {
             return result;
         }
-        jdbc.query("SELECT product_id, branch_id FROM product_branches WHERE product_id IN (:ids) ORDER BY created_at",
+        jdbc.query("""
+                SELECT pb.product_id, pb.branch_id FROM product_branches pb JOIN branches b ON b.id = pb.branch_id AND b.is_active
+                WHERE pb.product_id IN (:ids) ORDER BY pb.created_at
+                """,
                 new MapSqlParameterSource("ids", productIds),
                 rs -> {
                     result.computeIfAbsent(rs.getObject("product_id", UUID.class), id -> new ArrayList<>())
@@ -88,9 +95,12 @@ public class ProductBranchService {
                         .addValue("ids", wanted.isEmpty() ? List.of(new UUID(0, 0)) : wanted),
                 UUID.class);
         if (theirs.isEmpty()) {
-            throw new IllegalArgumentException("Choose at least one branch this product is for.");
+            throw new MadeWithException("Choose at least one branch this product is for.");
         }
-        jdbc.update("DELETE FROM product_branches WHERE product_id = :productId AND branch_id NOT IN (:keep)",
+        jdbc.update("""
+                DELETE FROM product_branches WHERE product_id = :productId AND branch_id NOT IN (:keep)
+                  AND branch_id IN (SELECT id FROM branches WHERE is_active)
+                """,
                 new MapSqlParameterSource().addValue("productId", product.getId()).addValue("keep", theirs));
         for (UUID branchId : theirs) {
             add(product, branchId);

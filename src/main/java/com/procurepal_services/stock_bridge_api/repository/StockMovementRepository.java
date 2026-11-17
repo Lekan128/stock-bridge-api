@@ -510,6 +510,9 @@ public interface StockMovementRepository extends TenantScopedRepository<StockMov
     /** The rows that reverse part or all of {@code movementId}: a cancelled sale, a give back (Part 6). */
     List<StockMovement> findAllByReversesMovementIdOrderByCreatedAtAsc(UUID movementId);
 
+    /** A made-here sale line's ingredients (V95). */
+    List<StockMovement> findAllByUsedForMovementIdOrderByCreatedAtAsc(UUID movementId);
+
     /** The lots a waybill put on the receiving shelf from this source lot (V53): the recall trace's next step. */
     List<StockMovement> findAllByClientIdAndTransferIdAndSourceLotIdAndMovementType(
             UUID clientId, UUID transferId, UUID sourceLotId, MovementType movementType);
