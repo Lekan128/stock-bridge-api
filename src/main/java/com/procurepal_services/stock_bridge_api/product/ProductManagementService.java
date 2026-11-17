@@ -501,7 +501,9 @@ public class ProductManagementService {
             throw new UnitPriceRequiredException();
         }
 
-        String unitOfMeasure = resolveUnitOfMeasure(request.unitOfMeasure());
+        // A made-here item (V90) is sold one at a time: "Piece", unless another unit was chosen (owner, 2026-11-17).
+        String unitOfMeasure = resolveUnitOfMeasure(
+                madeHere && (request.unitOfMeasure() == null || request.unitOfMeasure().isBlank()) ? "PIECE" : request.unitOfMeasure());
         String packagingUnit = resolvePackagingUnit(request.packagingUnit());
         requirePackagingUnitAndSizePaired(packagingUnit, request.packagingSize());
         requirePackagingImpliesUnitOfMeasure(unitOfMeasure, packagingUnit, request.packagingSize());

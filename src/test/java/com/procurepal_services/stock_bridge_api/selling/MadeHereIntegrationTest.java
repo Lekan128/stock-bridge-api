@@ -72,6 +72,7 @@ class MadeHereIntegrationTest {
         assertThat(soup.madeHere()).isTrue();
         assertThat(soup.estimatedCost()).isEqualByComparingTo("2800");
         assertThat(soup.lowStockThreshold()).isNull();
+        assertThat(soup.unitOfMeasure()).isEqualTo("PIECE");
 
         UUID saleId = UUID.randomUUID();
         StockMutationResponse sold = send(shop, HttpMethod.POST, "/api/products/" + soup.id() + "/stock/stock-out",
