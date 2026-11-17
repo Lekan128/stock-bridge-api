@@ -115,6 +115,9 @@ class MadeHereIntegrationTest {
         send(shop, HttpMethod.PUT, "/api/company/selling/made-here", Map.of("on", true), String.class);
         ProductResponse soup = madeHereProduct(shop, "Asun", "5000", null).getBody();
 
+        // No unit, and nothing "needs a quick fix" for it.
+        assertThat(get(shop, "/api/products/data-issues", String.class).getBody()).doesNotContain(soup.id().toString());
+
         String worth = get(shop, "/api/analytics/stock-worth", String.class).getBody();
         assertThat(worth).contains("\"activeProductCount\":0");
 
@@ -127,6 +130,31 @@ class MadeHereIntegrationTest {
         ProductResponse updated = restTemplate.exchange("/api/products/" + soup.id(), HttpMethod.PUT,
                 new HttpEntity<>(body, headers), ProductResponse.class).getBody();
         assertThat(updated.estimatedCost()).isEqualByComparingTo("1900");
+    }
+
+    @Test
+    void atACompanyWithTwoBranchesAMadeHereSaleBelongsToTheBranchItWasSoldAt() {
+        Shop shop = shop("Made Branches Shop");
+        sellingOn(shop);
+        send(shop, HttpMethod.PUT, "/api/company/selling/made-here", Map.of("on", true), String.class);
+        ResponseEntity<Map> created = send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Oshodi"), Map.class);
+        assertThat(created.getStatusCode().is2xxSuccessful()).as("second branch: %s", created.getBody()).isTrue();
+        String oshodi = (String) created.getBody().get("id");
+        ProductResponse soup = madeHereProduct(shop, "Pepper soup", "6500", "2800").getBody();
+
+        StockMutationResponse sold = send(shop, HttpMethod.POST, "/api/products/" + soup.id() + "/stock/stock-out",
+                Map.of("quantity", 1, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 6500,
+                        "paymentMethod", "CASH", "branchId", oshodi),
+                StockMutationResponse.class).getBody();
+        assertThat(sold.movement().branchId()).hasToString(oshodi);
+
+        SalesReportResponse byBranch = get(shop, "/api/analytics/sales?groupBy=branch", SalesReportResponse.class).getBody();
+        assertThat(byBranch.rows()).singleElement().satisfies(row -> {
+            assertThat(row.label()).isEqualTo("Oshodi");
+            assertThat(row.totals().salesAmount()).isEqualByComparingTo("6500");
+        });
+        // No stock figure at either branch.
+        assertThat(onHand(shop, soup.id())).isEqualByComparingTo("0");
     }
 
     private void sellingOn(Shop shop) {
