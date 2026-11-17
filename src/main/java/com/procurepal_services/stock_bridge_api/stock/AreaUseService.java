@@ -24,9 +24,13 @@ public class AreaUseService {
 
     private final NamedParameterJdbcTemplate jdbc;
 
+    /** What was sold that used it: "4 Jollof rice & chicken". */
+    public record SoldItem(String name, BigDecimal quantity) {}
+
     public record Ingredient(
             UUID productId, String name, String stockUnit, BigDecimal cameIn, BigDecimal platesTook,
-            BigDecimal platesTookCost, boolean counted, BigDecimal usedOnTop, BigDecimal usedOnTopCost, BigDecimal left) {}
+            BigDecimal platesTookCost, boolean counted, BigDecimal usedOnTop, BigDecimal usedOnTopCost, BigDecimal left,
+            List<SoldItem> soldItems, int moreSoldItems) {}
 
     /** {@code counted}: a count of any of them in the period; totals are null while any part has no cost. */
     public record AreaUse(
@@ -97,8 +101,28 @@ public class AreaUseService {
                     rs.getObject("id", UUID.class), rs.getString("name"), rs.getString("unit_of_measure"),
                     rs.getBigDecimal("came_in"), rs.getBigDecimal("took"),
                     rs.getBoolean("uncosted") ? null : rs.getBigDecimal("took_cost"),
-                    counted, onTop, onTopCost, rs.getBigDecimal("left_now")));
+                    counted, onTop, onTopCost, rs.getBigDecimal("left_now"), List.of(), 0));
         });
+        // What was sold that used each one, most first: the sale lines its Used rows name, cancelled ones left out.
+        List<Ingredient> withItems = new ArrayList<>();
+        for (Ingredient ingredient : ingredients) {
+            List<SoldItem> items = jdbc.query("""
+                    SELECT sp.name, SUM(s.quantity) AS qty
+                    FROM stock_movements m
+                    JOIN stock_movements s ON s.id = m.used_for_movement_id
+                    JOIN products sp ON sp.id = s.product_id
+                    WHERE m.client_id = :clientId AND m.branch_id = :branchId AND m.area_id = :areaId
+                      AND m.product_id = :productId AND m.movement_type = 'OUT'
+                      AND NOT EXISTS (SELECT 1 FROM stock_movements r WHERE r.reverses_movement_id = s.id)""" + period + """
+                    GROUP BY sp.name ORDER BY qty DESC, sp.name
+                    """, params(clientId, branchId, areaId, from, to).addValue("productId", ingredient.productId()),
+                    (rs, i) -> new SoldItem(rs.getString("name"), rs.getBigDecimal("qty")));
+            withItems.add(new Ingredient(ingredient.productId(), ingredient.name(), ingredient.stockUnit(), ingredient.cameIn(),
+                    ingredient.platesTook(), ingredient.platesTookCost(), ingredient.counted(), ingredient.usedOnTop(),
+                    ingredient.usedOnTopCost(), ingredient.left(), items.stream().limit(2).toList(), Math.max(0, items.size() - 2)));
+        }
+        ingredients.clear();
+        ingredients.addAll(withItems);
         BigDecimal tookCost = BigDecimal.ZERO;
         BigDecimal onTopCost = BigDecimal.ZERO;
         boolean anyCounted = false;

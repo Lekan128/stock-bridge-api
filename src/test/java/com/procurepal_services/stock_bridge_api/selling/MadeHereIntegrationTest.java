@@ -350,6 +350,10 @@ class MadeHereIntegrationTest {
         assertThat(new java.math.BigDecimal(lines.get(0).get("platesTook").toString())).isEqualByComparingTo("1.8");
         assertThat(new java.math.BigDecimal(lines.get(0).get("left").toString())).isEqualByComparingTo("98.2");
         assertThat(new java.math.BigDecimal(use.get("platesTookCost").toString())).isEqualByComparingTo("2592.00");
+        java.util.List<Map<String, Object>> sold = (java.util.List<Map<String, Object>>) lines.get(0).get("soldItems");
+        assertThat(sold).hasSize(1);
+        assertThat(sold.get(0).get("name")).isEqualTo("Jollof rice");
+        assertThat(new java.math.BigDecimal(sold.get(0).get("quantity").toString())).isEqualByComparingTo("3");
         assertThat(use.get("counted")).isEqualTo(false);
 
         // The Kitchen counted at 97 kg: 1.2 kg used on top of the plates.
