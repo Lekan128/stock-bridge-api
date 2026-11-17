@@ -34,12 +34,21 @@ public class SaleTilesService {
 
     @Transactional(readOnly = true)
     public List<ProductResponse> tiles(UUID clientId, int limit) {
+        return tiles(clientId, limit, null);
+    }
+
+    /** At {@code branchId}: only products for that branch (V92). Null: every product. */
+    @Transactional(readOnly = true)
+    public List<ProductResponse> tiles(UUID clientId, int limit, UUID branchId) {
         int wanted = Math.max(1, Math.min(limit, MAX));
         List<UUID> mostSold = jdbc.queryForList(
                 """
                 SELECT o.product_id FROM stock_movements o
                 JOIN products p ON p.id = o.product_id AND p.is_active
                 WHERE o.client_id = :clientId AND o.movement_type = 'OUT' AND o.sale_id IS NOT NULL
+                  AND (CAST(:branchId AS uuid) IS NULL OR o.branch_id = :branchId)
+                  AND (CAST(:branchId AS uuid) IS NULL OR p.for_all_branches
+                       OR EXISTS (SELECT 1 FROM product_branches pb WHERE pb.product_id = p.id AND pb.branch_id = :branchId))
                   AND o.occurred_at >= :since
                 GROUP BY o.product_id
                 ORDER BY COUNT(*) DESC, MAX(o.occurred_at) DESC
@@ -48,12 +57,18 @@ public class SaleTilesService {
                 new MapSqlParameterSource()
                         .addValue("clientId", clientId)
                         .addValue("since", OffsetDateTime.now().minusDays(30))
+                        .addValue("branchId", branchId)
                         .addValue("limit", wanted),
                 UUID.class);
 
         Set<UUID> order = new LinkedHashSet<>(mostSold);
+        Set<UUID> forBranch = branchId == null ? null : new java.util.HashSet<>(jdbc.queryForList(
+                "SELECT product_id FROM product_branches WHERE branch_id = :branchId",
+                new MapSqlParameterSource("branchId", branchId), UUID.class));
         List<Product> active = order.size() < wanted
-                ? productRepository.findAllByClientIdAndActiveTrueOrderByNameAsc(clientId)
+                ? productRepository.findAllByClientIdAndActiveTrueOrderByNameAsc(clientId).stream()
+                        .filter(p -> forBranch == null || p.isForAllBranches() || forBranch.contains(p.getId()))
+                        .toList()
                 : List.of();
         active.stream().filter(p -> p.getUnitPrice() != null).forEach(p -> addUpTo(order, p.getId(), wanted));
         active.forEach(p -> addUpTo(order, p.getId(), wanted));

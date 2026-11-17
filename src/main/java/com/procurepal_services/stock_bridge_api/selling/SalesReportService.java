@@ -176,6 +176,7 @@ public class SalesReportService {
                     FROM products p
                     LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id IN (:branchIds)
                     WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
+                      AND (p.for_all_branches OR EXISTS (SELECT 1 FROM product_branches pb WHERE pb.product_id = p.id AND pb.branch_id IN (:branchIds)))
                     GROUP BY p.id, p.cost_price, p.unit_price)
                 SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
                        COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,

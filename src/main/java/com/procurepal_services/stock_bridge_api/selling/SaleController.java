@@ -50,8 +50,10 @@ public class SaleController {
     @PreAuthorize("hasAuthority('STOCK_OUT') and hasAuthority('VIEW_PRODUCTS')")
     public java.util.List<com.procurepal_services.stock_bridge_api.product.dto.ProductResponse> tiles(
             @RequestParam(defaultValue = "12") int limit,
+            // V92: the till's branch - only products for it.
+            @RequestParam(required = false) UUID branchId,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return saleTilesService.tiles(principal.getClientId(), limit);
+        return saleTilesService.tiles(principal.getClientId(), limit, branchId);
     }
 
     /**

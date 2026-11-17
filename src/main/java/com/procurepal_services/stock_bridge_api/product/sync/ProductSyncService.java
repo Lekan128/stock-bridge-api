@@ -46,6 +46,7 @@ public class ProductSyncService {
     private final ProductRepository productRepository;
     private final ProductManagementService productManagementService;
     private final ExpectedDeliveryService expectedDeliveryService;
+    private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
 
     /**
      * One page of the full catalogue, in id order.
@@ -191,6 +192,8 @@ public class ProductSyncService {
                 ? Map.of()
                 : branchStockService.countMarks(thresholds.keySet(), carried);
 
+        Map<UUID, List<UUID>> forBranches = productBranchService.branchesOf(thresholds.keySet());
+
         return products.stream()
                 .map(product -> new ProductSyncRow(
                         product.getId(),
@@ -223,7 +226,9 @@ public class ProductSyncService {
                         product.getUsedInUnit(),
                         product.getCountIn() == null || product.getCountIn().isEmpty() ? null : product.getCountIn(),
                         counts.get(product.getId()),
-                        product.isMadeHere()))
+                        product.isMadeHere(),
+                        product.isForAllBranches(),
+                        forBranches.getOrDefault(product.getId(), List.of())))
                 .toList();
     }
 

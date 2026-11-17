@@ -158,6 +158,73 @@ class MadeHereIntegrationTest {
         assertThat(onHand(shop, soup.id())).isEqualByComparingTo("0");
     }
 
+    @Test
+    void aProductIsOnlyForItsBranchesAndNothingIsRecordedForItAnywhereElse() {
+        Shop shop = shop("For Branch Shop");
+        sellingOn(shop);
+        send(shop, HttpMethod.PUT, "/api/company/selling/made-here", Map.of("on", true), String.class);
+        String main = (String) ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        String ikeja = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Ikeja"), Map.class).getBody().get("id");
+
+        // A made-here item for the main branch only.
+        Map<String, Object> soupFields = new java.util.HashMap<>(Map.of("name", "Pepper soup", "sku", "PS-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitPrice", 6500, "madeHere", true, "branchIds", java.util.List.of(main)));
+        ProductResponse soup = productWith(shop, soupFields);
+        assertThat(soup.forAllBranches()).isFalse();
+        assertThat(soup.forBranchIds()).containsExactly(UUID.fromString(main));
+
+        ResponseEntity<String> refused = send(shop, HttpMethod.POST, "/api/products/" + soup.id() + "/stock/stock-out",
+                Map.of("quantity", 1, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 6500, "branchId", ikeja),
+                String.class);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(refused.getBody()).contains("isn't for Ikeja");
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + soup.id() + "/stock/stock-out",
+                Map.of("quantity", 1, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 6500, "branchId", main),
+                String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // The Ikeja list doesn't have it; the main branch's does.
+        assertThat(get(shop, "/api/products?branchId=" + ikeja, String.class).getBody()).doesNotContain(soup.id().toString());
+        assertThat(get(shop, "/api/products?branchId=" + main, String.class).getBody()).contains(soup.id().toString());
+
+        // A stocked product for Ikeja only: counted there, refused at the main branch; stock arriving at the main
+        // branch makes it for the main branch too.
+        Map<String, Object> cokeFields = new java.util.HashMap<>(Map.of("name", "Coke", "sku", "CK-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitPrice", 500, "branchIds", java.util.List.of(ikeja)));
+        ProductResponse coke = productWith(shop, cokeFields);
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + coke.id() + "/stock/count",
+                Map.of("countedQuantity", 4, "branchId", main), String.class).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + coke.id() + "/stock/stock-in",
+                Map.of("quantity", 6, "branchId", main), String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(get(shop, "/api/products/" + coke.id(), ProductResponse.class).getBody().forBranchIds())
+                .containsExactlyInAnyOrder(UUID.fromString(ikeja), UUID.fromString(main));
+
+        // "All branches": everywhere.
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        HttpHeaders part = new HttpHeaders();
+        part.setContentType(MediaType.APPLICATION_JSON);
+        body.add("product", new HttpEntity<>(Map.of("allBranches", true), part));
+        HttpHeaders headers = auth(shop);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ProductResponse everywhere = restTemplate.exchange("/api/products/" + soup.id(), HttpMethod.PUT,
+                new HttpEntity<>(body, headers), ProductResponse.class).getBody();
+        assertThat(everywhere.forAllBranches()).isTrue();
+        assertThat(get(shop, "/api/products?branchId=" + ikeja, String.class).getBody()).contains(soup.id().toString());
+    }
+
+    private ProductResponse productWith(Shop shop, Map<String, Object> fields) {
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        HttpHeaders part = new HttpHeaders();
+        part.setContentType(MediaType.APPLICATION_JSON);
+        body.add("product", new HttpEntity<>(fields, part));
+        HttpHeaders headers = auth(shop);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        ResponseEntity<ProductResponse> response =
+                restTemplate.exchange("/api/products", HttpMethod.POST, new HttpEntity<>(body, headers), ProductResponse.class);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        return response.getBody();
+    }
+
     private void sellingOn(Shop shop) {
         assertThat(send(shop, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class)
                 .getStatusCode()).isEqualTo(HttpStatus.OK);

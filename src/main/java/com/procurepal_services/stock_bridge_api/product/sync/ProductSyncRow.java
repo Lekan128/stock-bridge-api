@@ -56,5 +56,8 @@ public record ProductSyncRow(
         // typed (2026-11-10): the count list's "Counted today" at any branch. Absent when never counted there.
         List<com.procurepal_services.stock_bridge_api.branch.dto.CountMark> counts,
         // V90 (selling till Step 4): made here, not kept in stock - left out of the phone's stock lists, never "out".
-        boolean madeHere) {
+        boolean madeHere,
+        // V92: which branches it is for - every branch, or these - so the phone shows it only where it belongs.
+        boolean forAllBranches,
+        List<UUID> forBranchIds) {
 }

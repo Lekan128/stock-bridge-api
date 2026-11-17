@@ -121,7 +121,39 @@ public record CreateProductRequest(
          */
         Boolean madeHere,
         /** A made-here item's rough cost to make one. Optional. */
-        @DecimalMin(value = "0", inclusive = true) BigDecimal estimatedCost) {
+        @DecimalMin(value = "0", inclusive = true) BigDecimal estimatedCost,
+        /**
+         * Which branches it is for (V92): these, or every branch with {@code allBranches}. Absent: the only branch at
+         * a one-branch company; every branch at a company with several (a caller from before branches were chosen).
+         */
+        java.util.List<UUID> branchIds,
+        Boolean allBranches) {
+
+    /** The shape before a product's branches (V92). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit,
+            java.util.List<String> countIn,
+            java.util.List<SupplierLink> suppliers,
+            OpeningStock openingStock,
+            Boolean madeHere,
+            BigDecimal estimatedCost) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers, openingStock,
+                madeHere, estimatedCost, null, null);
+    }
 
     /** The shape before made-here items (V90). */
     public CreateProductRequest(
@@ -144,7 +176,7 @@ public record CreateProductRequest(
             OpeningStock openingStock) {
         this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
                 initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers, openingStock,
-                null, null);
+                (Boolean) null, (BigDecimal) null);
     }
 
     public boolean isMadeHere() {

@@ -119,6 +119,7 @@ public class StockManagementService {
     private final com.procurepal_services.stock_bridge_api.selling.SellingPolicy sellingPolicy;
     private final com.procurepal_services.stock_bridge_api.selling.SalesReportService salesReportService;
     private final com.procurepal_services.stock_bridge_api.selling.SalePaymentService salePaymentService;
+    private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
      * class for why a one-branch company's figure is still {@code Product.quantityOnHand}.
@@ -207,6 +208,8 @@ public class StockManagementService {
         Product product = keptInStock(lockProductOrThrow(productId));
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        // Stock arriving at a branch makes the product for that branch (V92), like a waybill delivering it.
+        productBranchService.add(product, branchId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.RECEIVE, actingUserId);
         OffsetDateTime occurredAt = resolveOccurredAt(request.occurredAt());
 
@@ -440,6 +443,8 @@ public class StockManagementService {
         }
         UUID tenantId = requireTenantId();
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        // A product not for this branch is not sold, counted or adjusted here (V92).
+        productBranchService.requireFor(product, branchId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse,
                 forMove ? null : actingUserId);
 
@@ -569,6 +574,8 @@ public class StockManagementService {
     public StockMutationResponse count(UUID productId, StockCountRequest request, UUID actingUserId) {
         Product product = keptInStock(lockProductOrThrow(productId));
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        // A product not for this branch is not sold, counted or adjusted here (V92).
+        productBranchService.requireFor(product, branchId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
         OffsetDateTime countedAt = resolveOccurredAt(request.countedAt());
         if (countedAfter(productId, branchId, areaId, countedAt)) {
@@ -1543,6 +1550,8 @@ public class StockManagementService {
             OffsetDateTime occurredAt,
             String note,
             UUID actingUserId) {
+        // A waybill delivering it makes the product for the receiving branch (V92, owner 2026-11-17).
+        productBranchService.add(product, branchId);
         // Into the delivery area (D-E10) until a receipt can say where to put it (areas, Part 7).
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, null, AreaUse.RECEIVE);
         BigDecimal total = BigDecimal.ZERO;
@@ -1713,6 +1722,8 @@ public class StockManagementService {
     public StockMutationResponse adjust(UUID productId, StockAdjustmentRequest request, UUID actingUserId) {
         Product product = keptInStock(lockProductOrThrow(productId));
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        // A product not for this branch is not sold, counted or adjusted here (V92).
+        productBranchService.requireFor(product, branchId);
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), AreaUse.TAKE, actingUserId);
         BigDecimal delta = request.newQuantity().subtract(branchStockService.quantityAt(product, branchId, areaId));
         if (delta.signum() == 0) {
@@ -2191,6 +2202,8 @@ public class StockManagementService {
             throw com.procurepal_services.stock_bridge_api.product.MadeHereException.noStock(product.getName());
         }
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
+        // A product not for this branch is not sold, counted or adjusted here (V92).
+        productBranchService.requireFor(product, branchId);
         ResolvedEntry entry = resolveEntry(
                 product, request.quantity(), SaleFacts.enteredPrice(request), request.unit(), null, null);
         BigDecimal quantity = entry.baseQuantity();

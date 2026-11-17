@@ -92,6 +92,7 @@ public class ProductManagementService {
     private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
     private final com.procurepal_services.stock_bridge_api.repository.ClientRepository clientRepository;
+    private final ProductBranchService productBranchService;
     private final EveryBranchStockQuery everyBranchStockQuery;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
     private final S3ImageService s3ImageService;
@@ -277,7 +278,8 @@ public class ProductManagementService {
         boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
         ProductResponse response = ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
                 .withExpectedQuantity(
-                        expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id));
+                        expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id))
+                .withBranches(productBranchService.branchesOf(id));
         if (userId == null) {
             return response;
         }
@@ -555,6 +557,14 @@ public class ProductManagementService {
         // - it must already be able to find this row. Same reasoning
         // IncomingStockService.matchOrCreateBuyerProduct's own saveAndFlush documents.
         product = productRepository.saveAndFlush(product);
+        // Which branches it is for (V92): as chosen. A caller that doesn't say (an older app): the branch it gets
+        // opening stock at, below, else the main branch at commit (V94) - every product has a branch.
+        if (Boolean.TRUE.equals(request.allBranches())) {
+            productBranchService.set(product, true, List.of());
+        } else if (request.branchIds() != null && !request.branchIds().isEmpty()) {
+            productBranchService.set(product, false, request.branchIds());
+        }
+        product = productRepository.saveAndFlush(product);
 
         String preferredVendorName = null;
         // Its suppliers, several at once (2026-11-10): each linked with its pack and price, nothing received. The
@@ -578,6 +588,8 @@ public class ProductManagementService {
                     opening.companyVendorId() == null ? null : linked.get(opening.companyVendorId());
             UUID openingBranchId = branchStockService.resolveForWrite(opening.branchId(), actingUserId);
             branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
+            // Stock on the shelf at a branch: the product is for that branch too.
+            productBranchService.add(product, openingBranchId);
             String fromPack = from == null ? null : resolvePackagingUnit(from.packagingUnit());
             stockManagementService.stockIn(
                     product.getId(),
@@ -626,6 +638,7 @@ public class ProductManagementService {
             // work there, as for any stock-in they record.
             UUID openingBranchId = branchStockService.resolveForWrite(initialVendor.branchId(), actingUserId);
             branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
+            productBranchService.add(product, openingBranchId);
             stockManagementService.stockIn(
                     product.getId(),
                     new StockInRequest(
@@ -645,7 +658,8 @@ public class ProductManagementService {
                     .orElse(null);
         }
 
-        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
+        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings)
+                .withBranches(productBranchService.branchesOf(product.getId()));
     }
 
     /** Delegates to {@link #update(UUID, UpdateProductRequest, MultipartFile, AuthenticatedUserPrincipal)} with no principal - the sku-override permission check treats that as "not permitted." */
@@ -705,6 +719,12 @@ public class ProductManagementService {
                     : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
         }
         SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
+        // Which branches it is for (V92): every branch, or exactly the ones sent; absent leaves them.
+        if (Boolean.TRUE.equals(request.allBranches())) {
+            productBranchService.set(product, true, List.of());
+        } else if (request.branchIds() != null) {
+            productBranchService.set(product, false, request.branchIds());
+        }
         if (request.lowStockThreshold() != null && !product.isMadeHere()) {
             product.setLowStockThreshold(request.lowStockThreshold());
         }
@@ -841,7 +861,8 @@ public class ProductManagementService {
                 .findByClientIdAndProductIdAndIsPreferredTrue(product.getClientId(), id)
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
-        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
+        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings)
+                .withBranches(productBranchService.branchesOf(product.getId()));
     }
 
     @Transactional

@@ -161,6 +161,11 @@ public class Product extends TenantAwareEntity {
     @Column(name = "estimated_cost", precision = 14, scale = 2)
     private BigDecimal estimatedCost;
 
+    /** For every branch, now and any opened later (V92); otherwise only those in product_branches. */
+    @Column(name = "for_all_branches", nullable = false)
+    @Builder.Default
+    private boolean forAllBranches = false;
+
     /**
      * Marketplace category. Safe as a mapped association because ProductCategory
      * is global (not tenant-scoped), so no tenant filter applies to it.

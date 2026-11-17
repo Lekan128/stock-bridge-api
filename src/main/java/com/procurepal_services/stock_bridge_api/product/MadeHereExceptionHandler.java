@@ -14,4 +14,10 @@ public class MadeHereExceptionHandler {
     public ResponseEntity<ApiError> handle(MadeHereException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
     }
+
+    /** A product used at a branch it isn't for (V92) - global for the same reason. */
+    @ExceptionHandler(ProductNotForBranchException.class)
+    public ResponseEntity<ApiError> handle(ProductNotForBranchException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(ex.getMessage()));
+    }
 }

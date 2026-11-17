@@ -90,7 +90,16 @@ final class ProductSpecifications {
     static Specification<Product> atBranch(
             UUID clientId, String search, Boolean active, UUID categoryId, StockStatus stockStatus, Boolean hasSellingPrice,
             UUID branchId) {
-        Specification<Product> base = forTenant(clientId, search, active, categoryId, null, hasSellingPrice);
+        // Only products for this branch (V92): one not for it doesn't show there at all.
+        Specification<Product> base = forTenant(clientId, search, active, categoryId, null, hasSellingPrice)
+                .and((root, query, cb) -> {
+                    jakarta.persistence.criteria.Subquery<UUID> forIt = query.subquery(UUID.class);
+                    Root<com.procurepal_services.stock_bridge_api.entity.ProductBranchEntry> row =
+                            forIt.from(com.procurepal_services.stock_bridge_api.entity.ProductBranchEntry.class);
+                    forIt.select(row.get("productId"))
+                            .where(cb.equal(row.get("productId"), root.get("id")), cb.equal(row.get("branchId"), branchId));
+                    return cb.or(cb.isTrue(root.get("forAllBranches")), cb.exists(forIt));
+                });
         if (stockStatus == null) {
             return base;
         }
