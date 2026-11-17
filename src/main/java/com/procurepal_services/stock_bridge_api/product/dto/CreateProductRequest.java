@@ -179,6 +179,13 @@ public record CreateProductRequest(
                 (Boolean) null, (BigDecimal) null);
     }
 
+    /** The same product, for every branch (V92) - the demo's, sold at both of its branches. */
+    public CreateProductRequest forAllBranches() {
+        return new CreateProductRequest(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit,
+                packagingSize, initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers,
+                openingStock, madeHere, estimatedCost, null, true);
+    }
+
     public boolean isMadeHere() {
         return Boolean.TRUE.equals(madeHere);
     }

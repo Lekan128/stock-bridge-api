@@ -142,6 +142,8 @@ class MadeHereIntegrationTest {
         assertThat(created.getStatusCode().is2xxSuccessful()).as("second branch: %s", created.getBody()).isTrue();
         String oshodi = (String) created.getBody().get("id");
         ProductResponse soup = madeHereProduct(shop, "Pepper soup", "6500", "2800").getBody();
+        // Saying no branch, it is the main branch's (V92); Oshodi is given it as a new branch would be.
+        send(shop, HttpMethod.POST, "/api/branches/" + oshodi + "/products", Map.of("productIds", java.util.List.of(soup.id().toString())), Map.class);
 
         StockMutationResponse sold = send(shop, HttpMethod.POST, "/api/products/" + soup.id() + "/stock/stock-out",
                 Map.of("quantity", 1, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 6500,
@@ -210,6 +212,32 @@ class MadeHereIntegrationTest {
                 new HttpEntity<>(body, headers), ProductResponse.class).getBody();
         assertThat(everywhere.forAllBranches()).isTrue();
         assertThat(get(shop, "/api/products?branchId=" + ikeja, String.class).getBody()).contains(soup.id().toString());
+    }
+
+    @Test
+    void aNewBranchIsGivenProductsChosenOrAllWithNoStock() {
+        Shop shop = shop("Branch Products Shop");
+        String main = (String) ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        ProductResponse coke = productWith(shop, new java.util.HashMap<>(Map.of("name", "Coke", "sku", "CK-" + UUID.randomUUID().toString().substring(0, 6), "branchIds", java.util.List.of(main))));
+        ProductResponse fanta = productWith(shop, new java.util.HashMap<>(Map.of("name", "Fanta", "sku", "FT-" + UUID.randomUUID().toString().substring(0, 6), "branchIds", java.util.List.of(main))));
+        String ikeja = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Ikeja"), Map.class).getBody().get("id");
+
+        Map<String, Object> toAdd = get(shop, "/api/branches/" + ikeja + "/products/to-add?search=cok", Map.class).getBody();
+        assertThat(((Number) toAdd.get("total")).intValue()).isEqualTo(2);
+        assertThat(((Number) toAdd.get("matching")).intValue()).isEqualTo(1);
+
+        Map<String, Object> added = send(shop, HttpMethod.POST, "/api/branches/" + ikeja + "/products",
+                Map.of("productIds", java.util.List.of(coke.id().toString())), Map.class).getBody();
+        assertThat(((Number) added.get("added")).intValue()).isEqualTo(1);
+        assertThat(get(shop, "/api/products?branchId=" + ikeja, String.class).getBody())
+                .contains(coke.id().toString()).doesNotContain(fanta.id().toString());
+        // No stock moved: counting it there is now allowed, and it holds nothing.
+        assertThat(get(shop, "/api/products/" + coke.id(), ProductResponse.class).getBody().quantityOnHand()).isEqualByComparingTo("0");
+
+        assertThat(((Number) send(shop, HttpMethod.POST, "/api/branches/" + ikeja + "/products", Map.of("all", true), Map.class)
+                .getBody().get("added")).intValue()).isEqualTo(1);
+        assertThat(((Number) get(shop, "/api/branches/" + ikeja + "/products/to-add", Map.class).getBody().get("total")).intValue()).isZero();
     }
 
     private ProductResponse productWith(Shop shop, Map<String, Object> fields) {

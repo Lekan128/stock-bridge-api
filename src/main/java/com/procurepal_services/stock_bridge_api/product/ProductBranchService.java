@@ -111,6 +111,70 @@ public class ProductBranchService {
                         .addValue("clientId", product.getClientId()));
     }
 
+    /** The company's active products the branch doesn't have yet, matching {@code search}, by category then name. */
+    @Transactional(readOnly = true)
+    public BranchProductsController.ToAddResponse toAdd(UUID clientId, UUID branchId, String search, Boolean madeHere, int limit) {
+        requireBranch(clientId, branchId);
+        String notThere = """
+                FROM products p LEFT JOIN company_categories c ON c.id = p.company_category_id
+                WHERE p.client_id = :clientId AND p.is_active AND NOT p.for_all_branches
+                  AND NOT EXISTS (SELECT 1 FROM product_branches pb WHERE pb.product_id = p.id AND pb.branch_id = :branchId)
+                """;
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId)
+                .addValue("limit", limit);
+        Long total = jdbc.queryForObject("SELECT COUNT(*) " + notThere, params, Long.class);
+        StringBuilder where = new StringBuilder(notThere);
+        if (search != null && !search.isBlank()) {
+            where.append(" AND (LOWER(p.name) LIKE :search OR LOWER(p.sku) LIKE :search)");
+            params.addValue("search", "%" + search.trim().toLowerCase() + "%");
+        }
+        if (madeHere != null) {
+            where.append(" AND p.made_here = :madeHere");
+            params.addValue("madeHere", madeHere);
+        }
+        Long matching = jdbc.queryForObject("SELECT COUNT(*) " + where, params, Long.class);
+        List<BranchProductsController.ProductToAdd> products = jdbc.query(
+                "SELECT p.id, p.name, p.sku, c.id AS category_id, c.name AS category_name, p.made_here " + where
+                        + " ORDER BY c.name NULLS LAST, p.name, p.id LIMIT :limit",
+                params,
+                (rs, i) -> new BranchProductsController.ProductToAdd(
+                        rs.getObject("id", UUID.class), rs.getString("name"), rs.getString("sku"),
+                        rs.getObject("category_id", UUID.class), rs.getString("category_name"), rs.getBoolean("made_here")));
+        return new BranchProductsController.ToAddResponse(total == null ? 0 : total, matching == null ? 0 : matching, products);
+    }
+
+    /** Makes products for the branch - every active one, or these of the company's. No stock moves. */
+    @Transactional
+    public int addToBranch(UUID clientId, UUID branchId, boolean all, Collection<UUID> productIds) {
+        requireBranch(clientId, branchId);
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId);
+        String chosen;
+        if (all) {
+            chosen = "";
+        } else {
+            if (productIds == null || productIds.isEmpty()) {
+                return 0;
+            }
+            chosen = " AND p.id IN (:ids)";
+            params.addValue("ids", productIds);
+        }
+        return jdbc.update("""
+                INSERT INTO product_branches (product_id, branch_id, client_id)
+                SELECT p.id, :branchId, :clientId FROM products p
+                WHERE p.client_id = :clientId AND p.is_active AND NOT p.for_all_branches""" + chosen + "\n" + """
+                ON CONFLICT DO NOTHING
+                """, params);
+    }
+
+    private void requireBranch(UUID clientId, UUID branchId) {
+        Boolean theirs = jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM branches WHERE id = :branchId AND client_id = :clientId AND is_active)",
+                new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId), Boolean.class);
+        if (!Boolean.TRUE.equals(theirs)) {
+            throw new com.procurepal_services.stock_bridge_api.branch.BranchNotFoundException();
+        }
+    }
+
     private String branchName(UUID branchId) {
         return jdbc.queryForList("SELECT name FROM branches WHERE id = :id", new MapSqlParameterSource("id", branchId), String.class)
                 .stream().findFirst().orElse("this branch");

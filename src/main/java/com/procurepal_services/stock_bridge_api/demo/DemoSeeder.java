@@ -401,7 +401,8 @@ public class DemoSeeder {
                 null,
                 links,
                 null);
-        return productManagementService.create(request, null, ownerId).id();
+        // Sold and stocked at both branches (V92: a product is otherwise only for the branch it was added at).
+        return productManagementService.create(request.forAllBranches(), null, ownerId).id();
     }
 
     /** The product's picture from {@code demo/images/<key>.jpg}, if there is one and pictures can be stored. */

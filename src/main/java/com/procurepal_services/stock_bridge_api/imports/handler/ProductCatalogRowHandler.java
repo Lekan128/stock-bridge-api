@@ -1542,7 +1542,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner)
                 && sellingPricePermission.allows(ctx.actingUserId());
         boolean perPack = keepsSellingPrice && sellingPricePerPack(ctx.tenantId(), ctx.cache());
-        Product created = productRepository.save(Product.builder()
+        Product created = productRepository.saveAndFlush(Product.builder()
                 .name(state.text(ImportFields.NAME))
                 .sku(state.text(ImportFields.SKU))
                 .description(state.text(ImportFields.DESCRIPTION))
