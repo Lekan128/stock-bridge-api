@@ -152,6 +152,10 @@ public class Client {
     @Column(name = "sells_stock", nullable = false)
     private boolean sellsStock;
 
+    /** "Sell things you make" (V90, selling till Step 4): made-here items, under selling. Off until turned on. */
+    @Column(name = "sells_made_here", nullable = false)
+    private boolean sellsMadeHere;
+
     /**
      * Support has let this company add a second branch while multiple branches are in pilot (V52,
      * {@code app.branches.rollout}). Read through {@code BranchService.mayAddBranch}; a company that

@@ -56,8 +56,8 @@ public class DemoResetService {
     static final List<String> WIPED = List.of(
             "notifications", "carts", "stock_write_undo", "stock_idempotency_keys", "phone_sync_status",
             "area_move_returns", "area_moves", "stock_requests", "delivery_send_backs", "purchase_order_emails",
-            "price_requests", "stock_movements", "stock_transfers", "expected_deliveries", "area_stock",
-            "branch_stock", "product_price_changes", "products", "product_vendors", "import_sessions",
+            "price_requests", "sales", "stock_movements", "stock_transfers", "expected_deliveries", "area_stock",
+            "product_branches", "branch_stock", "product_price_changes", "products", "product_vendors", "import_sessions",
             "product_list_files", "company_vendors", "company_categories", "product_sku_settings", "delivery_addresses");
 
     public enum State { RUNNING, DONE, FAILED }
@@ -279,6 +279,7 @@ public class DemoResetService {
                 "DELETE FROM delivery_send_backs WHERE client_id = :clientId",
                 "DELETE FROM purchase_order_emails WHERE client_id = :clientId",
                 "DELETE FROM price_requests WHERE client_id = :clientId",
+                "DELETE FROM sales WHERE client_id = :clientId",
                 """
                 DELETE FROM stock_movement_allocations a USING stock_movements m
                 WHERE (a.in_movement_id = m.id OR a.out_movement_id = m.id) AND m.client_id = :clientId
@@ -287,6 +288,7 @@ public class DemoResetService {
                 "DELETE FROM stock_transfers WHERE client_id = :clientId",
                 "DELETE FROM expected_deliveries WHERE client_id = :clientId",
                 "DELETE FROM area_stock WHERE client_id = :clientId",
+                "DELETE FROM product_branches WHERE client_id = :clientId",
                 "DELETE FROM branch_stock WHERE client_id = :clientId",
                 "DELETE FROM product_price_changes WHERE client_id = :clientId",
                 "DELETE FROM products WHERE client_id = :clientId",

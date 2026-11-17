@@ -168,6 +168,10 @@ public class BranchStockService {
      * one being reversed.
      */
     public void apply(Product product, UUID branchId, UUID areaId, BigDecimal delta) {
+        // A made-here item (V90) has no stock figure anywhere: selling it, or cancelling that, moves nothing.
+        if (product.isMadeHere()) {
+            return;
+        }
         java.util.Objects.requireNonNull(areaId, "every stock figure is in an area (V60)");
         product.setQuantityOnHand(product.getQuantityOnHand().add(delta));
         MapSqlParameterSource params = new MapSqlParameterSource()

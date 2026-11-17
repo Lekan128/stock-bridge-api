@@ -178,7 +178,8 @@ class SaleLedgerIntegrationTest {
     // ---------------------------------------------------------------------------- undo ----
 
     @Test
-    void undoingASaleVoidsEveryLineAndTheSaleIsGone() {
+    void undoNoLongerErasesASaleItCancelsItAndTheSaleStaysOnRecord() {
+        // Selling till Step 3 (owner, 2026-11-16): "take the cash, undo, no trace" is gone.
         Shop shop = shop("Undo Shop");
         UUID a = pieceProduct(shop, "A");
         UUID b = pieceProduct(shop, "B");
@@ -191,30 +192,12 @@ class SaleLedgerIntegrationTest {
         UndoSaleResponse undo = post(shop, "/api/sales/" + saleId + "/undo", null, UndoSaleResponse.class).getBody();
 
         assertThat(undo.undoneCount()).isEqualTo(2);
-        assertThat(undo.notUndoneCount()).isZero();
         assertThat(product(shop, a).quantityOnHand()).isEqualByComparingTo("10");
         assertThat(product(shop, b).quantityOnHand()).isEqualByComparingTo("10");
-        assertThat(get(shop, "/api/sales/" + saleId, String.class).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
-    }
-
-    @Test
-    void undoSaysWhichLineItCouldNotUndoAndUndoesTheRest() {
-        Shop shop = shop("Undo Partial Shop");
-        UUID a = pieceProduct(shop, "A");
-        UUID b = pieceProduct(shop, "B");
-        stockIn(shop, a, 10, null, "100");
-        stockIn(shop, b, 10, null, "200");
-        UUID saleId = UUID.randomUUID();
-        stockOut(shop, a, body(2, null, "150", null, saleId, null));
-        stockOut(shop, b, body(1, null, "250", null, saleId, null));
-        // Another sale of A since: A's line is no longer its latest write.
-        stockOut(shop, a, body(1, null, "150", null, null, null));
-
-        UndoSaleResponse undo = post(shop, "/api/sales/" + saleId + "/undo", null, UndoSaleResponse.class).getBody();
-
-        assertThat(undo.undoneCount()).isEqualTo(1);
-        assertThat(undo.lines()).filteredOn(line -> !line.undone()).singleElement()
-                .satisfies(line -> assertThat(line.reason()).contains("recorded for this product since"));
+        SaleResponse sale = sale(shop, saleId);
+        assertThat(sale.cancelledLineCount()).isEqualTo(2);
+        assertThat(sale.cancelState()).isEqualTo("CANCELLED");
+        assertThat(sale.cancelDecidedByName()).isNotBlank();
     }
 
     // -------------------------------------------------------------------------- cancel ----

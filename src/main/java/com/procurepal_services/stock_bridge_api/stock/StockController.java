@@ -55,6 +55,7 @@ public class StockController {
     static final String IDEMPOTENT_REPLAYED_HEADER = "Idempotent-Replayed";
 
     private final StockManagementService stockManagementService;
+    private final AreaUseService areaUseService;
     private final StockIdempotencyService stockIdempotencyService;
     /** Re-checks the caller's current permissions before each write is recorded (D2). */
     private final StockWritePermissionGuard permissionGuard;
@@ -304,6 +305,26 @@ public class StockController {
      * being viewed. See {@code StockMovementSummaryResponse} for why the unpriced counts come
      * back alongside the money.
      */
+    /**
+     * "Kitchen this month" (selling till Step 6): one area's ingredients over the period - came in, what the plates
+     * sold took, what counts found used on top, what's there now. Empty when the plates took nothing there.
+     */
+    @GetMapping("/api/stock/movements/area-use")
+    @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
+    public AreaUseService.AreaUse areaUse(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            @RequestParam UUID branchId,
+            @RequestParam UUID areaId,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        List<UUID> branches = branchScope(branchId, principal);
+        if (!branches.contains(branchId)) {
+            throw new org.springframework.security.access.AccessDeniedException("You can't see that branch.");
+        }
+        areaAccessService.scope(principal.getUserId(), branches, List.of(areaId));
+        return areaUseService.of(principal.getClientId(), branchId, areaId, from, to);
+    }
+
     @GetMapping("/api/stock/movements/summary")
     @PreAuthorize("hasAuthority('MANAGE_INVENTORY')")
     public StockMovementSummaryResponse movementSummary(

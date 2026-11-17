@@ -91,6 +91,8 @@ public class ProductManagementService {
     private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
     private final com.procurepal_services.stock_bridge_api.repository.CompanyCategoryRepository companyCategoryRepository;
     private final ProductRepository productRepository;
+    private final com.procurepal_services.stock_bridge_api.repository.ClientRepository clientRepository;
+    private final ProductBranchService productBranchService;
     private final EveryBranchStockQuery everyBranchStockQuery;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
     private final S3ImageService s3ImageService;
@@ -276,7 +278,8 @@ public class ProductManagementService {
         boolean hasMultiplePacks = hasMultiplePacksFor(List.of(product)).getOrDefault(id, false);
         ProductResponse response = ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
                 .withExpectedQuantity(
-                        expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id));
+                        expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id))
+                .withBranches(productBranchService.branchesOf(id));
         if (userId == null) {
             return response;
         }
@@ -465,6 +468,11 @@ public class ProductManagementService {
     @Transactional
     public ProductResponse create(CreateProductRequest request, MultipartFile image, UUID actingUserId) {
         UUID tenantId = requireTenantId();
+        // Made here, not kept in stock (V90): only where "Sell things you make" is on, and with nothing about stock.
+        boolean madeHere = request.isMadeHere();
+        if (madeHere && !clientRepository.findById(tenantId).map(Client::isSellsMadeHere).orElse(false)) {
+            throw new MadeHereException("Turn on \"Sell things you make\" under Company → Selling to add things you make.");
+        }
 
         // See CreateProductRequest's "sku is conditionally required" javadoc: whichever branch
         // runs, request.sku() plays no further part below - `sku` is the one value this method
@@ -495,7 +503,9 @@ public class ProductManagementService {
             throw new UnitPriceRequiredException();
         }
 
-        String unitOfMeasure = resolveUnitOfMeasure(request.unitOfMeasure());
+        // A made-here item (V90) is sold one at a time: "Piece", unless another unit was chosen (owner, 2026-11-17).
+        String unitOfMeasure = resolveUnitOfMeasure(
+                madeHere && (request.unitOfMeasure() == null || request.unitOfMeasure().isBlank()) ? "PIECE" : request.unitOfMeasure());
         String packagingUnit = resolvePackagingUnit(request.packagingUnit());
         requirePackagingUnitAndSizePaired(packagingUnit, request.packagingSize());
         requirePackagingImpliesUnitOfMeasure(unitOfMeasure, packagingUnit, request.packagingSize());
@@ -508,12 +518,14 @@ public class ProductManagementService {
                 .sku(sku)
                 .barcode(assertBarcodeAvailable(tenantId, request.barcode(), null))
                 .description(request.description())
-                .lowStockThreshold(request.lowStockThreshold())
+                .lowStockThreshold(madeHere ? null : request.lowStockThreshold())
                 .unitOfMeasure(unitOfMeasure)
-                .packagingUnit(packagingUnit)
-                .packagingSize(request.packagingSize())
+                .packagingUnit(madeHere ? null : packagingUnit)
+                .packagingSize(madeHere ? null : request.packagingSize())
                 // UNITS_PLAN.md Part 1: the product's own units, each with what one holds.
-                .measures(new ArrayList<>(ProductMeasures.validate(request.measures(), unitOfMeasure, packagingUnit)))
+                .measures(madeHere ? new ArrayList<>() : new ArrayList<>(ProductMeasures.validate(request.measures(), unitOfMeasure, packagingUnit)))
+                .madeHere(madeHere)
+                .estimatedCost(madeHere ? request.estimatedCost() : null)
                 .quantityOnHand(BigDecimal.ZERO)
                 .incomingQuantity(0)
                 .active(true)
@@ -545,12 +557,20 @@ public class ProductManagementService {
         // - it must already be able to find this row. Same reasoning
         // IncomingStockService.matchOrCreateBuyerProduct's own saveAndFlush documents.
         product = productRepository.saveAndFlush(product);
+        // Which branches it is for (V92): as chosen. A caller that doesn't say (an older app): the branch it gets
+        // opening stock at, below, else the main branch at commit (V94) - every product has a branch.
+        if (Boolean.TRUE.equals(request.allBranches())) {
+            productBranchService.set(product, true, List.of());
+        } else if (request.branchIds() != null && !request.branchIds().isEmpty()) {
+            productBranchService.set(product, false, request.branchIds());
+        }
+        product = productRepository.saveAndFlush(product);
 
         String preferredVendorName = null;
         // Its suppliers, several at once (2026-11-10): each linked with its pack and price, nothing received. The
         // first is preferred, as the first linked always is.
         java.util.Map<UUID, CreateProductRequest.SupplierLink> linked = new java.util.LinkedHashMap<>();
-        for (CreateProductRequest.SupplierLink link : request.suppliers() == null ? List.<CreateProductRequest.SupplierLink>of() : request.suppliers()) {
+        for (CreateProductRequest.SupplierLink link : request.suppliers() == null || madeHere ? List.<CreateProductRequest.SupplierLink>of() : request.suppliers()) {
             if (linked.containsKey(link.companyVendorId())) {
                 continue;
             }
@@ -562,12 +582,14 @@ public class ProductManagementService {
             linked.put(link.companyVendorId(), link);
         }
         // What's on the shelf now, separately: from one of them (their pack and price), or from nobody named.
-        if (request.openingStock() != null) {
+        if (request.openingStock() != null && !madeHere) {
             CreateProductRequest.OpeningStock opening = request.openingStock();
             CreateProductRequest.SupplierLink from =
                     opening.companyVendorId() == null ? null : linked.get(opening.companyVendorId());
             UUID openingBranchId = branchStockService.resolveForWrite(opening.branchId(), actingUserId);
             branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
+            // Stock on the shelf at a branch: the product is for that branch too.
+            productBranchService.add(product, openingBranchId);
             String fromPack = from == null ? null : resolvePackagingUnit(from.packagingUnit());
             stockManagementService.stockIn(
                     product.getId(),
@@ -593,7 +615,7 @@ public class ProductManagementService {
                     .map(vendor -> vendor.getCompanyVendor().getName())
                     .orElse(null);
         }
-        if (request.initialVendor() != null) {
+        if (request.initialVendor() != null && !madeHere) {
             CreateProductRequest.InitialVendor initialVendor = request.initialVendor();
             // Reused, not reimplemented: stockIn already owns the ledger write, the weighted-
             // average cost recalculation (trivial here since quantityOnHand starts at zero -
@@ -616,6 +638,7 @@ public class ProductManagementService {
             // work there, as for any stock-in they record.
             UUID openingBranchId = branchStockService.resolveForWrite(initialVendor.branchId(), actingUserId);
             branchAccessService.requireMayRecordAt(actingUserId, openingBranchId);
+            productBranchService.add(product, openingBranchId);
             stockManagementService.stockIn(
                     product.getId(),
                     new StockInRequest(
@@ -635,7 +658,8 @@ public class ProductManagementService {
                     .orElse(null);
         }
 
-        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
+        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings)
+                .withBranches(productBranchService.branchesOf(product.getId()));
     }
 
     /** Delegates to {@link #update(UUID, UpdateProductRequest, MultipartFile, AuthenticatedUserPrincipal)} with no principal - the sku-override permission check treats that as "not permitted." */
@@ -695,8 +719,20 @@ public class ProductManagementService {
                     : assertBarcodeAvailable(product.getClientId(), request.barcode(), id));
         }
         SellingPriceService.Snapshot priceBefore = SellingPriceService.Snapshot.of(product);
-        if (request.lowStockThreshold() != null) {
+        // Which branches it is for (V92): every branch, or exactly the ones sent; absent leaves them.
+        if (Boolean.TRUE.equals(request.allBranches())) {
+            productBranchService.set(product, true, List.of());
+        } else if (request.branchIds() != null) {
+            productBranchService.set(product, false, request.branchIds());
+        }
+        if (request.lowStockThreshold() != null && !product.isMadeHere()) {
             product.setLowStockThreshold(request.lowStockThreshold());
+        }
+        // A made-here item's rough cost to make one (V90).
+        if (product.isMadeHere() && Boolean.TRUE.equals(request.clearEstimatedCost())) {
+            product.setEstimatedCost(null);
+        } else if (product.isMadeHere() && request.estimatedCost() != null) {
+            product.setEstimatedCost(request.estimatedCost());
         }
         if (request.active() != null) {
             product.setActive(request.active());
@@ -825,7 +861,8 @@ public class ProductManagementService {
                 .findByClientIdAndProductIdAndIsPreferredTrue(product.getClientId(), id)
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
-        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings);
+        return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings)
+                .withBranches(productBranchService.branchesOf(product.getId()));
     }
 
     @Transactional

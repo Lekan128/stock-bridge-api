@@ -27,5 +27,9 @@ public record SellingSettingsResponse(
         SettingChangeSource changedVia,
         StockUse stockUse,
         long legacyPriceCount,
-        boolean legacyPricesDismissed) {
+        boolean legacyPricesDismissed,
+        /** "Sell things you make" (V90): made-here items, under selling. Only shown while selling is on. */
+        boolean sellsMadeHere,
+        OffsetDateTime madeHereChangedAt,
+        String madeHereChangedByName) {
 }

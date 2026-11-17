@@ -121,7 +121,22 @@ public record ProductResponse(
         List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
         String usedInUnit,
         // V84: the units a count of it opens in, as unit keys. Empty: its pack and its stock unit.
-        List<String> countIn) {
+        List<String> countIn,
+        // V90 (selling till Step 4): made here, not kept in stock - and its rough cost to make one.
+        boolean madeHere,
+        BigDecimal estimatedCost,
+        // V92: which branches it is for - all of them, or these. Filled where the caller knows them; absent otherwise.
+        boolean forAllBranches,
+        List<UUID> forBranchIds) {
+
+    /** The same product, saying which branches it is for (V92). */
+    public ProductResponse withBranches(List<UUID> branches) {
+        return new ProductResponse(id, name, sku, barcode, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
+                expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure, packagingUnit,
+                packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt, warnings, hasMultiplePacks,
+                categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit, branchStock, areaStock, measures, usedInUnit,
+                countIn, madeHere, estimatedCost, forAllBranches, branches);
+    }
 
     /**
      * The no-vendor-info overload. Deliberately does NOT touch {@code product.getVendors()}/
@@ -189,7 +204,11 @@ public record ProductResponse(
                 null,
                 product.getMeasures() == null ? List.of() : List.copyOf(product.getMeasures()),
                 product.getUsedInUnit(),
-                product.getCountIn() == null ? List.of() : List.copyOf(product.getCountIn()));
+                product.getCountIn() == null ? List.of() : List.copyOf(product.getCountIn()),
+                product.isMadeHere(),
+                product.getEstimatedCost(),
+                product.isForAllBranches(),
+                null);
     }
 
     /**
@@ -203,7 +222,7 @@ public record ProductResponse(
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock, measures, usedInUnit, countIn);
+                branchStock, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
     }
 
     /**
@@ -216,7 +235,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, figure.lowStockThreshold(), brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, figure.isLowStock(), createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock, measures, usedInUnit, countIn);
+                branchStock, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
     }
 
     /** The same product with its figure at each branch the person sees (V52) - the product page only. */
@@ -226,7 +245,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                figures, areaStock, measures, usedInUnit, countIn);
+                figures, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
     }
 
     /** The same product with its figure in each area (V60) of the branches the person sees that have areas. */
@@ -236,6 +255,6 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, figures, measures, usedInUnit, countIn);
+                branchStock, figures, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
     }
 }

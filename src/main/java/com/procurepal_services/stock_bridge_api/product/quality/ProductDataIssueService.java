@@ -88,7 +88,8 @@ public class ProductDataIssueService {
                             .formatted(product.getSku(), undamaged(product.getSku())),
                     generated ? null : suggestedCode(tenantId, product)));
         }
-        if (product.getUnitOfMeasure() == null || product.getUnitOfMeasure().isBlank()) {
+        // A made-here item (V90) is sold one at a time and never counted: it has no stock unit to miss.
+        if (!product.isMadeHere() && (product.getUnitOfMeasure() == null || product.getUnitOfMeasure().isBlank())) {
             issues.add(new Issue("NO_STOCK_UNIT",
                     "%s has no unit, so the %s in stock are just \"%s\". Choose what it is counted in - kg, litres, pieces."
                             .formatted(product.getName(),

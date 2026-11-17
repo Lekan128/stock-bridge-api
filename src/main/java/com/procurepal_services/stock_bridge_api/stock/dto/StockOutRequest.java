@@ -1,6 +1,7 @@
 package com.procurepal_services.stock_bridge_api.stock.dto;
 
 import com.procurepal_services.stock_bridge_api.entity.OutReason;
+import com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
@@ -85,7 +86,30 @@ public record StockOutRequest(
         // Areas inside a branch (V60): the area this happened in. Absent means the branch's only area that
         // keeps stock, else its delivery area for a delivery, else refused (BranchStockService
         // .resolveAreaForWrite). Left out of the idempotency hash when absent, like branchId.
-        UUID areaId) {
+        UUID areaId,
+        // Selling till Step 1 (V88): how the customer paid for the sale this line belongs to. Every line
+        // of one basket carries the same; the first to arrive records it (SalePaymentService). Absent on
+        // a sale recorded before payments, and on every stock-out that is not a sale. Left out of the
+        // idempotency hash when absent, like branchId.
+        SalePaymentMethod paymentMethod) {
+
+    /** The shape before {@code paymentMethod} (selling till, Step 1). */
+    public StockOutRequest(
+            BigDecimal quantity,
+            BigDecimal unitPrice,
+            String note,
+            String unit,
+            List<Allocation> allocations,
+            OffsetDateTime occurredAt,
+            Boolean recordedOffline,
+            OutReason reason,
+            UUID saleId,
+            BigDecimal lineTotal,
+            UUID branchId,
+            UUID areaId) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                branchId, areaId, null);
+    }
 
     /** The shape before {@code areaId} (areas, Part 0). */
     public StockOutRequest(
@@ -149,13 +173,13 @@ public record StockOutRequest(
     /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
     public StockOutRequest withBranchId(UUID branch) {
         return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
-                saleId, lineTotal, branch, areaId);
+                saleId, lineTotal, branch, areaId, paymentMethod);
     }
 
     /** This request, recorded in {@code area} - how a caller states the area it has resolved. */
     public StockOutRequest withAreaId(UUID area) {
         return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
-                saleId, lineTotal, branchId, area);
+                saleId, lineTotal, branchId, area, paymentMethod);
     }
 
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */

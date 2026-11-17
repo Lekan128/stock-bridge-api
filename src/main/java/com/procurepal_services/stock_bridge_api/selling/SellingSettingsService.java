@@ -137,6 +137,66 @@ public class SellingSettingsService {
                 "Demo company reset");
         client.setStockUse(StockUse.BOTH);
         clientRepository.save(client);
+        // The demo is a restaurant: it sells what it makes too (V90).
+        applyMadeHere(client, true, SettingChangeSource.SUPPORT, null, ChangedByKind.SUPER_ADMIN, "demo reset",
+                "Demo company reset");
+    }
+
+    /** The owner turning "Sell things you make" on or off (V90). Needs selling on to turn it on. */
+    @Transactional
+    public SellingSettingsResponse updateMadeHere(boolean on, UUID actingUserId) {
+        Client client = currentClient();
+        User actor = userRepository.findById(actingUserId).orElse(null);
+        applyMadeHere(client, on, SettingChangeSource.OWNER, actingUserId, ChangedByKind.TENANT_USER,
+                actor == null ? "unknown" : actor.getUsername(), null);
+        return responseFor(client);
+    }
+
+    /** Support turning it on or off for a company, with a reason; the owner is told, as for selling itself. */
+    @Transactional
+    public SellingSettingsResponse updateMadeHereBySupport(UUID clientId, boolean on, String reason, UUID superAdminId) {
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("Say why you are changing this - the owner is told.");
+        }
+        Client client = clientRepository.findById(clientId).orElseThrow(ClientNotFoundException::new);
+        String username = superAdminRepository.findById(superAdminId).map(admin -> admin.getUsername()).orElse("support");
+        boolean changed = applyMadeHere(client, on, SettingChangeSource.SUPPORT, superAdminId, ChangedByKind.SUPER_ADMIN,
+                username, reason.trim());
+        if (changed) {
+            UUID ownerUserId = userRepository.findFirstByClientIdAndRootTrue(clientId).map(User::getId).orElse(null);
+            notificationService.notifyClient(clientId, ownerUserId, NotificationType.ACCOUNT_SETTING_CHANGED,
+                    on ? SUPPORT_NAME + " turned on selling things you make" : SUPPORT_NAME + " turned off selling things you make",
+                    reason.trim(), "/app/company", null);
+        }
+        return responseFor(client);
+    }
+
+    /** @return whether anything changed. Turning it on needs selling on; turning it off never does. */
+    private boolean applyMadeHere(
+            Client client, boolean on, SettingChangeSource source, UUID changedBy, ChangedByKind kind, String username,
+            String reason) {
+        if (on && !client.isSellsStock()) {
+            throw new SellingNotAvailableException("Turn on selling first: things you make are sold the same way.");
+        }
+        if (client.isSellsMadeHere() == on) {
+            return false;
+        }
+        client.setSellsMadeHere(on);
+        clientRepository.save(client);
+        changeRepository.save(ClientSettingChange.builder()
+                .clientId(client.getId())
+                .setting(ClientSettingChange.SELLS_MADE_HERE)
+                .oldValue(Boolean.toString(!on))
+                .newValue(Boolean.toString(on))
+                .source(source)
+                .changedBy(changedBy)
+                .changedByKind(kind)
+                .changedByUsername(username)
+                .reason(reason)
+                .changedAt(OffsetDateTime.now())
+                .build());
+        log.info("Selling things you make {} for client={} via {} by {}", on ? "on" : "off", client.getId(), source, changedBy);
+        return true;
     }
 
     /** @return whether anything changed. */
@@ -182,6 +242,9 @@ public class SellingSettingsService {
         ClientSettingChange last = changeRepository
                 .findFirstByClientIdAndSettingOrderByChangedAtDesc(client.getId(), ClientSettingChange.SELLS_STOCK)
                 .orElse(null);
+        ClientSettingChange madeHere = changeRepository
+                .findFirstByClientIdAndSettingOrderByChangedAtDesc(client.getId(), ClientSettingChange.SELLS_MADE_HERE)
+                .orElse(null);
         return new SellingSettingsResponse(
                 client.isSellsStock(),
                 sellingPolicy.canChooseToSellStock(client),
@@ -190,7 +253,10 @@ public class SellingSettingsService {
                 last == null ? null : last.getSource(),
                 client.getStockUse(),
                 productRepository.countByClientIdAndLegacyUnitPriceIsNotNullAndUnitPriceIsNullAndActiveTrue(client.getId()),
-                client.getLegacyPricesDismissedAt() != null);
+                client.getLegacyPricesDismissedAt() != null,
+                client.isSellsMadeHere(),
+                madeHere == null ? null : madeHere.getChangedAt(),
+                madeHere == null ? null : changedByName(madeHere));
     }
 
     // ---------------------------------------------------------------- old prices (section 4.6.3)

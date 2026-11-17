@@ -10,5 +10,7 @@ public enum CostBasis {
     /** Some units costed at the product's average cost - a delivery with no price, or older stock. */
     AVERAGE,
     /** No cost could be known; {@code cost_amount} is null. */
-    UNKNOWN
+    UNKNOWN,
+    /** A made-here item (V90): its rough cost to make one, until a recipe works it out. */
+    ESTIMATE
 }

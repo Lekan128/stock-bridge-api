@@ -108,6 +108,17 @@ public class SalesReportService {
         return new SalesReportResponse(range[0], range[1], grouping, rows, truncated, totals(clientId, range[0], range[1], filters));
     }
 
+    /**
+     * A person's own sales today, newest first, with nothing about cost - "My sales today" (selling till Step 3).
+     */
+    @Transactional(readOnly = true)
+    public SalesReportResponse mine(UUID clientId, UUID userId) {
+        SalesReportResponse report = report(clientId, null, null, "sale", new Filters(null, userId, false, false, false), MAX_ROWS);
+        return new SalesReportResponse(report.from(), report.to(), report.groupBy(),
+                report.rows().stream().map(SalesReportRow::withoutCost).toList(),
+                report.truncated(), report.totals().withoutCost());
+    }
+
     /** The totals alone - the dashboard figure and a cashier's "your sales today". */
     @Transactional(readOnly = true)
     public SalesTotals totals(UUID clientId, OffsetDateTime from, OffsetDateTime to, Filters filters) {
@@ -137,7 +148,7 @@ public class SalesReportService {
                         SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(s.quantity_on_hand), 0) AS quantity
                         FROM products p
                         LEFT JOIN area_stock s ON s.product_id = p.id AND s.area_id IN (:scopeAreaIds)
-                        WHERE p.client_id = :clientId AND p.is_active
+                        WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
                         GROUP BY p.id, p.cost_price, p.unit_price)
                     SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
                            COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
@@ -164,7 +175,8 @@ public class SalesReportService {
                     SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(bs.quantity_on_hand), 0) AS quantity
                     FROM products p
                     LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id IN (:branchIds)
-                    WHERE p.client_id = :clientId AND p.is_active
+                    WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
+                      AND (p.for_all_branches OR EXISTS (SELECT 1 FROM product_branches pb WHERE pb.product_id = p.id AND pb.branch_id IN (:branchIds)))
                     GROUP BY p.id, p.cost_price, p.unit_price)
                 SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
                        COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
@@ -193,7 +205,7 @@ public class SalesReportService {
                        COUNT(*) FILTER (WHERE p.cost_price IS NULL) AS no_cost,
                        COUNT(*) FILTER (WHERE p.unit_price IS NULL) AS no_price
                 FROM products p
-                WHERE p.client_id = :clientId AND p.is_active
+                WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
                 """,
                 new MapSqlParameterSource("clientId", clientId),
                 (rs, n) -> new StockWorthResponse(
@@ -267,11 +279,13 @@ public class SalesReportService {
                            COALESCE(o.sale_amount, c.sale_amount) AS amount,
                            o.cost_amount AS cost,
                            (r.id IS NOT NULL) AS cancelled,
+                           sp.payment_method AS payment,
                            (o.usual_price_at_time IS NOT NULL AND o.unit_price_at_time IS NOT NULL
                                 AND o.unit_price_at_time < o.usual_price_at_time - 0.005) AS below_usual
                     FROM stock_movements o
                     LEFT JOIN stock_movements r ON r.reverses_movement_id = o.id
                     LEFT JOIN stock_movements c ON c.corrects_movement_id = o.id
+                    LEFT JOIN sales sp ON sp.id = o.sale_id AND sp.client_id = o.client_id
                     WHERE o.client_id = :clientId
                       AND o.sale_id IS NOT NULL
                       AND o.movement_type = 'OUT'
@@ -295,7 +309,15 @@ public class SalesReportService {
             COUNT(*) FILTER (WHERE cancelled) AS cancelled_count,
             COUNT(*) FILTER (WHERE NOT cancelled AND below_usual) AS below_usual_count,
             COUNT(*) FILTER (WHERE NOT cancelled AND amount IS NOT NULL AND cost IS NOT NULL AND amount < cost) AS below_cost_count,
-            COALESCE(SUM(quantity) FILTER (WHERE NOT cancelled), 0) AS quantity""";
+            COALESCE(SUM(quantity) FILTER (WHERE NOT cancelled), 0) AS quantity,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment = 'CASH'), 0) AS cash_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment = 'CASH') AS cash_sales,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment = 'TRANSFER'), 0) AS transfer_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment = 'TRANSFER') AS transfer_sales,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment = 'CARD'), 0) AS card_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment = 'CARD') AS card_sales,
+            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND payment IS NULL), 0) AS unrecorded_amount,
+            COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled AND payment IS NULL) AS unrecorded_sales""";
 
     private static String groupQuery(String grouping, Filters filters) {
         String cte = linesCte(filters);
@@ -306,11 +328,18 @@ public class SalesReportService {
                            MAX(COALESCE(NULLIF(TRIM(CONCAT(u.first_name, ' ', u.last_name)), ''), u.username)) AS label,
                            NULL AS unit, MIN(l.occurred_at) AS occurred_at,
                            STRING_AGG(DISTINCT p.name, ', ') AS detail, MAX(b.name) AS branch,
+                           MAX(l.payment) AS payment,
+                           sx.cancel_state, sx.cancel_reason,
+                           COALESCE(NULLIF(TRIM(CONCAT(cd.first_name, ' ', cd.last_name)), ''), cd.username) AS cancel_decided_name,
+                           COALESCE(NULLIF(TRIM(CONCAT(cr.first_name, ' ', cr.last_name)), ''), cr.username) AS cancel_requested_name,
                     """ + AGGREGATES + """
 
                     FROM lines l LEFT JOIN users u ON u.id = l.created_by JOIN products p ON p.id = l.product_id
                     LEFT JOIN branches b ON b.id = l.branch_id
-                    GROUP BY l.sale_id ORDER BY MIN(l.occurred_at) DESC, l.sale_id""";
+                    LEFT JOIN sales sx ON sx.id = l.sale_id AND sx.client_id = :clientId
+                    LEFT JOIN users cd ON cd.id = sx.cancel_decided_by
+                    LEFT JOIN users cr ON cr.id = sx.cancel_requested_by
+                    GROUP BY l.sale_id, sx.id, cd.id, cr.id ORDER BY MIN(l.occurred_at) DESC, l.sale_id""";
             case "branch" -> cte + """
                     SELECT l.branch_id::text AS key, b.name AS label, NULL AS unit, NULL::timestamptz AS occurred_at,
                     """ + AGGREGATES + """
@@ -386,7 +415,12 @@ public class SalesReportService {
                 occurred == null ? null : occurred.toInstant().atOffset(ZoneOffset.UTC),
                 totals(rs),
                 "sale".equals(grouping) ? rs.getString("detail") : null,
-                "sale".equals(grouping) && namesBranches ? rs.getString("branch") : null);
+                "sale".equals(grouping) && namesBranches ? rs.getString("branch") : null,
+                "sale".equals(grouping) ? rs.getString("payment") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_state") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_reason") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_decided_name") : null,
+                "sale".equals(grouping) ? rs.getString("cancel_requested_name") : null);
     }
 
     private static SalesTotals totals(ResultSet rs) throws SQLException {
@@ -405,7 +439,12 @@ public class SalesReportService {
                 rs.getLong("unknown_cost"),
                 rs.getLong("cancelled_count"),
                 rs.getLong("below_usual_count"),
-                rs.getLong("below_cost_count"));
+                rs.getLong("below_cost_count"),
+                new SalesTotals.ByPayment(
+                        money(rs.getBigDecimal("cash_amount")), rs.getLong("cash_sales"),
+                        money(rs.getBigDecimal("transfer_amount")), rs.getLong("transfer_sales"),
+                        money(rs.getBigDecimal("card_amount")), rs.getLong("card_sales"),
+                        money(rs.getBigDecimal("unrecorded_amount")), rs.getLong("unrecorded_sales")));
     }
 
     private static BigDecimal money(BigDecimal value) {

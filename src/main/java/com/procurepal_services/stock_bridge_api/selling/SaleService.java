@@ -60,6 +60,11 @@ public class SaleService {
     private final StockWritePermissionGuard permissions;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
+    private final SalePaymentService salePaymentService;
+    private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
+
+    /** How long the person who recorded a sale may change how it was paid - the same as Undo sale (D8). */
+    static final java.time.Duration CHANGE_PAYMENT_FOR = java.time.Duration.ofMinutes(2);
 
     @Transactional(readOnly = true)
     public SaleResponse get(UUID saleId) {
@@ -95,6 +100,19 @@ public class SaleService {
      */
     @Transactional
     public SaleResponse cancel(UUID saleId, Collection<UUID> lineIds, UUID actingUserId) {
+        return cancel(saleId, lineIds, actingUserId, true);
+    }
+
+    /**
+     * Cancels the whole sale on an approved request (selling till Step 3): the approver's right to cancel
+     * sales was checked by {@link SaleCancelService}; the lines are cancelled in their name.
+     */
+    @Transactional
+    SaleResponse cancelApproved(UUID saleId, UUID approverId) {
+        return cancel(saleId, null, approverId, false);
+    }
+
+    private SaleResponse cancel(UUID saleId, Collection<UUID> lineIds, UUID actingUserId, boolean checkRights) {
         List<StockMovement> rows = rowsOf(saleId);
         List<StockMovement> lines = linesOf(rows);
         List<StockMovement> wanted = lineIds == null || lineIds.isEmpty()
@@ -119,7 +137,9 @@ public class SaleService {
             if (cancellations.containsKey(line.getId())) {
                 continue;
             }
-            requireMayFix(line, actingUserId, "cancel");
+            if (checkRights) {
+                requireMayCancel(line, actingUserId);
+            }
             written.add(stockManagementService.cancelSaleLine(line, actingUserId));
         }
         List<StockMovement> after = new ArrayList<>(rows);
@@ -156,7 +176,68 @@ public class SaleService {
         return toResponse(line.getSaleId(), after);
     }
 
+    /**
+     * "Change how they paid" (selling till Step 1): the person who recorded the sale, within two
+     * minutes of recording it - the wrong button tapped. After that, or for someone else's sale, only
+     * someone who manages inventory. Who changed it and when is kept on the sale.
+     */
+    @Transactional
+    public SaleResponse changePayment(UUID saleId, SalePaymentMethod method, UUID actingUserId) {
+        List<StockMovement> rows = rowsOf(saleId);
+        StockMovement first = linesOf(rows).get(0);
+        if (first.getBranchId() != null && branchStockService.isMultiBranch(first.getClientId())) {
+            branchAccessService.requireMayRecordAt(actingUserId, first.getBranchId());
+        }
+        if (!permissions.has(actingUserId, "MANAGE_INVENTORY")) {
+            boolean own = first.getCreatedBy() != null && first.getCreatedBy().getId().equals(actingUserId);
+            boolean recent = first.getCreatedAt().isAfter(OffsetDateTime.now().minus(CHANGE_PAYMENT_FOR));
+            if (!own || !recent || !permissions.has(actingUserId, "STOCK_OUT")) {
+                throw new AccessDeniedException(own
+                        ? "How it was paid can only be changed in the first two minutes. Ask someone who manages inventory."
+                        : "Only someone who manages inventory can change how someone else's sale was paid.");
+            }
+        }
+        salePaymentService.set(requireTenantId(), saleId, first.getBranchId(), method, actingUserId);
+        return toResponse(saleId, rows);
+    }
+
     // ------------------------------------------------------------------------------ rules ----
+
+    /** How long the person who recorded a sale may cancel it alone, with a reason (selling till Step 3). */
+    static final java.time.Duration CANCEL_ALONE_FOR = java.time.Duration.ofMinutes(2);
+
+    /**
+     * Who may cancel a sale line (selling till Step 3, owner 2026-11-16): anyone who can cancel sales, any
+     * time; the person who recorded it, in its first two minutes. Anyone else asks
+     * ({@link SaleCancelService#request}). "Sell, keep the cash, cancel it later" is the classic leak.
+     */
+    void requireMayCancel(StockMovement line, UUID actingUserId) {
+        if (line.getBranchId() != null && branchStockService.isMultiBranch(line.getClientId())) {
+            branchAccessService.requireMayRecordAt(actingUserId, line.getBranchId());
+        }
+        if (permissions.has(actingUserId, "CANCEL_SALES")) {
+            return;
+        }
+        if (mayCancelAlone(line, actingUserId)) {
+            return;
+        }
+        boolean own = line.getCreatedBy() != null && line.getCreatedBy().getId().equals(actingUserId);
+        throw new AccessDeniedException(own
+                ? "It's past the first two minutes, so a manager has to cancel it. Ask a manager to cancel it."
+                : "Only someone who can cancel sales can cancel a sale someone else recorded.");
+    }
+
+    /** The person who recorded it, with Stock out, in its first two minutes. */
+    boolean mayCancelAlone(StockMovement line, UUID actingUserId) {
+        boolean own = line.getCreatedBy() != null && line.getCreatedBy().getId().equals(actingUserId);
+        boolean recent = line.getCreatedAt().isAfter(OffsetDateTime.now().minus(CANCEL_ALONE_FOR));
+        return own && recent && permissions.has(actingUserId, "STOCK_OUT");
+    }
+
+    /** The sale's lines - for {@link SaleCancelService}, which judges the sale by its first. */
+    List<StockMovement> linesOf(UUID saleId) {
+        return linesOf(rowsOf(saleId));
+    }
 
     private void requireMayFix(StockMovement line, UUID actingUserId, String verb) {
         // At the branch it was sold from (the stock goes back there): managing inventory somewhere
@@ -266,6 +347,7 @@ public class SaleService {
                     line.getProduct().getUnitOfMeasure()));
         }
         StockMovement first = lines.get(0);
+        SalePaymentService.Header header = salePaymentService.header(requireTenantId(), saleId);
         return new SaleResponse(
                 saleId,
                 lines.stream().map(StockMovement::getOccurredAt).filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null),
@@ -275,7 +357,25 @@ public class SaleService {
                 total,
                 lines.size(),
                 cancelled,
-                unpriced);
+                unpriced,
+                header.paymentMethod(),
+                branchName(first.getBranchId()),
+                header.cancelState(),
+                header.cancelReason(),
+                header.cancelNote(),
+                header.cancelRequestedByName(),
+                header.cancelRequestedAt(),
+                header.cancelDecidedByName(),
+                header.cancelDecidedAt());
+    }
+
+    private String branchName(UUID branchId) {
+        if (branchId == null || !branchStockService.isMultiBranch(requireTenantId())) {
+            return null;
+        }
+        return jdbc.queryForList("SELECT name FROM branches WHERE id = :id",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", branchId), String.class)
+                .stream().findFirst().orElse(null);
     }
 
     private static String nameOf(User user) {

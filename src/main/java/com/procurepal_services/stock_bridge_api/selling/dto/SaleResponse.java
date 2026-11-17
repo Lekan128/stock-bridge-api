@@ -20,5 +20,21 @@ public record SaleResponse(
         BigDecimal total,
         int lineCount,
         int cancelledLineCount,
-        int unpricedLineCount) {
+        int unpricedLineCount,
+        /** How the customer paid (selling till Step 1); absent for a sale from before payments were recorded. */
+        com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod paymentMethod,
+        /** Where it was sold, at a company with several branches - for the receipt. */
+        String branchName,
+        /**
+         * Cancelling (selling till Step 3): REQUESTED (a cashier asked, waiting), DECLINED (the sale stands) or
+         * CANCELLED (the whole sale); absent when nobody has asked or cancelled it.
+         */
+        String cancelState,
+        com.procurepal_services.stock_bridge_api.selling.SaleCancelReason cancelReason,
+        String cancelNote,
+        String cancelRequestedByName,
+        OffsetDateTime cancelRequestedAt,
+        /** Who cancelled it, or declined the request. */
+        String cancelDecidedByName,
+        OffsetDateTime cancelDecidedAt) {
 }

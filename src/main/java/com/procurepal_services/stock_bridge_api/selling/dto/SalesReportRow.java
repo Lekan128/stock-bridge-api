@@ -23,5 +23,21 @@ public record SalesReportRow(
         SalesTotals totals,
         String detail,
         /** The branch a sale was recorded at (V51): on the "sale" grouping, at a multi-branch company. */
-        String branch) {
+        String branch,
+        /** How a sale was paid (selling till Step 1): on the "sale" grouping; absent for one from before. */
+        String paymentMethod,
+        /** Sale rows (selling till Step 3): REQUESTED, DECLINED or CANCELLED; absent when nobody asked or cancelled. */
+        String cancelState,
+        /** WRONG_ITEM, WRONG_AMOUNT, CHANGED_MIND or OTHER. */
+        String cancelReason,
+        /** Who cancelled it, or declined the request. */
+        String cancelledByName,
+        /** Who asked for it to be cancelled. */
+        String cancelRequestedByName) {
+
+    /** The same row with nothing about cost - for a cashier's own list. */
+    public SalesReportRow withoutCost() {
+        return new SalesReportRow(key, label, quantity, unitOfMeasure, occurredAt, totals.withoutCost(), detail, branch,
+                paymentMethod, cancelState, cancelReason, cancelledByName, cancelRequestedByName);
+    }
 }

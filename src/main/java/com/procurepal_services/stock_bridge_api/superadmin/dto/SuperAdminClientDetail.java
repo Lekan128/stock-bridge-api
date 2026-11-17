@@ -62,5 +62,7 @@ public record SuperAdminClientDetail(
         // The shared demo company prospects try (V86): nothing leaves it, and SuperAdmin can reset it.
         boolean demo,
         // Whether it may be made a demo now: only a brand-new, empty company may. False for a demo.
-        boolean canBecomeDemo) {
+        boolean canBecomeDemo,
+        // "Sell things you make" (V90): PUT /api/superadmin/clients/{id}/selling/made-here.
+        boolean sellsMadeHere) {
 }
