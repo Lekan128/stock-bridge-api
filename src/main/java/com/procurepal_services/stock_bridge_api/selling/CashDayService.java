@@ -34,6 +34,12 @@ import org.springframework.transaction.annotation.Transactional;
 public class CashDayService {
 
     static final ZoneId LAGOS = ZoneId.of("Africa/Lagos");
+    /**
+     * How long a closed drawer can be opened again (owner, 2026-11-18): within this, "Open it again" and a sale reopen
+     * it from what was counted; after it, the till asks to Start the day with a fresh count. Hours, not the calendar
+     * day: a bar that closes at 2 am opens again at 6 pm as a new day.
+     */
+    static final java.time.Duration REOPEN_WITHIN = java.time.Duration.ofHours(6);
     /** How long after a close the owner's email waits - and "Count again" stays open. */
     static final java.time.Duration EMAIL_AFTER = java.time.Duration.ofMinutes(15);
 
@@ -71,7 +77,7 @@ public class CashDayService {
         Drawer open = drawers(clientId, branchId, "d.closed_at IS NULL AND d.area_id IS NOT DISTINCT FROM CAST(:areaId AS uuid)", areaId, userId)
                 .stream().findFirst().orElse(null);
         Drawer closed = open != null ? null : drawers(clientId, branchId,
-                "d.closed_at >= :today AND d.area_id IS NOT DISTINCT FROM CAST(:areaId AS uuid)", areaId, userId)
+                "d.closed_at >= :reopenSince AND d.area_id IS NOT DISTINCT FROM CAST(:areaId AS uuid)", areaId, userId)
                 .stream().findFirst().orElse(null);
         return new TillState(true, open, closed);
     }
@@ -80,7 +86,7 @@ public class CashDayService {
     @Transactional(readOnly = true)
     public List<Drawer> today(UUID clientId, UUID branchId, UUID userId) {
         requireOn(clientId);
-        return drawers(clientId, branchId, "(d.closed_at IS NULL OR d.closed_at >= :today)", null, userId);
+        return drawers(clientId, branchId, "(d.closed_at IS NULL OR d.closed_at >= LEAST(:today, :reopenSince))", null, userId);
     }
 
     @Transactional
@@ -126,7 +132,7 @@ public class CashDayService {
         }
         List<Map<String, Object>> last = jdbc.queryForList("""
                 SELECT id, counted FROM cash_days d WHERE d.client_id = :clientId AND d.branch_id = :branchId
-                  AND d.area_id IS NOT DISTINCT FROM CAST(:areaId AS uuid) AND d.closed_at >= :today
+                  AND d.area_id IS NOT DISTINCT FROM CAST(:areaId AS uuid) AND d.closed_at >= :reopenSince
                 ORDER BY d.closed_at DESC LIMIT 1
                 """, params);
         if (last.isEmpty()) {
@@ -405,7 +411,8 @@ public class CashDayService {
     private static MapSqlParameterSource params(UUID clientId, UUID branchId, UUID areaId, UUID userId) {
         return new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId)
                 .addValue("areaId", areaId).addValue("userId", userId)
-                .addValue("today", java.time.LocalDate.now(LAGOS).atStartOfDay(LAGOS).toOffsetDateTime());
+                .addValue("today", java.time.LocalDate.now(LAGOS).atStartOfDay(LAGOS).toOffsetDateTime())
+                .addValue("reopenSince", OffsetDateTime.now().minus(REOPEN_WITHIN));
     }
 
     private static OffsetDateTime toTime(Object value) {

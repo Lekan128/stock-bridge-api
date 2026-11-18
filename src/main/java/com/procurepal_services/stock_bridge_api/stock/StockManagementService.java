@@ -2349,9 +2349,12 @@ public class StockManagementService {
         return new SaleFacts.Cost(total.setScale(2, java.math.RoundingMode.HALF_UP), average ? CostBasis.AVERAGE : CostBasis.FIFO);
     }
 
-    /** Step 13 (V97): a cash sale at a drawer closed earlier today reopens it from what was counted. */
+    /**
+     * Step 13 (V97): any sale at a drawer closed earlier today reopens it from what was counted (owner, 2026-11-18:
+     * a transfer or card sale belongs to that drawer's day too, so Close the day shows again).
+     */
     private void reopenDrawer(StockOutRequest request, UUID branchId, UUID areaId, UUID actingUserId) {
-        if (request.paymentMethod() == com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.CASH) {
+        if (request.paymentMethod() != null) {
             cashDayService.onCashSale(requireTenantId(), branchId, areaId, actingUserId);
         }
     }
