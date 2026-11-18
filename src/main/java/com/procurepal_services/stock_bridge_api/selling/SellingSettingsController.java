@@ -53,6 +53,15 @@ public class SellingSettingsController {
         return sellingSettingsService.updateMadeHere(request.on(), principal.getUserId());
     }
 
+    /** "Count cash at open and close" (V97, selling till Step 13): the owner's switch. */
+    @PutMapping("/counts-cash")
+    @PreAuthorize("hasAuthority('MANAGE_COMPANY_PROFILE')")
+    public SellingSettingsResponse updateCountsCash(
+            @Valid @RequestBody com.procurepal_services.stock_bridge_api.selling.dto.MadeHereSettingRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return sellingSettingsService.updateCountsCash(request.on(), principal.getUserId());
+    }
+
     /** The old-price review (SELLING_PRICE_PLAN.md section 4.6.3): products whose only price V44 set aside. */
     @GetMapping("/legacy-prices")
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")

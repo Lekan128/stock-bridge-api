@@ -31,5 +31,9 @@ public record SellingSettingsResponse(
         /** "Sell things you make" (V90): made-here items, under selling. Only shown while selling is on. */
         boolean sellsMadeHere,
         OffsetDateTime madeHereChangedAt,
-        String madeHereChangedByName) {
+        String madeHereChangedByName,
+        /** "Count cash at open and close" (V97, Step 13). */
+        boolean countsCash,
+        OffsetDateTime countsCashChangedAt,
+        String countsCashChangedByName) {
 }

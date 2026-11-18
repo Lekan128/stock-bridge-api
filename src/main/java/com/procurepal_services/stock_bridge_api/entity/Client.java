@@ -156,6 +156,11 @@ public class Client {
     @Column(name = "sells_made_here", nullable = false)
     private boolean sellsMadeHere;
 
+    /** "Count cash at open and close" (V97): cashiers start and close each drawer. Off by default. */
+    @Column(name = "counts_cash", nullable = false)
+    @Builder.Default
+    private boolean countsCash = false;
+
     /**
      * Support has let this company add a second branch while multiple branches are in pilot (V52,
      * {@code app.branches.rollout}). Read through {@code BranchService.mayAddBranch}; a company that

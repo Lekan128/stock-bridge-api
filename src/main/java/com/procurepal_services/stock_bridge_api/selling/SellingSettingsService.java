@@ -152,6 +152,32 @@ public class SellingSettingsService {
         return responseFor(client);
     }
 
+    /** The owner turning "Count cash at open and close" on or off (V97, Step 13). Needs selling on to turn it on. */
+    @Transactional
+    public SellingSettingsResponse updateCountsCash(boolean on, UUID actingUserId) {
+        Client client = currentClient();
+        if (on && !client.isSellsStock()) {
+            throw new SellingNotAvailableException("Turn on selling first: it counts the cash from sales.");
+        }
+        if (client.isCountsCash() != on) {
+            User actor = userRepository.findById(actingUserId).orElse(null);
+            client.setCountsCash(on);
+            clientRepository.save(client);
+            changeRepository.save(ClientSettingChange.builder()
+                    .clientId(client.getId())
+                    .setting(ClientSettingChange.COUNTS_CASH)
+                    .oldValue(Boolean.toString(!on))
+                    .newValue(Boolean.toString(on))
+                    .source(SettingChangeSource.OWNER)
+                    .changedBy(actingUserId)
+                    .changedByKind(ChangedByKind.TENANT_USER)
+                    .changedByUsername(actor == null ? "unknown" : actor.getUsername())
+                    .changedAt(OffsetDateTime.now())
+                    .build());
+        }
+        return responseFor(client);
+    }
+
     /** Support turning it on or off for a company, with a reason; the owner is told, as for selling itself. */
     @Transactional
     public SellingSettingsResponse updateMadeHereBySupport(UUID clientId, boolean on, String reason, UUID superAdminId) {
@@ -245,6 +271,9 @@ public class SellingSettingsService {
         ClientSettingChange madeHere = changeRepository
                 .findFirstByClientIdAndSettingOrderByChangedAtDesc(client.getId(), ClientSettingChange.SELLS_MADE_HERE)
                 .orElse(null);
+        ClientSettingChange countsCash = changeRepository
+                .findFirstByClientIdAndSettingOrderByChangedAtDesc(client.getId(), ClientSettingChange.COUNTS_CASH)
+                .orElse(null);
         return new SellingSettingsResponse(
                 client.isSellsStock(),
                 sellingPolicy.canChooseToSellStock(client),
@@ -256,7 +285,10 @@ public class SellingSettingsService {
                 client.getLegacyPricesDismissedAt() != null,
                 client.isSellsMadeHere(),
                 madeHere == null ? null : madeHere.getChangedAt(),
-                madeHere == null ? null : changedByName(madeHere));
+                madeHere == null ? null : changedByName(madeHere),
+                client.isCountsCash(),
+                countsCash == null ? null : countsCash.getChangedAt(),
+                countsCash == null ? null : changedByName(countsCash));
     }
 
     // ---------------------------------------------------------------- old prices (section 4.6.3)

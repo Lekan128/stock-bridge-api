@@ -122,6 +122,7 @@ public class StockManagementService {
     private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
     private final com.procurepal_services.stock_bridge_api.product.MadeWithService madeWithService;
     private final com.procurepal_services.stock_bridge_api.selling.PaymentAccountService paymentAccountService;
+    private final com.procurepal_services.stock_bridge_api.selling.CashDayService cashDayService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate costJdbc;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
@@ -519,6 +520,7 @@ public class StockManagementService {
             // Selling till Step 1: the sale's first line to arrive records how it was paid.
             salePaymentService.recordIfAbsent(
                     tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
+            reopenDrawer(request, branchId, areaId, actingUserId);
         }
 
         List<StockMutationResponse.AllocationBreakdown> breakdown = new ArrayList<>();
@@ -2264,6 +2266,7 @@ public class StockManagementService {
             line.setCostBasis(used.basis());
         }
         salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
+        reopenDrawer(request, branchId, request.areaId(), actingUserId);
         return StockMutationResponse.ofStockOut(product, line, List.of());
     }
 
@@ -2344,6 +2347,13 @@ public class StockManagementService {
             return SaleFacts.Cost.UNKNOWN;
         }
         return new SaleFacts.Cost(total.setScale(2, java.math.RoundingMode.HALF_UP), average ? CostBasis.AVERAGE : CostBasis.FIFO);
+    }
+
+    /** Step 13 (V97): a cash sale at a drawer closed earlier today reopens it from what was counted. */
+    private void reopenDrawer(StockOutRequest request, UUID branchId, UUID areaId, UUID actingUserId) {
+        if (request.paymentMethod() == com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.CASH) {
+            cashDayService.onCashSale(requireTenantId(), branchId, areaId, actingUserId);
+        }
     }
 
     /** A transfer's account (V96): one of this branch's switched-on accounts, else refused; none for cash or card. */

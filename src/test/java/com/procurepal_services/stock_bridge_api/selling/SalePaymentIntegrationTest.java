@@ -251,6 +251,60 @@ class SalePaymentIntegrationTest {
                 .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    @Test
+    void aDrawerStartsCountsAndClosesBlindAndALateCashSaleReopensIt() {
+        Shop owner = shop("Drawer Shop");
+        Shop cashier = cashier(owner);
+        UUID rice = product(owner, "Rice");
+        stockIn(owner, rice, 50);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(owner, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        // Off: nothing to start.
+        assertThat(get(cashier, "/api/cash-days/till?branchId=" + branch, Map.class).getBody().get("countsCash")).isEqualTo(false);
+        send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
+        assertThat(send(owner, HttpMethod.PUT, "/api/company/selling/counts-cash", Map.of("on", true), String.class)
+                .getStatusCode().is2xxSuccessful()).isTrue();
+
+        Map<String, Object> day = send(cashier, HttpMethod.POST, "/api/cash-days",
+                Map.of("branchId", branch, "floatAmount", 20000), Map.class).getBody();
+        String dayId = (String) day.get("id");
+        stockOut(cashier, rice, sale(1, "3000", UUID.randomUUID(), "CASH"));
+        stockOut(cashier, rice, sale(1, "2000", UUID.randomUUID(), "TRANSFER"));
+        assertThat(send(cashier, HttpMethod.POST, "/api/cash-days/" + dayId + "/money-out",
+                Map.of("amount", 500, "kind", "COST", "note", "Diesel"), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        // A cost needs a note.
+        assertThat(send(cashier, HttpMethod.POST, "/api/cash-days/" + dayId + "/money-out",
+                Map.of("amount", 500, "kind", "COST"), String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        // The cashier closes counting 22,000: they see what they counted, never what it should be.
+        Map<String, Object> closed = send(cashier, HttpMethod.POST, "/api/cash-days/" + dayId + "/close",
+                Map.of("counted", 22000), Map.class).getBody();
+        assertThat(closed.get("expected")).isNull();
+        assertThat(closed.get("difference")).isNull();
+        assertThat(((Number) closed.get("salesCount")).intValue()).isEqualTo(2);
+        // The owner sees 20,000 + 3,000 - 500 = 22,500, so 500 short.
+        Map<String, Object> seen = get(owner, "/api/cash-days/" + dayId, Map.class).getBody();
+        assertThat(new BigDecimal(seen.get("expected").toString())).isEqualByComparingTo("22500");
+        assertThat(new BigDecimal(seen.get("difference").toString())).isEqualByComparingTo("-500");
+
+        // A mistake: the same cashier counts again.
+        assertThat(send(cashier, HttpMethod.POST, "/api/cash-days/" + dayId + "/count-again",
+                Map.of("counted", 22500), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(new BigDecimal(get(owner, "/api/cash-days/" + dayId, Map.class).getBody().get("difference").toString()))
+                .isEqualByComparingTo("0");
+
+        // A late cash sale reopens the drawer from what was counted.
+        stockOut(cashier, rice, sale(1, "1000", UUID.randomUUID(), "CASH"));
+        Map<String, Object> till = get(cashier, "/api/cash-days/till?branchId=" + branch, Map.class).getBody();
+        assertThat(till.get("open")).isNotNull();
+        String reopened = (String) ((Map<String, Object>) till.get("open")).get("id");
+        assertThat(new BigDecimal(get(owner, "/api/cash-days/" + reopened, Map.class).getBody().get("floatAmount").toString()))
+                .isEqualByComparingTo("22500");
+        // ...and the first count stands.
+        assertThat(send(cashier, HttpMethod.POST, "/api/cash-days/" + dayId + "/count-again",
+                Map.of("counted", 1), String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     private record Shop(TenantLoginResponse login) {
     }
 
