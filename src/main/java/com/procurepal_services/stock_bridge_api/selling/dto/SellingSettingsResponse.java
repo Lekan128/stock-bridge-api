@@ -35,5 +35,7 @@ public record SellingSettingsResponse(
         /** "Count cash at open and close" (V97, Step 13). */
         boolean countsCash,
         OffsetDateTime countsCashChangedAt,
-        String countsCashChangedByName) {
+        String countsCashChangedByName,
+        /** How long after a close a drawer can be opened again (V98); after it, a fresh start count. */
+        int cashReopenHours) {
 }

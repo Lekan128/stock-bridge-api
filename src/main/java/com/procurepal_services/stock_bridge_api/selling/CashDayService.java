@@ -34,12 +34,6 @@ import org.springframework.transaction.annotation.Transactional;
 public class CashDayService {
 
     static final ZoneId LAGOS = ZoneId.of("Africa/Lagos");
-    /**
-     * How long a closed drawer can be opened again (owner, 2026-11-18): within this, "Open it again" and a sale reopen
-     * it from what was counted; after it, the till asks to Start the day with a fresh count. Hours, not the calendar
-     * day: a bar that closes at 2 am opens again at 6 pm as a new day.
-     */
-    static final java.time.Duration REOPEN_WITHIN = java.time.Duration.ofHours(6);
     /** How long after a close the owner's email waits - and "Count again" stays open. */
     static final java.time.Duration EMAIL_AFTER = java.time.Duration.ofMinutes(15);
 
@@ -408,11 +402,22 @@ public class CashDayService {
         }
     }
 
-    private static MapSqlParameterSource params(UUID clientId, UUID branchId, UUID areaId, UUID userId) {
+    /**
+     * How long a closed drawer can be opened again - the owner's choice, 4 hours to start (V98; owner, 2026-11-18).
+     * Within it, "Open it again" and a sale reopen it from what was counted; after it, the till asks to Start the day
+     * with a fresh count. Hours, not the calendar day: a bar that closes at 2 am opens again at 6 pm as a new day.
+     */
+    private java.time.Duration reopenWithin(UUID clientId) {
+        Integer hours = jdbc.queryForObject("SELECT cash_reopen_hours FROM clients WHERE id = :id",
+                new MapSqlParameterSource("id", clientId), Integer.class);
+        return java.time.Duration.ofHours(hours == null ? 4 : hours);
+    }
+
+    private MapSqlParameterSource params(UUID clientId, UUID branchId, UUID areaId, UUID userId) {
         return new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId)
                 .addValue("areaId", areaId).addValue("userId", userId)
                 .addValue("today", java.time.LocalDate.now(LAGOS).atStartOfDay(LAGOS).toOffsetDateTime())
-                .addValue("reopenSince", OffsetDateTime.now().minus(REOPEN_WITHIN));
+                .addValue("reopenSince", OffsetDateTime.now().minus(reopenWithin(clientId)));
     }
 
     private static OffsetDateTime toTime(Object value) {

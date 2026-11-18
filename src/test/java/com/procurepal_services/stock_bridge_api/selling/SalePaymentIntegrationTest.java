@@ -305,6 +305,42 @@ class SalePaymentIntegrationTest {
                 Map.of("counted", 1), String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void aClosedDrawerReopensOnlyWithinTheOwnersHours() {
+        Shop owner = shop("Reopen Shop");
+        Shop cashier = cashier(owner);
+        UUID rice = product(owner, "Rice");
+        stockIn(owner, rice, 50);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(owner, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
+        Map<String, Object> settings = send(owner, HttpMethod.PUT, "/api/company/selling/counts-cash", Map.of("on", true), Map.class).getBody();
+        // 4 hours to start; the owner can choose 1 to 24, and only the owner.
+        assertThat(((Number) settings.get("cashReopenHours")).intValue()).isEqualTo(4);
+        assertThat(send(owner, HttpMethod.PUT, "/api/company/selling/cash-reopen-hours", Map.of("hours", 0), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(send(cashier, HttpMethod.PUT, "/api/company/selling/cash-reopen-hours", Map.of("hours", 8), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(((Number) send(owner, HttpMethod.PUT, "/api/company/selling/cash-reopen-hours", Map.of("hours", 2), Map.class)
+                .getBody().get("cashReopenHours")).intValue()).isEqualTo(2);
+
+        String dayId = (String) send(cashier, HttpMethod.POST, "/api/cash-days", Map.of("branchId", branch, "floatAmount", 1000), Map.class)
+                .getBody().get("id");
+        send(cashier, HttpMethod.POST, "/api/cash-days/" + dayId + "/close", Map.of("counted", 1000), String.class);
+        // Closed 3 hours ago, with 2 hours chosen: a new day - a sale (of any kind) doesn't reopen it, the till asks to start.
+        jdbcTemplate.update("UPDATE cash_days SET closed_at = now() - interval '3 hours' WHERE id = ?::uuid", dayId);
+        stockOut(cashier, rice, sale(1, "1000", UUID.randomUUID(), "TRANSFER"));
+        Map<String, Object> till = get(cashier, "/api/cash-days/till?branchId=" + branch, Map.class).getBody();
+        assertThat(till.get("open")).isNull();
+        assertThat(till.get("closedToday")).isNull();
+        // With 4 hours it is still the same day: a transfer sale reopens it from what was counted.
+        send(owner, HttpMethod.PUT, "/api/company/selling/cash-reopen-hours", Map.of("hours", 4), String.class);
+        stockOut(cashier, rice, sale(1, "1000", UUID.randomUUID(), "TRANSFER"));
+        till = get(cashier, "/api/cash-days/till?branchId=" + branch, Map.class).getBody();
+        assertThat(till.get("open")).isNotNull();
+    }
+
     private record Shop(TenantLoginResponse login) {
     }
 

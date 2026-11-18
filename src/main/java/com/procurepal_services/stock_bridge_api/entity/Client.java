@@ -161,6 +161,12 @@ public class Client {
     @Builder.Default
     private boolean countsCash = false;
 
+    /** How long after a close a drawer can be opened again from what was counted (V98); after it, a new day. */
+    @Column(name = "cash_reopen_hours", nullable = false)
+    @org.hibernate.annotations.JdbcTypeCode(org.hibernate.type.SqlTypes.SMALLINT)
+    @Builder.Default
+    private int cashReopenHours = 4;
+
     /**
      * Support has let this company add a second branch while multiple branches are in pilot (V52,
      * {@code app.branches.rollout}). Read through {@code BranchService.mayAddBranch}; a company that

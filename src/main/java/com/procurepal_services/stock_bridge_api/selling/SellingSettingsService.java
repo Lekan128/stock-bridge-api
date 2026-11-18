@@ -178,6 +178,33 @@ public class SellingSettingsService {
         return responseFor(client);
     }
 
+    /** The owner choosing how long after a close a drawer can be opened again (V98): 1 to 24 hours. */
+    @Transactional
+    public SellingSettingsResponse updateCashReopenHours(int hours, UUID actingUserId) {
+        if (hours < 1 || hours > 24) {
+            throw new IllegalArgumentException("Choose between 1 and 24 hours.");
+        }
+        Client client = currentClient();
+        if (client.getCashReopenHours() != hours) {
+            User actor = userRepository.findById(actingUserId).orElse(null);
+            int old = client.getCashReopenHours();
+            client.setCashReopenHours(hours);
+            clientRepository.save(client);
+            changeRepository.save(ClientSettingChange.builder()
+                    .clientId(client.getId())
+                    .setting(ClientSettingChange.CASH_REOPEN_HOURS)
+                    .oldValue(Integer.toString(old))
+                    .newValue(Integer.toString(hours))
+                    .source(SettingChangeSource.OWNER)
+                    .changedBy(actingUserId)
+                    .changedByKind(ChangedByKind.TENANT_USER)
+                    .changedByUsername(actor == null ? "unknown" : actor.getUsername())
+                    .changedAt(OffsetDateTime.now())
+                    .build());
+        }
+        return responseFor(client);
+    }
+
     /** Support turning it on or off for a company, with a reason; the owner is told, as for selling itself. */
     @Transactional
     public SellingSettingsResponse updateMadeHereBySupport(UUID clientId, boolean on, String reason, UUID superAdminId) {
@@ -288,7 +315,8 @@ public class SellingSettingsService {
                 madeHere == null ? null : changedByName(madeHere),
                 client.isCountsCash(),
                 countsCash == null ? null : countsCash.getChangedAt(),
-                countsCash == null ? null : changedByName(countsCash));
+                countsCash == null ? null : changedByName(countsCash),
+                client.getCashReopenHours());
     }
 
     // ---------------------------------------------------------------- old prices (section 4.6.3)
