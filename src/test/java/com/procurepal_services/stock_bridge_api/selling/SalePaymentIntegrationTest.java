@@ -204,6 +204,53 @@ class SalePaymentIntegrationTest {
 
     // ------------------------------------------------------------------------- helpers ----
 
+    @Test
+    void aTransferNamesTheAccountItCameIntoAndTheTotalsSplitByAccount() {
+        Shop shop = shop("Accounts Shop");
+        UUID rice = product(shop, "Rice");
+        stockIn(shop, rice, 20);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        Map<String, Object> gtb = send(shop, HttpMethod.POST, "/api/branches/" + branch + "/payment-accounts",
+                Map.of("bankName", "GTBank", "accountName", "Accounts Shop Ltd", "accountNumber", "0123456789"), Map.class).getBody();
+        Map<String, Object> moniepoint = send(shop, HttpMethod.POST, "/api/branches/" + branch + "/payment-accounts",
+                Map.of("bankName", "Moniepoint", "accountNumber", "5012345678"), Map.class).getBody();
+        // The till reads them off the branch list.
+        java.util.List<Map<String, Object>> listed = (java.util.List<Map<String, Object>>)
+                ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody().get("branches")).get(0).get("paymentAccounts");
+        assertThat(listed).hasSize(2);
+
+        UUID first = UUID.randomUUID();
+        Map<String, Object> toGtb = sale(1, "3000", first, "TRANSFER");
+        toGtb.put("paymentAccountId", gtb.get("id"));
+        stockOut(shop, rice, toGtb);
+        Map<String, Object> toMp = sale(1, "1000", UUID.randomUUID(), "TRANSFER");
+        toMp.put("paymentAccountId", moniepoint.get("id"));
+        stockOut(shop, rice, toMp);
+
+        SaleResponse sale = getSale(shop, first);
+        assertThat(sale.paymentAccountName()).isEqualTo("GTBank");
+        SalesTotals.ByPayment paid = get(shop, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals().byPayment();
+        assertThat(paid.transferAmount()).isEqualByComparingTo("4000.00");
+        assertThat(paid.transferAccounts()).hasSize(2);
+        assertThat(paid.transferAccounts().get(0).bankName()).isEqualTo("GTBank");
+        assertThat(paid.transferAccounts().get(0).amount()).isEqualByComparingTo("3000.00");
+
+        // Changed to the other account: the sale says so.
+        assertThat(send(shop, HttpMethod.PUT, "/api/sales/" + first + "/payment",
+                Map.of("paymentMethod", "TRANSFER", "paymentAccountId", moniepoint.get("id")), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(getSale(shop, first).paymentAccountName()).isEqualTo("Moniepoint");
+
+        // Switched off: no longer offered, and refused on a new sale - the old sales keep it.
+        send(shop, HttpMethod.PATCH, "/api/payment-accounts/" + gtb.get("id"), Map.of("active", false), String.class);
+        assertThat((java.util.List<?>) ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody()
+                .get("branches")).get(0).get("paymentAccounts")).hasSize(1);
+        Map<String, Object> toOff = sale(1, "500", UUID.randomUUID(), "TRANSFER");
+        toOff.put("paymentAccountId", gtb.get("id"));
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + rice + "/stock/stock-out", toOff, String.class).getStatusCode())
+                .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
     private record Shop(TenantLoginResponse login) {
     }
 

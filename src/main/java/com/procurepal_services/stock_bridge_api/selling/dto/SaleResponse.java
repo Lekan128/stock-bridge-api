@@ -36,5 +36,8 @@ public record SaleResponse(
         OffsetDateTime cancelRequestedAt,
         /** Who cancelled it, or declined the request. */
         String cancelDecidedByName,
-        OffsetDateTime cancelDecidedAt) {
+        OffsetDateTime cancelDecidedAt,
+        /** Step 12 (V96): which account a transfer came into ("GTBank"); absent otherwise. Never on a receipt. */
+        java.util.UUID paymentAccountId,
+        String paymentAccountName) {
 }

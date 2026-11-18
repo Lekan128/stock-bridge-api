@@ -150,7 +150,7 @@ public class SaleController {
             @PathVariable UUID saleId,
             @Valid @RequestBody ChangeSalePaymentRequest request,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return saleService.changePayment(saleId, request.paymentMethod(), principal.getUserId());
+        return saleService.changePayment(saleId, request.paymentMethod(), request.paymentAccountId(), principal.getUserId());
     }
 
     /** Add the price to a sale line saved without one. */

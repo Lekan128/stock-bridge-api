@@ -44,13 +44,35 @@ public record SalesTotals(
             BigDecimal cardAmount,
             long cardSales,
             BigDecimal notRecordedAmount,
-            long notRecordedSales) {
+            long notRecordedSales,
+            // Step 12 (V96): transfers by the account they came into, most first; absent where none was named.
+            java.util.List<AccountTotal> transferAccounts) {
+
+        public ByPayment(BigDecimal cashAmount, long cashSales, BigDecimal transferAmount, long transferSales,
+                BigDecimal cardAmount, long cardSales, BigDecimal notRecordedAmount, long notRecordedSales) {
+            this(cashAmount, cashSales, transferAmount, transferSales, cardAmount, cardSales, notRecordedAmount,
+                    notRecordedSales, null);
+        }
+
+        public ByPayment withTransferAccounts(java.util.List<AccountTotal> accounts) {
+            return new ByPayment(cashAmount, cashSales, transferAmount, transferSales, cardAmount, cardSales,
+                    notRecordedAmount, notRecordedSales, accounts == null || accounts.isEmpty() ? null : accounts);
+        }
+    }
+
+    /** Transfers into one account: "GTBank", how much and in how many sales. */
+    public record AccountTotal(java.util.UUID accountId, String bankName, String accountNumber, BigDecimal amount, long sales) {
     }
 
     /**
      * The same figures with everything about cost taken out - for a person's own till total, which
      * staff without analytics see at the counter. What the stock cost is the owner's business.
      */
+    public SalesTotals withByPayment(ByPayment payment) {
+        return new SalesTotals(saleCount, lineCount, salesAmount, profitKnownSalesAmount, costAmount, grossProfit, margin,
+                unpricedLineCount, unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, payment);
+    }
+
     public SalesTotals withoutCost() {
         return new SalesTotals(saleCount, lineCount, salesAmount, null, null, null, null,
                 unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0, byPayment);

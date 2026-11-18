@@ -61,6 +61,7 @@ public class SaleService {
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
     private final SalePaymentService salePaymentService;
+    private final PaymentAccountService paymentAccountService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
 
     /** How long the person who recorded a sale may change how it was paid - the same as Undo sale (D8). */
@@ -183,6 +184,12 @@ public class SaleService {
      */
     @Transactional
     public SaleResponse changePayment(UUID saleId, SalePaymentMethod method, UUID actingUserId) {
+        return changePayment(saleId, method, null, actingUserId);
+    }
+
+    /** ...and, for a transfer, which of the branch's accounts it came into (V96). */
+    @Transactional
+    public SaleResponse changePayment(UUID saleId, SalePaymentMethod method, UUID accountId, UUID actingUserId) {
         List<StockMovement> rows = rowsOf(saleId);
         StockMovement first = linesOf(rows).get(0);
         if (first.getBranchId() != null && branchStockService.isMultiBranch(first.getClientId())) {
@@ -197,7 +204,10 @@ public class SaleService {
                         : "Only someone who manages inventory can change how someone else's sale was paid.");
             }
         }
-        salePaymentService.set(requireTenantId(), saleId, first.getBranchId(), method, actingUserId);
+        if (accountId != null && method == SalePaymentMethod.TRANSFER) {
+            paymentAccountService.requireUsable(requireTenantId(), first.getBranchId(), accountId);
+        }
+        salePaymentService.set(requireTenantId(), saleId, first.getBranchId(), method, accountId, actingUserId);
         return toResponse(saleId, rows);
     }
 
@@ -366,7 +376,9 @@ public class SaleService {
                 header.cancelRequestedByName(),
                 header.cancelRequestedAt(),
                 header.cancelDecidedByName(),
-                header.cancelDecidedAt());
+                header.cancelDecidedAt(),
+                header.paymentAccountId(),
+                header.paymentAccountName());
     }
 
     private String branchName(UUID branchId) {

@@ -121,6 +121,7 @@ public class StockManagementService {
     private final com.procurepal_services.stock_bridge_api.selling.SalePaymentService salePaymentService;
     private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
     private final com.procurepal_services.stock_bridge_api.product.MadeWithService madeWithService;
+    private final com.procurepal_services.stock_bridge_api.selling.PaymentAccountService paymentAccountService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate costJdbc;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
@@ -517,7 +518,7 @@ public class StockManagementService {
         if (sale) {
             // Selling till Step 1: the sale's first line to arrive records how it was paid.
             salePaymentService.recordIfAbsent(
-                    tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), actingUserId);
+                    tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
         }
 
         List<StockMutationResponse.AllocationBreakdown> breakdown = new ArrayList<>();
@@ -2262,7 +2263,7 @@ public class StockManagementService {
             line.setCostAmount(used.amount());
             line.setCostBasis(used.basis());
         }
-        salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), actingUserId);
+        salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
         return StockMutationResponse.ofStockOut(product, line, List.of());
     }
 
@@ -2343,6 +2344,15 @@ public class StockManagementService {
             return SaleFacts.Cost.UNKNOWN;
         }
         return new SaleFacts.Cost(total.setScale(2, java.math.RoundingMode.HALF_UP), average ? CostBasis.AVERAGE : CostBasis.FIFO);
+    }
+
+    /** A transfer's account (V96): one of this branch's switched-on accounts, else refused; none for cash or card. */
+    private UUID saleAccount(StockOutRequest request, UUID branchId) {
+        if (request.paymentAccountId() == null || request.paymentMethod() != com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.TRANSFER) {
+            return null;
+        }
+        paymentAccountService.requireUsable(requireTenantId(), branchId, request.paymentAccountId());
+        return request.paymentAccountId();
     }
 
     /** Counting, receiving, moving or adjusting: none of it means anything for a made-here item (V90). */

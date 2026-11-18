@@ -46,6 +46,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class BranchService {
 
     private final BranchRepository branchRepository;
+    private final com.procurepal_services.stock_bridge_api.selling.PaymentAccountService paymentAccountService;
     private final ClientRepository clientRepository;
     private final BranchAccessService branchAccessService;
     private final BranchStockService branchStockService;
@@ -67,6 +68,8 @@ public class BranchService {
         BranchAccessService.Grants grants = branchAccessService.grants(userId);
         // Each area says whether this person works in it (Part 3), so the phone knows where they are.
         AreaAccessService.Limits limits = areaAccessService.limits(userId);
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.selling.PaymentAccountService.PaymentAccount>> accounts =
+                paymentAccountService.byBranch(clientId, false);
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse>> areas = new java.util.HashMap<>();
         areaService.areasByBranch(clientId, manages).forEach((branchId, list) -> areas.put(branchId,
                 list.stream().map(area -> area.withWorksHere(limits.worksIn(branchId, area.id()))).toList()));
@@ -77,7 +80,7 @@ public class BranchService {
                         .thenComparing(branch -> !branch.isActive())
                         .thenComparing(Branch::getName, String.CASE_INSENSITIVE_ORDER))
                 .map(branch -> toResponse(branch, writable.contains(branch.getId()), totals.get(branch.getId()), manages,
-                        areas.getOrDefault(branch.getId(), List.of())))
+                        areas.getOrDefault(branch.getId(), List.of()), accounts.getOrDefault(branch.getId(), List.of())))
                 .toList();
         boolean multiBranch = branchStockService.isMultiBranch(clientId);
         List<BranchListResponse.BranchName> sendTo = !multiBranch || !hasPermission(userId, "SEND_STOCK") ? List.of()
@@ -368,6 +371,13 @@ public class BranchService {
     private static BranchResponse toResponse(
             Branch branch, boolean canRecord, Totals totals, boolean manages,
             List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse> areas) {
+        return toResponse(branch, canRecord, totals, manages, areas, null);
+    }
+
+    private static BranchResponse toResponse(
+            Branch branch, boolean canRecord, Totals totals, boolean manages,
+            List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse> areas,
+            List<com.procurepal_services.stock_bridge_api.selling.PaymentAccountService.PaymentAccount> accounts) {
         Totals shown = manages ? (totals == null ? new Totals(0, BigDecimal.ZERO, 0) : totals) : null;
         return new BranchResponse(
                 branch.getId(),
@@ -381,7 +391,8 @@ public class BranchService {
                 shown == null ? null : shown.stockWorth(),
                 branch.getAddress(),
                 shown == null ? null : shown.people(),
-                areas);
+                areas,
+                accounts);
     }
 
     private boolean hasPermission(UUID userId, String code) {

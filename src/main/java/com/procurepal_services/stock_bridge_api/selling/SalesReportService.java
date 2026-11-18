@@ -123,9 +123,26 @@ public class SalesReportService {
     @Transactional(readOnly = true)
     public SalesTotals totals(UUID clientId, OffsetDateTime from, OffsetDateTime to, Filters filters) {
         OffsetDateTime[] range = rangeOrToday(from, to);
-        return jdbc.queryForObject(
+        SalesTotals totals = jdbc.queryForObject(
                 linesCte(filters) + "SELECT " + AGGREGATES + " FROM lines", params(clientId, range, filters),
                 (rs, n) -> totals(rs));
+        if (totals == null || totals.byPayment() == null || totals.byPayment().transferSales() == 0) {
+            return totals;
+        }
+        // Step 12 (V96): the transfers split by the account they came into, for matching against each bank.
+        List<SalesTotals.AccountTotal> accounts = jdbc.query(
+                linesCte(filters) + """
+                SELECT a.id, a.bank_name, a.account_number,
+                       COALESCE(SUM(l.amount) FILTER (WHERE NOT l.cancelled), 0) AS amount,
+                       COUNT(DISTINCT l.sale_id) FILTER (WHERE NOT l.cancelled) AS sales
+                FROM lines l JOIN payment_accounts a ON a.id = l.account_id
+                WHERE l.payment = 'TRANSFER'
+                GROUP BY a.id, a.bank_name, a.account_number
+                ORDER BY amount DESC
+                """, params(clientId, range, filters),
+                (rs, n) -> new SalesTotals.AccountTotal(rs.getObject("id", UUID.class), rs.getString("bank_name"),
+                        rs.getString("account_number"), money(rs.getBigDecimal("amount")), rs.getLong("sales")));
+        return totals.withByPayment(totals.byPayment().withTransferAccounts(accounts));
     }
 
     /**
@@ -280,6 +297,7 @@ public class SalesReportService {
                            o.cost_amount AS cost,
                            (r.id IS NOT NULL) AS cancelled,
                            sp.payment_method AS payment,
+                           sp.payment_account_id AS account_id,
                            (o.usual_price_at_time IS NOT NULL AND o.unit_price_at_time IS NOT NULL
                                 AND o.unit_price_at_time < o.usual_price_at_time - 0.005) AS below_usual
                     FROM stock_movements o
@@ -329,6 +347,7 @@ public class SalesReportService {
                            NULL AS unit, MIN(l.occurred_at) AS occurred_at,
                            STRING_AGG(DISTINCT p.name, ', ') AS detail, MAX(b.name) AS branch,
                            MAX(l.payment) AS payment,
+                           (SELECT pa.bank_name FROM payment_accounts pa WHERE pa.id = MAX(CAST(l.account_id AS text))::uuid) AS account_name,
                            sx.cancel_state, sx.cancel_reason,
                            COALESCE(NULLIF(TRIM(CONCAT(cd.first_name, ' ', cd.last_name)), ''), cd.username) AS cancel_decided_name,
                            COALESCE(NULLIF(TRIM(CONCAT(cr.first_name, ' ', cr.last_name)), ''), cr.username) AS cancel_requested_name,
@@ -420,7 +439,8 @@ public class SalesReportService {
                 "sale".equals(grouping) ? rs.getString("cancel_state") : null,
                 "sale".equals(grouping) ? rs.getString("cancel_reason") : null,
                 "sale".equals(grouping) ? rs.getString("cancel_decided_name") : null,
-                "sale".equals(grouping) ? rs.getString("cancel_requested_name") : null);
+                "sale".equals(grouping) ? rs.getString("cancel_requested_name") : null,
+                "sale".equals(grouping) ? rs.getString("account_name") : null);
     }
 
     private static SalesTotals totals(ResultSet rs) throws SQLException {
