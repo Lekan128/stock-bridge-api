@@ -91,7 +91,43 @@ public record StockOutRequest(
         // of one basket carries the same; the first to arrive records it (SalePaymentService). Absent on
         // a sale recorded before payments, and on every stock-out that is not a sale. Left out of the
         // idempotency hash when absent, like branchId.
-        SalePaymentMethod paymentMethod) {
+        SalePaymentMethod paymentMethod,
+        // Selling till Step 12 (V96): which of the branch's accounts a transfer came into. Absent with one account, on
+        // a sale before accounts, and on cash or card. Left out of the idempotency hash when absent, like branchId.
+        UUID paymentAccountId,
+        // Selling till Stage C (V99): a line sent to an open bill - the phone's key for the line, the meal a side goes
+        // with, and its note for the kitchen. The sale id is the bill's. Absent on every other stock-out, and left out
+        // of the idempotency hash when absent, like branchId.
+        BillLine billLine) {
+
+    /** A bill line's place on its bill (V99). */
+    /**
+     * @param sendKey one Send from the bill (Step 8, V102): its lines gather on one ticket per area. Absent from an older
+     *     app: each line is then its own ticket.
+     */
+    public record BillLine(@NotNull UUID lineKey, UUID withKey, @Size(max = 200) String note, UUID sendKey) {
+        public BillLine(UUID lineKey, UUID withKey, String note) {
+            this(lineKey, withKey, note, null);
+        }
+    }
+
+    /** The shape before {@code billLine} (Stage C). */
+    public StockOutRequest(
+            BigDecimal quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations,
+            OffsetDateTime occurredAt, Boolean recordedOffline, OutReason reason, UUID saleId, BigDecimal lineTotal,
+            UUID branchId, UUID areaId, SalePaymentMethod paymentMethod, UUID paymentAccountId) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                branchId, areaId, paymentMethod, paymentAccountId, null);
+    }
+
+    /** The shape before {@code paymentAccountId} (selling till, Step 12). */
+    public StockOutRequest(
+            BigDecimal quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations,
+            OffsetDateTime occurredAt, Boolean recordedOffline, OutReason reason, UUID saleId, BigDecimal lineTotal,
+            UUID branchId, UUID areaId, SalePaymentMethod paymentMethod) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                branchId, areaId, paymentMethod, null);
+    }
 
     /** The shape before {@code paymentMethod} (selling till, Step 1). */
     public StockOutRequest(
@@ -108,7 +144,7 @@ public record StockOutRequest(
             UUID branchId,
             UUID areaId) {
         this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
-                branchId, areaId, null);
+                branchId, areaId, (SalePaymentMethod) null);
     }
 
     /** The shape before {@code areaId} (areas, Part 0). */
@@ -173,13 +209,13 @@ public record StockOutRequest(
     /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
     public StockOutRequest withBranchId(UUID branch) {
         return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
-                saleId, lineTotal, branch, areaId, paymentMethod);
+                saleId, lineTotal, branch, areaId, paymentMethod, paymentAccountId, billLine);
     }
 
     /** This request, recorded in {@code area} - how a caller states the area it has resolved. */
     public StockOutRequest withAreaId(UUID area) {
         return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
-                saleId, lineTotal, branchId, area, paymentMethod);
+                saleId, lineTotal, branchId, area, paymentMethod, paymentAccountId, billLine);
     }
 
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */

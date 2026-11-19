@@ -28,13 +28,19 @@ public class SalePaymentService {
     /** Records how a sale was paid, unless its row already exists. */
     @Transactional
     public void recordIfAbsent(UUID clientId, UUID saleId, UUID branchId, SalePaymentMethod method, UUID userId) {
+        recordIfAbsent(clientId, saleId, branchId, method, null, userId);
+    }
+
+    /** ...and, for a transfer, which of the branch's accounts it came into (V96, Step 12). */
+    @Transactional
+    public void recordIfAbsent(UUID clientId, UUID saleId, UUID branchId, SalePaymentMethod method, UUID accountId, UUID userId) {
         if (saleId == null || method == null) {
             return;
         }
         jdbc.update(
                 """
-                INSERT INTO sales (id, client_id, branch_id, payment_method, recorded_by)
-                VALUES (:id, :clientId, :branchId, :method, :userId)
+                INSERT INTO sales (id, client_id, branch_id, payment_method, payment_account_id, recorded_by)
+                VALUES (:id, :clientId, :branchId, :method, :accountId, :userId)
                 ON CONFLICT (id) DO NOTHING
                 """,
                 new MapSqlParameterSource()
@@ -42,6 +48,7 @@ public class SalePaymentService {
                         .addValue("clientId", clientId)
                         .addValue("branchId", branchId)
                         .addValue("method", method.name())
+                        .addValue("accountId", method == SalePaymentMethod.TRANSFER ? accountId : null)
                         .addValue("userId", userId));
     }
 
@@ -61,19 +68,29 @@ public class SalePaymentService {
      */
     @Transactional
     public void set(UUID clientId, UUID saleId, UUID branchId, SalePaymentMethod method, UUID userId) {
+        set(clientId, saleId, branchId, method, null, userId);
+    }
+
+    /** ...with the account a transfer came into (V96); a change to another account alone is a change too. */
+    @Transactional
+    public void set(UUID clientId, UUID saleId, UUID branchId, SalePaymentMethod method, UUID accountId, UUID userId) {
+        UUID account = method == SalePaymentMethod.TRANSFER ? accountId : null;
         int changed = jdbc.update(
                 """
-                UPDATE sales SET payment_method = :method, payment_changed_by = :userId, payment_changed_at = :now
-                WHERE id = :id AND client_id = :clientId AND payment_method IS DISTINCT FROM :method
+                UPDATE sales SET payment_method = :method, payment_account_id = :accountId,
+                                 payment_changed_by = :userId, payment_changed_at = :now
+                WHERE id = :id AND client_id = :clientId
+                  AND (payment_method IS DISTINCT FROM :method OR payment_account_id IS DISTINCT FROM CAST(:accountId AS uuid))
                 """,
                 new MapSqlParameterSource()
                         .addValue("id", saleId)
                         .addValue("clientId", clientId)
                         .addValue("method", method.name())
+                        .addValue("accountId", account)
                         .addValue("userId", userId)
                         .addValue("now", OffsetDateTime.now()));
         if (changed == 0) {
-            recordIfAbsent(clientId, saleId, branchId, method, userId);
+            recordIfAbsent(clientId, saleId, branchId, method, account, userId);
         }
     }
 
@@ -89,8 +106,10 @@ public class SalePaymentService {
             String cancelRequestedByName,
             OffsetDateTime cancelRequestedAt,
             String cancelDecidedByName,
-            OffsetDateTime cancelDecidedAt) {
-        static final Header NONE = new Header(null, null, null, null, null, null, null, null, null);
+            OffsetDateTime cancelDecidedAt,
+            UUID paymentAccountId,
+            String paymentAccountName) {
+        static final Header NONE = new Header(null, null, null, null, null, null, null, null, null, null, null);
     }
 
     @Transactional(readOnly = true)
@@ -101,8 +120,9 @@ public class SalePaymentService {
                        COALESCE(NULLIF(TRIM(CONCAT(r.first_name, ' ', r.last_name)), ''), r.username) AS requested_name,
                        s.cancel_requested_at,
                        COALESCE(NULLIF(TRIM(CONCAT(d.first_name, ' ', d.last_name)), ''), d.username) AS decided_name,
-                       s.cancel_decided_at
+                       s.cancel_decided_at, s.payment_account_id, pa.bank_name AS account_name
                 FROM sales s
+                LEFT JOIN payment_accounts pa ON pa.id = s.payment_account_id
                 LEFT JOIN users r ON r.id = s.cancel_requested_by
                 LEFT JOIN users d ON d.id = s.cancel_decided_by
                 WHERE s.id = :id AND s.client_id = :clientId
@@ -117,7 +137,9 @@ public class SalePaymentService {
                         rs.getString("requested_name"),
                         rs.getObject("cancel_requested_at", OffsetDateTime.class),
                         rs.getString("decided_name"),
-                        rs.getObject("cancel_decided_at", OffsetDateTime.class)));
+                        rs.getObject("cancel_decided_at", OffsetDateTime.class),
+                        rs.getObject("payment_account_id", UUID.class),
+                        rs.getString("account_name")));
         return found.isEmpty() ? Header.NONE : found.get(0);
     }
 

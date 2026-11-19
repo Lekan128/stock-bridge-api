@@ -133,6 +133,43 @@ public class BranchStockService {
                 Boolean.class));
     }
 
+    /** A sale is never taken from an area nothing is sold from (V103): a store room's stock is moved out first. */
+    public void requireSellsFrom(UUID areaId) {
+        if (areaId == null) {
+            return;
+        }
+        jdbc.query("SELECT name, sells FROM areas WHERE id = :id", new MapSqlParameterSource("id", areaId), rs -> {
+            if (!rs.getBoolean("sells")) {
+                throw new com.procurepal_services.stock_bridge_api.product.MadeWithException("Nothing is sold from the "
+                        + rs.getString("name") + ". Move it to an area that sells first.");
+            }
+        });
+    }
+
+    /**
+     * Where a product is held at a branch in an area nothing is sold from, for "60 in the Store: move some to the Bar
+     * first" when an area that sells runs out (V103): the area sold from, and that sentence. Null when there's none.
+     */
+    public String[] heldWhereNotSold(Product product, UUID branchId, UUID soldFromAreaId, String unit) {
+        if (soldFromAreaId == null) {
+            return null;
+        }
+        List<String[]> found = jdbc.query("""
+                SELECT a.name, s.quantity_on_hand, (SELECT name FROM areas WHERE id = :soldFrom) AS here
+                FROM area_stock s JOIN areas a ON a.id = s.area_id
+                WHERE s.product_id = :productId AND s.branch_id = :branchId AND a.is_active AND NOT a.sells
+                  AND s.quantity_on_hand > 0
+                ORDER BY s.quantity_on_hand DESC LIMIT 1
+                """, new MapSqlParameterSource().addValue("productId", product.getId()).addValue("branchId", branchId)
+                .addValue("soldFrom", soldFromAreaId),
+                (rs, n) -> new String[] {rs.getString("here"),
+                        com.procurepal_services.stock_bridge_api.imports.ImportCopy.count(rs.getBigDecimal("quantity_on_hand"))
+                        + (unit == null || unit.isBlank() ? "" : " " + unit) + " in the " + rs.getString("name")
+                        + ": move some to the " + rs.getString("here") + " first."});
+        return found.isEmpty() ? null : found.getFirst();
+    }
+
+
     /**
      * How many of {@code product} the area holds now: the figure a stock-out or count is judged against.
      * At a branch with one area, the branch's own figure, exactly as before areas.

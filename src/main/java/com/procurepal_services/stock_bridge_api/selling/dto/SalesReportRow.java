@@ -33,11 +33,25 @@ public record SalesReportRow(
         /** Who cancelled it, or declined the request. */
         String cancelledByName,
         /** Who asked for it to be cancelled. */
-        String cancelRequestedByName) {
+        String cancelRequestedByName,
+        /** Step 12 (V96): the account a transfer sale came into ("GTBank"); absent otherwise. */
+        String paymentAccountName,
+        /**
+         * Step 10 (V100), sale rows: the charges and taxes added on top - what the customer paid is the total plus this.
+         * Absent when there were none, or when the list is narrowed to some of each sale (a product, an area).
+         */
+        BigDecimal chargesOnTop) {
+
+    public SalesReportRow(String key, String label, BigDecimal quantity, String unitOfMeasure, OffsetDateTime occurredAt,
+            SalesTotals totals, String detail, String branch, String paymentMethod, String cancelState, String cancelReason,
+            String cancelledByName, String cancelRequestedByName) {
+        this(key, label, quantity, unitOfMeasure, occurredAt, totals, detail, branch, paymentMethod, cancelState,
+                cancelReason, cancelledByName, cancelRequestedByName, null, null);
+    }
 
     /** The same row with nothing about cost - for a cashier's own list. */
     public SalesReportRow withoutCost() {
         return new SalesReportRow(key, label, quantity, unitOfMeasure, occurredAt, totals.withoutCost(), detail, branch,
-                paymentMethod, cancelState, cancelReason, cancelledByName, cancelRequestedByName);
+                paymentMethod, cancelState, cancelReason, cancelledByName, cancelRequestedByName, paymentAccountName, chargesOnTop);
     }
 }

@@ -121,6 +121,10 @@ public class StockManagementService {
     private final com.procurepal_services.stock_bridge_api.selling.SalePaymentService salePaymentService;
     private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
     private final com.procurepal_services.stock_bridge_api.product.MadeWithService madeWithService;
+    private final com.procurepal_services.stock_bridge_api.selling.PaymentAccountService paymentAccountService;
+    private final com.procurepal_services.stock_bridge_api.selling.CashDayService cashDayService;
+    private final com.procurepal_services.stock_bridge_api.selling.BillLineRecorder billLineRecorder;
+    private final com.procurepal_services.stock_bridge_api.selling.ChargeService chargeService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate costJdbc;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
@@ -447,8 +451,15 @@ public class StockManagementService {
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         // A product not for this branch is not sold, counted or adjusted here (V92).
         productBranchService.requireFor(product, branchId);
+        // A table's bill line (V99) comes from where it's made or kept, whoever takes the order: a waiter at the Front
+        // desk sends a Heineken from the Bar. The waiter still has to work at the branch (resolveForWrite above).
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse,
-                forMove ? null : actingUserId);
+                forMove || request.billLine() != null ? null : actingUserId);
+        boolean sold = SaleFacts.reasonOf(request) == OutReason.SALE;
+        // V103: nothing is sold from a store room; its stock is moved to an area that sells first.
+        if (sold) {
+            branchStockService.requireSellsFrom(areaId);
+        }
 
         ResolvedEntry entry = resolveEntry(
                 product, request.quantity(), SaleFacts.enteredPrice(request), request.unit(), null, null);
@@ -467,7 +478,8 @@ public class StockManagementService {
         // area's, at a branch that has several - the Kitchen can't sell what is in the Store.
         BigDecimal available = branchStockService.quantityAt(product, branchId, areaId);
         if (!absorbed && quantityBaseUnits.compareTo(available) > 0) {
-            throw new InsufficientStockException(available, quantityBaseUnits, unitSymbol(product));
+            throw new InsufficientStockException(available, quantityBaseUnits, unitSymbol(product))
+                    .elsewhere(sold ? branchStockService.heldWhereNotSold(product, branchId, areaId, unitSymbol(product)) : null);
         }
 
         List<StockMovement> lockedLotsOldestFirst =
@@ -515,9 +527,21 @@ public class StockManagementService {
                 .costBasis(cost.basis())
                 .build());
         if (sale) {
+            if (request.paymentMethod() == com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.SPLIT) {
+                throw new com.procurepal_services.stock_bridge_api.product.MadeWithException("Choose cash, transfer or card.");
+            }
+            // Stage C (V99): a line sent to a table's bill - its bill must still be open; it carries no payment.
+            if (request.billLine() != null) {
+                stockMovementRepository.flush();
+                billLineRecorder.record(tenantId, request, outMovement.getId(), outMovement.getSaleId(), branchId, actingUserId);
+            }
             // Selling till Step 1: the sale's first line to arrive records how it was paid.
             salePaymentService.recordIfAbsent(
-                    tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), actingUserId);
+                    tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
+            // Step 10 (V100): a counter sale's charges and taxes - fixed at its first line, kept up with its lines.
+            stockMovementRepository.flush();
+            chargeService.afterSaleLine(tenantId, outMovement.getSaleId(), branchId, outMovement.getId());
+            reopenDrawer(request, branchId, areaId, actingUserId);
         }
 
         List<StockMutationResponse.AllocationBreakdown> breakdown = new ArrayList<>();
@@ -2262,7 +2286,17 @@ public class StockManagementService {
             line.setCostAmount(used.amount());
             line.setCostBasis(used.basis());
         }
-        salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), actingUserId);
+        if (request.paymentMethod() == com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.SPLIT) {
+            throw new com.procurepal_services.stock_bridge_api.product.MadeWithException("Choose cash, transfer or card.");
+        }
+        if (request.billLine() != null) {
+            stockMovementRepository.flush();
+            billLineRecorder.record(tenantId, request, line.getId(), line.getSaleId(), branchId, actingUserId);
+        }
+        salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
+        stockMovementRepository.flush();
+        chargeService.afterSaleLine(tenantId, line.getSaleId(), branchId, line.getId());
+        reopenDrawer(request, branchId, request.areaId(), actingUserId);
         return StockMutationResponse.ofStockOut(product, line, List.of());
     }
 
@@ -2343,6 +2377,25 @@ public class StockManagementService {
             return SaleFacts.Cost.UNKNOWN;
         }
         return new SaleFacts.Cost(total.setScale(2, java.math.RoundingMode.HALF_UP), average ? CostBasis.AVERAGE : CostBasis.FIFO);
+    }
+
+    /**
+     * Step 13 (V97): any sale at a drawer closed earlier today reopens it from what was counted (owner, 2026-11-18:
+     * a transfer or card sale belongs to that drawer's day too, so Close the day shows again).
+     */
+    private void reopenDrawer(StockOutRequest request, UUID branchId, UUID areaId, UUID actingUserId) {
+        if (request.paymentMethod() != null) {
+            cashDayService.onCashSale(requireTenantId(), branchId, areaId, actingUserId);
+        }
+    }
+
+    /** A transfer's account (V96): one of this branch's switched-on accounts, else refused; none for cash or card. */
+    private UUID saleAccount(StockOutRequest request, UUID branchId) {
+        if (request.paymentAccountId() == null || request.paymentMethod() != com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.TRANSFER) {
+            return null;
+        }
+        paymentAccountService.requireUsable(requireTenantId(), branchId, request.paymentAccountId());
+        return request.paymentAccountId();
     }
 
     /** Counting, receiving, moving or adjusting: none of it means anything for a made-here item (V90). */

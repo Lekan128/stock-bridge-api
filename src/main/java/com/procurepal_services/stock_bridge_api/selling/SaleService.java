@@ -61,7 +61,9 @@ public class SaleService {
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
     private final SalePaymentService salePaymentService;
+    private final PaymentAccountService paymentAccountService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
+    private final ChargeService chargeService;
 
     /** How long the person who recorded a sale may change how it was paid - the same as Undo sale (D8). */
     static final java.time.Duration CHANGE_PAYMENT_FOR = java.time.Duration.ofMinutes(2);
@@ -144,6 +146,9 @@ public class SaleService {
         }
         List<StockMovement> after = new ArrayList<>(rows);
         after.addAll(written);
+        // Step 10: its charges follow its lines.
+        stockMovementRepository.flush();
+        chargeService.refresh(tenantId, saleId);
         return toResponse(saleId, after);
     }
 
@@ -173,6 +178,8 @@ public class SaleService {
         requireMayFix(line, actingUserId, "add a price to");
         List<StockMovement> after = new ArrayList<>(rows);
         after.add(stockManagementService.addSalePrice(line, amount, actingUserId));
+        stockMovementRepository.flush();
+        chargeService.refresh(requireTenantId(), line.getSaleId());
         return toResponse(line.getSaleId(), after);
     }
 
@@ -183,6 +190,17 @@ public class SaleService {
      */
     @Transactional
     public SaleResponse changePayment(UUID saleId, SalePaymentMethod method, UUID actingUserId) {
+        return changePayment(saleId, method, null, actingUserId);
+    }
+
+    /** ...and, for a transfer, which of the branch's accounts it came into (V96). */
+    @Transactional
+    public SaleResponse changePayment(UUID saleId, SalePaymentMethod method, UUID accountId, UUID actingUserId) {
+        if (method == SalePaymentMethod.SPLIT || Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM bills WHERE id = :id)",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", saleId), Boolean.class))) {
+            throw new SaleFixRefusedException("A table's bill is paid from the bill. Its payments can't be changed here.");
+        }
         List<StockMovement> rows = rowsOf(saleId);
         StockMovement first = linesOf(rows).get(0);
         if (first.getBranchId() != null && branchStockService.isMultiBranch(first.getClientId())) {
@@ -197,7 +215,10 @@ public class SaleService {
                         : "Only someone who manages inventory can change how someone else's sale was paid.");
             }
         }
-        salePaymentService.set(requireTenantId(), saleId, first.getBranchId(), method, actingUserId);
+        if (accountId != null && method == SalePaymentMethod.TRANSFER) {
+            paymentAccountService.requireUsable(requireTenantId(), first.getBranchId(), accountId);
+        }
+        salePaymentService.set(requireTenantId(), saleId, first.getBranchId(), method, accountId, actingUserId);
         return toResponse(saleId, rows);
     }
 
@@ -310,6 +331,19 @@ public class SaleService {
         Map<UUID, StockMovement> cancellations = fixesBy(rows, StockMovement::getReversesMovementId);
         Map<UUID, StockMovement> priceFixes = fixesBy(rows, StockMovement::getCorrectsMovementId);
 
+        // A table's bill (V99): which meal each side goes with, the kitchen notes, and lines taken off.
+        Map<UUID, Map<String, Object>> billLines = new HashMap<>();
+        Map<UUID, UUID> lineByKey = new HashMap<>();
+        jdbc.query("SELECT movement_id, line_key, with_key, note, taken_off FROM bill_lines WHERE bill_id = :id",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", saleId), rs -> {
+                    Map<String, Object> row = new HashMap<>();
+                    row.put("with_key", rs.getObject("with_key", UUID.class));
+                    row.put("note", rs.getString("note"));
+                    row.put("taken_off", rs.getString("taken_off"));
+                    billLines.put(rs.getObject("movement_id", UUID.class), row);
+                    lineByKey.put(rs.getObject("line_key", UUID.class), rs.getObject("movement_id", UUID.class));
+                });
+
         List<SaleLineResponse> lineResponses = new ArrayList<>();
         BigDecimal total = BigDecimal.ZERO;
         int cancelled = 0;
@@ -320,7 +354,9 @@ public class SaleService {
             BigDecimal amount = line.getSaleAmount() != null
                     ? line.getSaleAmount()
                     : priceFix == null ? null : priceFix.getSaleAmount();
-            if (cancellation != null) {
+            Map<String, Object> billLine = billLines.getOrDefault(line.getId(), Map.of());
+            boolean sentBack = "SENT_BACK".equals(billLine.get("taken_off"));
+            if (cancellation != null || sentBack) {
                 cancelled++;
             } else if (amount == null) {
                 unpriced++;
@@ -339,15 +375,19 @@ public class SaleService {
                     amount,
                     line.getCostAmount(),
                     line.getCostBasis(),
-                    cancellation != null,
+                    cancellation != null || sentBack,
                     cancellation == null ? null : cancellation.getCreatedAt(),
                     cancellation == null ? null : nameOf(cancellation.getCreatedBy()),
                     priceFix != null,
                     line.getOccurredAt(),
-                    line.getProduct().getUnitOfMeasure()));
+                    line.getProduct().getUnitOfMeasure(),
+                    billLine.get("with_key") == null ? null : lineByKey.get((UUID) billLine.get("with_key")),
+                    (String) billLine.get("note"),
+                    (String) billLine.get("taken_off")));
         }
         StockMovement first = lines.get(0);
         SalePaymentService.Header header = salePaymentService.header(requireTenantId(), saleId);
+        List<ChargeService.SaleCharge> charges = chargeService.of(requireTenantId(), saleId);
         return new SaleResponse(
                 saleId,
                 lines.stream().map(StockMovement::getOccurredAt).filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null),
@@ -366,7 +406,31 @@ public class SaleService {
                 header.cancelRequestedByName(),
                 header.cancelRequestedAt(),
                 header.cancelDecidedByName(),
-                header.cancelDecidedAt());
+                header.cancelDecidedAt(),
+                header.paymentAccountId(),
+                header.paymentAccountName(),
+                billFor(saleId),
+                charges,
+                ChargeService.toPay(total, charges),
+                jdbc.query("SELECT method, amount FROM bill_payments WHERE bill_id = :id ORDER BY paid_at, id",
+                        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", saleId),
+                        (rs, n) -> new SaleResponse.Part(SalePaymentMethod.valueOf(rs.getString("method")), rs.getBigDecimal("amount"))));
+    }
+
+    /** What a table's bill was for (V99): its table's name, or the name it was opened under. */
+    private String billFor(UUID saleId) {
+        return jdbc.queryForList(
+                "SELECT COALESCE(CASE WHEN t.name ~ '^[0-9]+$' THEN 'Table ' || t.name ELSE t.name END, b.name)"
+                        + " FROM bills b LEFT JOIN branch_tables t ON t.id = b.table_id"
+                        + " WHERE b.id = :id",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", saleId), String.class)
+                .stream().findFirst().orElse(null);
+    }
+
+    /** Takes a sent line off an open bill (V99, "Not made yet"): cancelled as any sale line is, stock back. */
+    @Transactional
+    void cancelBillLine(UUID billId, UUID lineId, UUID actingUserId) {
+        cancel(billId, List.of(lineId), actingUserId, false);
     }
 
     private String branchName(UUID branchId) {

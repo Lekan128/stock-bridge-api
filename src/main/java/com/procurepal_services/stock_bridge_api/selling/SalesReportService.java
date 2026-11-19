@@ -100,7 +100,7 @@ public class SalesReportService {
 
         boolean namesBranches = branchStockService.isMultiBranch(clientId);
         List<SalesReportRow> rows = jdbc.query(groupQuery(grouping, filters) + " LIMIT " + (rowLimit + 1), params,
-                (rs, n) -> row(grouping, rs, namesBranches));
+                (rs, n) -> row(grouping, rs, namesBranches, wholeSales(filters)));
         boolean truncated = rows.size() > rowLimit;
         if (truncated) {
             rows = new ArrayList<>(rows.subList(0, rowLimit));
@@ -123,10 +123,151 @@ public class SalesReportService {
     @Transactional(readOnly = true)
     public SalesTotals totals(UUID clientId, OffsetDateTime from, OffsetDateTime to, Filters filters) {
         OffsetDateTime[] range = rangeOrToday(from, to);
-        return jdbc.queryForObject(
+        SalesTotals totals = jdbc.queryForObject(
                 linesCte(filters) + "SELECT " + AGGREGATES + " FROM lines", params(clientId, range, filters),
                 (rs, n) -> totals(rs));
+        if (totals == null) {
+            return null;
+        }
+        // Step 10 (V100): the charges and taxes on these sales, each on its own - when the whole of each sale is here; a
+        // product's or an area's share of a sale's charges would be a guess.
+        if (wholeSales(filters)) totals = totals.withCharges(jdbc.query(linesCte(filters) + """
+                SELECT sc.name, sc.included, SUM(sc.amount) AS amount
+                FROM sale_charges sc
+                WHERE sc.client_id = :clientId AND sc.sale_id IN (SELECT sale_id FROM lines WHERE NOT cancelled)
+                GROUP BY sc.name, sc.included
+                HAVING SUM(sc.amount) > 0
+                ORDER BY MIN(sc.position), sc.name
+                """, params(clientId, range, filters),
+                (rs, n) -> new SalesTotals.ChargeTotal(rs.getString("name"), rs.getBoolean("included"), money(rs.getBigDecimal("amount")))));
+        // Step 10-11 (V100, V101; owner, 2026-11-19): the ways it was paid are the money that came in each way, so they
+        // match the drawer and the bank - charges added on top included, and a bill paid in parts (SPLIT) counted part by
+        // part. Narrowed to some of each sale (a product, an area, a check), they stay the food and drinks: a split bill's
+        // shared across its parts in proportion. Whole naira either way.
+        List<SplitShare> split = totals.byPayment() == null ? List.of() : jdbc.query(linesCte(filters)
+                + (wholeSales(filters) ? RECEIVED_EXTRA : SPLIT_FOOD_SHARES), params(clientId, range, filters),
+                (rs, n) -> new SplitShare(rs.getString("method"), rs.getObject("account_id", UUID.class), rs.getString("bank_name"),
+                        rs.getString("account_number"), money(rs.getBigDecimal("amount")), rs.getLong("sales")));
+        if (!split.isEmpty()) {
+            SalesTotals.ByPayment by = totals.byPayment();
+            BigDecimal cash = by.cashAmount(), transfer = by.transferAmount(), card = by.cardAmount();
+            long cashSales = by.cashSales(), transferSales = by.transferSales(), cardSales = by.cardSales();
+            for (SplitShare share : split) {
+                switch (share.method()) {
+                    case "CASH" -> { cash = cash.add(share.amount()); cashSales += share.sales(); }
+                    case "TRANSFER" -> { transfer = transfer.add(share.amount()); transferSales += share.sales(); }
+                    default -> { card = card.add(share.amount()); cardSales += share.sales(); }
+                }
+            }
+            totals = totals.withByPayment(new SalesTotals.ByPayment(cash, cashSales, transfer, transferSales, card, cardSales,
+                    by.notRecordedAmount(), by.notRecordedSales(), by.transferAccounts()));
+        }
+        if (totals.byPayment() == null || totals.byPayment().transferSales() == 0) {
+            return totals;
+        }
+        // Step 12 (V96): the transfers split by the account they came into, for matching against each bank.
+        List<SalesTotals.AccountTotal> accounts = jdbc.query(
+                linesCte(filters) + """
+                SELECT a.id, a.bank_name, a.account_number,
+                       COALESCE(SUM(l.amount) FILTER (WHERE NOT l.cancelled), 0) AS amount,
+                       COUNT(DISTINCT l.sale_id) FILTER (WHERE NOT l.cancelled) AS sales
+                FROM lines l JOIN payment_accounts a ON a.id = l.account_id
+                WHERE l.payment = 'TRANSFER'
+                GROUP BY a.id, a.bank_name, a.account_number
+                ORDER BY amount DESC
+                """, params(clientId, range, filters),
+                (rs, n) -> new SalesTotals.AccountTotal(rs.getObject("id", UUID.class), rs.getString("bank_name"),
+                        rs.getString("account_number"), money(rs.getBigDecimal("amount")), rs.getLong("sales")));
+        // ...a split bill's transfer parts, into the accounts they came into.
+        List<SalesTotals.AccountTotal> merged = new java.util.ArrayList<>(accounts);
+        for (SplitShare share : split) {
+            if (!"TRANSFER".equals(share.method()) || share.accountId() == null) continue;
+            int at = -1;
+            for (int i = 0; i < merged.size(); i++) if (share.accountId().equals(merged.get(i).accountId())) at = i;
+            if (at < 0) {
+                merged.add(new SalesTotals.AccountTotal(share.accountId(), share.bankName(), share.accountNumber(), share.amount(), share.sales()));
+            } else {
+                SalesTotals.AccountTotal was = merged.get(at);
+                merged.set(at, new SalesTotals.AccountTotal(was.accountId(), was.bankName(), was.accountNumber(),
+                        was.amount().add(share.amount()), was.sales() + share.sales()));
+            }
+        }
+        merged.sort(java.util.Comparator.comparing(SalesTotals.AccountTotal::amount).reversed());
+        return totals.withByPayment(totals.byPayment().withTransferAccounts(merged));
     }
+
+    /**
+     * The whole of each sale is in the list - no product, area or check narrowing it to some lines. A person is fine:
+     * their share of a bill others added to is worked out below.
+     */
+    static boolean wholeSales(Filters filters) {
+        return filters.productId() == null && filters.areas() == null && !filters.belowUsualPrice() && !filters.belowCost()
+                && !filters.cancelledOnly() && !filters.unpricedOnly() && !filters.noCostOnly();
+    }
+
+    /**
+     * What came in each way on top of the food and drinks paid one way: the charges added on top of a CASH, TRANSFER or
+     * CARD sale, and every part of a SPLIT bill as it was paid. A sale only partly in the list (a person's lines on a
+     * shared bill) counts in proportion to its food and drinks there.
+     */
+    private static final String RECEIVED_EXTRA = """
+            , shown AS (
+                SELECT sale_id, MAX(payment) AS payment, MAX(CAST(account_id AS text)) AS account_id,
+                       COALESCE(SUM(amount) FILTER (WHERE NOT cancelled), 0) AS food
+                FROM lines GROUP BY sale_id
+                HAVING COUNT(*) FILTER (WHERE NOT cancelled) > 0
+            ),
+            whole AS (
+                SELECT o.sale_id, COALESCE(SUM(COALESCE(o.sale_amount, c.sale_amount)), 0) AS food
+                FROM stock_movements o
+                LEFT JOIN stock_movements r ON r.reverses_movement_id = o.id
+                LEFT JOIN stock_movements c ON c.corrects_movement_id = o.id
+                LEFT JOIN bill_lines bl ON bl.movement_id = o.id
+                WHERE o.client_id = :clientId AND o.movement_type = 'OUT' AND r.id IS NULL AND bl.taken_off IS NULL
+                  AND o.sale_id IN (SELECT sale_id FROM shown)
+                GROUP BY o.sale_id
+            ),
+            share AS (
+                SELECT s.sale_id, s.payment, s.account_id,
+                       CASE WHEN w.food > 0 AND s.food < w.food THEN s.food / w.food ELSE 1 END AS part
+                FROM shown s LEFT JOIN whole w ON w.sale_id = s.sale_id
+            ),
+            extra AS (
+                SELECT sh.payment AS method, CAST(sh.account_id AS uuid) AS account_id, SUM(sc.amount * sh.part) AS amount,
+                       0 AS sales
+                FROM share sh JOIN sale_charges sc ON sc.sale_id = sh.sale_id AND NOT sc.included
+                WHERE sh.payment IN ('CASH', 'TRANSFER', 'CARD')
+                GROUP BY sh.payment, sh.account_id
+                UNION ALL
+                SELECT bp.method, bp.payment_account_id, SUM(bp.amount * sh.part), COUNT(DISTINCT sh.sale_id)
+                FROM share sh JOIN bill_payments bp ON bp.bill_id = sh.sale_id
+                WHERE sh.payment = 'SPLIT'
+                GROUP BY bp.method, bp.payment_account_id
+            )
+            SELECT e.method, a.id AS account_id, a.bank_name, a.account_number, ROUND(SUM(e.amount)) AS amount,
+                   SUM(e.sales) AS sales
+            FROM extra e LEFT JOIN payment_accounts a ON a.id = e.account_id
+            GROUP BY e.method, a.id, a.bank_name, a.account_number
+            HAVING SUM(e.amount) > 0 OR SUM(e.sales) > 0
+            """;
+
+    /** A split bill's food and drinks in the list, shared across the ways it was paid in proportion to each part. */
+    private static final String SPLIT_FOOD_SHARES = """
+            , split AS (
+                SELECT l.sale_id, SUM(l.amount) FILTER (WHERE NOT l.cancelled) AS food
+                FROM lines l WHERE l.payment = 'SPLIT' GROUP BY l.sale_id
+            )
+            SELECT bp.method, a.id AS account_id, a.bank_name, a.account_number,
+                   ROUND(SUM(bp.amount * COALESCE(sp.food, 0) / NULLIF(t.paid, 0))) AS amount, COUNT(DISTINCT bp.bill_id) AS sales
+            FROM split sp
+            JOIN bill_payments bp ON bp.bill_id = sp.sale_id
+            JOIN (SELECT bill_id, SUM(amount) AS paid FROM bill_payments GROUP BY bill_id) t ON t.bill_id = sp.sale_id
+            LEFT JOIN payment_accounts a ON a.id = bp.payment_account_id
+            GROUP BY bp.method, a.id, a.bank_name, a.account_number
+            """;
+
+    /** One way money came in beyond the food and drinks paid one way: charges on top, or a part of a split bill. */
+    private record SplitShare(String method, UUID accountId, String bankName, String accountNumber, BigDecimal amount, long sales) {}
 
     /**
      * What the stock at these branches is worth (V51): each product's figure there, at its cost and
@@ -278,18 +419,23 @@ public class SalesReportService {
                     SELECT o.id, o.sale_id, o.product_id, o.created_by, o.occurred_at, o.quantity, o.branch_id,
                            COALESCE(o.sale_amount, c.sale_amount) AS amount,
                            o.cost_amount AS cost,
-                           (r.id IS NOT NULL) AS cancelled,
+                           -- A bill line sent back (V99) stays used but isn't charged: as good as cancelled here.
+                           (r.id IS NOT NULL OR bl.taken_off IS NOT NULL) AS cancelled,
                            sp.payment_method AS payment,
+                           sp.payment_account_id AS account_id,
                            (o.usual_price_at_time IS NOT NULL AND o.unit_price_at_time IS NOT NULL
                                 AND o.unit_price_at_time < o.usual_price_at_time - 0.005) AS below_usual
                     FROM stock_movements o
                     LEFT JOIN stock_movements r ON r.reverses_movement_id = o.id
                     LEFT JOIN stock_movements c ON c.corrects_movement_id = o.id
                     LEFT JOIN sales sp ON sp.id = o.sale_id AND sp.client_id = o.client_id
+                    LEFT JOIN bill_lines bl ON bl.movement_id = o.id
                     WHERE o.client_id = :clientId
                       AND o.sale_id IS NOT NULL
                       AND o.movement_type = 'OUT'
-                      AND o.occurred_at >= :from AND o.occurred_at < :to"""
+                      AND o.occurred_at >= :from AND o.occurred_at < :to
+                      -- A table's bill (V99) is a sale once it's paid; until then it's on Tables, not here.
+                      AND NOT EXISTS (SELECT 1 FROM bills ob WHERE ob.id = o.sale_id AND ob.status <> 'PAID')"""
                 + where
                 + """
                 ),
@@ -329,9 +475,11 @@ public class SalesReportService {
                            NULL AS unit, MIN(l.occurred_at) AS occurred_at,
                            STRING_AGG(DISTINCT p.name, ', ') AS detail, MAX(b.name) AS branch,
                            MAX(l.payment) AS payment,
+                           (SELECT pa.bank_name FROM payment_accounts pa WHERE pa.id = MAX(CAST(l.account_id AS text))::uuid) AS account_name,
                            sx.cancel_state, sx.cancel_reason,
                            COALESCE(NULLIF(TRIM(CONCAT(cd.first_name, ' ', cd.last_name)), ''), cd.username) AS cancel_decided_name,
                            COALESCE(NULLIF(TRIM(CONCAT(cr.first_name, ' ', cr.last_name)), ''), cr.username) AS cancel_requested_name,
+                           (SELECT SUM(sc.amount) FROM sale_charges sc WHERE sc.sale_id = l.sale_id AND NOT sc.included) AS on_top,
                     """ + AGGREGATES + """
 
                     FROM lines l LEFT JOIN users u ON u.id = l.created_by JOIN products p ON p.id = l.product_id
@@ -400,7 +548,7 @@ public class SalesReportService {
         return params;
     }
 
-    private static SalesReportRow row(String grouping, ResultSet rs, boolean namesBranches) throws SQLException {
+    private static SalesReportRow row(String grouping, ResultSet rs, boolean namesBranches, boolean wholeSales) throws SQLException {
         String key = rs.getString("key");
         String label = rs.getString("label");
         if ("day".equals(grouping)) {
@@ -420,7 +568,13 @@ public class SalesReportService {
                 "sale".equals(grouping) ? rs.getString("cancel_state") : null,
                 "sale".equals(grouping) ? rs.getString("cancel_reason") : null,
                 "sale".equals(grouping) ? rs.getString("cancel_decided_name") : null,
-                "sale".equals(grouping) ? rs.getString("cancel_requested_name") : null);
+                "sale".equals(grouping) ? rs.getString("cancel_requested_name") : null,
+                "sale".equals(grouping) ? rs.getString("account_name") : null,
+                "sale".equals(grouping) && wholeSales ? onTop(rs.getBigDecimal("on_top")) : null);
+    }
+
+    private static BigDecimal onTop(BigDecimal amount) {
+        return amount == null || amount.signum() <= 0 ? null : money(amount);
     }
 
     private static SalesTotals totals(ResultSet rs) throws SQLException {
