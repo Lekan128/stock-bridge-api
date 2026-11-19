@@ -33,11 +33,18 @@ public class BillService {
     private final PaymentAccountService paymentAccountService;
     private final CashDayService cashDayService;
     private final BranchAccessService branchAccessService;
+    private final ChargeService chargeService;
 
     /** An open bill on the grid: what it's for, what's on it so far, since when and who opened it. */
     public record BillSummary(
             UUID id, UUID branchId, UUID tableId, String name, String label, String status, OffsetDateTime openedAt,
-            String openedByName, BigDecimal total, int items, OffsetDateTime lastSentAt) {}
+            String openedByName, BigDecimal total, int items, OffsetDateTime lastSentAt, BigDecimal toPay) {
+
+        BillSummary priced(List<ChargeService.SaleCharge> charges) {
+            return new BillSummary(id, branchId, tableId, name, label, status, openedAt, openedByName, total, items, lastSentAt,
+                    ChargeService.toPay(total, charges));
+        }
+    }
 
     /** One sent line, as the bill shows it: grouped by when and by whom it was sent; a side names its meal's key. */
     public record BillLine(
@@ -46,7 +53,8 @@ public class BillService {
             String enteredUnit, BigDecimal enteredQuantity, BigDecimal amount, UUID areaId, String areaName, String note,
             OffsetDateTime sentAt, String sentByName, String takenOff, String takenOffNote) {}
 
-    public record Bill(BillSummary summary, List<BillLine> lines) {}
+    /** {@code charges}: the branch's charges and taxes as they'd be paid now (Step 10), with what each comes to. */
+    public record Bill(BillSummary summary, List<BillLine> lines, List<ChargeService.SaleCharge> charges) {}
 
     /** A table's bill ({@code tableId}), or one for a name (a bar tab, a takeaway). */
     public record OpenRequest(UUID branchId, UUID tableId, String name) {}
@@ -62,9 +70,10 @@ public class BillService {
     @Transactional(readOnly = true)
     public List<BillSummary> open(UUID clientId, UUID userId, UUID branchId) {
         requireBranch(userId, branchId);
+        List<ChargeService.SaleCharge> charges = chargeService.current(clientId, branchId, true);
         return jdbc.query(SUMMARY + " WHERE b.client_id = :clientId AND b.branch_id = :branchId AND b.status = 'OPEN'"
                 + " ORDER BY b.opened_at", new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId),
-                BillService::summary);
+                BillService::summary).stream().map(summary -> summary.priced(charges)).toList();
     }
 
     @Transactional(readOnly = true)
@@ -95,7 +104,18 @@ public class BillService {
                         rs.getBigDecimal("amount"), rs.getObject("area_id", UUID.class), rs.getString("area_name"),
                         rs.getString("note"), rs.getObject("sent_at", OffsetDateTime.class), rs.getString("sent_by_name"),
                         rs.getString("taken_off"), rs.getString("taken_off_note")));
-        return new Bill(summary, lines);
+        // An open bill shows the charges as they'd be paid now; a paid one, those it was paid with.
+        List<ChargeService.SaleCharge> charges = "OPEN".equals(summary.status())
+                ? chargeService.current(clientId, summary.branchId(), true)
+                : chargeService.of(clientId, billId);
+        List<BigDecimal> amounts = ChargeService.amounts(summary.total(), charges);
+        List<ChargeService.SaleCharge> priced = new java.util.ArrayList<>();
+        for (int i = 0; i < charges.size(); i++) {
+            ChargeService.SaleCharge charge = charges.get(i);
+            priced.add(new ChargeService.SaleCharge(charge.chargeId(), charge.name(), charge.kind(), charge.value(),
+                    charge.included(), amounts.get(i)));
+        }
+        return new Bill(summary.priced(charges), lines, priced);
     }
 
     /** Where each of a branch's products comes from on a bill, and so where its ticket goes. */
@@ -242,11 +262,15 @@ public class BillService {
             throw new MadeWithException("That till's area isn't at this bill's branch.");
         }
         salePaymentService.recordIfAbsent(clientId, billId, branchId, request.method(), account, userId);
+        // Step 10: the bill's charges and taxes, fixed as they stand now; the customer pays the food and drinks plus
+        // every charge added on top.
+        chargeService.fix(clientId, billId, branchId, true);
+        BigDecimal toPay = ChargeService.toPay(summary.total(), chargeService.of(clientId, billId));
         jdbc.update("""
                 INSERT INTO bill_payments (client_id, bill_id, branch_id, area_id, amount, method, payment_account_id, paid_by)
                 VALUES (:clientId, :billId, :branchId, :areaId, :amount, :method, :accountId, :userId)
                 """, new MapSqlParameterSource().addValue("clientId", clientId).addValue("billId", billId)
-                .addValue("branchId", branchId).addValue("areaId", request.areaId()).addValue("amount", summary.total())
+                .addValue("branchId", branchId).addValue("areaId", request.areaId()).addValue("amount", toPay)
                 .addValue("method", request.method().name()).addValue("accountId", account).addValue("userId", userId));
         int closed = jdbc.update("""
                 UPDATE bills SET status = 'PAID', closed_by = :userId, closed_at = now() WHERE id = :id AND status = 'OPEN'
@@ -297,7 +321,7 @@ public class BillService {
         return new BillSummary(rs.getObject("id", UUID.class), rs.getObject("branch_id", UUID.class),
                 rs.getObject("table_id", UUID.class), rs.getString("name"), label, rs.getString("status"),
                 rs.getObject("opened_at", OffsetDateTime.class), rs.getString("opened_by_name"), rs.getBigDecimal("total"),
-                rs.getInt("items"), rs.getObject("last_sent", OffsetDateTime.class));
+                rs.getInt("items"), rs.getObject("last_sent", OffsetDateTime.class), rs.getBigDecimal("total"));
     }
 
     private BillSummary summaryOf(UUID clientId, UUID billId) {

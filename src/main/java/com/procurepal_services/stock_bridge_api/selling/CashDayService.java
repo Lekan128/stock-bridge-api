@@ -314,6 +314,18 @@ public class CashDayService {
                   AND o.created_at >= :from AND o.created_at < :until
                   AND NOT EXISTS (SELECT 1 FROM bills b WHERE b.id = o.sale_id)
                 UNION ALL
+                -- Step 10 (V100): charges added on top of those counter sales came in with them.
+                SELECT sc.sale_id, sc.amount, s.payment_method, s.payment_account_id
+                FROM sale_charges sc
+                JOIN sales s ON s.id = sc.sale_id
+                WHERE sc.client_id = :clientId AND NOT sc.included AND sc.amount > 0
+                  AND NOT EXISTS (SELECT 1 FROM bills b WHERE b.id = sc.sale_id)
+                  AND EXISTS (SELECT 1 FROM stock_movements o
+                              LEFT JOIN stock_movements r ON r.reverses_movement_id = o.id
+                              WHERE o.sale_id = sc.sale_id AND o.branch_id = :branchId AND o.movement_type = 'OUT' AND r.id IS NULL
+                                AND (CAST(:areaId AS uuid) IS NULL OR o.area_id = :areaId)
+                                AND o.created_at >= :from AND o.created_at < :until)
+                UNION ALL
                 SELECT bp.bill_id, bp.amount, bp.method, bp.payment_account_id
                 FROM bill_payments bp
                 WHERE bp.client_id = :clientId AND bp.branch_id = :branchId

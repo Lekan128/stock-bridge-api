@@ -30,7 +30,26 @@ public record SalesTotals(
         long belowUsualPriceLineCount,
         long belowCostLineCount,
         /** What came in by each way of paying (selling till Step 1). */
-        ByPayment byPayment) {
+        ByPayment byPayment,
+        /** Step 10 (V100): the charges and taxes on these sales, kept apart from the food and drinks. */
+        java.util.List<ChargeTotal> charges) {
+
+    public SalesTotals(long saleCount, long lineCount, BigDecimal salesAmount, BigDecimal profitKnownSalesAmount,
+            BigDecimal costAmount, BigDecimal grossProfit, BigDecimal margin, long unpricedLineCount, long unknownCostLineCount,
+            long cancelledLineCount, long belowUsualPriceLineCount, long belowCostLineCount, ByPayment byPayment) {
+        this(saleCount, lineCount, salesAmount, profitKnownSalesAmount, costAmount, grossProfit, margin, unpricedLineCount,
+                unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, byPayment, null);
+    }
+
+    /** One charge across the sales: "VAT", whether it was in the prices or on top, and what it came to. */
+    public record ChargeTotal(String name, boolean included, BigDecimal amount) {
+    }
+
+    public SalesTotals withCharges(java.util.List<ChargeTotal> list) {
+        return new SalesTotals(saleCount, lineCount, salesAmount, profitKnownSalesAmount, costAmount, grossProfit, margin,
+                unpricedLineCount, unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, byPayment,
+                list == null || list.isEmpty() ? null : list);
+    }
 
     /**
      * The sales amount split by how the customer paid, with how many sales each. "Not recorded" is a
@@ -70,11 +89,12 @@ public record SalesTotals(
      */
     public SalesTotals withByPayment(ByPayment payment) {
         return new SalesTotals(saleCount, lineCount, salesAmount, profitKnownSalesAmount, costAmount, grossProfit, margin,
-                unpricedLineCount, unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, payment);
+                unpricedLineCount, unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, payment,
+                charges);
     }
 
     public SalesTotals withoutCost() {
         return new SalesTotals(saleCount, lineCount, salesAmount, null, null, null, null,
-                unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0, byPayment);
+                unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0, byPayment, charges);
     }
 }

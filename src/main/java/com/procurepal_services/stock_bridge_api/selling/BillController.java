@@ -28,6 +28,32 @@ public class BillController {
 
     private final TableService tableService;
     private final BillService billService;
+    private final ChargeService chargeService;
+
+    // ---------------------------------------------------------------------------------- charges and taxes (Step 10)
+
+    @GetMapping("/api/branches/{branchId}/charges")
+    @PreAuthorize("hasAuthority('MANAGE_BRANCHES')")
+    public List<ChargeService.Charge> charges(@PathVariable UUID branchId, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return chargeService.list(principal.getClientId(), branchId);
+    }
+
+    @PostMapping("/api/branches/{branchId}/charges")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasAuthority('MANAGE_BRANCHES')")
+    public List<ChargeService.Charge> addCharge(
+            @PathVariable UUID branchId, @RequestBody ChargeService.ChargeRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return chargeService.add(principal.getClientId(), branchId, request);
+    }
+
+    @PatchMapping("/api/charges/{id}")
+    @PreAuthorize("hasAuthority('MANAGE_BRANCHES')")
+    public List<ChargeService.Charge> updateCharge(
+            @PathVariable UUID id, @RequestBody ChargeService.ChargeRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return chargeService.update(principal.getClientId(), id, request);
+    }
 
     // ---------------------------------------------------------------------------------- tables
 

@@ -41,5 +41,9 @@ public record SaleResponse(
         java.util.UUID paymentAccountId,
         String paymentAccountName,
         /** A table's bill (V99): its table ("Table 5", "VIP") or the name it was opened for; absent for a counter sale. */
-        String billFor) {
+        String billFor,
+        /** Step 10 (V100): its charges and taxes as they stood when it was made, with what each came to. */
+        java.util.List<com.procurepal_services.stock_bridge_api.selling.ChargeService.SaleCharge> charges,
+        /** What the customer paid: the food and drinks ({@code total}) plus every charge added on top. */
+        java.math.BigDecimal totalToPay) {
 }

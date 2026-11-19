@@ -124,6 +124,7 @@ public class StockManagementService {
     private final com.procurepal_services.stock_bridge_api.selling.PaymentAccountService paymentAccountService;
     private final com.procurepal_services.stock_bridge_api.selling.CashDayService cashDayService;
     private final com.procurepal_services.stock_bridge_api.selling.BillLineRecorder billLineRecorder;
+    private final com.procurepal_services.stock_bridge_api.selling.ChargeService chargeService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate costJdbc;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
@@ -528,6 +529,9 @@ public class StockManagementService {
             // Selling till Step 1: the sale's first line to arrive records how it was paid.
             salePaymentService.recordIfAbsent(
                     tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
+            // Step 10 (V100): a counter sale's charges and taxes - fixed at its first line, kept up with its lines.
+            stockMovementRepository.flush();
+            chargeService.afterSaleLine(tenantId, outMovement.getSaleId(), branchId, outMovement.getId());
             reopenDrawer(request, branchId, areaId, actingUserId);
         }
 
@@ -2278,6 +2282,8 @@ public class StockManagementService {
             billLineRecorder.record(tenantId, request, line.getId(), line.getSaleId(), branchId, actingUserId);
         }
         salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
+        stockMovementRepository.flush();
+        chargeService.afterSaleLine(tenantId, line.getSaleId(), branchId, line.getId());
         reopenDrawer(request, branchId, request.areaId(), actingUserId);
         return StockMutationResponse.ofStockOut(product, line, List.of());
     }

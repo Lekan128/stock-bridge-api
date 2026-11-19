@@ -451,6 +451,82 @@ class SalePaymentIntegrationTest {
                 .getBody().get("label")).isEqualTo("Tunde");
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void chargesAndTaxesAreWorkedOutOnTheFoodAndDrinksAndKeptWithEachSale() {
+        Shop owner = shop("Charges Shop");
+        send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
+        UUID rice = product(owner, "Rice");
+        stockIn(owner, rice, 50);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(owner, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+
+        // VAT is there to start with, off. Switched on, added on top of every sale; a 10% service charge and an included
+        // N2,000 cover charge on table bills only.
+        java.util.List<Map<String, Object>> charges = get(owner, "/api/branches/" + branch + "/charges", java.util.List.class).getBody();
+        assertThat(charges).extracting(c -> c.get("name")).containsExactly("VAT");
+        assertThat(charges.get(0).get("active")).isEqualTo(false);
+        send(owner, HttpMethod.PATCH, "/api/charges/" + charges.get(0).get("id"), Map.of("active", true), String.class);
+        send(owner, HttpMethod.POST, "/api/branches/" + branch + "/charges",
+                Map.of("name", "Service charge", "kind", "PERCENT", "value", 10, "applies", "TABLE_BILLS"), String.class);
+        send(owner, HttpMethod.POST, "/api/branches/" + branch + "/charges",
+                Map.of("name", "Cover", "kind", "AMOUNT", "value", 2000, "included", true, "applies", "TABLE_BILLS"), String.class);
+        assertThat(send(owner, HttpMethod.POST, "/api/branches/" + branch + "/charges",
+                Map.of("name", "vat", "kind", "PERCENT", "value", 5), String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        // A counter sale: VAT only (service and cover are for tables). 7.5% of 5,000 is 375, on top.
+        UUID counter = UUID.randomUUID();
+        stockOut(owner, rice, sale(1, "3000", counter, "CASH"));
+        stockOut(owner, rice, sale(1, "2000", counter, "CASH"));
+        SaleResponse sold = getSale(owner, counter);
+        assertThat(sold.charges()).extracting(ChargeService.SaleCharge::name).containsExactly("VAT");
+        assertThat(sold.charges().get(0).amount()).isEqualByComparingTo("375");
+        assertThat(sold.totalToPay()).isEqualByComparingTo("5375");
+        // A line cancelled: the VAT follows the lines.
+        UUID second = sold.lines().get(1).movementId();
+        send(owner, HttpMethod.POST, "/api/sales/" + counter + "/cancel", Map.of("lineIds", java.util.List.of(second.toString()), "reason", "WRONG_ITEM"), String.class);
+        assertThat(getSale(owner, counter).charges().get(0).amount()).isEqualByComparingTo("225");
+
+        // A table bill: VAT, service, and the included cover. 8,200 of food: VAT 615, service 820, cover in the prices.
+        java.util.List<Map<String, Object>> tables = send(owner, HttpMethod.POST, "/api/branches/" + branch + "/tables",
+                Map.of("count", 1), java.util.List.class).getBody();
+        String bill = (String) send(owner, HttpMethod.POST, "/api/bills",
+                Map.of("branchId", branch, "tableId", tables.get(0).get("id")), Map.class).getBody().get("id");
+        for (String price : java.util.List.of("7500", "700")) {
+            Map<String, Object> line = sale(1, price, UUID.fromString(bill), null);
+            line.put("billLine", Map.of("lineKey", UUID.randomUUID().toString()));
+            stockOut(owner, rice, line);
+        }
+        Map<String, Object> open = get(owner, "/api/bills/" + bill, Map.class).getBody();
+        assertThat(new BigDecimal(((Map<String, Object>) open.get("summary")).get("toPay").toString())).isEqualByComparingTo("9635");
+        // Changed after the bill was opened but before it's paid: the bill pays what stands when it's paid.
+        SaleResponse paid = send(owner, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "CASH"), SaleResponse.class).getBody();
+        assertThat(paid.total()).isEqualByComparingTo("8200");
+        assertThat(paid.totalToPay()).isEqualByComparingTo("9635");
+        assertThat(paid.charges()).extracting(ChargeService.SaleCharge::name).containsExactly("VAT", "Service charge", "Cover");
+        assertThat(paid.charges().get(2).included()).isTrue();
+        assertThat(jdbcTemplate.queryForObject("SELECT amount FROM bill_payments WHERE bill_id = ?::uuid", BigDecimal.class, bill))
+                .isEqualByComparingTo("9635");
+
+        // Sales keeps the charges apart from the food and drinks.
+        SalesTotals totals = get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals();
+        assertThat(totals.salesAmount()).isEqualByComparingTo("11200");
+        assertThat(totals.charges()).anySatisfy(c -> {
+            assertThat(c.name()).isEqualTo("VAT");
+            assertThat(c.amount()).isEqualByComparingTo("840");
+        });
+
+        // A shop with VAT in its prices: the total stays; the receipt says what's in it. 1,075 holds 75.
+        send(owner, HttpMethod.PATCH, "/api/charges/" + charges.get(0).get("id"), Map.of("included", true), String.class);
+        UUID shop = UUID.randomUUID();
+        stockOut(owner, rice, sale(1, "1075", shop, "CASH"));
+        SaleResponse inPrice = getSale(owner, shop);
+        assertThat(inPrice.charges().get(0).amount()).isEqualByComparingTo("75");
+        assertThat(inPrice.totalToPay()).isEqualByComparingTo("1075");
+        // ...and the earlier sale keeps the VAT it was sold with.
+        assertThat(getSale(owner, counter).charges().get(0).included()).isFalse();
+    }
+
     private BigDecimal onHand(Shop shop, UUID productId) {
         return new BigDecimal(get(shop, "/api/products/" + productId, Map.class).getBody().get("quantityOnHand").toString());
     }

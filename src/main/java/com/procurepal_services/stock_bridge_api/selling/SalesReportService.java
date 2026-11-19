@@ -126,7 +126,20 @@ public class SalesReportService {
         SalesTotals totals = jdbc.queryForObject(
                 linesCte(filters) + "SELECT " + AGGREGATES + " FROM lines", params(clientId, range, filters),
                 (rs, n) -> totals(rs));
-        if (totals == null || totals.byPayment() == null || totals.byPayment().transferSales() == 0) {
+        if (totals == null) {
+            return null;
+        }
+        // Step 10 (V100): the charges and taxes on these sales, each on its own.
+        totals = totals.withCharges(jdbc.query(linesCte(filters) + """
+                SELECT sc.name, sc.included, SUM(sc.amount) AS amount
+                FROM sale_charges sc
+                WHERE sc.client_id = :clientId AND sc.sale_id IN (SELECT sale_id FROM lines WHERE NOT cancelled)
+                GROUP BY sc.name, sc.included
+                HAVING SUM(sc.amount) > 0
+                ORDER BY MIN(sc.position), sc.name
+                """, params(clientId, range, filters),
+                (rs, n) -> new SalesTotals.ChargeTotal(rs.getString("name"), rs.getBoolean("included"), money(rs.getBigDecimal("amount")))));
+        if (totals.byPayment() == null || totals.byPayment().transferSales() == 0) {
             return totals;
         }
         // Step 12 (V96): the transfers split by the account they came into, for matching against each bank.

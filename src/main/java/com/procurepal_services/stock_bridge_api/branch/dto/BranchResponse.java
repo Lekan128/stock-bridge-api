@@ -34,5 +34,7 @@ public record BranchResponse(
         /** V96: the accounts its customers pay into by transfer, switched-on ones; absent on the answer to a change. */
         java.util.List<com.procurepal_services.stock_bridge_api.selling.PaymentAccountService.PaymentAccount> paymentAccounts,
         /** V99: its switched-on tables, in the owner's order; empty at a branch without table service. */
-        java.util.List<com.procurepal_services.stock_bridge_api.selling.TableService.Table> tables) {
+        java.util.List<com.procurepal_services.stock_bridge_api.selling.TableService.Table> tables,
+        /** V100: its switched-on charges and taxes, for the till to show what a sale comes to. */
+        java.util.List<com.procurepal_services.stock_bridge_api.selling.ChargeService.Charge> charges) {
 }

@@ -63,6 +63,7 @@ public class SaleService {
     private final SalePaymentService salePaymentService;
     private final PaymentAccountService paymentAccountService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
+    private final ChargeService chargeService;
 
     /** How long the person who recorded a sale may change how it was paid - the same as Undo sale (D8). */
     static final java.time.Duration CHANGE_PAYMENT_FOR = java.time.Duration.ofMinutes(2);
@@ -145,6 +146,9 @@ public class SaleService {
         }
         List<StockMovement> after = new ArrayList<>(rows);
         after.addAll(written);
+        // Step 10: its charges follow its lines.
+        stockMovementRepository.flush();
+        chargeService.refresh(tenantId, saleId);
         return toResponse(saleId, after);
     }
 
@@ -174,6 +178,8 @@ public class SaleService {
         requireMayFix(line, actingUserId, "add a price to");
         List<StockMovement> after = new ArrayList<>(rows);
         after.add(stockManagementService.addSalePrice(line, amount, actingUserId));
+        stockMovementRepository.flush();
+        chargeService.refresh(requireTenantId(), line.getSaleId());
         return toResponse(line.getSaleId(), after);
     }
 
@@ -376,6 +382,7 @@ public class SaleService {
         }
         StockMovement first = lines.get(0);
         SalePaymentService.Header header = salePaymentService.header(requireTenantId(), saleId);
+        List<ChargeService.SaleCharge> charges = chargeService.of(requireTenantId(), saleId);
         return new SaleResponse(
                 saleId,
                 lines.stream().map(StockMovement::getOccurredAt).filter(Objects::nonNull).min(Comparator.naturalOrder()).orElse(null),
@@ -397,7 +404,9 @@ public class SaleService {
                 header.cancelDecidedAt(),
                 header.paymentAccountId(),
                 header.paymentAccountName(),
-                billFor(saleId));
+                billFor(saleId),
+                charges,
+                ChargeService.toPay(total, charges));
     }
 
     /** What a table's bill was for (V99): its table's name, or the name it was opened under. */
