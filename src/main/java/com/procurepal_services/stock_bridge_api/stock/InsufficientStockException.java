@@ -64,6 +64,28 @@ public class InsufficientStockException extends RuntimeException {
         return this;
     }
 
+    /** Where there is some that can't be sold from (V103): "60 in the Store: move some to the Bar first." */
+    private String elsewhere;
+    private String here;
+
+    /** @param found the area sold from, then where there is some; null when there's none. */
+    public InsufficientStockException elsewhere(String[] found) {
+        if (found != null) {
+            this.here = found[0];
+            this.elsewhere = found[1];
+        }
+        return this;
+    }
+
+    @Override
+    public String getMessage() {
+        if (elsewhere == null) {
+            return super.getMessage();
+        }
+        String start = availableQuantity != null && availableQuantity.signum() == 0 ? "None in the " + here + "." : super.getMessage();
+        return start + " " + elsewhere;
+    }
+
     public java.util.UUID getProductId() {
         return productId;
     }

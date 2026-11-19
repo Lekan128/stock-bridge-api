@@ -59,7 +59,7 @@ public class AreaService {
     /** One area as this service reads it. */
     private record AreaRow(
             UUID id, UUID branchId, String name, boolean keepsStock, boolean delivery, boolean original,
-            boolean active, OffsetDateTime closedAt, boolean shortIsUsed, boolean confirms) {
+            boolean active, OffsetDateTime closedAt, boolean shortIsUsed, boolean confirms, boolean sells) {
     }
 
     // ---------------------------------------------------------------------------------------- reading
@@ -151,8 +151,8 @@ public class AreaService {
             boolean keepsStock = wanted.keepsStock() == null || wanted.keepsStock();
             boolean shortIsUsed = keepsStock && Boolean.TRUE.equals(wanted.shortIsUsed());
             UUID id = jdbc.queryForObject("""
-                    INSERT INTO areas (client_id, branch_id, name, keeps_stock, short_is_used, confirms, sort_order)
-                    VALUES (:clientId, :branchId, :name, :keepsStock, :shortIsUsed, :confirms, :order)
+                    INSERT INTO areas (client_id, branch_id, name, keeps_stock, short_is_used, confirms, sells, sort_order)
+                    VALUES (:clientId, :branchId, :name, :keepsStock, :shortIsUsed, :confirms, :sells, :order)
                     RETURNING id
                     """, new MapSqlParameterSource()
                             .addValue("clientId", clientId)
@@ -161,6 +161,7 @@ public class AreaService {
                             .addValue("keepsStock", keepsStock)
                             .addValue("shortIsUsed", shortIsUsed)
                             .addValue("confirms", Boolean.TRUE.equals(wanted.confirms()))
+                            .addValue("sells", wanted.sells() == null || wanted.sells())
                             .addValue("order", order++), UUID.class);
             added.add(toResponse(requireArea(id, clientId), keepsStock ? 0L : null));
         }
@@ -215,6 +216,20 @@ public class AreaService {
         if (request.confirms() != null && request.confirms() != area.confirms()) {
             jdbc.update("UPDATE areas SET confirms = :confirms WHERE id = :id",
                     new MapSqlParameterSource("id", areaId).addValue("confirms", request.confirms()));
+        }
+
+        // Sold from here (V103): any time; a branch keeps at least one open area things are sold from.
+        if (request.sells() != null && request.sells() != area.sells()) {
+            if (!request.sells()) {
+                boolean another = rows("WHERE a.branch_id = :branchId AND a.is_active AND a.sells AND a.id <> :id",
+                        new MapSqlParameterSource("branchId", area.branchId()).addValue("id", areaId)).size() > 0;
+                if (!another) {
+                    throw new BranchChangeRefusedException(area.name()
+                            + " is the only area here things are sold from. Let another area sell first.");
+                }
+            }
+            jdbc.update("UPDATE areas SET sells = :sells WHERE id = :id",
+                    new MapSqlParameterSource("id", areaId).addValue("sells", request.sells()));
         }
 
         if (Boolean.TRUE.equals(request.delivery()) && !area.delivery()) {
@@ -314,7 +329,7 @@ public class AreaService {
     private List<AreaRow> rows(String where, MapSqlParameterSource params) {
         return jdbc.query("""
                 SELECT a.id, a.branch_id, a.name, a.keeps_stock, a.is_delivery, a.is_original, a.is_active, a.closed_at,
-                       a.short_is_used, a.confirms
+                       a.short_is_used, a.confirms, a.sells
                 FROM areas a
                 """ + where + " ORDER BY a.is_active DESC, a.sort_order, a.created_at", params,
                 (rs, n) -> new AreaRow(
@@ -327,12 +342,13 @@ public class AreaService {
                         rs.getBoolean("is_active"),
                         rs.getObject("closed_at", OffsetDateTime.class),
                         rs.getBoolean("short_is_used"),
-                        rs.getBoolean("confirms")));
+                        rs.getBoolean("confirms"),
+                        rs.getBoolean("sells")));
     }
 
     private static AreaResponse toResponse(AreaRow area, Long productsInStock) {
         return new AreaResponse(area.id(), area.name(), area.keepsStock(), area.delivery(), area.active(),
-                area.closedAt(), productsInStock, null, area.shortIsUsed(), area.confirms());
+                area.closedAt(), productsInStock, null, area.shortIsUsed(), area.confirms(), area.sells());
     }
 
     private static String requireName(String raw) {

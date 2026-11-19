@@ -455,6 +455,11 @@ public class StockManagementService {
         // desk sends a Heineken from the Bar. The waiter still has to work at the branch (resolveForWrite above).
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse,
                 forMove || request.billLine() != null ? null : actingUserId);
+        boolean sold = SaleFacts.reasonOf(request) == OutReason.SALE;
+        // V103: nothing is sold from a store room; its stock is moved to an area that sells first.
+        if (sold) {
+            branchStockService.requireSellsFrom(areaId);
+        }
 
         ResolvedEntry entry = resolveEntry(
                 product, request.quantity(), SaleFacts.enteredPrice(request), request.unit(), null, null);
@@ -473,7 +478,8 @@ public class StockManagementService {
         // area's, at a branch that has several - the Kitchen can't sell what is in the Store.
         BigDecimal available = branchStockService.quantityAt(product, branchId, areaId);
         if (!absorbed && quantityBaseUnits.compareTo(available) > 0) {
-            throw new InsufficientStockException(available, quantityBaseUnits, unitSymbol(product));
+            throw new InsufficientStockException(available, quantityBaseUnits, unitSymbol(product))
+                    .elsewhere(sold ? branchStockService.heldWhereNotSold(product, branchId, areaId, unitSymbol(product)) : null);
         }
 
         List<StockMovement> lockedLotsOldestFirst =

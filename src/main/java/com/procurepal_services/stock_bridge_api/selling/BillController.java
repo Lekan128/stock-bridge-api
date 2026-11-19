@@ -156,15 +156,47 @@ public class BillController {
         return ticketService.list(principal.getClientId(), principal.getUserId(), areaId);
     }
 
-    @PutMapping("/api/tickets/{id}/done")
+    @PutMapping("/api/tickets/{id}/ready")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public List<TicketService.Ticket> ticketDone(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return ticketService.done(principal.getClientId(), principal.getUserId(), id, true);
+    public List<TicketService.Ticket> ticketReady(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ticketService.ready(principal.getClientId(), principal.getUserId(), id, true);
     }
 
-    @org.springframework.web.bind.annotation.DeleteMapping("/api/tickets/{id}/done")
+    @org.springframework.web.bind.annotation.DeleteMapping("/api/tickets/{id}/ready")
     @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
-    public List<TicketService.Ticket> ticketNotDone(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
-        return ticketService.done(principal.getClientId(), principal.getUserId(), id, false);
+    public List<TicketService.Ticket> ticketNotReady(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ticketService.ready(principal.getClientId(), principal.getUserId(), id, false);
+    }
+
+    /** OK to a "Don't send" on a ticket. */
+    @PutMapping("/api/tickets/{id}/seen")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<TicketService.Ticket> ticketSeen(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ticketService.seen(principal.getClientId(), principal.getUserId(), id);
+    }
+
+    /** Served, from the bill: the waiter took this area's part of a send to the table. Answers with the bill. */
+    @PutMapping("/api/tickets/{id}/served")
+    @PreAuthorize("hasAuthority('STOCK_OUT')")
+    public BillService.Bill ticketServed(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        ticketService.served(principal.getClientId(), principal.getUserId(), id, true);
+        return billService.billOfTicket(principal.getClientId(), principal.getUserId(), id);
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/api/tickets/{id}/served")
+    @PreAuthorize("hasAuthority('STOCK_OUT')")
+    public BillService.Bill ticketNotServed(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        ticketService.served(principal.getClientId(), principal.getUserId(), id, false);
+        return billService.billOfTicket(principal.getClientId(), principal.getUserId(), id);
+    }
+
+    /** Branch → Selling: kitchen and bar tickets on or off (V103). */
+    @PutMapping("/api/branches/{branchId}/tickets")
+    @PreAuthorize("hasAuthority('MANAGE_BRANCHES')")
+    public java.util.Map<String, Boolean> ticketsOn(@PathVariable UUID branchId, @RequestBody java.util.Map<String, Boolean> body,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        boolean on = Boolean.TRUE.equals(body.get("on"));
+        tableService.setTickets(principal.getClientId(), branchId, on);
+        return java.util.Map.of("on", on);
     }
 }

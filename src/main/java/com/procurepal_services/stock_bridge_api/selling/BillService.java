@@ -34,17 +34,27 @@ public class BillService {
     private final CashDayService cashDayService;
     private final BranchAccessService branchAccessService;
     private final ChargeService chargeService;
+    private final TicketService ticketService;
 
     /** An open bill on the grid: what it's for, what's on it so far, since when and who opened it. */
     public record BillSummary(
             UUID id, UUID branchId, UUID tableId, String name, String label, String status, OffsetDateTime openedAt,
             String openedByName, BigDecimal total, int items, OffsetDateTime lastSentAt, BigDecimal toPay, BigDecimal paid,
-            BigDecimal left) {
+            BigDecimal left, List<String> ready, Boolean allServed) {
 
         BillSummary priced(List<ChargeService.SaleCharge> charges) {
             BigDecimal pay = ChargeService.toPay(total, charges);
             return new BillSummary(id, branchId, tableId, name, label, status, openedAt, openedByName, total, items, lastSentAt,
-                    pay, paid, pay.subtract(paid).max(BigDecimal.ZERO));
+                    pay, paid, pay.subtract(paid).max(BigDecimal.ZERO), ready, allServed);
+        }
+
+        /**
+         * Its mark on Tables (V103): the areas with something ready to take, and whether everything sent has been
+         * served. Absent where the branch has no tickets.
+         */
+        BillSummary marked(TicketService.TableStatus status) {
+            return status == null ? this : new BillSummary(id, branchId, tableId, name, label, status(), openedAt, openedByName,
+                    total, items, lastSentAt, toPay, paid, left, status.ready(), status.allServed());
         }
     }
 
@@ -56,7 +66,8 @@ public class BillService {
             OffsetDateTime sentAt, String sentByName, String takenOff, String takenOffNote) {}
 
     /** {@code charges}: the branch's charges and taxes as they'd be paid now (Step 10), with what each comes to. */
-    public record Bill(BillSummary summary, List<BillLine> lines, List<ChargeService.SaleCharge> charges, List<Payment> payments) {}
+    public record Bill(BillSummary summary, List<BillLine> lines, List<ChargeService.SaleCharge> charges, List<Payment> payments,
+            List<TicketService.SendStatus> sends) {}
 
     /** A bill's charges: fixed once its first part is paid, else the branch's as they stand now. */
     private List<ChargeService.SaleCharge> chargesOf(UUID clientId, BillSummary summary, List<ChargeService.SaleCharge> now) {
@@ -85,9 +96,12 @@ public class BillService {
     public List<BillSummary> open(UUID clientId, UUID userId, UUID branchId) {
         requireBranch(userId, branchId);
         List<ChargeService.SaleCharge> charges = chargeService.current(clientId, branchId, true);
-        return jdbc.query(SUMMARY + " WHERE b.client_id = :clientId AND b.branch_id = :branchId AND b.status = 'OPEN'"
+        List<BillSummary> open = jdbc.query(SUMMARY + " WHERE b.client_id = :clientId AND b.branch_id = :branchId AND b.status = 'OPEN'"
                 + " ORDER BY b.opened_at", new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId),
-                BillService::summary).stream().map(summary -> summary.priced(chargesOf(clientId, summary, charges))).toList();
+                BillService::summary);
+        Map<UUID, TicketService.TableStatus> marks = ticketService.tableStatus(open.stream().map(BillSummary::id).toList());
+        return open.stream().map(summary -> summary.priced(chargesOf(clientId, summary, charges)).marked(marks.get(summary.id())))
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -127,7 +141,16 @@ public class BillService {
             priced.add(new ChargeService.SaleCharge(charge.chargeId(), charge.name(), charge.kind(), charge.value(),
                     charge.included(), amounts.get(i)));
         }
-        return new Bill(summary.priced(charges), lines, priced, payments(billId));
+        return new Bill(summary.priced(charges), lines, priced, payments(billId), ticketService.sends(billId));
+    }
+
+    /** The bill a ticket is on, as its waiter sees it - the answer to Served. */
+    @Transactional(readOnly = true)
+    public Bill billOfTicket(UUID clientId, UUID userId, UUID ticketId) {
+        UUID billId = jdbc.queryForList("SELECT bill_id FROM tickets WHERE id = :id AND client_id = :clientId",
+                new MapSqlParameterSource().addValue("id", ticketId).addValue("clientId", clientId), UUID.class)
+                .stream().findFirst().orElseThrow(() -> new MadeWithException("That ticket isn't there any more."));
+        return get(clientId, userId, billId);
     }
 
     /** Where each of a branch's products comes from on a bill, and so where its ticket goes. */
@@ -148,12 +171,14 @@ public class BillService {
                 -- Made in, as the recipe reads it (MadeWithService.areaAt): by name first, then this branch's choice.
                 LEFT JOIN LATERAL (
                     SELECT a.id FROM areas a
-                    WHERE a.branch_id = :branchId AND a.is_active AND lower(a.name) = lower(p.made_in_area_name)
+                    WHERE a.branch_id = :branchId AND a.is_active AND a.sells AND lower(a.name) = lower(p.made_in_area_name)
                     LIMIT 1
                 ) mn ON TRUE
+                -- Never an area nothing is sold from (V103): a store room's stock is moved out first.
                 LEFT JOIN product_made_in mi ON mi.product_id = p.id AND mi.branch_id = :branchId
+                    AND EXISTS (SELECT 1 FROM areas ma WHERE ma.id = mi.area_id AND ma.is_active AND ma.sells)
                 LEFT JOIN LATERAL (
-                    SELECT s.area_id FROM area_stock s JOIN areas a ON a.id = s.area_id AND a.is_active
+                    SELECT s.area_id FROM area_stock s JOIN areas a ON a.id = s.area_id AND a.is_active AND a.sells
                     WHERE s.product_id = p.id AND s.branch_id = :branchId
                     ORDER BY (s.quantity_on_hand > 0) DESC, a.is_delivery, s.quantity_on_hand DESC
                     LIMIT 1
@@ -237,8 +262,7 @@ public class BillService {
         }
         if ("NOT_MADE".equals(kind)) {
             saleService.cancelBillLine(billId, movementId, userId);
-            // Step 8 (V102): its area is told not to make it.
-            TicketService.dontMake(jdbc, clientId, billId, movementId, userId);
+            // Its ticket (V103) shows "Don't send" until someone in the area says OK.
         }
         jdbc.update("""
                 UPDATE bill_lines SET taken_off = :kind, taken_off_note = :note, taken_off_by = :userId, taken_off_at = now()
@@ -388,7 +412,7 @@ public class BillService {
                 rs.getObject("table_id", UUID.class), rs.getString("name"), label, rs.getString("status"),
                 rs.getObject("opened_at", OffsetDateTime.class), rs.getString("opened_by_name"), rs.getBigDecimal("total"),
                 rs.getInt("items"), rs.getObject("last_sent", OffsetDateTime.class), rs.getBigDecimal("total"),
-                rs.getBigDecimal("paid"), rs.getBigDecimal("total"));
+                rs.getBigDecimal("paid"), rs.getBigDecimal("total"), null, null);
     }
 
     private BillSummary summaryOf(UUID clientId, UUID billId) {

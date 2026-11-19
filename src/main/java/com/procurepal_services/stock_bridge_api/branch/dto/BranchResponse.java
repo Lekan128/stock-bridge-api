@@ -36,5 +36,7 @@ public record BranchResponse(
         /** V99: its switched-on tables, in the owner's order; empty at a branch without table service. */
         java.util.List<com.procurepal_services.stock_bridge_api.selling.TableService.Table> tables,
         /** V100: its switched-on charges and taxes, for the till to show what a sale comes to. */
-        java.util.List<com.procurepal_services.stock_bridge_api.selling.ChargeService.Charge> charges) {
+        java.util.List<com.procurepal_services.stock_bridge_api.selling.ChargeService.Charge> charges,
+        /** V103: items sent from a bill go as tickets to where they're made or kept. Off to start. */
+        boolean ticketsOn) {
 }

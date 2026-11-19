@@ -177,4 +177,14 @@ public class TableService {
             throw new BranchNotFoundException();
         }
     }
+
+    /** Branch → Selling (V103): items sent from a bill go as tickets to where they're made or kept, or not. */
+    @org.springframework.transaction.annotation.Transactional
+    public void setTickets(UUID clientId, UUID branchId, boolean on) {
+        int changed = jdbc.update("UPDATE branches SET tickets_on = :on WHERE id = :id AND client_id = :clientId",
+                new MapSqlParameterSource().addValue("on", on).addValue("id", branchId).addValue("clientId", clientId));
+        if (changed == 0) {
+            throw new com.procurepal_services.stock_bridge_api.product.MadeWithException("No such branch.");
+        }
+    }
 }

@@ -588,7 +588,7 @@ class SalePaymentIntegrationTest {
 
     @Test
     @SuppressWarnings("unchecked")
-    void eachSendIsATicketWhereItsItemsAreMadeAddedLaterSaysSoAndATakenOffItemSaysDontMake() {
+    void ticketsGoWhereItemsAreMadeTheAreaSaysReadyTheWaiterSaysServedAndATakenOffItemSaysDontSend() {
         Shop owner = shop("Tickets Shop");
         send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
         UUID rice = product(owner, "Jollof rice");
@@ -602,7 +602,16 @@ class SalePaymentIntegrationTest {
         String bill = (String) send(owner, HttpMethod.POST, "/api/bills",
                 Map.of("branchId", branch, "tableId", tables.get(4).get("id")), Map.class).getBody().get("id");
 
-        // One Send: a Jollof with Extra chicken on it, and a note. One ticket, NEW, both lines, the side with its meal.
+        // Off to start: a send makes no ticket, and there's nowhere to keep them.
+        Map<String, Object> before = sale(1, "7000", UUID.fromString(bill), null);
+        before.put("billLine", Map.of("lineKey", UUID.randomUUID().toString(), "sendKey", UUID.randomUUID().toString()));
+        stockOut(owner, rice, before);
+        assertThat(get(owner, "/api/tickets/areas?branchId=" + branch, java.util.List.class).getBody()).isEmpty();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM tickets WHERE bill_id = ?::uuid", Long.class, bill)).isZero();
+
+        // On: one Send, a Jollof with Extra chicken and a note, is one ticket with both lines.
+        assertThat(send(owner, HttpMethod.PUT, "/api/branches/" + branch + "/tickets", Map.of("on", true), Map.class)
+                .getStatusCode()).isEqualTo(HttpStatus.OK);
         UUID first = UUID.randomUUID();
         UUID meal = UUID.randomUUID();
         Map<String, Object> jollof = sale(1, "7000", UUID.fromString(bill), null);
@@ -618,45 +627,98 @@ class SalePaymentIntegrationTest {
         String area = (String) areas.get(0).get("id");
         java.util.List<Map<String, Object>> tickets = get(owner, "/api/tickets?areaId=" + area, java.util.List.class).getBody();
         assertThat(tickets).hasSize(1);
-        assertThat(tickets.get(0).get("kind")).isEqualTo("NEW");
         assertThat(tickets.get(0).get("label")).isEqualTo("Table 5");
         java.util.List<Map<String, Object>> lines = (java.util.List<Map<String, Object>>) tickets.get(0).get("lines");
         assertThat(lines).extracting(l -> l.get("name")).containsExactly("Jollof rice", "Extra chicken");
         assertThat(lines.get(0).get("note")).isEqualTo("No pepper");
         assertThat(lines.get(1).get("withKey")).isEqualTo(meal.toString());
 
-        // Added later: a new ticket, ADDED; a side for a meal sent before names it.
+        // Added later: ADDED.
         Map<String, Object> more = sale(2, "7000", UUID.fromString(bill), null);
-        String added = UUID.randomUUID().toString();
-        more.put("billLine", Map.of("lineKey", added, "sendKey", UUID.randomUUID().toString()));
+        more.put("billLine", Map.of("lineKey", UUID.randomUUID().toString(), "sendKey", UUID.randomUUID().toString()));
         stockOut(owner, rice, more);
-        Map<String, Object> late = sale(1, "2000", UUID.fromString(bill), null);
-        late.put("billLine", Map.of("lineKey", UUID.randomUUID().toString(), "withKey", meal.toString(), "sendKey", UUID.randomUUID().toString()));
-        stockOut(owner, chicken, late);
         tickets = get(owner, "/api/tickets?areaId=" + area, java.util.List.class).getBody();
-        assertThat(tickets).extracting(t -> t.get("kind")).containsExactly("NEW", "ADDED", "ADDED");
-        Map<String, Object> lateLine = ((java.util.List<Map<String, Object>>) tickets.get(2).get("lines")).get(0);
-        assertThat(lateLine.get("withName")).isEqualTo("Jollof rice");
-
-        // Done moves it down, greyed; a mistaken Done is undone.
+        assertThat(tickets).extracting(t -> t.get("kind")).containsExactly("NEW", "ADDED");
         String firstTicket = (String) tickets.get(0).get("id");
-        tickets = send(owner, HttpMethod.PUT, "/api/tickets/" + firstTicket + "/done", null, java.util.List.class).getBody();
-        assertThat(tickets.get(tickets.size() - 1).get("id")).isEqualTo(firstTicket);
-        assertThat(tickets.get(tickets.size() - 1).get("doneAt")).isNotNull();
-        tickets = send(owner, HttpMethod.DELETE, "/api/tickets/" + firstTicket + "/done", null, java.util.List.class).getBody();
-        assertThat(tickets.get(0).get("doneAt")).isNull();
+        String addedTicket = (String) tickets.get(1).get("id");
 
-        // Taken off before it was made: a DONT_MAKE ticket, and the line shows as taken off on the ticket it was on.
+        // Ready: it moves down; Not ready brings it back. Tables shows the area ready.
+        tickets = send(owner, HttpMethod.PUT, "/api/tickets/" + firstTicket + "/ready", null, java.util.List.class).getBody();
+        assertThat(tickets.get(tickets.size() - 1).get("id")).isEqualTo(firstTicket);
+        assertThat(tickets.get(tickets.size() - 1).get("readyAt")).isNotNull();
+        java.util.List<Map<String, Object>> open = get(owner, "/api/bills?branchId=" + branch, java.util.List.class).getBody();
+        assertThat((java.util.List<String>) open.get(0).get("ready")).containsExactly("Store");
+        assertThat(open.get(0).get("allServed")).isEqualTo(false);
+        tickets = send(owner, HttpMethod.DELETE, "/api/tickets/" + firstTicket + "/ready", null, java.util.List.class).getBody();
+        assertThat(tickets.get(0).get("readyAt")).isNull();
+
+        // Taken off before it was made: the ticket it was on says so, waiting, until the area says OK; then the
+        // ticket, with nothing left on it, goes.
         UUID movement = getSale(owner, UUID.fromString(bill)).lines().stream()
                 .filter(l -> l.quantity().compareTo(new BigDecimal("2")) == 0).findFirst().orElseThrow().movementId();
         assertThat(send(owner, HttpMethod.POST, "/api/bills/" + bill + "/lines/" + movement + "/take-off",
                 Map.of("kind", "NOT_MADE", "note", "Changed their mind"), String.class).getStatusCode()).isEqualTo(HttpStatus.OK);
         tickets = get(owner, "/api/tickets?areaId=" + area, java.util.List.class).getBody();
-        assertThat(tickets).extracting(t -> t.get("kind")).containsExactly("NEW", "ADDED", "ADDED", "DONT_MAKE");
-        Map<String, Object> struck = ((java.util.List<Map<String, Object>>) tickets.get(1).get("lines")).get(0);
-        assertThat(struck.get("takenOff")).isEqualTo("NOT_MADE");
+        Map<String, Object> changed = tickets.stream().filter(t -> t.get("id").equals(addedTicket)).findFirst().orElseThrow();
+        assertThat(changed.get("changed")).isEqualTo(true);
+        assertThat(((java.util.List<Map<String, Object>>) changed.get("lines")).get(0).get("takenOff")).isEqualTo("NOT_MADE");
+        tickets = send(owner, HttpMethod.PUT, "/api/tickets/" + addedTicket + "/seen", null, java.util.List.class).getBody();
+        assertThat(tickets).extracting(t -> t.get("id")).containsExactly(firstTicket);
+
+        // Served from the bill, before the area said Ready: it counts as ready, and the table is all served.
+        Map<String, Object> served = send(owner, HttpMethod.PUT, "/api/tickets/" + firstTicket + "/served", null, Map.class).getBody();
+        java.util.List<Map<String, Object>> sends = (java.util.List<Map<String, Object>>) served.get("sends");
+        Map<String, Object> mine = sends.stream().filter(x -> x.get("ticketId").equals(firstTicket)).findFirst().orElseThrow();
+        assertThat(mine.get("servedAt")).isNotNull();
+        assertThat(mine.get("readyAt")).isNotNull();
+        assertThat(((Map<String, Object>) get(owner, "/api/tickets?areaId=" + area, java.util.List.class).getBody().get(0))
+                .get("readyAt")).isNotNull();
+        open = get(owner, "/api/bills?branchId=" + branch, java.util.List.class).getBody();
+        assertThat(open.get(0).get("allServed")).isEqualTo(true);
+        // Not served after all: the Ready it gave goes too.
+        send(owner, HttpMethod.DELETE, "/api/tickets/" + firstTicket + "/served", null, Map.class);
+        assertThat(jdbcTemplate.queryForObject("SELECT ready_at IS NULL FROM tickets WHERE id = ?::uuid", Boolean.class, firstTicket)).isTrue();
+
         // Someone not working in the area can't see its tickets.
         assertThat(get(cashier(owner), "/api/tickets?areaId=" + java.util.UUID.randomUUID(), String.class).getStatusCode().is4xxClientError()).isTrue();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void nothingIsSoldFromAnAreaThatOnlyHoldsStockAndARunOutSaysWhereThereIsSome() {
+        Shop owner = shop("Store Room Shop");
+        send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
+        UUID coke = product(owner, "Coke");
+        stockIn(owner, coke, 60);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(owner, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        java.util.List<Map<String, Object>> areas = (java.util.List<Map<String, Object>>) ((java.util.List<Map<String, Object>>)
+                get(owner, "/api/branches", Map.class).getBody().get("branches")).get(0).get("areas");
+        String store = (String) areas.get(0).get("id");
+        // The only area: it can't stop selling.
+        assertThat(send(owner, HttpMethod.PATCH, "/api/areas/" + store, Map.of("sells", false), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.CONFLICT);
+        Map<String, Object> bar = new java.util.HashMap<>();
+        bar.put("name", "Bar");
+        send(owner, HttpMethod.POST, "/api/branches/" + branch + "/areas", Map.of("areas", java.util.List.of(bar)), String.class);
+        ResponseEntity<Map> changed = send(owner, HttpMethod.PATCH, "/api/areas/" + store, Map.of("sells", false), Map.class);
+        assertThat(changed.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(changed.getBody().get("sells")).isEqualTo(false);
+        String barId = ((java.util.List<Map<String, Object>>) ((java.util.List<Map<String, Object>>)
+                get(owner, "/api/branches", Map.class).getBody().get("branches")).get(0).get("areas")).stream()
+                .filter(a -> "Bar".equals(a.get("name"))).findFirst().orElseThrow().get("id").toString();
+
+        // From the Store: refused. From the Bar, which has none: says where there is some.
+        Map<String, Object> fromStore = sale(1, "500", UUID.randomUUID(), "CASH");
+        fromStore.put("areaId", store);
+        ResponseEntity<String> refused = send(owner, HttpMethod.POST, "/api/products/" + coke + "/stock/stock-out", fromStore, String.class);
+        assertThat(refused.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(refused.getBody()).contains("Nothing is sold from the Store");
+        Map<String, Object> fromBar = sale(1, "500", UUID.randomUUID(), "CASH");
+        fromBar.put("areaId", barId);
+        ResponseEntity<String> none = send(owner, HttpMethod.POST, "/api/products/" + coke + "/stock/stock-out", fromBar, String.class);
+        assertThat(none.getStatusCode().is4xxClientError()).isTrue();
+        assertThat(none.getBody()).contains("None in the Bar.").contains("60").contains("in the Store: move some to the Bar first.");
     }
 
     private BigDecimal onHand(Shop shop, UUID productId) {
