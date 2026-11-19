@@ -237,6 +237,8 @@ public class BillService {
         }
         if ("NOT_MADE".equals(kind)) {
             saleService.cancelBillLine(billId, movementId, userId);
+            // Step 8 (V102): its area is told not to make it.
+            TicketService.dontMake(jdbc, clientId, billId, movementId, userId);
         }
         jdbc.update("""
                 UPDATE bill_lines SET taken_off = :kind, taken_off_note = :note, taken_off_by = :userId, taken_off_at = now()

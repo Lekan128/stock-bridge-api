@@ -101,7 +101,15 @@ public record StockOutRequest(
         BillLine billLine) {
 
     /** A bill line's place on its bill (V99). */
-    public record BillLine(@NotNull UUID lineKey, UUID withKey, @Size(max = 200) String note) {}
+    /**
+     * @param sendKey one Send from the bill (Step 8, V102): its lines gather on one ticket per area. Absent from an older
+     *     app: each line is then its own ticket.
+     */
+    public record BillLine(@NotNull UUID lineKey, UUID withKey, @Size(max = 200) String note, UUID sendKey) {
+        public BillLine(UUID lineKey, UUID withKey, String note) {
+            this(lineKey, withKey, note, null);
+        }
+    }
 
     /** The shape before {@code billLine} (Stage C). */
     public StockOutRequest(

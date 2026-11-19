@@ -29,6 +29,7 @@ public class BillController {
     private final TableService tableService;
     private final BillService billService;
     private final ChargeService chargeService;
+    private final TicketService ticketService;
 
     // ---------------------------------------------------------------------------------- charges and taxes (Step 10)
 
@@ -137,5 +138,33 @@ public class BillController {
     @PreAuthorize("hasAuthority('STOCK_OUT')")
     public BillService.BillSummary close(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return billService.close(principal.getClientId(), principal.getUserId(), id);
+    }
+
+    // ---------------------------------------------------------------------------------- kitchen and bar tickets (Step 8)
+
+    /** The areas at a branch whose tickets this person can keep, with how many are waiting in each. */
+    @GetMapping("/api/tickets/areas")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<TicketService.TicketArea> ticketAreas(
+            @RequestParam UUID branchId, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ticketService.areas(principal.getClientId(), principal.getUserId(), branchId);
+    }
+
+    @GetMapping("/api/tickets")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<TicketService.Ticket> tickets(@RequestParam UUID areaId, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ticketService.list(principal.getClientId(), principal.getUserId(), areaId);
+    }
+
+    @PutMapping("/api/tickets/{id}/done")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<TicketService.Ticket> ticketDone(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ticketService.done(principal.getClientId(), principal.getUserId(), id, true);
+    }
+
+    @org.springframework.web.bind.annotation.DeleteMapping("/api/tickets/{id}/done")
+    @PreAuthorize("hasAuthority('VIEW_PRODUCTS')")
+    public List<TicketService.Ticket> ticketNotDone(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return ticketService.done(principal.getClientId(), principal.getUserId(), id, false);
     }
 }

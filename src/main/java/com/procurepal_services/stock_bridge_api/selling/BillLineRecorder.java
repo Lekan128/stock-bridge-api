@@ -56,5 +56,6 @@ public class BillLineRecorder {
                 new MapSqlParameterSource().addValue("movementId", movementId).addValue("billId", saleId)
                         .addValue("clientId", clientId).addValue("key", line.lineKey()).addValue("withKey", line.withKey())
                         .addValue("note", note).addValue("userId", userId));
+        TicketService.addToTicket(jdbc, clientId, saleId, movementId, line.sendKey() == null ? movementId : line.sendKey(), userId);
     }
 }
