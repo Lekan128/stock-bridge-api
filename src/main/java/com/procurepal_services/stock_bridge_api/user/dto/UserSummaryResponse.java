@@ -30,7 +30,10 @@ public record UserSummaryResponse(
         List<UUID> branchIds,
         Boolean worksEverywhere,
         // Areas (V64): the areas they're limited to; absent = every area.
-        List<UUID> areaIds) {
+        List<UUID> areaIds,
+        // Quick mode (V105): their buttons (absent: the app's own choice) and whether they start in it.
+        List<String> quickModeTabs,
+        boolean startsInQuickMode) {
 
     /** Without branches - the super-admin screens, which have no branch interface. */
     public static UserSummaryResponse from(User user) {
@@ -54,6 +57,10 @@ public record UserSummaryResponse(
                 user.getCreatedAt(),
                 branchIds,
                 worksEverywhere,
-                areaIds == null || areaIds.isEmpty() ? null : areaIds);
+                areaIds == null || areaIds.isEmpty() ? null : areaIds,
+                user.getQuickModeTabs() == null || user.getQuickModeTabs().isBlank()
+                        ? null
+                        : List.of(user.getQuickModeTabs().split(",")),
+                user.isStartsInQuick());
     }
 }

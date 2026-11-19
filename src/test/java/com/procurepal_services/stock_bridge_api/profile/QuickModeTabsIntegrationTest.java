@@ -2,12 +2,17 @@ package com.procurepal_services.stock_bridge_api.profile;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.procurepal_services.stock_bridge_api.auth.dto.LoginRequest;
 import com.procurepal_services.stock_bridge_api.auth.dto.TenantLoginResponse;
+import com.procurepal_services.stock_bridge_api.user.dto.CreateRoleRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.CreateUserRequest;
+import com.procurepal_services.stock_bridge_api.user.dto.RoleResponse;
 import com.procurepal_services.stock_bridge_api.client.dto.ClientSignupRequest;
 import com.procurepal_services.stock_bridge_api.profile.dto.ProfileResponse;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -60,6 +65,45 @@ class QuickModeTabsIntegrationTest {
         assertThat(twice.getBody()).contains("once");
         assertThat(unknown.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         assertThat(me(login).quickModeTabs()).isNull();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void theManagerSetsAPersonsButtonsAndThatTheyStartInQuickModeAndThePersonCanStillChangeTheirButtons() {
+        TenantLoginResponse owner = signup();
+        RoleResponse role = restTemplate.exchange("/api/roles", HttpMethod.POST,
+                        new HttpEntity<>(new CreateRoleRequest("Waiter " + UUID.randomUUID().toString().substring(0, 8), null,
+                                Set.of("STOCK_OUT", "VIEW_PRODUCTS")), auth(owner)), RoleResponse.class).getBody();
+        String username = "waiter-" + UUID.randomUUID();
+        Map<String, Object> made = restTemplate.exchange("/api/users", HttpMethod.POST,
+                new HttpEntity<>(new CreateUserRequest(username, PASSWORD, role.id(), null, null, null, null, null), auth(owner)),
+                Map.class).getBody();
+        String id = (String) made.get("id");
+        assertThat(made.get("startsInQuickMode")).isEqualTo(false);
+
+        // The manager: Tables, Tickets and Sell, and start in quick mode.
+        HttpHeaders headers = auth(owner);
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        Map<String, Object> edit = new HashMap<>();
+        edit.put("quickModeTabs", List.of("sell", "tickets", "tables"));
+        edit.put("startsInQuickMode", true);
+        Map<String, Object> saved = restTemplate.exchange("/api/users/" + id, HttpMethod.PUT, new HttpEntity<>(edit, headers), Map.class)
+                .getBody();
+        assertThat((List<String>) saved.get("quickModeTabs")).containsExactly("tables", "tickets", "sell");
+        assertThat(saved.get("startsInQuickMode")).isEqualTo(true);
+        // A fifth button is refused, with the reason.
+        edit.put("quickModeTabs", List.of("tables", "tickets", "sell", "out", "count"));
+        ResponseEntity<String> five = restTemplate.exchange("/api/users/" + id, HttpMethod.PUT, new HttpEntity<>(edit, headers), String.class);
+        assertThat(five.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(five.getBody()).contains("4 buttons");
+
+        // The waiter sees both on their account, and can change their buttons; where they start stays.
+        TenantLoginResponse waiter = restTemplate.postForObject("/api/auth/login",
+                new LoginRequest(owner.user().clientIdentifier(), username, PASSWORD), TenantLoginResponse.class);
+        assertThat(me(waiter).startsInQuickMode()).isTrue();
+        assertThat(me(waiter).quickModeTabs()).containsExactly("tables", "tickets", "sell");
+        assertThat(put(waiter, List.of("tables", "sell"), ProfileResponse.class).getBody().quickModeTabs()).containsExactly("tables", "sell");
+        assertThat(me(waiter).startsInQuickMode()).isTrue();
     }
 
     private TenantLoginResponse signup() {

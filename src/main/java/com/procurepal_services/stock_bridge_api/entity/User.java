@@ -141,6 +141,10 @@ public class User extends TenantAwareEntity {
     @Column(name = "quick_mode_tabs", length = 100)
     private String quickModeTabs;
 
+    /** Opens in quick mode rather than the usual app (V105): the manager's choice; Exit still leaves it. */
+    @Column(name = "starts_in_quick", nullable = false)
+    private boolean startsInQuick;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

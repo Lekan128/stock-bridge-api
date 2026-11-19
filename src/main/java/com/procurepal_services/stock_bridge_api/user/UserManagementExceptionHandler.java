@@ -13,6 +13,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice(assignableTypes = UserController.class)
 public class UserManagementExceptionHandler {
 
+    /** A manager setting someone's quick mode buttons (V105): the same rules as their own Profile. */
+    @ExceptionHandler(com.procurepal_services.stock_bridge_api.profile.QuickModeTabsInvalidException.class)
+    public ResponseEntity<ApiError> handleQuickModeTabs(com.procurepal_services.stock_bridge_api.profile.QuickModeTabsInvalidException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(new ApiError(ex.getMessage()));
+    }
+
+
     @ExceptionHandler(UserNotFoundException.class)
     public ResponseEntity<ApiError> handleNotFound(UserNotFoundException ex) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(ex.getMessage()));

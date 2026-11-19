@@ -26,7 +26,25 @@ public record UpdateUserRequest(
         List<UUID> branchIds,
         // Areas (V64, STOCK_AREAS_PART_3.md): the areas they're limited to, replacing the list. Absent leaves
         // it alone; empty = every area.
-        List<UUID> areaIds) {
+        List<UUID> areaIds,
+        // Quick mode for every job (V105): their buttons, set by their manager (empty: the app's own choice; absent
+        // leaves it alone), and whether they start in quick mode.
+        List<String> quickModeTabs,
+        Boolean startsInQuickMode) {
+
+    /** The shape before quick mode settings (V105). */
+    public UpdateUserRequest(
+            UUID roleId,
+            Boolean active,
+            String firstName,
+            String lastName,
+            String email,
+            String phone,
+            String jobTitle,
+            List<UUID> branchIds,
+            List<UUID> areaIds) {
+        this(roleId, active, firstName, lastName, email, phone, jobTitle, branchIds, areaIds, null, null);
+    }
 
     /** The shape before {@code areaIds} (areas, Part 3). */
     public UpdateUserRequest(
@@ -38,7 +56,7 @@ public record UpdateUserRequest(
             String phone,
             String jobTitle,
             List<UUID> branchIds) {
-        this(roleId, active, firstName, lastName, email, phone, jobTitle, branchIds, null);
+        this(roleId, active, firstName, lastName, email, phone, jobTitle, branchIds, null, null, null);
     }
 
     /** The shape before {@code branchIds} (multiple branches, Phase 1). */
@@ -50,6 +68,6 @@ public record UpdateUserRequest(
             String email,
             String phone,
             String jobTitle) {
-        this(roleId, active, firstName, lastName, email, phone, jobTitle, null, null);
+        this(roleId, active, firstName, lastName, email, phone, jobTitle, null, null, null, null);
     }
 }
