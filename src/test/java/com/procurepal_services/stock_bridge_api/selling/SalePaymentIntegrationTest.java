@@ -516,6 +516,18 @@ class SalePaymentIntegrationTest {
             assertThat(c.name()).isEqualTo("VAT");
             assertThat(c.amount()).isEqualByComparingTo("840");
         });
+        // ...and the ways it was paid are the money that came in, charges and all: 3,225 and 9,635 in cash. Each sale says
+        // what was added on top.
+        assertThat(totals.byPayment().cashAmount()).isEqualByComparingTo("12860");
+        SalesReportResponse list = get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody();
+        assertThat(list.rows()).anySatisfy(row -> {
+            assertThat(row.key()).isEqualTo(bill);
+            assertThat(row.chargesOnTop()).isEqualByComparingTo("1435");
+        });
+        // Narrowed to a product, it's the food and drinks again.
+        SalesReportResponse ofRice = get(owner, "/api/analytics/sales?groupBy=sale&productId=" + rice, SalesReportResponse.class).getBody();
+        assertThat(ofRice.totals().byPayment().cashAmount()).isEqualByComparingTo("11200");
+        assertThat(ofRice.rows()).allSatisfy(row -> assertThat(row.chargesOnTop()).isNull());
 
         // A shop with VAT in its prices: the total stays; the receipt says what's in it. 1,075 holds 75.
         send(owner, HttpMethod.PATCH, "/api/charges/" + charges.get(0).get("id"), Map.of("included", true), String.class);
@@ -564,7 +576,7 @@ class SalePaymentIntegrationTest {
         assertThat(last.sale().paymentMethod()).isEqualTo(SalePaymentMethod.SPLIT);
         assertThat(last.sale().payments()).extracting(SaleResponse.Part::method)
                 .containsExactly(SalePaymentMethod.CARD, SalePaymentMethod.TRANSFER, SalePaymentMethod.CASH);
-        // Sales shares the 9,000 across them, a third each.
+        // Sales counts each part the way it came in: 3,000 each.
         SalesTotals.ByPayment by = get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals().byPayment();
         assertThat(by.cashAmount()).isEqualByComparingTo("3000");
         assertThat(by.cardAmount()).isEqualByComparingTo("3000");
