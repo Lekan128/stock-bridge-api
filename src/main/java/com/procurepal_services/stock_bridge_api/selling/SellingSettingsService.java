@@ -59,6 +59,7 @@ public class SellingSettingsService {
     private final SellingPolicy sellingPolicy;
     private final ProductRepository productRepository;
     private final SellingPriceService sellingPriceService;
+    private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
 
     @Transactional(readOnly = true)
     public SellingSettingsResponse get() {
@@ -316,7 +317,9 @@ public class SellingSettingsService {
                 client.isCountsCash(),
                 countsCash == null ? null : countsCash.getChangedAt(),
                 countsCash == null ? null : changedByName(countsCash),
-                client.getCashReopenHours());
+                client.getCashReopenHours(),
+                jdbc.queryForList("SELECT id FROM company_categories WHERE client_id = :id AND goes_with_meal",
+                        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", client.getId()), java.util.UUID.class));
     }
 
     // ---------------------------------------------------------------- old prices (section 4.6.3)

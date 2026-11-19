@@ -32,5 +32,11 @@ public record SaleLineResponse(
         String cancelledByName,
         boolean priceAdded,
         OffsetDateTime occurredAt,
-        String unitOfMeasure) {
+        String unitOfMeasure,
+        /** A table bill's side (V99): the line of the meal it goes with; absent otherwise. */
+        java.util.UUID withLineId,
+        /** A table bill line's note for the kitchen ("No pepper"). */
+        String note,
+        /** A table bill line taken off: NOT_MADE (stock back, also {@code cancelled}) or SENT_BACK (used, not charged). */
+        String takenOff) {
 }

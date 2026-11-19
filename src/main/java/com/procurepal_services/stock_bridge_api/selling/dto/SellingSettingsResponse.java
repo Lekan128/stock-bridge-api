@@ -37,5 +37,7 @@ public record SellingSettingsResponse(
         OffsetDateTime countsCashChangedAt,
         String countsCashChangedByName,
         /** How long after a close a drawer can be opened again (V98); after it, a fresh start count. */
-        int cashReopenHours) {
+        int cashReopenHours,
+        /** V99: the categories whose products are sides (the till asks which meal each goes with). */
+        java.util.List<java.util.UUID> sideCategoryIds) {
 }

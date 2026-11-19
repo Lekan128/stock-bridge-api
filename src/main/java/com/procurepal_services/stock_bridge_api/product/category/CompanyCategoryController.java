@@ -50,6 +50,13 @@ public class CompanyCategoryController {
         return companyCategoryService.rename(id, request.name());
     }
 
+    /** "These go with a meal" (V99): the category's products are sides. */
+    @PutMapping("/{id}/goes-with-meal")
+    @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
+    public CompanyCategoryResponse goesWithMeal(@PathVariable UUID id, @RequestBody java.util.Map<String, Boolean> body) {
+        return companyCategoryService.setGoesWithMeal(id, Boolean.TRUE.equals(body.get("on")));
+    }
+
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('MANAGE_PRODUCTS')")
     public ResponseEntity<Void> delete(@PathVariable UUID id) {

@@ -123,6 +123,7 @@ public class StockManagementService {
     private final com.procurepal_services.stock_bridge_api.product.MadeWithService madeWithService;
     private final com.procurepal_services.stock_bridge_api.selling.PaymentAccountService paymentAccountService;
     private final com.procurepal_services.stock_bridge_api.selling.CashDayService cashDayService;
+    private final com.procurepal_services.stock_bridge_api.selling.BillLineRecorder billLineRecorder;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate costJdbc;
     /**
      * Where each write lands and the only way a stock figure moves (V51, multiple branches) - see that
@@ -517,6 +518,11 @@ public class StockManagementService {
                 .costBasis(cost.basis())
                 .build());
         if (sale) {
+            // Stage C (V99): a line sent to a table's bill - its bill must still be open; it carries no payment.
+            if (request.billLine() != null) {
+                stockMovementRepository.flush();
+                billLineRecorder.record(tenantId, request, outMovement.getId(), outMovement.getSaleId(), branchId, actingUserId);
+            }
             // Selling till Step 1: the sale's first line to arrive records how it was paid.
             salePaymentService.recordIfAbsent(
                     tenantId, outMovement.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
@@ -2264,6 +2270,10 @@ public class StockManagementService {
                             .addValue("amount", used.amount()).addValue("basis", used.basis().name()).addValue("id", line.getId()));
             line.setCostAmount(used.amount());
             line.setCostBasis(used.basis());
+        }
+        if (request.billLine() != null) {
+            stockMovementRepository.flush();
+            billLineRecorder.record(tenantId, request, line.getId(), line.getSaleId(), branchId, actingUserId);
         }
         salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
         reopenDrawer(request, branchId, request.areaId(), actingUserId);

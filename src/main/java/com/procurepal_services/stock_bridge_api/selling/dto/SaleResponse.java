@@ -39,5 +39,7 @@ public record SaleResponse(
         OffsetDateTime cancelDecidedAt,
         /** Step 12 (V96): which account a transfer came into ("GTBank"); absent otherwise. Never on a receipt. */
         java.util.UUID paymentAccountId,
-        String paymentAccountName) {
+        String paymentAccountName,
+        /** A table's bill (V99): its table ("Table 5", "VIP") or the name it was opened for; absent for a counter sale. */
+        String billFor) {
 }

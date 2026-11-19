@@ -32,5 +32,7 @@ public record BranchResponse(
         /** V60: its areas, open ones first; one (its Store) at a branch that hasn't added any. */
         java.util.List<AreaResponse> areas,
         /** V96: the accounts its customers pay into by transfer, switched-on ones; absent on the answer to a change. */
-        java.util.List<com.procurepal_services.stock_bridge_api.selling.PaymentAccountService.PaymentAccount> paymentAccounts) {
+        java.util.List<com.procurepal_services.stock_bridge_api.selling.PaymentAccountService.PaymentAccount> paymentAccounts,
+        /** V99: its switched-on tables, in the owner's order; empty at a branch without table service. */
+        java.util.List<com.procurepal_services.stock_bridge_api.selling.TableService.Table> tables) {
 }

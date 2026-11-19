@@ -295,7 +295,8 @@ public class SalesReportService {
                     SELECT o.id, o.sale_id, o.product_id, o.created_by, o.occurred_at, o.quantity, o.branch_id,
                            COALESCE(o.sale_amount, c.sale_amount) AS amount,
                            o.cost_amount AS cost,
-                           (r.id IS NOT NULL) AS cancelled,
+                           -- A bill line sent back (V99) stays used but isn't charged: as good as cancelled here.
+                           (r.id IS NOT NULL OR bl.taken_off IS NOT NULL) AS cancelled,
                            sp.payment_method AS payment,
                            sp.payment_account_id AS account_id,
                            (o.usual_price_at_time IS NOT NULL AND o.unit_price_at_time IS NOT NULL
@@ -304,10 +305,13 @@ public class SalesReportService {
                     LEFT JOIN stock_movements r ON r.reverses_movement_id = o.id
                     LEFT JOIN stock_movements c ON c.corrects_movement_id = o.id
                     LEFT JOIN sales sp ON sp.id = o.sale_id AND sp.client_id = o.client_id
+                    LEFT JOIN bill_lines bl ON bl.movement_id = o.id
                     WHERE o.client_id = :clientId
                       AND o.sale_id IS NOT NULL
                       AND o.movement_type = 'OUT'
-                      AND o.occurred_at >= :from AND o.occurred_at < :to"""
+                      AND o.occurred_at >= :from AND o.occurred_at < :to
+                      -- A table's bill (V99) is a sale once it's paid; until then it's on Tables, not here.
+                      AND NOT EXISTS (SELECT 1 FROM bills ob WHERE ob.id = o.sale_id AND ob.status <> 'PAID')"""
                 + where
                 + """
                 ),

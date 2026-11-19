@@ -341,6 +341,120 @@ class SalePaymentIntegrationTest {
         assertThat(till.get("open")).isNotNull();
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void aTableBillIsSentTakenOffAndPaidAndStaysOutOfSalesUntilThen() {
+        Shop owner = shop("Table Shop");
+        Shop waiter = cashier(owner);
+        send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
+        UUID rice = product(owner, "Fried rice");
+        UUID plantain = product(owner, "Plantain");
+        stockIn(owner, rice, 20);
+        stockIn(owner, plantain, 20);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(owner, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+
+        // Tables: "Add 5" makes 1 to 5; one renamed; a name twice is refused; a waiter can't add tables.
+        java.util.List<Map<String, Object>> tables = send(owner, HttpMethod.POST, "/api/branches/" + branch + "/tables",
+                Map.of("count", 5), java.util.List.class).getBody();
+        assertThat(tables).extracting(t -> t.get("name")).containsExactly("1", "2", "3", "4", "5");
+        send(owner, HttpMethod.PATCH, "/api/tables/" + tables.get(3).get("id"), Map.of("name", "Window"), String.class);
+        assertThat(send(owner, HttpMethod.POST, "/api/branches/" + branch + "/tables", Map.of("name", "window"), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(send(waiter, HttpMethod.POST, "/api/branches/" + branch + "/tables", Map.of("count", 2), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        String table1 = (String) tables.get(0).get("id");
+        java.util.List<Map<String, Object>> onBranch = (java.util.List<Map<String, Object>>) ((java.util.List<Map<String, Object>>)
+                get(waiter, "/api/branches", Map.class).getBody().get("branches")).get(0).get("tables");
+        assertThat(onBranch).extracting(t -> t.get("name")).containsExactly("1", "2", "3", "Window", "5");
+
+        // Two phones open Table 1: one bill.
+        String bill = (String) send(waiter, HttpMethod.POST, "/api/bills", Map.of("branchId", branch, "tableId", table1), Map.class)
+                .getBody().get("id");
+        assertThat(send(owner, HttpMethod.POST, "/api/bills", Map.of("branchId", branch, "tableId", table1), Map.class)
+                .getBody().get("id")).isEqualTo(bill);
+
+        // Send: a dish and its side, with a note. The stock leaves now; no payment yet.
+        UUID meal = UUID.randomUUID();
+        Map<String, Object> dish = sale(1, "7500", UUID.fromString(bill), null);
+        dish.put("billLine", Map.of("lineKey", meal.toString(), "note", "No pepper"));
+        stockOut(waiter, rice, dish);
+        Map<String, Object> side = sale(1, "700", UUID.fromString(bill), null);
+        side.put("billLine", Map.of("lineKey", UUID.randomUUID().toString(), "withKey", meal.toString()));
+        stockOut(waiter, plantain, side);
+        // A bill line never carries a payment.
+        Map<String, Object> paidLine = sale(1, "700", UUID.fromString(bill), "CASH");
+        paidLine.put("billLine", Map.of("lineKey", UUID.randomUUID().toString()));
+        assertThat(send(waiter, HttpMethod.POST, "/api/products/" + plantain + "/stock/stock-out", paidLine, String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+
+        Map<String, Object> open = get(waiter, "/api/bills/" + bill, Map.class).getBody();
+        assertThat(new BigDecimal(((Map<String, Object>) open.get("summary")).get("total").toString())).isEqualByComparingTo("8200");
+        assertThat((java.util.List<?>) open.get("lines")).hasSize(2);
+        assertThat(get(waiter, "/api/bills?branchId=" + branch, java.util.List.class).getBody()).hasSize(1);
+        // Open: not in Sales yet.
+        assertThat(get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals().saleCount()).isZero();
+
+        // The side comes back: made, sent back - it needs a reason; stock stays used, not charged.
+        java.util.List<Map<String, Object>> lines = (java.util.List<Map<String, Object>>) open.get("lines");
+        String sideLine = (String) lines.get(1).get("movementId");
+        assertThat(send(waiter, HttpMethod.POST, "/api/bills/" + bill + "/lines/" + sideLine + "/take-off",
+                Map.of("kind", "SENT_BACK"), String.class).getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        Map<String, Object> after = send(waiter, HttpMethod.POST, "/api/bills/" + bill + "/lines/" + sideLine + "/take-off",
+                Map.of("kind", "SENT_BACK", "note", "Too salty"), Map.class).getBody();
+        assertThat(new BigDecimal(((Map<String, Object>) after.get("summary")).get("total").toString())).isEqualByComparingTo("7500");
+        assertThat(onHand(owner, plantain)).isEqualByComparingTo("19");
+
+        // Paid in cash: a sale like any other, with its table, the note, and the side marked.
+        SaleResponse receipt = send(waiter, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "CASH"), SaleResponse.class)
+                .getBody();
+        assertThat(receipt.billFor()).isEqualTo("Table 1");
+        assertThat(receipt.total()).isEqualByComparingTo("7500");
+        assertThat(receipt.paymentMethod()).isEqualTo(SalePaymentMethod.CASH);
+        assertThat(receipt.lines()).anySatisfy(line -> assertThat(line.note()).isEqualTo("No pepper"));
+        assertThat(receipt.lines()).anySatisfy(line -> {
+            assertThat(line.takenOff()).isEqualTo("SENT_BACK");
+            assertThat(line.cancelled()).isTrue();
+            assertThat(line.withLineId()).isNotNull();
+        });
+        SalesTotals totals = get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals();
+        assertThat(totals.saleCount()).isEqualTo(1);
+        assertThat(totals.byPayment().cashAmount()).isEqualByComparingTo("7500");
+
+        // Paid: nothing more goes on it, and Table 1 opens a fresh bill.
+        Map<String, Object> late = sale(1, "7500", UUID.fromString(bill), null);
+        late.put("billLine", Map.of("lineKey", UUID.randomUUID().toString()));
+        assertThat(send(waiter, HttpMethod.POST, "/api/products/" + rice + "/stock/stock-out", late, String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(get(waiter, "/api/bills?branchId=" + branch, java.util.List.class).getBody()).isEmpty();
+        String next = (String) send(waiter, HttpMethod.POST, "/api/bills", Map.of("branchId", branch, "tableId", table1), Map.class)
+                .getBody().get("id");
+        assertThat(next).isNotEqualTo(bill);
+
+        // Not made yet: the stock goes back. Then the empty bill is closed, not paid.
+        Map<String, Object> second = sale(1, "7500", UUID.fromString(next), null);
+        second.put("billLine", Map.of("lineKey", UUID.randomUUID().toString()));
+        stockOut(waiter, rice, second);
+        assertThat(onHand(owner, rice)).isEqualByComparingTo("18");
+        String secondLine = (String) ((java.util.List<Map<String, Object>>) get(waiter, "/api/bills/" + next, Map.class).getBody()
+                .get("lines")).get(0).get("movementId");
+        send(waiter, HttpMethod.POST, "/api/bills/" + next + "/lines/" + secondLine + "/take-off",
+                Map.of("kind", "NOT_MADE", "note", "Changed their mind"), Map.class);
+        assertThat(onHand(owner, rice)).isEqualByComparingTo("19");
+        assertThat(send(waiter, HttpMethod.POST, "/api/bills/" + next + "/pay", Map.of("method", "CASH"), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(send(waiter, HttpMethod.POST, "/api/bills/" + next + "/close", null, Map.class).getBody().get("status"))
+                .isEqualTo("CANCELLED");
+
+        // A bill for a name (a bar tab).
+        assertThat(send(waiter, HttpMethod.POST, "/api/bills", Map.of("branchId", branch, "name", "Tunde"), Map.class)
+                .getBody().get("label")).isEqualTo("Tunde");
+    }
+
+    private BigDecimal onHand(Shop shop, UUID productId) {
+        return new BigDecimal(get(shop, "/api/products/" + productId, Map.class).getBody().get("quantityOnHand").toString());
+    }
+
     private record Shop(TenantLoginResponse login) {
     }
 

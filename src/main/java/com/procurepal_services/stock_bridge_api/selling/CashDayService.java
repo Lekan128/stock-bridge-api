@@ -300,7 +300,8 @@ public class CashDayService {
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("clientId", clientId)
                 .addValue("branchId", day.get("branch_id")).addValue("areaId", day.get("area_id"))
                 .addValue("from", toTime(day.get("opened_at"))).addValue("until", until).addValue("dayId", day.get("id"));
-        // The drawer's sale lines in its time: this branch, this area (a one-place branch: any), not cancelled.
+        // The drawer's sale lines in its time: this branch, this area (a one-place branch: any), not cancelled. A table's
+        // bill (V99) counts where and when it was paid, not where its items were made: its payments, not its lines.
         String lines = """
                 SELECT o.sale_id, COALESCE(o.sale_amount, c.sale_amount, 0) AS amount, s.payment_method, s.payment_account_id
                 FROM stock_movements o
@@ -311,6 +312,13 @@ public class CashDayService {
                   AND r.id IS NULL
                   AND (CAST(:areaId AS uuid) IS NULL OR o.area_id = :areaId)
                   AND o.created_at >= :from AND o.created_at < :until
+                  AND NOT EXISTS (SELECT 1 FROM bills b WHERE b.id = o.sale_id)
+                UNION ALL
+                SELECT bp.bill_id, bp.amount, bp.method, bp.payment_account_id
+                FROM bill_payments bp
+                WHERE bp.client_id = :clientId AND bp.branch_id = :branchId
+                  AND (CAST(:areaId AS uuid) IS NULL OR bp.area_id = :areaId)
+                  AND bp.paid_at >= :from AND bp.paid_at < :until
                 """;
         Map<String, Object> totals = jdbc.queryForMap("""
                 SELECT COALESCE(SUM(amount) FILTER (WHERE payment_method = 'CASH'), 0) AS cash,
