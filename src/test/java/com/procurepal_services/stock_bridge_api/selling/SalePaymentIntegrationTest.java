@@ -530,7 +530,8 @@ class SalePaymentIntegrationTest {
 
         // Sales keeps the charges apart from the food and drinks.
         SalesTotals totals = get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals();
-        assertThat(totals.salesAmount()).isEqualByComparingTo("11200");
+        // 11,200 of lines, of which the 2,000 cover was in the bill's prices.
+        assertThat(totals.salesAmount()).isEqualByComparingTo("9200");
         assertThat(totals.charges()).anySatisfy(c -> {
             assertThat(c.name()).isEqualTo("VAT");
             assertThat(c.amount()).isEqualByComparingTo("840");
@@ -546,6 +547,7 @@ class SalePaymentIntegrationTest {
         // Narrowed to a product, it's the food and drinks again.
         SalesReportResponse ofRice = get(owner, "/api/analytics/sales?groupBy=sale&productId=" + rice, SalesReportResponse.class).getBody();
         assertThat(ofRice.totals().byPayment().cashAmount()).isEqualByComparingTo("11200");
+        assertThat(ofRice.totals().salesAmount()).isEqualByComparingTo("9200");
         assertThat(ofRice.rows()).allSatisfy(row -> assertThat(row.chargesOnTop()).isNull());
 
         // A shop with VAT in its prices: the total stays; the receipt says what's in it. 1,075 holds 75.
@@ -557,6 +559,21 @@ class SalePaymentIntegrationTest {
         assertThat(inPrice.totalToPay()).isEqualByComparingTo("1075");
         // ...and the earlier sale keeps the VAT it was sold with.
         assertThat(getSale(owner, counter).charges().get(0).included()).isFalse();
+        // Sales leaves taxes in the prices out of the food and drinks and the profit, and lists them with the rest:
+        // 1,075 is 1,000 of rice (cost 100, profit 900) and 75 of VAT. What came in in cash is still 1,075 more.
+        SalesReportResponse after = get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody();
+        assertThat(after.totals().salesAmount()).isEqualByComparingTo("10200");
+        assertThat(after.totals().grossProfit().subtract(totals.grossProfit())).isEqualByComparingTo("900");
+        assertThat(after.totals().charges()).anySatisfy(c -> {
+            assertThat(c.included()).isTrue();
+            assertThat(c.amount()).isEqualByComparingTo("75");
+        });
+        assertThat(after.totals().byPayment().cashAmount()).isEqualByComparingTo("13935");
+        assertThat(after.rows()).anySatisfy(row -> {
+            assertThat(row.key()).isEqualTo(shop.toString());
+            assertThat(row.totals().salesAmount()).isEqualByComparingTo("1000");
+            assertThat(row.chargesInPrices()).isEqualByComparingTo("75");
+        });
     }
 
     @Test

@@ -40,18 +40,23 @@ public record SalesReportRow(
          * Step 10 (V100), sale rows: the charges and taxes added on top - what the customer paid is the total plus this.
          * Absent when there were none, or when the list is narrowed to some of each sale (a product, an area).
          */
-        BigDecimal chargesOnTop) {
+        BigDecimal chargesOnTop,
+        /**
+         * Sale rows (owner, 2026-11-19): the charges and taxes that were in its prices. The row's total leaves them
+         * out, so what the customer paid is the total plus both.
+         */
+        BigDecimal chargesInPrices) {
 
     public SalesReportRow(String key, String label, BigDecimal quantity, String unitOfMeasure, OffsetDateTime occurredAt,
             SalesTotals totals, String detail, String branch, String paymentMethod, String cancelState, String cancelReason,
             String cancelledByName, String cancelRequestedByName) {
         this(key, label, quantity, unitOfMeasure, occurredAt, totals, detail, branch, paymentMethod, cancelState,
-                cancelReason, cancelledByName, cancelRequestedByName, null, null);
+                cancelReason, cancelledByName, cancelRequestedByName, null, null, null);
     }
 
     /** The same row with nothing about cost - for a cashier's own list. */
     public SalesReportRow withoutCost() {
         return new SalesReportRow(key, label, quantity, unitOfMeasure, occurredAt, totals.withoutCost(), detail, branch,
-                paymentMethod, cancelState, cancelReason, cancelledByName, cancelRequestedByName, paymentAccountName, chargesOnTop);
+                paymentMethod, cancelState, cancelReason, cancelledByName, cancelRequestedByName, paymentAccountName, chargesOnTop, chargesInPrices);
     }
 }
