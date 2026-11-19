@@ -181,6 +181,48 @@ public class CashDayService {
         return result(clientId, dayId, userId);
     }
 
+    /** Money taken out of a past drawer, for {@link #recordDay}. */
+    public record PastMoneyOut(BigDecimal amount, OutKind kind, String note, OffsetDateTime at) {}
+
+    /**
+     * Sample data (the demo's reset): a drawer's day as it went, worked out exactly as a close works it out - its
+     * cash sales between {@code openedAt} and {@code closedAt}, less the money taken out - and counted
+     * {@code countedOff} away from what was expected (negative: short). Its owner's email counts as sent: a reset
+     * must never email anybody. {@code closedAt} null leaves today's drawer open.
+     */
+    @Transactional
+    public UUID recordDay(UUID clientId, UUID branchId, UUID areaId, OffsetDateTime openedAt, BigDecimal floatAmount,
+            List<PastMoneyOut> moneyOut, OffsetDateTime closedAt, BigDecimal countedOff, UUID openedBy, UUID closedBy) {
+        UUID id = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO cash_days (id, client_id, branch_id, area_id, opened_by, opened_at, float_amount, float_skipped)
+                VALUES (:id, :clientId, :branchId, :areaId, :userId, :openedAt, :float, FALSE)
+                """, new MapSqlParameterSource().addValue("id", id).addValue("clientId", clientId).addValue("branchId", branchId)
+                .addValue("areaId", areaId).addValue("userId", openedBy).addValue("openedAt", openedAt).addValue("float", floatAmount));
+        for (PastMoneyOut out : moneyOut) {
+            jdbc.update("""
+                    INSERT INTO cash_money_out (client_id, cash_day_id, amount, kind, note, created_by, created_at)
+                    VALUES (:clientId, :dayId, :amount, :kind, :note, :userId, :at)
+                    """, new MapSqlParameterSource().addValue("clientId", clientId).addValue("dayId", id)
+                    .addValue("amount", out.amount()).addValue("kind", out.kind().name()).addValue("note", out.note())
+                    .addValue("userId", openedBy).addValue("at", out.at()));
+        }
+        if (closedAt != null) {
+            Map<String, Object> day = jdbc.queryForList("SELECT * FROM cash_days WHERE id = :id", new MapSqlParameterSource("id", id))
+                    .getFirst();
+            Figures figures = figures(clientId, day, closedAt);
+            jdbc.update("""
+                    UPDATE cash_days SET closed_at = :closedAt, closed_by = :userId, counted = :counted, cash_sales = :cashSales,
+                        money_out = :moneyOut, expected = :expected, email_sent_at = :closedAt
+                    WHERE id = :id
+                    """, new MapSqlParameterSource().addValue("id", id).addValue("closedAt", closedAt).addValue("userId", closedBy)
+                    .addValue("counted", figures.expected().add(countedOff == null ? BigDecimal.ZERO : countedOff).max(BigDecimal.ZERO))
+                    .addValue("cashSales", figures.cashSales()).addValue("moneyOut", figures.moneyOut())
+                    .addValue("expected", figures.expected()));
+        }
+        return id;
+    }
+
     /** "Count again": the same person, until the owner's email goes and no sale has reopened the drawer. */
     @Transactional
     public CloseResult countAgain(UUID clientId, UUID dayId, BigDecimal counted, UUID userId) {

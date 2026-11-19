@@ -44,6 +44,9 @@ public class TicketPushes {
 
     /** A ticket was just made: tell its area once the Send has had a moment to arrive. */
     public void announceLater(UUID ticketId) {
+        if (PushService.quiet()) {
+            return;
+        }
         Runnable announce = () -> later.schedule(() -> announce(ticketId), GATHER_SECONDS, TimeUnit.SECONDS);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -59,6 +62,9 @@ public class TicketPushes {
 
     /** The area said Ready: tell whoever sent it. */
     public void ready(UUID ticketId) {
+        if (PushService.quiet()) {
+            return;
+        }
         Map<String, Object> ticket = ticket(ticketId);
         if (ticket == null) {
             return;
