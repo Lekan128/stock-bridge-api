@@ -122,6 +122,7 @@ public class SalesExportService {
             case "CASH" -> "Cash";
             case "TRANSFER" -> "Transfer";
             case "CARD" -> "Card";
+            case "SPLIT" -> "Split";
             default -> method;
         };
     }

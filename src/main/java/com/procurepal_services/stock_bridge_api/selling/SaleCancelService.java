@@ -177,6 +177,7 @@ public class SaleCancelService {
                 case CASH -> "Cash";
                 case TRANSFER -> "Transfer";
                 case CARD -> "Card";
+                case SPLIT -> "Split";
             });
         }
         if (sale.occurredAt() != null) {

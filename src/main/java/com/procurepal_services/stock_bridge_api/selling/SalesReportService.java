@@ -139,6 +139,37 @@ public class SalesReportService {
                 ORDER BY MIN(sc.position), sc.name
                 """, params(clientId, range, filters),
                 (rs, n) -> new SalesTotals.ChargeTotal(rs.getString("name"), rs.getBoolean("included"), money(rs.getBigDecimal("amount")))));
+        // Step 11 (V101): a bill paid in parts is SPLIT - its food and drinks shared across the ways it was paid, in
+        // proportion to each part.
+        List<SplitShare> split = totals.byPayment() == null ? List.of() : jdbc.query(linesCte(filters) + """
+                , split AS (
+                    SELECT l.sale_id, SUM(l.amount) FILTER (WHERE NOT l.cancelled) AS food
+                    FROM lines l WHERE l.payment = 'SPLIT' GROUP BY l.sale_id
+                )
+                SELECT bp.method, a.id AS account_id, a.bank_name, a.account_number,
+                       SUM(bp.amount * COALESCE(sp.food, 0) / NULLIF(t.paid, 0)) AS amount, COUNT(DISTINCT bp.bill_id) AS sales
+                FROM split sp
+                JOIN bill_payments bp ON bp.bill_id = sp.sale_id
+                JOIN (SELECT bill_id, SUM(amount) AS paid FROM bill_payments GROUP BY bill_id) t ON t.bill_id = sp.sale_id
+                LEFT JOIN payment_accounts a ON a.id = bp.payment_account_id
+                GROUP BY bp.method, a.id, a.bank_name, a.account_number
+                """, params(clientId, range, filters),
+                (rs, n) -> new SplitShare(rs.getString("method"), rs.getObject("account_id", UUID.class), rs.getString("bank_name"),
+                        rs.getString("account_number"), money(rs.getBigDecimal("amount")), rs.getLong("sales")));
+        if (!split.isEmpty()) {
+            SalesTotals.ByPayment by = totals.byPayment();
+            BigDecimal cash = by.cashAmount(), transfer = by.transferAmount(), card = by.cardAmount();
+            long cashSales = by.cashSales(), transferSales = by.transferSales(), cardSales = by.cardSales();
+            for (SplitShare share : split) {
+                switch (share.method()) {
+                    case "CASH" -> { cash = cash.add(share.amount()); cashSales += share.sales(); }
+                    case "TRANSFER" -> { transfer = transfer.add(share.amount()); transferSales += share.sales(); }
+                    default -> { card = card.add(share.amount()); cardSales += share.sales(); }
+                }
+            }
+            totals = totals.withByPayment(new SalesTotals.ByPayment(cash, cashSales, transfer, transferSales, card, cardSales,
+                    by.notRecordedAmount(), by.notRecordedSales(), by.transferAccounts()));
+        }
         if (totals.byPayment() == null || totals.byPayment().transferSales() == 0) {
             return totals;
         }
@@ -155,8 +186,26 @@ public class SalesReportService {
                 """, params(clientId, range, filters),
                 (rs, n) -> new SalesTotals.AccountTotal(rs.getObject("id", UUID.class), rs.getString("bank_name"),
                         rs.getString("account_number"), money(rs.getBigDecimal("amount")), rs.getLong("sales")));
-        return totals.withByPayment(totals.byPayment().withTransferAccounts(accounts));
+        // ...a split bill's transfer parts, into the accounts they came into.
+        List<SalesTotals.AccountTotal> merged = new java.util.ArrayList<>(accounts);
+        for (SplitShare share : split) {
+            if (!"TRANSFER".equals(share.method()) || share.accountId() == null) continue;
+            int at = -1;
+            for (int i = 0; i < merged.size(); i++) if (share.accountId().equals(merged.get(i).accountId())) at = i;
+            if (at < 0) {
+                merged.add(new SalesTotals.AccountTotal(share.accountId(), share.bankName(), share.accountNumber(), share.amount(), share.sales()));
+            } else {
+                SalesTotals.AccountTotal was = merged.get(at);
+                merged.set(at, new SalesTotals.AccountTotal(was.accountId(), was.bankName(), was.accountNumber(),
+                        was.amount().add(share.amount()), was.sales() + share.sales()));
+            }
+        }
+        merged.sort(java.util.Comparator.comparing(SalesTotals.AccountTotal::amount).reversed());
+        return totals.withByPayment(totals.byPayment().withTransferAccounts(merged));
     }
+
+    /** One way a split bill was paid, and its share of the bill's food and drinks. */
+    private record SplitShare(String method, UUID accountId, String bankName, String accountNumber, BigDecimal amount, long sales) {}
 
     /**
      * What the stock at these branches is worth (V51): each product's figure there, at its cost and

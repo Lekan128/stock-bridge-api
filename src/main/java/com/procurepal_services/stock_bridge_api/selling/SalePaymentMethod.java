@@ -7,5 +7,7 @@ package com.procurepal_services.stock_bridge_api.selling;
 public enum SalePaymentMethod {
     CASH,
     TRANSFER,
-    CARD
+    CARD,
+    /** A table's bill paid in parts, more than one way (V101, Step 11) - its parts are the bill's payments. */
+    SPLIT
 }

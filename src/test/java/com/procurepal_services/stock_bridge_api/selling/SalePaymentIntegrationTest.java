@@ -406,8 +406,8 @@ class SalePaymentIntegrationTest {
         assertThat(onHand(owner, plantain)).isEqualByComparingTo("19");
 
         // Paid in cash: a sale like any other, with its table, the note, and the side marked.
-        SaleResponse receipt = send(waiter, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "CASH"), SaleResponse.class)
-                .getBody();
+        SaleResponse receipt = send(waiter, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "CASH"), BillService.PayResult.class)
+                .getBody().sale();
         assertThat(receipt.billFor()).isEqualTo("Table 1");
         assertThat(receipt.total()).isEqualByComparingTo("7500");
         assertThat(receipt.paymentMethod()).isEqualTo(SalePaymentMethod.CASH);
@@ -500,7 +500,8 @@ class SalePaymentIntegrationTest {
         Map<String, Object> open = get(owner, "/api/bills/" + bill, Map.class).getBody();
         assertThat(new BigDecimal(((Map<String, Object>) open.get("summary")).get("toPay").toString())).isEqualByComparingTo("9635");
         // Changed after the bill was opened but before it's paid: the bill pays what stands when it's paid.
-        SaleResponse paid = send(owner, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "CASH"), SaleResponse.class).getBody();
+        SaleResponse paid = send(owner, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "CASH"), BillService.PayResult.class)
+                .getBody().sale();
         assertThat(paid.total()).isEqualByComparingTo("8200");
         assertThat(paid.totalToPay()).isEqualByComparingTo("9635");
         assertThat(paid.charges()).extracting(ChargeService.SaleCharge::name).containsExactly("VAT", "Service charge", "Cover");
@@ -525,6 +526,52 @@ class SalePaymentIntegrationTest {
         assertThat(inPrice.totalToPay()).isEqualByComparingTo("1075");
         // ...and the earlier sale keeps the VAT it was sold with.
         assertThat(getSale(owner, counter).charges().get(0).included()).isFalse();
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aBillIsPaidInPartsStaysOpenTillTheLastAndSalesSharesItAcrossTheWaysItWasPaid() {
+        Shop owner = shop("Split Shop");
+        send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
+        UUID rice = product(owner, "Rice");
+        stockIn(owner, rice, 50);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(owner, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        java.util.List<Map<String, Object>> tables = send(owner, HttpMethod.POST, "/api/branches/" + branch + "/tables",
+                Map.of("count", 1), java.util.List.class).getBody();
+        String bill = (String) send(owner, HttpMethod.POST, "/api/bills",
+                Map.of("branchId", branch, "tableId", tables.get(0).get("id")), Map.class).getBody().get("id");
+        Map<String, Object> line = sale(1, "9000", UUID.fromString(bill), null);
+        line.put("billLine", Map.of("lineKey", UUID.randomUUID().toString()));
+        stockOut(owner, rice, line);
+
+        // Three friends: 3,000 by card, 3,000 by transfer; more than is left is refused.
+        BillService.PayResult first = send(owner, HttpMethod.POST, "/api/bills/" + bill + "/pay",
+                Map.of("method", "CARD", "amount", 3000), BillService.PayResult.class).getBody();
+        assertThat(first.paid()).isFalse();
+        assertThat(first.bill().summary().left()).isEqualByComparingTo("6000");
+        assertThat(get(owner, "/api/bills?branchId=" + branch, java.util.List.class).getBody()).hasSize(1);
+        send(owner, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "TRANSFER", "amount", 3000), String.class);
+        assertThat(send(owner, HttpMethod.POST, "/api/bills/" + bill + "/pay", Map.of("method", "CASH", "amount", 5000), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        // Not in Sales while part paid.
+        assertThat(get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals().saleCount()).isZero();
+
+        // The rest in cash: paid, SPLIT, each part on the receipt.
+        BillService.PayResult last = send(owner, HttpMethod.POST, "/api/bills/" + bill + "/pay",
+                Map.of("method", "CASH"), BillService.PayResult.class).getBody();
+        assertThat(last.paid()).isTrue();
+        assertThat(last.sale().paymentMethod()).isEqualTo(SalePaymentMethod.SPLIT);
+        assertThat(last.sale().payments()).extracting(SaleResponse.Part::method)
+                .containsExactly(SalePaymentMethod.CARD, SalePaymentMethod.TRANSFER, SalePaymentMethod.CASH);
+        // Sales shares the 9,000 across them, a third each.
+        SalesTotals.ByPayment by = get(owner, "/api/analytics/sales?groupBy=sale", SalesReportResponse.class).getBody().totals().byPayment();
+        assertThat(by.cashAmount()).isEqualByComparingTo("3000");
+        assertThat(by.cardAmount()).isEqualByComparingTo("3000");
+        assertThat(by.transferAmount()).isEqualByComparingTo("3000");
+        // A split bill's payments aren't changed from the sale.
+        assertThat(send(owner, HttpMethod.PUT, "/api/sales/" + bill + "/payment", Map.of("paymentMethod", "CASH"), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
     }
 
     private BigDecimal onHand(Shop shop, UUID productId) {

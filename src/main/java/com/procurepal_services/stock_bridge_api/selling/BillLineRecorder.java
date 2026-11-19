@@ -23,6 +23,9 @@ public class BillLineRecorder {
 
     /** Called before the sale's payment is looked at: a bill line carries none, and its bill must still be open. */
     public void record(UUID clientId, StockOutRequest request, UUID movementId, UUID saleId, UUID branchId, UUID userId) {
+        if (request.paymentMethod() == SalePaymentMethod.SPLIT) {
+            throw new MadeWithException("Choose cash, transfer or card.");
+        }
         if (request.billLine() == null) {
             return;
         }

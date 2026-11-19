@@ -127,7 +127,7 @@ public class BillController {
 
     @PostMapping("/api/bills/{id}/pay")
     @PreAuthorize("hasAuthority('STOCK_OUT')")
-    public SaleResponse pay(
+    public BillService.PayResult pay(
             @PathVariable UUID id, @RequestBody BillService.PayRequest request,
             @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return billService.pay(principal.getClientId(), principal.getUserId(), id, request);

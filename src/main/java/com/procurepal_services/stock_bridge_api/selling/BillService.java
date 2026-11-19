@@ -38,11 +38,13 @@ public class BillService {
     /** An open bill on the grid: what it's for, what's on it so far, since when and who opened it. */
     public record BillSummary(
             UUID id, UUID branchId, UUID tableId, String name, String label, String status, OffsetDateTime openedAt,
-            String openedByName, BigDecimal total, int items, OffsetDateTime lastSentAt, BigDecimal toPay) {
+            String openedByName, BigDecimal total, int items, OffsetDateTime lastSentAt, BigDecimal toPay, BigDecimal paid,
+            BigDecimal left) {
 
         BillSummary priced(List<ChargeService.SaleCharge> charges) {
+            BigDecimal pay = ChargeService.toPay(total, charges);
             return new BillSummary(id, branchId, tableId, name, label, status, openedAt, openedByName, total, items, lastSentAt,
-                    ChargeService.toPay(total, charges));
+                    pay, paid, pay.subtract(paid).max(BigDecimal.ZERO));
         }
     }
 
@@ -54,7 +56,16 @@ public class BillService {
             OffsetDateTime sentAt, String sentByName, String takenOff, String takenOffNote) {}
 
     /** {@code charges}: the branch's charges and taxes as they'd be paid now (Step 10), with what each comes to. */
-    public record Bill(BillSummary summary, List<BillLine> lines, List<ChargeService.SaleCharge> charges) {}
+    public record Bill(BillSummary summary, List<BillLine> lines, List<ChargeService.SaleCharge> charges, List<Payment> payments) {}
+
+    /** A bill's charges: fixed once its first part is paid, else the branch's as they stand now. */
+    private List<ChargeService.SaleCharge> chargesOf(UUID clientId, BillSummary summary, List<ChargeService.SaleCharge> now) {
+        List<ChargeService.SaleCharge> fixed = chargeService.of(clientId, summary.id());
+        if (!fixed.isEmpty() || !"OPEN".equals(summary.status())) {
+            return fixed;
+        }
+        return now != null ? now : chargeService.current(clientId, summary.branchId(), true);
+    }
 
     /** A table's bill ({@code tableId}), or one for a name (a bar tab, a takeaway). */
     public record OpenRequest(UUID branchId, UUID tableId, String name) {}
@@ -62,8 +73,11 @@ public class BillService {
     /** NOT_MADE: stock goes back. SENT_BACK: stock stays used, not charged. Both need a few words why. */
     public record TakeOffRequest(String kind, String note) {}
 
-    /** How the whole bill was paid, and the area of the till taking it - the drawer the cash goes into. */
-    public record PayRequest(SalePaymentMethod method, UUID accountId, UUID areaId) {}
+    /**
+     * How a part of the bill was paid - {@code amount}, or the rest when absent - and the area of the till taking it:
+     * the drawer the cash goes into.
+     */
+    public record PayRequest(SalePaymentMethod method, UUID accountId, UUID areaId, BigDecimal amount) {}
 
     // ------------------------------------------------------------------------------------------- reading
 
@@ -73,7 +87,7 @@ public class BillService {
         List<ChargeService.SaleCharge> charges = chargeService.current(clientId, branchId, true);
         return jdbc.query(SUMMARY + " WHERE b.client_id = :clientId AND b.branch_id = :branchId AND b.status = 'OPEN'"
                 + " ORDER BY b.opened_at", new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId),
-                BillService::summary).stream().map(summary -> summary.priced(charges)).toList();
+                BillService::summary).stream().map(summary -> summary.priced(chargesOf(clientId, summary, charges))).toList();
     }
 
     @Transactional(readOnly = true)
@@ -105,9 +119,7 @@ public class BillService {
                         rs.getString("note"), rs.getObject("sent_at", OffsetDateTime.class), rs.getString("sent_by_name"),
                         rs.getString("taken_off"), rs.getString("taken_off_note")));
         // An open bill shows the charges as they'd be paid now; a paid one, those it was paid with.
-        List<ChargeService.SaleCharge> charges = "OPEN".equals(summary.status())
-                ? chargeService.current(clientId, summary.branchId(), true)
-                : chargeService.of(clientId, billId);
+        List<ChargeService.SaleCharge> charges = chargesOf(clientId, summary, null);
         List<BigDecimal> amounts = ChargeService.amounts(summary.total(), charges);
         List<ChargeService.SaleCharge> priced = new java.util.ArrayList<>();
         for (int i = 0; i < charges.size(); i++) {
@@ -115,7 +127,7 @@ public class BillService {
             priced.add(new ChargeService.SaleCharge(charge.chargeId(), charge.name(), charge.kind(), charge.value(),
                     charge.included(), amounts.get(i)));
         }
-        return new Bill(summary.priced(charges), lines, priced);
+        return new Bill(summary.priced(charges), lines, priced, payments(billId));
     }
 
     /** Where each of a branch's products comes from on a bill, and so where its ticket goes. */
@@ -234,11 +246,15 @@ public class BillService {
         return get(clientId, userId, summary.id());
     }
 
-    /** Pays the whole bill: it becomes a sale like any other, its money in the drawer of the till that took it. */
+    /**
+     * Pays a bill (Steps 7 and 11): the rest, or a part ({@code amount}). Each part is a payment into the drawer of the
+     * till that took it, or the account a transfer came into. The bill stays open, part paid, until nothing is left;
+     * then it's a sale like any other - paid one way, or SPLIT. Its charges are fixed at the first part.
+     */
     @Transactional
-    public SaleResponse pay(UUID clientId, UUID userId, UUID billId, PayRequest request) {
+    public PayResult pay(UUID clientId, UUID userId, UUID billId, PayRequest request) {
         BillSummary summary = requireOpen(clientId, userId, billId);
-        if (request == null || request.method() == null) {
+        if (request == null || request.method() == null || request.method() == SalePaymentMethod.SPLIT) {
             throw new MadeWithException("Say how they paid.");
         }
         if (summary.items() == 0) {
@@ -261,27 +277,74 @@ public class BillService {
                 new MapSqlParameterSource().addValue("id", request.areaId()).addValue("branchId", branchId), Boolean.class))) {
             throw new MadeWithException("That till's area isn't at this bill's branch.");
         }
-        salePaymentService.recordIfAbsent(clientId, billId, branchId, request.method(), account, userId);
-        // Step 10: the bill's charges and taxes, fixed as they stand now; the customer pays the food and drinks plus
+        // Step 10: the bill's charges and taxes, fixed at its first payment; the customer pays the food and drinks plus
         // every charge added on top.
         chargeService.fix(clientId, billId, branchId, true);
         BigDecimal toPay = ChargeService.toPay(summary.total(), chargeService.of(clientId, billId));
+        BigDecimal left = toPay.subtract(paid(billId));
+        BigDecimal amount = request.amount() == null ? left : request.amount().setScale(2, java.math.RoundingMode.HALF_UP);
+        if (amount.signum() <= 0) {
+            throw new MadeWithException("Say how much this part is.");
+        }
+        if (amount.compareTo(left) > 0) {
+            throw new MadeWithException("That's more than is left to pay: " + naira(left) + ".");
+        }
         jdbc.update("""
                 INSERT INTO bill_payments (client_id, bill_id, branch_id, area_id, amount, method, payment_account_id, paid_by)
                 VALUES (:clientId, :billId, :branchId, :areaId, :amount, :method, :accountId, :userId)
                 """, new MapSqlParameterSource().addValue("clientId", clientId).addValue("billId", billId)
-                .addValue("branchId", branchId).addValue("areaId", request.areaId()).addValue("amount", toPay)
+                .addValue("branchId", branchId).addValue("areaId", request.areaId()).addValue("amount", amount)
                 .addValue("method", request.method().name()).addValue("accountId", account).addValue("userId", userId));
+        if (request.method() == SalePaymentMethod.CASH) {
+            cashDayService.onCashSale(clientId, branchId, request.areaId(), userId);
+        }
+        if (amount.compareTo(left) < 0) {
+            // Part paid: the bill stays open with what's left.
+            return new PayResult(false, null, get(clientId, userId, billId));
+        }
+        // Paid in full: one way, or more than one - a SPLIT sale whose parts are its payments.
+        List<Map<String, Object>> ways = jdbc.queryForList(
+                "SELECT DISTINCT method, payment_account_id FROM bill_payments WHERE bill_id = :id",
+                new MapSqlParameterSource("id", billId));
+        boolean oneWay = ways.size() == 1;
+        salePaymentService.recordIfAbsent(clientId, billId, branchId,
+                oneWay ? request.method() : SalePaymentMethod.SPLIT, oneWay ? account : null, userId);
         int closed = jdbc.update("""
                 UPDATE bills SET status = 'PAID', closed_by = :userId, closed_at = now() WHERE id = :id AND status = 'OPEN'
                 """, new MapSqlParameterSource().addValue("userId", userId).addValue("id", billId));
         if (closed == 0) {
             throw new MadeWithException("This bill was just paid on another phone.");
         }
-        if (request.method() == SalePaymentMethod.CASH) {
-            cashDayService.onCashSale(clientId, branchId, request.areaId(), userId);
-        }
-        return saleService.get(billId);
+        return new PayResult(true, saleService.get(billId), null);
+    }
+
+    /** {@code paid}: nothing left - {@code sale} is the receipt. Otherwise {@code bill} is the bill with what's left. */
+    public record PayResult(boolean paid, SaleResponse sale, Bill bill) {}
+
+    /** One part of a bill's payment, for the bill and its receipt. */
+    public record Payment(String method, BigDecimal amount, String accountName, OffsetDateTime paidAt, String paidByName) {}
+
+    @Transactional(readOnly = true)
+    public List<Payment> payments(UUID billId) {
+        return jdbc.query("""
+                SELECT bp.method, bp.amount, pa.bank_name, bp.paid_at,
+                       COALESCE(NULLIF(btrim(concat_ws(' ', u.first_name, u.last_name)), ''), u.username) AS paid_by_name
+                FROM bill_payments bp
+                LEFT JOIN payment_accounts pa ON pa.id = bp.payment_account_id
+                LEFT JOIN users u ON u.id = bp.paid_by
+                WHERE bp.bill_id = :id ORDER BY bp.paid_at, bp.id
+                """, new MapSqlParameterSource("id", billId),
+                (rs, n) -> new Payment(rs.getString("method"), rs.getBigDecimal("amount"), rs.getString("bank_name"),
+                        rs.getObject("paid_at", OffsetDateTime.class), rs.getString("paid_by_name")));
+    }
+
+    private BigDecimal paid(UUID billId) {
+        return jdbc.queryForObject("SELECT COALESCE(SUM(amount), 0) FROM bill_payments WHERE bill_id = :id",
+                new MapSqlParameterSource("id", billId), BigDecimal.class);
+    }
+
+    private static String naira(BigDecimal amount) {
+        return "\u20a6" + String.format(java.util.Locale.ENGLISH, "%,.0f", amount);
     }
 
     /** Closes a bill with nothing left on it - every item came off, or it was opened by mistake. */
@@ -302,7 +365,8 @@ public class BillService {
     private static final String SUMMARY = """
             SELECT b.id, b.branch_id, b.table_id, b.name, t.name AS table_name, b.status, b.opened_at,
                    COALESCE(NULLIF(btrim(concat_ws(' ', u.first_name, u.last_name)), ''), u.username) AS opened_by_name,
-                   COALESCE(x.total, 0) AS total, COALESCE(x.items, 0) AS items, x.last_sent
+                   COALESCE(x.total, 0) AS total, COALESCE(x.items, 0) AS items, x.last_sent,
+                   (SELECT COALESCE(SUM(bp.amount), 0) FROM bill_payments bp WHERE bp.bill_id = b.id) AS paid
             FROM bills b
             LEFT JOIN branch_tables t ON t.id = b.table_id
             LEFT JOIN users u ON u.id = b.opened_by
@@ -321,7 +385,8 @@ public class BillService {
         return new BillSummary(rs.getObject("id", UUID.class), rs.getObject("branch_id", UUID.class),
                 rs.getObject("table_id", UUID.class), rs.getString("name"), label, rs.getString("status"),
                 rs.getObject("opened_at", OffsetDateTime.class), rs.getString("opened_by_name"), rs.getBigDecimal("total"),
-                rs.getInt("items"), rs.getObject("last_sent", OffsetDateTime.class), rs.getBigDecimal("total"));
+                rs.getInt("items"), rs.getObject("last_sent", OffsetDateTime.class), rs.getBigDecimal("total"),
+                rs.getBigDecimal("paid"), rs.getBigDecimal("total"));
     }
 
     private BillSummary summaryOf(UUID clientId, UUID billId) {

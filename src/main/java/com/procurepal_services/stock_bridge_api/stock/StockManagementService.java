@@ -521,6 +521,9 @@ public class StockManagementService {
                 .costBasis(cost.basis())
                 .build());
         if (sale) {
+            if (request.paymentMethod() == com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.SPLIT) {
+                throw new com.procurepal_services.stock_bridge_api.product.MadeWithException("Choose cash, transfer or card.");
+            }
             // Stage C (V99): a line sent to a table's bill - its bill must still be open; it carries no payment.
             if (request.billLine() != null) {
                 stockMovementRepository.flush();
@@ -2276,6 +2279,9 @@ public class StockManagementService {
                             .addValue("amount", used.amount()).addValue("basis", used.basis().name()).addValue("id", line.getId()));
             line.setCostAmount(used.amount());
             line.setCostBasis(used.basis());
+        }
+        if (request.paymentMethod() == com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.SPLIT) {
+            throw new com.procurepal_services.stock_bridge_api.product.MadeWithException("Choose cash, transfer or card.");
         }
         if (request.billLine() != null) {
             stockMovementRepository.flush();

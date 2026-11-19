@@ -196,6 +196,11 @@ public class SaleService {
     /** ...and, for a transfer, which of the branch's accounts it came into (V96). */
     @Transactional
     public SaleResponse changePayment(UUID saleId, SalePaymentMethod method, UUID accountId, UUID actingUserId) {
+        if (method == SalePaymentMethod.SPLIT || Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT EXISTS (SELECT 1 FROM bills WHERE id = :id)",
+                new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", saleId), Boolean.class))) {
+            throw new SaleFixRefusedException("A table's bill is paid from the bill. Its payments can't be changed here.");
+        }
         List<StockMovement> rows = rowsOf(saleId);
         StockMovement first = linesOf(rows).get(0);
         if (first.getBranchId() != null && branchStockService.isMultiBranch(first.getClientId())) {
@@ -406,7 +411,10 @@ public class SaleService {
                 header.paymentAccountName(),
                 billFor(saleId),
                 charges,
-                ChargeService.toPay(total, charges));
+                ChargeService.toPay(total, charges),
+                jdbc.query("SELECT method, amount FROM bill_payments WHERE bill_id = :id ORDER BY paid_at, id",
+                        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", saleId),
+                        (rs, n) -> new SaleResponse.Part(SalePaymentMethod.valueOf(rs.getString("method")), rs.getBigDecimal("amount"))));
     }
 
     /** What a table's bill was for (V99): its table's name, or the name it was opened under. */

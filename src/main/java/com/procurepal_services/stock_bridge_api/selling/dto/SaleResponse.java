@@ -45,5 +45,11 @@ public record SaleResponse(
         /** Step 10 (V100): its charges and taxes as they stood when it was made, with what each came to. */
         java.util.List<com.procurepal_services.stock_bridge_api.selling.ChargeService.SaleCharge> charges,
         /** What the customer paid: the food and drinks ({@code total}) plus every charge added on top. */
-        java.math.BigDecimal totalToPay) {
+        java.math.BigDecimal totalToPay,
+        /** A table's bill (V99, V101): each part it was paid in - several when split. Empty for a counter sale. */
+        java.util.List<Part> payments) {
+
+    /** One part of a bill's payment: how, and how much. Transfers say only "Transfer" on a receipt. */
+    public record Part(com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod method, java.math.BigDecimal amount) {
+    }
 }
