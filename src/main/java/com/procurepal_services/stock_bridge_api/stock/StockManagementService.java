@@ -450,8 +450,10 @@ public class StockManagementService {
         UUID branchId = branchStockService.resolveForWrite(request.branchId(), actingUserId);
         // A product not for this branch is not sold, counted or adjusted here (V92).
         productBranchService.requireFor(product, branchId);
+        // A table's bill line (V99) comes from where it's made or kept, whoever takes the order: a waiter at the Front
+        // desk sends a Heineken from the Bar. The waiter still has to work at the branch (resolveForWrite above).
         UUID areaId = branchStockService.resolveAreaForWrite(branchId, request.areaId(), areaUse,
-                forMove ? null : actingUserId);
+                forMove || request.billLine() != null ? null : actingUserId);
 
         ResolvedEntry entry = resolveEntry(
                 product, request.quantity(), SaleFacts.enteredPrice(request), request.unit(), null, null);

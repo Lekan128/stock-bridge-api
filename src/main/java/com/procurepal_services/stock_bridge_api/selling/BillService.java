@@ -41,7 +41,8 @@ public class BillService {
 
     /** One sent line, as the bill shows it: grouped by when and by whom it was sent; a side names its meal's key. */
     public record BillLine(
-            UUID movementId, UUID lineKey, UUID withKey, UUID productId, String productName, UUID categoryId, BigDecimal quantity,
+            UUID movementId, UUID lineKey, UUID withKey, UUID productId, String productName, UUID categoryId, boolean madeHere,
+            BigDecimal quantity,
             String enteredUnit, BigDecimal enteredQuantity, BigDecimal amount, UUID areaId, String areaName, String note,
             OffsetDateTime sentAt, String sentByName, String takenOff, String takenOffNote) {}
 
@@ -71,7 +72,7 @@ public class BillService {
         BillSummary summary = summaryOf(clientId, billId);
         requireBranch(userId, summary.branchId());
         List<BillLine> lines = jdbc.query("""
-                SELECT o.id, bl.line_key, bl.with_key, o.product_id, p.name AS product_name, p.company_category_id, o.quantity, o.entered_unit,
+                SELECT o.id, bl.line_key, bl.with_key, o.product_id, p.name AS product_name, p.company_category_id, p.made_here, o.quantity, o.entered_unit,
                        o.entered_quantity, COALESCE(o.sale_amount, c.sale_amount) AS amount, o.area_id, a.name AS area_name,
                        bl.note, bl.sent_at,
                        COALESCE(NULLIF(btrim(concat_ws(' ', u.first_name, u.last_name)), ''), u.username) AS sent_by_name,
@@ -89,7 +90,7 @@ public class BillService {
                 """, new MapSqlParameterSource().addValue("billId", billId).addValue("clientId", clientId),
                 (rs, n) -> new BillLine(rs.getObject("id", UUID.class), rs.getObject("line_key", UUID.class),
                         rs.getObject("with_key", UUID.class), rs.getObject("product_id", UUID.class), rs.getString("product_name"),
-                        rs.getObject("company_category_id", UUID.class),
+                        rs.getObject("company_category_id", UUID.class), rs.getBoolean("made_here"),
                         rs.getBigDecimal("quantity"), rs.getString("entered_unit"), rs.getBigDecimal("entered_quantity"),
                         rs.getBigDecimal("amount"), rs.getObject("area_id", UUID.class), rs.getString("area_name"),
                         rs.getString("note"), rs.getObject("sent_at", OffsetDateTime.class), rs.getString("sent_by_name"),
