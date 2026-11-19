@@ -20,6 +20,11 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import com.procurepal_services.stock_bridge_api.push.CapturingPushTransport;
+import com.procurepal_services.stock_bridge_api.push.PushTestDevice;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.resttestclient.TestRestTemplate;
 import org.springframework.boot.resttestclient.autoconfigure.AutoConfigureTestRestTemplate;
@@ -40,6 +45,20 @@ import org.springframework.util.MultiValueMap;
 @AutoConfigureTestRestTemplate
 @ActiveProfiles("local")
 class SalePaymentIntegrationTest {
+
+    @Autowired
+    private CapturingPushTransport pushes;
+
+    /** The push services, kept in memory: what would have reached each phone. */
+    @TestConfiguration
+    static class Pushes {
+        @Bean
+        @Primary
+        CapturingPushTransport capturingPushTransport() {
+            return new CapturingPushTransport();
+        }
+    }
+
 
     private static final String PASSWORD = "correct-horse-battery-staple";
 
@@ -719,6 +738,56 @@ class SalePaymentIntegrationTest {
         ResponseEntity<String> none = send(owner, HttpMethod.POST, "/api/products/" + coke + "/stock/stock-out", fromBar, String.class);
         assertThat(none.getStatusCode().is4xxClientError()).isTrue();
         assertThat(none.getBody()).contains("None in the Bar.").contains("60").contains("in the Store: move some to the Bar first.");
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void aNewTicketReachesThePhonesOfItsAreaAndReadyReachesTheWaiterWhoSentIt() throws Exception {
+        Shop owner = shop("Ticket Push Shop");
+        send(owner, HttpMethod.PUT, "/api/company/selling", Map.of("sellsStock", true, "source", "OWNER"), String.class);
+        UUID rice = product(owner, "Jollof rice");
+        stockIn(owner, rice, 20);
+        String branch = (String) ((java.util.List<Map<String, Object>>) get(owner, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        send(owner, HttpMethod.PUT, "/api/branches/" + branch + "/tickets", Map.of("on", true), Map.class);
+        java.util.List<Map<String, Object>> tables = send(owner, HttpMethod.POST, "/api/branches/" + branch + "/tables",
+                Map.of("count", 2), java.util.List.class).getBody();
+        Shop waiter = cashier(owner);
+
+        // The owner records everywhere: new tickets are off until they turn them on. The waiter's are on.
+        assertThat(get(owner, "/api/push/prefs", Map.class).getBody().get("TICKETS_NEW")).isEqualTo(false);
+        assertThat(get(waiter, "/api/push/prefs", Map.class).getBody().get("TICKETS_READY")).isEqualTo(true);
+        send(owner, HttpMethod.PUT, "/api/push/prefs", Map.of("kind", "TICKETS_NEW", "on", true), Map.class);
+        PushTestDevice ownersPhone = new PushTestDevice();
+        PushTestDevice waitersPhone = new PushTestDevice();
+        send(owner, HttpMethod.POST, "/api/push/subscriptions", ownersPhone.subscription(), String.class);
+        send(waiter, HttpMethod.POST, "/api/push/subscriptions", waitersPhone.subscription(), String.class);
+
+        // The waiter sends two plates: one notification for the area, with both.
+        String bill = (String) send(waiter, HttpMethod.POST, "/api/bills",
+                Map.of("branchId", branch, "tableId", tables.get(1).get("id")), Map.class).getBody().get("id");
+        String sendKey = UUID.randomUUID().toString();
+        for (int i = 0; i < 2; i++) {
+            Map<String, Object> plate = sale(1, "7000", UUID.fromString(bill), null);
+            plate.put("billLine", Map.of("lineKey", UUID.randomUUID().toString(), "sendKey", sendKey));
+            stockOut(waiter, rice, plate);
+        }
+        CapturingPushTransport.Sent told = pushes.to(ownersPhone.endpoint(), 1).getFirst();
+        tools.jackson.databind.JsonNode message = tools.jackson.databind.json.JsonMapper.builder().build().readTree(ownersPhone.read(told.body()));
+        assertThat(message.get("title").asString()).isEqualTo("Table 2 · Store · 2 items");
+        assertThat(message.get("body").asString()).isEqualTo("Jollof rice, Jollof rice");
+        assertThat(message.get("url").asString()).isEqualTo("/app/tickets");
+        // The waiter who sent it isn't told about their own ticket.
+        assertThat(pushes.to(waitersPhone.endpoint(), 0)).isEmpty();
+
+        // Ready: the waiter is told.
+        String area = (String) ((Map<String, Object>) get(owner, "/api/tickets/areas?branchId=" + branch, java.util.List.class).getBody().get(0)).get("id");
+        String ticket = (String) ((Map<String, Object>) get(owner, "/api/tickets?areaId=" + area, java.util.List.class).getBody().get(0)).get("id");
+        send(owner, HttpMethod.PUT, "/api/tickets/" + ticket + "/ready", null, java.util.List.class);
+        CapturingPushTransport.Sent ready = pushes.to(waitersPhone.endpoint(), 1).getFirst();
+        tools.jackson.databind.JsonNode readyMessage = tools.jackson.databind.json.JsonMapper.builder().build().readTree(waitersPhone.read(ready.body()));
+        assertThat(readyMessage.get("title").asString()).isEqualTo("Table 2 · Store: ready");
+        assertThat(readyMessage.get("url").asString()).isEqualTo("/app/sell/bill?id=" + bill);
     }
 
     private BigDecimal onHand(Shop shop, UUID productId) {

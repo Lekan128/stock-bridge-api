@@ -20,6 +20,7 @@ import org.springframework.stereotype.Component;
 public class BillLineRecorder {
 
     private final NamedParameterJdbcTemplate jdbc;
+    private final TicketPushes ticketPushes;
 
     /** Called before the sale's payment is looked at: a bill line carries none, and its bill must still be open. */
     public void record(UUID clientId, StockOutRequest request, UUID movementId, UUID saleId, UUID branchId, UUID userId) {
@@ -56,6 +57,9 @@ public class BillLineRecorder {
                 new MapSqlParameterSource().addValue("movementId", movementId).addValue("billId", saleId)
                         .addValue("clientId", clientId).addValue("key", line.lineKey()).addValue("withKey", line.withKey())
                         .addValue("note", note).addValue("userId", userId));
-        TicketService.addToTicket(jdbc, clientId, saleId, movementId, line.sendKey() == null ? movementId : line.sendKey(), userId);
+        UUID made = TicketService.addToTicket(jdbc, clientId, saleId, movementId, line.sendKey() == null ? movementId : line.sendKey(), userId);
+        if (made != null) {
+            ticketPushes.announceLater(made);
+        }
     }
 }

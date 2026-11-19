@@ -36,6 +36,7 @@ public class TicketService {
     private final NamedParameterJdbcTemplate jdbc;
     private final AreaAccessService areaAccessService;
     private final BranchAccessService branchAccessService;
+    private final TicketPushes ticketPushes;
 
     /**
      * @param changed an item on it was taken off since it was sent, and nobody in the area has said OK yet.
@@ -69,17 +70,18 @@ public class TicketService {
      * A line sent to a bill joins its Send's ticket for the area it came from; the first line of each makes it. Only
      * at a branch with tickets switched on.
      */
-    static void addToTicket(NamedParameterJdbcTemplate jdbc, UUID clientId, UUID billId, UUID movementId, UUID sendKey,
+    /** @return the ticket, when this line made it (its first line); null otherwise. */
+    static UUID addToTicket(NamedParameterJdbcTemplate jdbc, UUID clientId, UUID billId, UUID movementId, UUID sendKey,
             UUID userId) {
         UUID areaId = jdbc.queryForList("SELECT area_id FROM stock_movements WHERE id = :id",
                 new MapSqlParameterSource("id", movementId), UUID.class).stream().findFirst().orElse(null);
         if (areaId == null) {
-            return;
+            return null;
         }
         MapSqlParameterSource params = new MapSqlParameterSource().addValue("clientId", clientId).addValue("billId", billId)
                 .addValue("areaId", areaId).addValue("sendKey", sendKey).addValue("userId", userId)
                 .addValue("movementId", movementId);
-        jdbc.update("""
+        List<UUID> made = jdbc.queryForList("""
                 INSERT INTO tickets (client_id, branch_id, area_id, bill_id, send_key, kind, created_by)
                 SELECT :clientId, b.branch_id, :areaId, b.id, :sendKey,
                        CASE WHEN EXISTS (SELECT 1 FROM tickets t WHERE t.bill_id = b.id AND t.send_key <> :sendKey)
@@ -88,12 +90,14 @@ public class TicketService {
                 FROM bills b JOIN branches br ON br.id = b.branch_id AND br.tickets_on
                 WHERE b.id = :billId AND b.client_id = :clientId
                 ON CONFLICT (bill_id, area_id, send_key) DO NOTHING
-                """, params);
+                RETURNING id
+                """, params, UUID.class);
         jdbc.update("""
                 INSERT INTO ticket_lines (ticket_id, movement_id)
                 SELECT id, :movementId FROM tickets WHERE bill_id = :billId AND area_id = :areaId AND send_key = :sendKey
                 ON CONFLICT DO NOTHING
                 """, params);
+        return made.isEmpty() ? null : made.getFirst();
     }
 
     // ---------------------------------------------------------------------------------------- the Tickets page
@@ -221,10 +225,14 @@ public class TicketService {
     public List<Ticket> ready(UUID clientId, UUID userId, UUID ticketId, boolean ready) {
         UUID areaId = areaOf(clientId, ticketId);
         requireArea(clientId, userId, areaId);
-        jdbc.update(ready
+        int changed = jdbc.update(ready
                 ? "UPDATE tickets SET ready_at = now(), ready_by = :userId WHERE id = :id AND ready_at IS NULL"
                 : "UPDATE tickets SET ready_at = NULL, ready_by = NULL, served_at = NULL, served_by = NULL WHERE id = :id",
                 new MapSqlParameterSource().addValue("id", ticketId).addValue("userId", userId));
+        // The waiter who sent it is told (V104).
+        if (ready && changed > 0) {
+            ticketPushes.ready(ticketId);
+        }
         return list(clientId, userId, areaId);
     }
 
