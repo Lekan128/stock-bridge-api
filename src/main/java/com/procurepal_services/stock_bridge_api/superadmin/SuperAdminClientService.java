@@ -190,7 +190,8 @@ public class SuperAdminClientService {
                 client.getPaymentTerms(),
                 client.isSellsStock(),
                 client.isDemo(),
-                !client.isDemo() && demoResetService.whyNotDemo(client) == null);
+                !client.isDemo() && demoResetService.whyNotDemo(client) == null,
+                client.isSellsMadeHere());
     }
 
     private Client findOrThrow(UUID id) {

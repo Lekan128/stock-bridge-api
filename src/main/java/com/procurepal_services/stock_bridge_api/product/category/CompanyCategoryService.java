@@ -33,7 +33,7 @@ public class CompanyCategoryService {
         }
         return companyCategoryRepository.findAllByClientIdOrderByNameAsc(tenantId).stream()
                 .map(category -> new CompanyCategoryResponse(
-                        category.getId(), category.getName(), counts.getOrDefault(category.getId(), 0L)))
+                        category.getId(), category.getName(), counts.getOrDefault(category.getId(), 0L), category.isGoesWithMeal()))
                 .toList();
     }
 
@@ -45,7 +45,7 @@ public class CompanyCategoryService {
             throw CompanyCategoryException.duplicate(clean);
         }
         CompanyCategory saved = companyCategoryRepository.saveAndFlush(CompanyCategory.builder().name(clean).build());
-        return new CompanyCategoryResponse(saved.getId(), saved.getName(), 0);
+        return new CompanyCategoryResponse(saved.getId(), saved.getName(), 0, false);
     }
 
     @Transactional
@@ -58,6 +58,15 @@ public class CompanyCategoryService {
             throw CompanyCategoryException.duplicate(clean);
         }
         category.setName(clean);
+        companyCategoryRepository.saveAndFlush(category);
+        return list().stream().filter(row -> row.id().equals(id)).findFirst().orElseThrow();
+    }
+
+    /** "These go with a meal" (V99, selling till Step 9): its products are sides on a table's bill. */
+    @Transactional
+    public CompanyCategoryResponse setGoesWithMeal(UUID id, boolean on) {
+        CompanyCategory category = require(id);
+        category.setGoesWithMeal(on);
         companyCategoryRepository.saveAndFlush(category);
         return list().stream().filter(row -> row.id().equals(id)).findFirst().orElseThrow();
     }

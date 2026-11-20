@@ -129,7 +129,10 @@ class EveryBranchStockQuery {
                   AND EXISTS (SELECT 1 FROM unnest(:scope) AS b(branch_id)
                               LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id = b.branch_id
                               WHERE COALESCE(bs.low_stock_threshold, p.low_stock_threshold) IS NOT NULL
-                                AND COALESCE(bs.quantity_on_hand, 0) <= COALESCE(bs.low_stock_threshold, p.low_stock_threshold))
+                                AND COALESCE(bs.quantity_on_hand, 0) <= COALESCE(bs.low_stock_threshold, p.low_stock_threshold)
+                                -- Only at a branch it is for (V92): elsewhere it isn't "out", it isn't there.
+                                AND (p.for_all_branches OR EXISTS (SELECT 1 FROM product_branches pb
+                                                                   WHERE pb.product_id = p.id AND pb.branch_id = b.branch_id)))
                 ORDER BY p.name, p.id LIMIT :limit""",
                 new MapSqlParameterSource()
                         .addValue("clientId", clientId)

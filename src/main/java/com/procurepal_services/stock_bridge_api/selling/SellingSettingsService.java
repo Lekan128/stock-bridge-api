@@ -59,6 +59,7 @@ public class SellingSettingsService {
     private final SellingPolicy sellingPolicy;
     private final ProductRepository productRepository;
     private final SellingPriceService sellingPriceService;
+    private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
 
     @Transactional(readOnly = true)
     public SellingSettingsResponse get() {
@@ -137,6 +138,119 @@ public class SellingSettingsService {
                 "Demo company reset");
         client.setStockUse(StockUse.BOTH);
         clientRepository.save(client);
+        // The demo is a restaurant: it sells what it makes too (V90).
+        applyMadeHere(client, true, SettingChangeSource.SUPPORT, null, ChangedByKind.SUPER_ADMIN, "demo reset",
+                "Demo company reset");
+    }
+
+    /** The owner turning "Sell things you make" on or off (V90). Needs selling on to turn it on. */
+    @Transactional
+    public SellingSettingsResponse updateMadeHere(boolean on, UUID actingUserId) {
+        Client client = currentClient();
+        User actor = userRepository.findById(actingUserId).orElse(null);
+        applyMadeHere(client, on, SettingChangeSource.OWNER, actingUserId, ChangedByKind.TENANT_USER,
+                actor == null ? "unknown" : actor.getUsername(), null);
+        return responseFor(client);
+    }
+
+    /** The owner turning "Count cash at open and close" on or off (V97, Step 13). Needs selling on to turn it on. */
+    @Transactional
+    public SellingSettingsResponse updateCountsCash(boolean on, UUID actingUserId) {
+        Client client = currentClient();
+        if (on && !client.isSellsStock()) {
+            throw new SellingNotAvailableException("Turn on selling first: it counts the cash from sales.");
+        }
+        if (client.isCountsCash() != on) {
+            User actor = userRepository.findById(actingUserId).orElse(null);
+            client.setCountsCash(on);
+            clientRepository.save(client);
+            changeRepository.save(ClientSettingChange.builder()
+                    .clientId(client.getId())
+                    .setting(ClientSettingChange.COUNTS_CASH)
+                    .oldValue(Boolean.toString(!on))
+                    .newValue(Boolean.toString(on))
+                    .source(SettingChangeSource.OWNER)
+                    .changedBy(actingUserId)
+                    .changedByKind(ChangedByKind.TENANT_USER)
+                    .changedByUsername(actor == null ? "unknown" : actor.getUsername())
+                    .changedAt(OffsetDateTime.now())
+                    .build());
+        }
+        return responseFor(client);
+    }
+
+    /** The owner choosing how long after a close a drawer can be opened again (V98): 1 to 24 hours. */
+    @Transactional
+    public SellingSettingsResponse updateCashReopenHours(int hours, UUID actingUserId) {
+        if (hours < 1 || hours > 24) {
+            throw new IllegalArgumentException("Choose between 1 and 24 hours.");
+        }
+        Client client = currentClient();
+        if (client.getCashReopenHours() != hours) {
+            User actor = userRepository.findById(actingUserId).orElse(null);
+            int old = client.getCashReopenHours();
+            client.setCashReopenHours(hours);
+            clientRepository.save(client);
+            changeRepository.save(ClientSettingChange.builder()
+                    .clientId(client.getId())
+                    .setting(ClientSettingChange.CASH_REOPEN_HOURS)
+                    .oldValue(Integer.toString(old))
+                    .newValue(Integer.toString(hours))
+                    .source(SettingChangeSource.OWNER)
+                    .changedBy(actingUserId)
+                    .changedByKind(ChangedByKind.TENANT_USER)
+                    .changedByUsername(actor == null ? "unknown" : actor.getUsername())
+                    .changedAt(OffsetDateTime.now())
+                    .build());
+        }
+        return responseFor(client);
+    }
+
+    /** Support turning it on or off for a company, with a reason; the owner is told, as for selling itself. */
+    @Transactional
+    public SellingSettingsResponse updateMadeHereBySupport(UUID clientId, boolean on, String reason, UUID superAdminId) {
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("Say why you are changing this - the owner is told.");
+        }
+        Client client = clientRepository.findById(clientId).orElseThrow(ClientNotFoundException::new);
+        String username = superAdminRepository.findById(superAdminId).map(admin -> admin.getUsername()).orElse("support");
+        boolean changed = applyMadeHere(client, on, SettingChangeSource.SUPPORT, superAdminId, ChangedByKind.SUPER_ADMIN,
+                username, reason.trim());
+        if (changed) {
+            UUID ownerUserId = userRepository.findFirstByClientIdAndRootTrue(clientId).map(User::getId).orElse(null);
+            notificationService.notifyClient(clientId, ownerUserId, NotificationType.ACCOUNT_SETTING_CHANGED,
+                    on ? SUPPORT_NAME + " turned on selling things you make" : SUPPORT_NAME + " turned off selling things you make",
+                    reason.trim(), "/app/company", null);
+        }
+        return responseFor(client);
+    }
+
+    /** @return whether anything changed. Turning it on needs selling on; turning it off never does. */
+    private boolean applyMadeHere(
+            Client client, boolean on, SettingChangeSource source, UUID changedBy, ChangedByKind kind, String username,
+            String reason) {
+        if (on && !client.isSellsStock()) {
+            throw new SellingNotAvailableException("Turn on selling first: things you make are sold the same way.");
+        }
+        if (client.isSellsMadeHere() == on) {
+            return false;
+        }
+        client.setSellsMadeHere(on);
+        clientRepository.save(client);
+        changeRepository.save(ClientSettingChange.builder()
+                .clientId(client.getId())
+                .setting(ClientSettingChange.SELLS_MADE_HERE)
+                .oldValue(Boolean.toString(!on))
+                .newValue(Boolean.toString(on))
+                .source(source)
+                .changedBy(changedBy)
+                .changedByKind(kind)
+                .changedByUsername(username)
+                .reason(reason)
+                .changedAt(OffsetDateTime.now())
+                .build());
+        log.info("Selling things you make {} for client={} via {} by {}", on ? "on" : "off", client.getId(), source, changedBy);
+        return true;
     }
 
     /** @return whether anything changed. */
@@ -182,6 +296,12 @@ public class SellingSettingsService {
         ClientSettingChange last = changeRepository
                 .findFirstByClientIdAndSettingOrderByChangedAtDesc(client.getId(), ClientSettingChange.SELLS_STOCK)
                 .orElse(null);
+        ClientSettingChange madeHere = changeRepository
+                .findFirstByClientIdAndSettingOrderByChangedAtDesc(client.getId(), ClientSettingChange.SELLS_MADE_HERE)
+                .orElse(null);
+        ClientSettingChange countsCash = changeRepository
+                .findFirstByClientIdAndSettingOrderByChangedAtDesc(client.getId(), ClientSettingChange.COUNTS_CASH)
+                .orElse(null);
         return new SellingSettingsResponse(
                 client.isSellsStock(),
                 sellingPolicy.canChooseToSellStock(client),
@@ -190,7 +310,16 @@ public class SellingSettingsService {
                 last == null ? null : last.getSource(),
                 client.getStockUse(),
                 productRepository.countByClientIdAndLegacyUnitPriceIsNotNullAndUnitPriceIsNullAndActiveTrue(client.getId()),
-                client.getLegacyPricesDismissedAt() != null);
+                client.getLegacyPricesDismissedAt() != null,
+                client.isSellsMadeHere(),
+                madeHere == null ? null : madeHere.getChangedAt(),
+                madeHere == null ? null : changedByName(madeHere),
+                client.isCountsCash(),
+                countsCash == null ? null : countsCash.getChangedAt(),
+                countsCash == null ? null : changedByName(countsCash),
+                client.getCashReopenHours(),
+                jdbc.queryForList("SELECT id FROM company_categories WHERE client_id = :id AND goes_with_meal",
+                        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", client.getId()), java.util.UUID.class));
     }
 
     // ---------------------------------------------------------------- old prices (section 4.6.3)

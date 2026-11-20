@@ -114,7 +114,81 @@ public record CreateProductRequest(
          */
         @Size(max = 20) java.util.List<@Valid SupplierLink> suppliers,
         /** What's on the shelf as it's added, and from which supplier if any - separate from the suppliers above. */
-        @Valid OpeningStock openingStock) {
+        @Valid OpeningStock openingStock,
+        /**
+         * Made here, not kept in stock (V90, selling till Step 4). Needs the company's "Sell things you make"; takes
+         * no units, suppliers, opening stock or low-stock level.
+         */
+        Boolean madeHere,
+        /** A made-here item's rough cost to make one. Optional. */
+        @DecimalMin(value = "0", inclusive = true) BigDecimal estimatedCost,
+        /**
+         * Which branches it is for (V92): these, or every branch with {@code allBranches}. Absent: the only branch at
+         * a one-branch company; every branch at a company with several (a caller from before branches were chosen).
+         */
+        java.util.List<UUID> branchIds,
+        Boolean allBranches) {
+
+    /** The shape before a product's branches (V92). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit,
+            java.util.List<String> countIn,
+            java.util.List<SupplierLink> suppliers,
+            OpeningStock openingStock,
+            Boolean madeHere,
+            BigDecimal estimatedCost) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers, openingStock,
+                madeHere, estimatedCost, null, null);
+    }
+
+    /** The shape before made-here items (V90). */
+    public CreateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            InitialVendor initialVendor,
+            UUID categoryId,
+            String barcode,
+            String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit,
+            java.util.List<String> countIn,
+            java.util.List<SupplierLink> suppliers,
+            OpeningStock openingStock) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers, openingStock,
+                (Boolean) null, (BigDecimal) null);
+    }
+
+    /** The same product, for every branch (V92) - the demo's, sold at both of its branches. */
+    public CreateProductRequest forAllBranches() {
+        return new CreateProductRequest(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit,
+                packagingSize, initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers,
+                openingStock, madeHere, estimatedCost, null, true);
+    }
+
+    public boolean isMadeHere() {
+        return Boolean.TRUE.equals(madeHere);
+    }
 
     /** One supplier of the product: its pack from them, and its price per stock unit, both optional. */
     public record SupplierLink(

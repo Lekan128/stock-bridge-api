@@ -32,6 +32,11 @@ public class ClientSettingChange {
 
     /** The only setting so far. A name rather than a column so the next switch logs here too. */
     public static final String SELLS_STOCK = "SELLS_STOCK";
+    /** "Sell things you make" (V90, selling till Step 4). */
+    public static final String SELLS_MADE_HERE = "SELLS_MADE_HERE";
+    /** "Count cash at open and close" (V97, selling till Step 13). */
+    public static final String COUNTS_CASH = "COUNTS_CASH";
+    public static final String CASH_REOPEN_HOURS = "CASH_REOPEN_HOURS";
 
     /** SuperAdmin marking a company as the shared demo, or back (V86). Always SUPPORT, with the reason. */
     public static final String DEMO = "DEMO";

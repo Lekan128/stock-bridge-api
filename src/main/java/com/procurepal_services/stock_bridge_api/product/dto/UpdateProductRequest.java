@@ -96,7 +96,50 @@ public record UpdateProductRequest(
         /** Where stock-outs and counts start for this product (Part 2): a measure, a unit or a pack key. Blank clears. */
         String usedInUnit,
         /** The units a count of it opens in (V84), the whole list; absent leaves them, empty goes back to the default. */
-        java.util.List<String> countIn) {
+        java.util.List<String> countIn,
+        /** A made-here item's rough cost to make one (V90); absent leaves it, with {@code clearEstimatedCost} to take it off. */
+        @DecimalMin(value = "0", inclusive = true) BigDecimal estimatedCost,
+        Boolean clearEstimatedCost,
+        /** Which branches it is for (V92): absent leaves them; {@code allBranches} true is every branch. */
+        java.util.List<UUID> branchIds,
+        Boolean allBranches) {
+
+    /** The shape before a product's branches (V92). */
+    public UpdateProductRequest(
+            String name, String sku, String description, BigDecimal unitPrice, Integer lowStockThreshold, Boolean active,
+            Boolean removeImage, String unitOfMeasure, String packagingUnit, BigDecimal packagingSize, UUID categoryId,
+            Boolean clearCategory, String barcode, String unitPriceUnit, Boolean clearUnitPrice,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures, String usedInUnit,
+            java.util.List<String> countIn, BigDecimal estimatedCost, Boolean clearEstimatedCost) {
+        this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure, packagingUnit,
+                packagingSize, categoryId, clearCategory, barcode, unitPriceUnit, clearUnitPrice, measures, usedInUnit,
+                countIn, estimatedCost, clearEstimatedCost, null, null);
+    }
+
+    /** The shape before made-here items (V90). */
+    public UpdateProductRequest(
+            String name,
+            String sku,
+            String description,
+            BigDecimal unitPrice,
+            Integer lowStockThreshold,
+            Boolean active,
+            Boolean removeImage,
+            String unitOfMeasure,
+            String packagingUnit,
+            BigDecimal packagingSize,
+            UUID categoryId,
+            Boolean clearCategory,
+            String barcode,
+            String unitPriceUnit,
+            Boolean clearUnitPrice,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit,
+            java.util.List<String> countIn) {
+        this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure, packagingUnit,
+                packagingSize, categoryId, clearCategory, barcode, unitPriceUnit, clearUnitPrice, measures, usedInUnit,
+                countIn, (BigDecimal) null, (Boolean) null);
+    }
 
     /** The shape before the count units (V84). */
     public UpdateProductRequest(

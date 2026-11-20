@@ -44,6 +44,7 @@ public class SalesExportService {
             headers.add("Recorded by");
             headers.add("Items");
             if (branchColumn) headers.add("Branch");
+            headers.add("Paid by");
         } else if (grouping.equals("product")) {
             headers.add("Sold");
         } else {
@@ -65,6 +66,7 @@ public class SalesExportService {
                     row.createCell(col++).setCellValue(line.label() == null ? "" : line.label());
                     row.createCell(col++).setCellValue(line.detail() == null ? "" : line.detail());
                     if (branchColumn) row.createCell(col++).setCellValue(line.branch() == null ? "" : line.branch());
+                    row.createCell(col++).setCellValue(paidBy(line.paymentMethod()));
                 } else if (grouping.equals("product")) {
                     row.createCell(col++).setCellValue(line.label() == null ? "" : line.label());
                     row.createCell(col++).setCellValue((line.quantity() == null ? 0 : line.quantity())
@@ -93,6 +95,13 @@ public class SalesExportService {
                                 .formatted(totals.unpricedLineCount() + totals.unknownCostLineCount(),
                                         totals.unpricedLineCount(), totals.unknownCostLineCount()));
             }
+            SalesTotals.ByPayment paid = totals.byPayment();
+            if (paid != null) {
+                builder.sheet().createRow(rowIndex++).createCell(0).setCellValue(
+                        "Cash ₦%,.2f · Transfer ₦%,.2f · Card ₦%,.2f%s".formatted(
+                                paid.cashAmount(), paid.transferAmount(), paid.cardAmount(),
+                                paid.notRecordedSales() > 0 ? " · Not recorded ₦%,.2f".formatted(paid.notRecordedAmount()) : ""));
+            }
             if (totals.cancelledLineCount() > 0) {
                 builder.sheet().createRow(rowIndex++).createCell(0).setCellValue(
                         "%d cancelled line(s) are not counted.".formatted(totals.cancelledLineCount()));
@@ -103,6 +112,19 @@ public class SalesExportService {
             }
             return builder.toBytes();
         }
+    }
+
+    private static String paidBy(String method) {
+        if (method == null) {
+            return "Not recorded";
+        }
+        return switch (method) {
+            case "CASH" -> "Cash";
+            case "TRANSFER" -> "Transfer";
+            case "CARD" -> "Card";
+            case "SPLIT" -> "Split";
+            default -> method;
+        };
     }
 
     private static void writeMoney(Row row, int col, SalesTotals totals, CellStyle money) {

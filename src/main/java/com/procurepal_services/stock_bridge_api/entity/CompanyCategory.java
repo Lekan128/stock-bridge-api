@@ -39,6 +39,11 @@ public class CompanyCategory extends TenantAwareEntity {
     @Column(nullable = false, length = NAME_MAX_LENGTH)
     private String name;
 
+    /** V99 (selling till Step 9): its products are sides - the till asks which meal each one goes with. */
+    @Column(name = "goes_with_meal", nullable = false)
+    @lombok.Builder.Default
+    private boolean goesWithMeal = false;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private OffsetDateTime createdAt;

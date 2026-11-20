@@ -27,5 +27,17 @@ public record SellingSettingsResponse(
         SettingChangeSource changedVia,
         StockUse stockUse,
         long legacyPriceCount,
-        boolean legacyPricesDismissed) {
+        boolean legacyPricesDismissed,
+        /** "Sell things you make" (V90): made-here items, under selling. Only shown while selling is on. */
+        boolean sellsMadeHere,
+        OffsetDateTime madeHereChangedAt,
+        String madeHereChangedByName,
+        /** "Count cash at open and close" (V97, Step 13). */
+        boolean countsCash,
+        OffsetDateTime countsCashChangedAt,
+        String countsCashChangedByName,
+        /** How long after a close a drawer can be opened again (V98); after it, a fresh start count. */
+        int cashReopenHours,
+        /** V99: the categories whose products are sides (the till asks which meal each goes with). */
+        java.util.List<java.util.UUID> sideCategoryIds) {
 }

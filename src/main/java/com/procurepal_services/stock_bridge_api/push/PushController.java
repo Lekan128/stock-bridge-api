@@ -37,6 +37,28 @@ public class PushController {
     }
 
     private final PushService pushService;
+    private final PushPrefs pushPrefs;
+
+    /** One kind of notification on or off for the signed-in person (V104). */
+    public record PrefRequest(@NotBlank String kind, boolean on) {
+    }
+
+    /** The signed-in person's notifications, by kind: TICKETS_NEW, TICKETS_READY. */
+    @GetMapping("/prefs")
+    public Map<String, Boolean> prefs(
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+            com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        return pushPrefs.of(principal.getUserId());
+    }
+
+    @org.springframework.web.bind.annotation.PutMapping("/prefs")
+    public Map<String, Boolean> setPref(
+            @Valid @org.springframework.web.bind.annotation.RequestBody PrefRequest request,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+            com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        pushPrefs.set(principal.getUserId(), request.kind(), request.on());
+        return pushPrefs.of(principal.getUserId());
+    }
 
     @GetMapping("/key")
     public Map<String, String> key() {

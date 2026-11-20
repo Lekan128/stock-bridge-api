@@ -16,6 +16,7 @@ import java.util.UUID;
  * @param worksHere whether the signed-in person works in it (V64, STOCK_AREAS_PART_3.md): the branch list
  *     says so for each area; absent on the answer to a change.
  * @param confirms moves to it wait until someone there confirms what arrived (Part 4, D-A2).
+ * @param sells things are sold from it (V103); false for a store room.
  */
 public record AreaResponse(
         UUID id,
@@ -27,10 +28,11 @@ public record AreaResponse(
         Long productsInStock,
         Boolean worksHere,
         boolean shortIsUsed,
-        boolean confirms) {
+        boolean confirms,
+        boolean sells) {
 
     public AreaResponse withWorksHere(boolean works) {
         return new AreaResponse(id, name, keepsStock, delivery, active, closedAt, productsInStock, works, shortIsUsed,
-                confirms);
+                confirms, sells);
     }
 }

@@ -122,6 +122,10 @@ public class StockMovement extends TenantAwareEntity {
     @Column(name = "used_area_id", updatable = false)
     private UUID usedAreaId;
 
+    /** On an ingredient's stock-out (V95): the made-here sale line it was used for - "Used for 3 x Jollof rice". */
+    @Column(name = "used_for_movement_id", updatable = false)
+    private UUID usedForMovementId;
+
     /** The waybill this row is part of (V53) - TRANSFER_OUT and TRANSFER_IN only. Raw, like branchId. */
     @Column(name = "transfer_id", updatable = false)
     private UUID transferId;

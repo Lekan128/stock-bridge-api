@@ -127,7 +127,9 @@ class DemoResetIntegrationTest {
         Map<String, Object> first = resetAndWait(token, clientId, slug);
         assertThat(first.get("state")).as(String.valueOf(first)).isEqualTo("DONE");
 
-        assertThat(count("SELECT count(*) FROM products WHERE client_id = ?", clientId)).isEqualTo(DemoCatalog.ITEMS.size());
+        // The stock catalogue, and the menu made here (selling till).
+        assertThat(count("SELECT count(*) FROM products WHERE client_id = ?", clientId))
+                .isEqualTo(DemoCatalog.ITEMS.size() + DemoSelling.MENU.size());
         assertThat(count("SELECT count(*) FROM branches WHERE client_id = ?", clientId)).isEqualTo(2);
         assertThat(count("SELECT count(*) FROM company_vendors WHERE client_id = ?", clientId)).isEqualTo(DemoCatalog.SUPPLIERS.size());
         assertThat(count("SELECT count(*) FROM stock_movements WHERE client_id = ?", clientId)).isGreaterThan(1000);
@@ -157,6 +159,46 @@ class DemoResetIntegrationTest {
         assertThat(count("""
                 SELECT count(DISTINCT m.created_by) FROM stock_movements m WHERE m.client_id = ?
                 """, clientId)).isGreaterThanOrEqualTo(3);
+        // Selling (owner, 2026-11-19): every feature has something to try.
+        assertThat(count("SELECT count(*) FROM product_ingredients WHERE client_id = ?", clientId)).isPositive();
+        assertThat(count("SELECT count(*) FROM company_categories WHERE client_id = ? AND goes_with_meal", clientId)).isEqualTo(1);
+        assertThat(count("SELECT count(*) FROM areas WHERE client_id = ? AND NOT sells", clientId)).isEqualTo(2);
+        assertThat(count("SELECT count(*) FROM branch_tables WHERE client_id = ?", clientId)).isEqualTo(11);
+        assertThat(count("SELECT count(*) FROM branches WHERE client_id = ? AND tickets_on", clientId)).isEqualTo(1);
+        assertThat(count("SELECT count(*) FROM branch_charges WHERE client_id = ? AND is_active", clientId)).isEqualTo(3);
+        assertThat(count("SELECT count(*) FROM payment_accounts WHERE client_id = ?", clientId)).isEqualTo(4);
+        assertThat(count("SELECT count(*) FROM bills WHERE client_id = ? AND status = 'PAID'", clientId)).isGreaterThan(30);
+        assertThat(count("SELECT count(*) FROM sales WHERE client_id = ? AND payment_method = 'SPLIT'", clientId)).isPositive();
+        assertThat(count("SELECT count(*) FROM bill_lines WHERE client_id = ? AND with_key IS NOT NULL", clientId)).isPositive();
+        assertThat(count("SELECT count(*) FROM sale_charges WHERE client_id = ? AND amount > 0", clientId)).isPositive();
+        // Today: five open bills, one each of being made, ready, all served, part paid, and for a name.
+        assertThat(count("SELECT count(*) FROM bills WHERE client_id = ? AND status = 'OPEN'", clientId)).isEqualTo(5);
+        assertThat(count("SELECT count(*) FROM bills WHERE client_id = ? AND status = 'OPEN' AND name IS NOT NULL", clientId)).isEqualTo(1);
+        assertThat(count("""
+                SELECT count(*) FROM tickets t JOIN bills b ON b.id = t.bill_id
+                WHERE t.client_id = ? AND b.status = 'OPEN' AND t.ready_at IS NOT NULL AND t.served_at IS NULL
+                """, clientId)).isPositive();
+        assertThat(count("""
+                SELECT count(*) FROM bill_payments p JOIN bills b ON b.id = p.bill_id WHERE p.client_id = ? AND b.status = 'OPEN'
+                """, clientId)).isEqualTo(1);
+        // A "Don't send" waiting on a ticket.
+        assertThat(count("""
+                SELECT count(*) FROM ticket_lines l JOIN tickets t ON t.id = l.ticket_id JOIN bill_lines bl ON bl.movement_id = l.movement_id
+                WHERE t.client_id = ? AND bl.taken_off = 'NOT_MADE' AND l.cleared_at IS NULL
+                """, clientId)).isEqualTo(1);
+        // Two weeks of closed drawers and today's open one, the switch on; one day short; no email sent from a reset.
+        assertThat(count("SELECT count(*) FROM cash_days WHERE client_id = ? AND closed_at IS NOT NULL", clientId)).isEqualTo(14);
+        assertThat(count("SELECT count(*) FROM cash_days WHERE client_id = ? AND closed_at IS NULL", clientId)).isEqualTo(1);
+        assertThat(count("SELECT count(*) FROM cash_days WHERE client_id = ? AND counted < expected", clientId)).isEqualTo(1);
+        assertThat(count("SELECT count(*) FROM cash_money_out WHERE client_id = ?", clientId)).isEqualTo(1);
+        assertThat(count("SELECT count(*) FROM clients WHERE id = ? AND counts_cash", clientId)).isEqualTo(1);
+        // A sale cancelled, and one waiting for a manager.
+        assertThat(count("SELECT count(*) FROM sales WHERE client_id = ? AND cancel_state = 'CANCELLED'", clientId)).isPositive();
+        assertThat(count("SELECT count(*) FROM sales WHERE client_id = ? AND cancel_state = 'REQUESTED'", clientId)).isEqualTo(1);
+        // The waiter starts in quick mode.
+        assertThat(count("SELECT count(*) FROM users WHERE client_id = ? AND username = 'tunde.bello' AND starts_in_quick", clientId))
+                .isEqualTo(1);
+
         // Some things are low, so the reorder screens have something to say.
         assertThat(count("""
                 SELECT count(*) FROM branch_stock bs JOIN products p ON p.id = bs.product_id
@@ -201,10 +243,12 @@ class DemoResetIntegrationTest {
         // Reset again: same company, same people, a fresh demo.
         Map<String, Object> again = resetAndWait(token, clientId, slug);
         assertThat(again.get("state")).as(String.valueOf(again)).isEqualTo("DONE");
-        assertThat(count("SELECT count(*) FROM products WHERE client_id = ?", clientId)).isEqualTo(DemoCatalog.ITEMS.size());
+        assertThat(count("SELECT count(*) FROM products WHERE client_id = ?", clientId))
+                .isEqualTo(DemoCatalog.ITEMS.size() + DemoSelling.MENU.size());
+        assertThat(count("SELECT count(*) FROM bills WHERE client_id = ? AND status = 'OPEN'", clientId)).isEqualTo(5);
         assertThat(count("SELECT count(*) FROM purchase_order_emails WHERE client_id = ?", clientId)).isZero();
-        // The owner, the three sample staff (made once, not again) and the three people added here.
-        assertThat(count("SELECT count(*) FROM users WHERE client_id = ?", clientId)).isEqualTo(7);
+        // The owner, the four sample staff (made once, not again) and the three people added here.
+        assertThat(count("SELECT count(*) FROM users WHERE client_id = ?", clientId)).isEqualTo(8);
         assertThat(count("SELECT count(*) FROM user_branches WHERE client_id = ?", clientId))
                 .isEqualTo(count("SELECT count(DISTINCT (user_id, branch_id)) FROM user_branches WHERE client_id = ?", clientId));
         assertThat(login(slug, prospect.username()).tokens().accessToken()).isNotBlank();
@@ -218,7 +262,7 @@ class DemoResetIntegrationTest {
                 "/api/superadmin/clients/" + clientId + "/demo-reset", HttpMethod.POST,
                 new HttpEntity<>(Map.of("confirm", slug), bearer(token)), Map.class);
         assertThat(started.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
-        Instant deadline = Instant.now().plus(Duration.ofMinutes(8));
+        Instant deadline = Instant.now().plus(Duration.ofMinutes(12));
         while (Instant.now().isBefore(deadline)) {
             Map<String, Object> status = restTemplate.exchange(
                     "/api/superadmin/clients/" + clientId + "/demo-reset", HttpMethod.GET,

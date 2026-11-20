@@ -56,8 +56,9 @@ public class DemoResetService {
     static final List<String> WIPED = List.of(
             "notifications", "carts", "stock_write_undo", "stock_idempotency_keys", "phone_sync_status",
             "area_move_returns", "area_moves", "stock_requests", "delivery_send_backs", "purchase_order_emails",
-            "price_requests", "stock_movements", "stock_transfers", "expected_deliveries", "area_stock",
-            "branch_stock", "product_price_changes", "products", "product_vendors", "import_sessions",
+            "price_requests", "tickets", "bill_payments", "bill_lines", "bills", "branch_tables", "sale_charges",
+            "branch_charges", "cash_money_out", "cash_days", "sales", "payment_accounts", "stock_movements", "stock_transfers", "expected_deliveries", "area_stock",
+            "product_branches", "branch_stock", "product_price_changes", "product_ingredients", "product_made_in", "products", "product_vendors", "import_sessions",
             "product_list_files", "company_vendors", "company_categories", "product_sku_settings", "delivery_addresses");
 
     public enum State { RUNNING, DONE, FAILED }
@@ -197,7 +198,9 @@ public class DemoResetService {
                 step(clientId, startedAt, "Clearing the old demo");
                 List<Map<String, Object>> places = placesOfPeople(clientId);
                 wipe(clientId);
-                DemoSeeder.Result seeded = demoSeeder.seed(clientId, ownerId, message -> step(clientId, startedAt, message));
+                // Played back quietly: tickets, cancellations and requests in the sample data never reach a phone.
+                DemoSeeder.Result seeded = com.procurepal_services.stock_bridge_api.push.PushService.quietly(
+                        () -> demoSeeder.seed(clientId, ownerId, message -> step(clientId, startedAt, message)));
                 restorePlaces(clientId, places);
                 return seeded;
             }));
@@ -279,6 +282,20 @@ public class DemoResetService {
                 "DELETE FROM delivery_send_backs WHERE client_id = :clientId",
                 "DELETE FROM purchase_order_emails WHERE client_id = :clientId",
                 "DELETE FROM price_requests WHERE client_id = :clientId",
+                // Selling till (V96-V104): tickets and bills before the sales and movements they point at; a bill's
+                // table and the sale's charges before what they name; the drawers' days; transfer accounts after
+                // the sales paid into them.
+                "DELETE FROM tickets WHERE client_id = :clientId",
+                "DELETE FROM bill_payments WHERE client_id = :clientId",
+                "DELETE FROM bill_lines WHERE client_id = :clientId",
+                "DELETE FROM bills WHERE client_id = :clientId",
+                "DELETE FROM branch_tables WHERE client_id = :clientId",
+                "DELETE FROM sale_charges WHERE client_id = :clientId",
+                "DELETE FROM branch_charges WHERE client_id = :clientId",
+                "DELETE FROM cash_money_out WHERE client_id = :clientId",
+                "DELETE FROM cash_days WHERE client_id = :clientId",
+                "DELETE FROM sales WHERE client_id = :clientId",
+                "DELETE FROM payment_accounts WHERE client_id = :clientId",
                 """
                 DELETE FROM stock_movement_allocations a USING stock_movements m
                 WHERE (a.in_movement_id = m.id OR a.out_movement_id = m.id) AND m.client_id = :clientId
@@ -287,8 +304,12 @@ public class DemoResetService {
                 "DELETE FROM stock_transfers WHERE client_id = :clientId",
                 "DELETE FROM expected_deliveries WHERE client_id = :clientId",
                 "DELETE FROM area_stock WHERE client_id = :clientId",
+                "DELETE FROM product_branches WHERE client_id = :clientId",
                 "DELETE FROM branch_stock WHERE client_id = :clientId",
                 "DELETE FROM product_price_changes WHERE client_id = :clientId",
+                // Recipes (V95): an ingredient points at another product.
+                "DELETE FROM product_ingredients WHERE client_id = :clientId",
+                "DELETE FROM product_made_in WHERE client_id = :clientId",
                 "DELETE FROM products WHERE client_id = :clientId",
                 "DELETE FROM product_vendors WHERE client_id = :clientId",
                 "DELETE FROM import_sessions WHERE client_id = :clientId",

@@ -49,20 +49,16 @@ public class ProfileService {
         return ProfileResponse.from(user, findClientOrThrow(user));
     }
 
-    /** The buttons quick mode may show, in the order it shows them. */
-    private static final List<String> QUICK_MODE_TABS = List.of("sell", "in", "out", "move", "ask", "count");
+    /** The buttons quick mode may show, in the order it shows them (Tables and Tickets: V105). */
+    private static final List<String> QUICK_MODE_TABS = List.of("tables", "tickets", "sell", "in", "out", "move", "ask", "count");
 
     /**
-     * Quick mode's buttons as this person wants them (owner, 2026-11-01): one to four, kept in quick mode's own
-     * order. Empty or absent puts the app's own choice back. What they're allowed to do isn't checked here - quick
-     * mode leaves out any button their role doesn't give them, now or later.
+     * One to four buttons, each once, from quick mode's own, in its order, as stored; null for empty (the app's own
+     * choice). Shared by the person's own Profile and their manager's Edit (V105).
      */
-    @Transactional
-    public ProfileResponse setQuickModeTabs(UUID callerId, List<String> tabs) {
-        User user = findSelfOrThrow(callerId);
+    public static String quickModeTabs(List<String> tabs) {
         if (tabs == null || tabs.isEmpty()) {
-            user.setQuickModeTabs(null);
-            return ProfileResponse.from(user, findClientOrThrow(user));
+            return null;
         }
         Set<String> chosen = new LinkedHashSet<>(tabs);
         if (chosen.size() != tabs.size()) {
@@ -72,9 +68,20 @@ public class ProfileService {
             throw new QuickModeTabsInvalidException("Quick mode has room for 4 buttons.");
         }
         if (!QUICK_MODE_TABS.containsAll(chosen)) {
-            throw new QuickModeTabsInvalidException("Choose from Sell, Stock in, Stock out, Move, Ask and Count.");
+            throw new QuickModeTabsInvalidException("Choose from Tables, Tickets, Sell, Stock in, Stock out, Move, Ask and Count.");
         }
-        user.setQuickModeTabs(String.join(",", QUICK_MODE_TABS.stream().filter(chosen::contains).toList()));
+        return String.join(",", QUICK_MODE_TABS.stream().filter(chosen::contains).toList());
+    }
+
+    /**
+     * Quick mode's buttons as this person wants them (owner, 2026-11-01): one to four, kept in quick mode's own
+     * order. Empty or absent puts the app's own choice back. What they're allowed to do isn't checked here - quick
+     * mode leaves out any button their role doesn't give them, now or later.
+     */
+    @Transactional
+    public ProfileResponse setQuickModeTabs(UUID callerId, List<String> tabs) {
+        User user = findSelfOrThrow(callerId);
+        user.setQuickModeTabs(quickModeTabs(tabs));
         return ProfileResponse.from(user, findClientOrThrow(user));
     }
 

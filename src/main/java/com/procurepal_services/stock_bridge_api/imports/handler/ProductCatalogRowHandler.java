@@ -141,6 +141,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
     private final StockMovementRepository stockMovementRepository;
     /** Undo puts stock back at the branch the import put it at (V51). */
     private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
     private final com.procurepal_services.stock_bridge_api.repository.BranchRepository branchRepository;
     private final StockMovementAllocationRepository stockMovementAllocationRepository;
     private final StockManagementService stockManagementService;
@@ -1541,7 +1542,7 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
         boolean keepsSellingPrice = sellingPolicy.showsSellingPrice(owner)
                 && sellingPricePermission.allows(ctx.actingUserId());
         boolean perPack = keepsSellingPrice && sellingPricePerPack(ctx.tenantId(), ctx.cache());
-        Product created = productRepository.save(Product.builder()
+        Product created = productRepository.saveAndFlush(Product.builder()
                 .name(state.text(ImportFields.NAME))
                 .sku(state.text(ImportFields.SKU))
                 .description(state.text(ImportFields.DESCRIPTION))
@@ -1567,6 +1568,8 @@ public class ProductCatalogRowHandler implements ImportRowHandler {
                 .companyCategory(categoryFor(ctx, state))
                 .importBatchId(batchId)
                 .build());
+        // For the branch the sheet was uploaded for (V92); the main branch when it names none (V94).
+        productBranchService.add(created, ctx.session().getBranchId());
         if (perPack && decimalOf(state, ImportFields.UNIT_PRICE) != null) {
             // Per what the row counts, and kept as typed: "5,000 a carton" stays 5,000 a carton.
             sellingPriceService.apply(created, decimalOf(state, ImportFields.UNIT_PRICE), sellingPriceUnitOf(state));

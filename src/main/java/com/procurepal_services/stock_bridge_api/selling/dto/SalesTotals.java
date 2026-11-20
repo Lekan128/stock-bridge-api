@@ -28,14 +28,73 @@ public record SalesTotals(
         long unknownCostLineCount,
         long cancelledLineCount,
         long belowUsualPriceLineCount,
-        long belowCostLineCount) {
+        long belowCostLineCount,
+        /** What came in by each way of paying (selling till Step 1). */
+        ByPayment byPayment,
+        /** Step 10 (V100): the charges and taxes on these sales, kept apart from the food and drinks. */
+        java.util.List<ChargeTotal> charges) {
+
+    public SalesTotals(long saleCount, long lineCount, BigDecimal salesAmount, BigDecimal profitKnownSalesAmount,
+            BigDecimal costAmount, BigDecimal grossProfit, BigDecimal margin, long unpricedLineCount, long unknownCostLineCount,
+            long cancelledLineCount, long belowUsualPriceLineCount, long belowCostLineCount, ByPayment byPayment) {
+        this(saleCount, lineCount, salesAmount, profitKnownSalesAmount, costAmount, grossProfit, margin, unpricedLineCount,
+                unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, byPayment, null);
+    }
+
+    /** One charge across the sales: "VAT", whether it was in the prices or on top, and what it came to. */
+    public record ChargeTotal(String name, boolean included, BigDecimal amount) {
+    }
+
+    public SalesTotals withCharges(java.util.List<ChargeTotal> list) {
+        return new SalesTotals(saleCount, lineCount, salesAmount, profitKnownSalesAmount, costAmount, grossProfit, margin,
+                unpricedLineCount, unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, byPayment,
+                list == null || list.isEmpty() ? null : list);
+    }
+
+    /**
+     * The sales amount split by how the customer paid, with how many sales each. "Not recorded" is a
+     * sale from before payments were recorded - never guessed as cash.
+     */
+    public record ByPayment(
+            BigDecimal cashAmount,
+            long cashSales,
+            BigDecimal transferAmount,
+            long transferSales,
+            BigDecimal cardAmount,
+            long cardSales,
+            BigDecimal notRecordedAmount,
+            long notRecordedSales,
+            // Step 12 (V96): transfers by the account they came into, most first; absent where none was named.
+            java.util.List<AccountTotal> transferAccounts) {
+
+        public ByPayment(BigDecimal cashAmount, long cashSales, BigDecimal transferAmount, long transferSales,
+                BigDecimal cardAmount, long cardSales, BigDecimal notRecordedAmount, long notRecordedSales) {
+            this(cashAmount, cashSales, transferAmount, transferSales, cardAmount, cardSales, notRecordedAmount,
+                    notRecordedSales, null);
+        }
+
+        public ByPayment withTransferAccounts(java.util.List<AccountTotal> accounts) {
+            return new ByPayment(cashAmount, cashSales, transferAmount, transferSales, cardAmount, cardSales,
+                    notRecordedAmount, notRecordedSales, accounts == null || accounts.isEmpty() ? null : accounts);
+        }
+    }
+
+    /** Transfers into one account: "GTBank", how much and in how many sales. */
+    public record AccountTotal(java.util.UUID accountId, String bankName, String accountNumber, BigDecimal amount, long sales) {
+    }
 
     /**
      * The same figures with everything about cost taken out - for a person's own till total, which
      * staff without analytics see at the counter. What the stock cost is the owner's business.
      */
+    public SalesTotals withByPayment(ByPayment payment) {
+        return new SalesTotals(saleCount, lineCount, salesAmount, profitKnownSalesAmount, costAmount, grossProfit, margin,
+                unpricedLineCount, unknownCostLineCount, cancelledLineCount, belowUsualPriceLineCount, belowCostLineCount, payment,
+                charges);
+    }
+
     public SalesTotals withoutCost() {
         return new SalesTotals(saleCount, lineCount, salesAmount, null, null, null, null,
-                unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0);
+                unpricedLineCount, 0, cancelledLineCount, belowUsualPriceLineCount, 0, byPayment, charges);
     }
 }
