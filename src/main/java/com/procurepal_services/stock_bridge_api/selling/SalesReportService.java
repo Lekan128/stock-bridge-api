@@ -418,6 +418,11 @@ public class SalesReportService {
                 WITH all_lines AS (
                     SELECT o.id, o.sale_id, o.product_id, o.created_by, o.occurred_at, o.quantity, o.branch_id,
                            COALESCE(o.sale_amount, c.sale_amount) AS amount,
+                           -- Food and drinks without the charges and taxes already in the prices (owner, 2026-11-19):
+                           -- each line gives up its share of its sale's, so every tab and the total agree. The money
+                           -- that came in is still amount, and the charges are counted apart.
+                           COALESCE(o.sale_amount, c.sale_amount)
+                               - COALESCE(COALESCE(o.sale_amount, c.sale_amount) * inc.amount / NULLIF(inc.food, 0), 0) AS net,
                            o.cost_amount AS cost,
                            -- A bill line sent back (V99) stays used but isn't charged: as good as cancelled here.
                            (r.id IS NOT NULL OR bl.taken_off IS NOT NULL) AS cancelled,
@@ -430,6 +435,17 @@ public class SalesReportService {
                     LEFT JOIN stock_movements c ON c.corrects_movement_id = o.id
                     LEFT JOIN sales sp ON sp.id = o.sale_id AND sp.client_id = o.client_id
                     LEFT JOIN bill_lines bl ON bl.movement_id = o.id
+                    LEFT JOIN LATERAL (
+                        SELECT ic.amount,
+                               (SELECT SUM(COALESCE(m.sale_amount, mc.sale_amount)) FROM stock_movements m
+                                  LEFT JOIN stock_movements mr ON mr.reverses_movement_id = m.id
+                                  LEFT JOIN stock_movements mc ON mc.corrects_movement_id = m.id
+                                  LEFT JOIN bill_lines mb ON mb.movement_id = m.id
+                                WHERE m.sale_id = o.sale_id AND m.client_id = o.client_id AND m.movement_type = 'OUT'
+                                  AND mr.id IS NULL AND mb.taken_off IS NULL) AS food
+                        FROM (SELECT SUM(sc.amount) AS amount FROM sale_charges sc
+                              WHERE sc.sale_id = o.sale_id AND sc.included HAVING SUM(sc.amount) > 0) ic
+                    ) inc ON TRUE
                     WHERE o.client_id = :clientId
                       AND o.sale_id IS NOT NULL
                       AND o.movement_type = 'OUT'
@@ -447,8 +463,8 @@ public class SalesReportService {
     private static final String AGGREGATES = """
             COUNT(DISTINCT sale_id) FILTER (WHERE NOT cancelled) AS sale_count,
             COUNT(*) FILTER (WHERE NOT cancelled) AS line_count,
-            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled), 0) AS sales_amount,
-            COALESCE(SUM(amount) FILTER (WHERE NOT cancelled AND amount IS NOT NULL AND cost IS NOT NULL), 0) AS known_sales,
+            COALESCE(SUM(net) FILTER (WHERE NOT cancelled), 0) AS sales_amount,
+            COALESCE(SUM(net) FILTER (WHERE NOT cancelled AND amount IS NOT NULL AND cost IS NOT NULL), 0) AS known_sales,
             COALESCE(SUM(cost) FILTER (WHERE NOT cancelled AND amount IS NOT NULL AND cost IS NOT NULL), 0) AS known_cost,
             COUNT(*) FILTER (WHERE NOT cancelled AND amount IS NULL) AS unpriced,
             COUNT(*) FILTER (WHERE NOT cancelled AND amount IS NOT NULL AND cost IS NULL) AS unknown_cost,
@@ -480,6 +496,7 @@ public class SalesReportService {
                            COALESCE(NULLIF(TRIM(CONCAT(cd.first_name, ' ', cd.last_name)), ''), cd.username) AS cancel_decided_name,
                            COALESCE(NULLIF(TRIM(CONCAT(cr.first_name, ' ', cr.last_name)), ''), cr.username) AS cancel_requested_name,
                            (SELECT SUM(sc.amount) FROM sale_charges sc WHERE sc.sale_id = l.sale_id AND NOT sc.included) AS on_top,
+                           (SELECT SUM(sc.amount) FROM sale_charges sc WHERE sc.sale_id = l.sale_id AND sc.included) AS in_prices,
                     """ + AGGREGATES + """
 
                     FROM lines l LEFT JOIN users u ON u.id = l.created_by JOIN products p ON p.id = l.product_id
@@ -570,7 +587,8 @@ public class SalesReportService {
                 "sale".equals(grouping) ? rs.getString("cancel_decided_name") : null,
                 "sale".equals(grouping) ? rs.getString("cancel_requested_name") : null,
                 "sale".equals(grouping) ? rs.getString("account_name") : null,
-                "sale".equals(grouping) && wholeSales ? onTop(rs.getBigDecimal("on_top")) : null);
+                "sale".equals(grouping) && wholeSales ? onTop(rs.getBigDecimal("on_top")) : null,
+                "sale".equals(grouping) && wholeSales ? onTop(rs.getBigDecimal("in_prices")) : null);
     }
 
     private static BigDecimal onTop(BigDecimal amount) {

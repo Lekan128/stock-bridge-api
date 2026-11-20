@@ -183,6 +183,14 @@ public class UserManagementService {
         if (request.areaIds() != null) {
             areaAccessService.assign(user.getClientId(), user.getId(), request.areaIds());
         }
+        // Quick mode (V105): the manager sets the buttons (the person can change them on their Profile) and where they
+        // start (theirs alone).
+        if (request.quickModeTabs() != null) {
+            user.setQuickModeTabs(com.procurepal_services.stock_bridge_api.profile.ProfileService.quickModeTabs(request.quickModeTabs()));
+        }
+        if (request.startsInQuickMode() != null) {
+            user.setStartsInQuick(request.startsInQuickMode());
+        }
         userRepository.flush();
         return withBranches(user);
     }

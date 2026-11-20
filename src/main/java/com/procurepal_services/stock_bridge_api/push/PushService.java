@@ -22,6 +22,24 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @RequiredArgsConstructor
 public class PushService {
 
+    /** Set while sample data is played back (the demo's reset): nothing it does reaches anybody's phone. */
+    private static final ThreadLocal<Boolean> QUIET = ThreadLocal.withInitial(() -> false);
+
+    /** Runs {@code work} with notifications held back on this thread - the demo's reset, so prospects' phones stay still. */
+    public static <T> T quietly(java.util.function.Supplier<T> work) {
+        boolean was = QUIET.get();
+        QUIET.set(true);
+        try {
+            return work.get();
+        } finally {
+            QUIET.set(was);
+        }
+    }
+
+    public static boolean quiet() {
+        return QUIET.get();
+    }
+
     private final NamedParameterJdbcTemplate jdbc;
     private final PushKeys pushKeys;
     private final PushSender sender;
@@ -58,7 +76,7 @@ public class PushService {
 
     /** Sends {@code message} to every device of these people, once the current transaction commits. */
     public void notify(Collection<UUID> userIds, PushMessage message) {
-        if (userIds.isEmpty()) {
+        if (userIds.isEmpty() || quiet()) {
             return;
         }
         List<PushSender.Device> devices = jdbc.query("""

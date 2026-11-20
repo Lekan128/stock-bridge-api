@@ -120,6 +120,7 @@ public class DemoSeeder {
     private final UserManagementService userManagementService;
     private final PriceRequestService priceRequestService;
     private final StockRequestService stockRequestService;
+    private final DemoSelling demoSelling;
     private final NamedParameterJdbcTemplate jdbc;
 
     @PersistenceContext
@@ -155,6 +156,8 @@ public class DemoSeeder {
         final Map<Home, UUID> homeAreas = new HashMap<>();
         UUID kitchen;
         UUID bar;
+        /** Its transfer accounts (selling till Step 12), for the bar's transfer sales. */
+        List<UUID> accounts = List.of();
         /** Who records this branch's day-to-day stock: its storekeeper. */
         UUID recorder;
         final Set<String> lowAtEnd;
@@ -223,6 +226,13 @@ public class DemoSeeder {
             }
         }
 
+        progress.accept("Setting up the menu, tables, charges and accounts");
+        DemoSelling.Places mainPlaces = new DemoSelling.Places(main.id, main.homeAreas.get(Home.STORE), main.kitchen, main.bar);
+        DemoSelling.Setup selling = demoSelling.setUp(clientId, ownerId, staff.waiter(), mainPlaces,
+                new DemoSelling.Places(second.id, second.homeAreas.get(Home.STORE), second.kitchen, second.bar), products);
+        main.accounts = selling.accounts().get(main.id);
+        second.accounts = selling.accounts().get(second.id);
+
         progress.accept("Playing back " + DAYS + " days of stock");
         Map<String, BigDecimal> stock = new HashMap<>();
         Map<String, BigDecimal> owed = new HashMap<>();
@@ -275,6 +285,12 @@ public class DemoSeeder {
                     if (at != null) {
                         reportSpoilt(branch, products, stock, random, at, ownerId);
                     }
+                }
+
+                // The last two weeks: lunch and dinner at the main branch's tables (selling till Stage C).
+                if (branch.main() && day > DAYS - 14) {
+                    demoSelling.serveDay(clientId, mainPlaces, selling, date, busy, products, stock, random, now, staff.waiter(),
+                            staff.chef(), day);
                 }
 
                 // The day's bar sales, as one sale at closing.
@@ -338,6 +354,12 @@ public class DemoSeeder {
         progress.accept("Setting the dates");
         entityManager.flush();
         backdate(clientId, start);
+
+        progress.accept("Adding cancelled sales, the drawers' days and today's open tables");
+        demoSelling.cancellations(clientId, mainPlaces, now.toLocalDate(), ownerId, staff.waiter());
+        demoSelling.drawers(clientId, mainPlaces, now.toLocalDate(), now, staff.mainStore());
+        demoSelling.openTables(clientId, mainPlaces, selling, now, staff.waiter(), staff.chef());
+        entityManager.flush();
 
         long movements = jdbc.queryForObject(
                 "SELECT count(*) FROM stock_movements WHERE client_id = :clientId", params(clientId), Long.class);
@@ -569,9 +591,14 @@ public class DemoSeeder {
             if (quantity.signum() <= 0) {
                 continue;
             }
+            com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod method = paymentFor(saleId);
+            // A transfer names the account it came into (Step 12), one of the branch's two.
+            UUID account = method == com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.TRANSFER && !branch.accounts.isEmpty()
+                    ? branch.accounts.get(Math.floorMod(saleId.hashCode() / 10, branch.accounts.size()))
+                    : null;
             stockManagementService.stockOut(products.get(item.key()), new StockOutRequest(
                     quantity, item.sellPrice(), null, item.stockUnit(), null, at, null, OutReason.SALE, saleId,
-                    null, branch.id, branch.bar, paymentFor(saleId)), branch.recorder);
+                    null, branch.id, branch.bar, method, account), branch.recorder);
             written();
             stock.merge(key, quantity.negate(), BigDecimal::add);
         }
@@ -627,8 +654,10 @@ public class DemoSeeder {
     }
 
     /** The sample kitchen staff: made once, kept by every reset like any other user. */
-    record Staff(UUID chef, UUID mainStore, UUID secondStore) {
+    record Staff(UUID chef, UUID mainStore, UUID secondStore, UUID waiter) {
     }
+
+    static final String WAITER_ROLE = "Waiter";
 
     static final String CHEF_ROLE = "Head chef";
 
@@ -660,8 +689,18 @@ public class DemoSeeder {
         UUID chef = ensureUser(clientId, ownerId, "bisi.adeyemi", "Bisi", "Adeyemi", "Head chef", chefRole, main.id);
         UUID mainStore = ensureUser(clientId, ownerId, "emeka.okafor", "Emeka", "Okafor", "Storekeeper", storekeeper, main.id);
         UUID secondStore = ensureUser(clientId, ownerId, "halima.musa", "Halima", "Musa", "Storekeeper", storekeeper, second.id);
+        // The waiter (selling till Stage C): takes tables' orders, sends them to the Kitchen and the Bar, takes payment.
+        UUID waiterRole = jdbc.query("SELECT id FROM roles WHERE client_id = :clientId AND name = :name",
+                params(clientId).addValue("name", WAITER_ROLE), (rs, n) -> rs.getObject("id", UUID.class))
+                .stream().findFirst().orElse(null);
+        if (waiterRole == null) {
+            waiterRole = roleManagementService.create(new CreateRoleRequest(WAITER_ROLE,
+                    "Takes tables' orders, sends them to the Kitchen and the Bar, and takes payment.",
+                    java.util.Set.of("STOCK_OUT", "VIEW_PRODUCTS"))).id();
+        }
+        UUID waiter = ensureUser(clientId, ownerId, "tunde.bello", "Tunde", "Bello", "Waiter", waiterRole, main.id);
         entityManager.flush();
-        return new Staff(chef, mainStore, secondStore);
+        return new Staff(chef, mainStore, secondStore, waiter);
     }
 
     private UUID ensureUser(UUID clientId, UUID ownerId, String username, String firstName, String lastName,
@@ -762,7 +801,9 @@ public class DemoSeeder {
                         used, item.sold() ? item.sellPrice() : null, item.sold() ? "Event order" : null,
                         item.stockUnit(), null, at, null, reason,
                         item.sold() ? UUID.randomUUID() : null, null, branch.id, area,
-                        item.sold() ? com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.TRANSFER : null),
+                        item.sold() ? com.procurepal_services.stock_bridge_api.selling.SalePaymentMethod.TRANSFER : null,
+                        // An event order paid by transfer names the account it came into (Step 12).
+                        item.sold() && !branch.accounts.isEmpty() ? branch.accounts.getFirst() : null),
                         branch.recorder);
                 written();
                 stock.merge(key, used.negate(), BigDecimal::add);
@@ -876,6 +917,13 @@ public class DemoSeeder {
                 jdbc.update("UPDATE " + table + " SET created_at = :start WHERE client_id = :clientId", params);
             }
         }
+        // A sale's own row (selling till): when its first line was.
+        jdbc.update("""
+                UPDATE sales s SET created_at = m.first FROM (
+                    SELECT sale_id, MIN(occurred_at) AS first FROM stock_movements
+                    WHERE client_id = :clientId AND sale_id IS NOT NULL GROUP BY sale_id) m
+                WHERE s.id = m.sale_id AND s.client_id = :clientId
+                """, params);
         for (String table : List.of("stock_movements", "area_moves", "stock_transfers")) {
             if (hasColumn(table, "created_at") && hasColumn(table, "occurred_at")) {
                 jdbc.update("UPDATE " + table + " SET created_at = occurred_at WHERE client_id = :clientId", params);
@@ -913,7 +961,7 @@ public class DemoSeeder {
         return DemoCatalog.ITEMS.stream().filter(item -> item.key().equals(key)).findFirst().orElseThrow();
     }
 
-    private static String key(UUID branchId, UUID areaId, String itemKey) {
+    static String key(UUID branchId, UUID areaId, String itemKey) {
         return branchId + "|" + areaId + "|" + itemKey;
     }
 
