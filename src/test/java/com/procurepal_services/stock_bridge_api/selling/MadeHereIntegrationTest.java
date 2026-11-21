@@ -316,6 +316,84 @@ class MadeHereIntegrationTest {
         assertThat(get(shop, "/api/products/" + rice.id(), ProductResponse.class).getBody().forBranchIds()).contains(UUID.fromString(ikeja));
     }
 
+    /** Step 0 of BRANCH_PRICES_PLAN.md: wherever an item goes, its ingredients go too - for the branch, no stock. */
+    @Test
+    void anItemsIngredientsFollowItToEveryBranchWithoutStock() {
+        Shop shop = shop("Made Follow Shop");
+        sellingOn(shop);
+        send(shop, HttpMethod.PUT, "/api/company/selling/made-here", Map.of("on", true), String.class);
+        String main = (String) ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        send(shop, HttpMethod.POST, "/api/branches/" + main + "/areas",
+                Map.of("areas", java.util.List.of(Map.of("name", "Kitchen", "keepsStock", true), Map.of("name", "Bar", "keepsStock", true))),
+                java.util.List.class);
+        ProductResponse rice = keptAt(shop, "Rice", main);
+        ProductResponse pepper = keptAt(shop, "Pepper", main);
+        ProductResponse onion = keptAt(shop, "Onion", main);
+        ProductResponse plate = madeAt(shop, "Jollof rice", rice, java.util.List.of(main));
+        ProductResponse soup = madeAt(shop, "Pepper soup", pepper, null);
+        ProductResponse stew = madeAt(shop, "Stew", onion, java.util.List.of(main));
+
+        // A new branch: what every item for all branches is made with.
+        String ikeja = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Ikeja"), Map.class).getBody().get("id");
+        assertThat(branchesOf(shop, pepper)).contains(ikeja);
+        assertThat(branchesOf(shop, rice)).doesNotContain(ikeja);
+
+        // Branches -> Ikeja -> Add products: the plate brings its rice.
+        send(shop, HttpMethod.POST, "/api/branches/" + ikeja + "/products", Map.of("productIds", java.util.List.of(plate.id().toString())), Map.class);
+        assertThat(branchesOf(shop, rice)).contains(ikeja);
+        assertThat(onHand(shop, rice.id())).isEqualByComparingTo("0");
+
+        // The stew switched to all branches: its onion everywhere.
+        MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
+        HttpHeaders part = new HttpHeaders();
+        part.setContentType(MediaType.APPLICATION_JSON);
+        body.add("product", new HttpEntity<>(Map.of("allBranches", true), part));
+        HttpHeaders headers = auth(shop);
+        headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+        assertThat(restTemplate.exchange("/api/products/" + stew.id(), HttpMethod.PUT, new HttpEntity<>(body, headers), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(branchesOf(shop, onion)).contains(main, ikeja);
+
+        // "Add all" at another branch: every item's ingredients come with it.
+        String lekki = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Lekki"), Map.class).getBody().get("id");
+        send(shop, HttpMethod.POST, "/api/branches/" + lekki + "/products", Map.of("all", true), Map.class);
+        assertThat(branchesOf(shop, rice)).contains(lekki);
+        assertThat(branchesOf(shop, pepper)).contains(lekki);
+
+        // A branch reopened gets them back if they went missing while it was closed.
+        assertThat(send(shop, HttpMethod.POST, "/api/branches/" + lekki + "/close", Map.of(), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        jdbcTemplate.update("DELETE FROM product_branches WHERE product_id = ? AND branch_id = ?", pepper.id(), UUID.fromString(lekki));
+        assertThat(send(shop, HttpMethod.POST, "/api/branches/" + lekki + "/reopen", Map.of(), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(branchesOf(shop, pepper)).contains(lekki);
+        assertThat(soup.forAllBranches()).isTrue();
+    }
+
+    private ProductResponse keptAt(Shop shop, String name, String branchId) {
+        return productWith(shop, new java.util.HashMap<>(Map.of("name", name, "sku", name.substring(0, 2).toUpperCase() + "-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitOfMeasure", "PIECE", "branchIds", java.util.List.of(branchId))));
+    }
+
+    /** A made-here item made in the Kitchen with one ingredient; {@code branchIds} null for all branches. */
+    private ProductResponse madeAt(Shop shop, String name, ProductResponse ingredient, java.util.List<String> branchIds) {
+        Map<String, Object> fields = new java.util.HashMap<>(Map.of("name", name, "sku", "MD-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitPrice", 5000, "madeHere", true));
+        if (branchIds == null) {
+            fields.put("allBranches", true);
+        } else {
+            fields.put("branchIds", branchIds);
+        }
+        ProductResponse item = productWith(shop, fields);
+        ResponseEntity<String> saved = send(shop, HttpMethod.PUT, "/api/products/" + item.id() + "/made-with", Map.of("madeIn", "Kitchen",
+                "ingredients", java.util.List.of(Map.of("productId", ingredient.id().toString(), "quantity", 1))), String.class);
+        assertThat(saved.getStatusCode()).as("%s", saved.getBody()).isEqualTo(HttpStatus.OK);
+        return get(shop, "/api/products/" + item.id(), ProductResponse.class).getBody();
+    }
+
+    private java.util.List<String> branchesOf(Shop shop, ProductResponse product) {
+        return get(shop, "/api/products/" + product.id(), ProductResponse.class).getBody().forBranchIds().stream().map(UUID::toString).toList();
+    }
+
     @Test
     void stockMovementsSaysWhatTheKitchenUsedAgainstWhatItsCountFound() {
         Shop shop = shop("Kitchen Use Shop");
