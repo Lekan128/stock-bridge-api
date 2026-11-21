@@ -295,6 +295,13 @@ public class BranchPriceService {
         return found.isEmpty() ? null : found.get(0);
     }
 
+    /** A product's price at a branch as it now stands (null: none there yet). */
+    @Transactional(readOnly = true)
+    public SellingPriceService.Snapshot priceAt(Product product, UUID branchId) {
+        UUID list = branchList(product.getClientId(), branchId);
+        return list == null ? null : current(list, product.getId());
+    }
+
     /** The main branch, for older callers that send one price: it lands at the main branch. */
     @Transactional(readOnly = true)
     public UUID mainBranch(UUID clientId) {

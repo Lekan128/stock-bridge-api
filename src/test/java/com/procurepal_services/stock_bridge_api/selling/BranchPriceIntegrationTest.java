@@ -147,6 +147,47 @@ class BranchPriceIntegrationTest {
         assertThat(get(shop, "/api/products/sync/snapshot", String.class).getBody()).contains("\"branchPrices\":[{");
     }
 
+    /** The price sheet (BRANCH_PRICES_PLAN.md §10): cells saved in a batch, at a branch or the one price. */
+    @Test
+    void thePriceSheetSavesCellsAtABranchOrTheOnePrice() {
+        Shop shop = shop("Price Sheet Shop");
+        sellingOn(shop);
+        String main = branchIds(shop).get(0);
+        jdbcTemplate.update("UPDATE clients SET branches_enabled = true WHERE id = (SELECT client_id FROM branches WHERE id = ?)",
+                UUID.fromString(main));
+        String ikeja = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Ikeja"), Map.class).getBody().get("id");
+        ProductResponse malt = create(shop, Map.of("name", "Malt", "sku", "ML-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitOfMeasure", "PIECE", "packagingUnit", "CRATE", "packagingSize", 12, "allBranches", true));
+
+        // Off: the one price, typed per crate.
+        Map<?, ?> off = send(shop, HttpMethod.PUT, "/api/prices", Map.of("cells", List.of(
+                Map.of("productId", malt.id().toString(), "price", 7200, "unit", "CRATE"))), Map.class).getBody();
+        assertThat(off.toString()).contains("unitPriceEntered=7200");
+        assertThat(get(shop, "/api/products/" + malt.id(), ProductResponse.class).getBody().unitPrice()).isEqualByComparingTo("600");
+
+        // On, Ikeja on its own: two cells in one go.
+        send(shop, HttpMethod.PUT, "/api/company/selling/branch-prices", Map.of("on", true), Map.class);
+        choose(shop, ikeja, "OWN", null);
+        ResponseEntity<Map> both = send(shop, HttpMethod.PUT, "/api/prices", Map.of("cells", List.of(
+                Map.of("productId", malt.id().toString(), "branchId", main, "price", 7500, "unit", "CRATE"),
+                Map.of("productId", malt.id().toString(), "branchId", ikeja, "price", 8000, "unit", "CRATE"))), Map.class);
+        assertThat(both.getStatusCode()).isEqualTo(HttpStatus.OK);
+        ProductResponse priced = get(shop, "/api/products/" + malt.id(), ProductResponse.class).getBody();
+        assertThat(at(priced, branch(shop, ikeja).get("priceListId")).unitPriceEntered()).isEqualByComparingTo("8000");
+        assertThat(at(priced, branch(shop, main).get("priceListId")).unitPriceEntered()).isEqualByComparingTo("7500");
+        int changes = listChanges(malt.id());
+        // The same again: nothing logged. A blank: no price at Ikeja.
+        send(shop, HttpMethod.PUT, "/api/prices", Map.of("cells", List.of(
+                Map.of("productId", malt.id().toString(), "branchId", ikeja, "price", 8000, "unit", "CRATE"))), Map.class);
+        assertThat(listChanges(malt.id())).isEqualTo(changes);
+        Map<String, Object> blank = new HashMap<>(Map.of("productId", malt.id().toString(), "branchId", ikeja));
+        send(shop, HttpMethod.PUT, "/api/prices", Map.of("cells", List.of(blank)), Map.class);
+        assertThat(get(shop, "/api/products/" + malt.id(), ProductResponse.class).getBody().branchPrices()).hasSize(1);
+        // On, a cell must say its branch.
+        assertThat(send(shop, HttpMethod.PUT, "/api/prices", Map.of("cells", List.of(
+                Map.of("productId", malt.id().toString(), "price", 1))), String.class).getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    }
+
     /** Selling at the branch's price (BRANCH_PRICES_PLAN.md step 4): the usual price and stock worth are the branch's. */
     @Test
     void aSaleAndStockWorthAtABranchUseThatBranchsPrice() {
