@@ -279,6 +279,22 @@ public class BranchPriceService {
         return now != null && now.sameAs(sellingPriceService.convert(product, price, unit));
     }
 
+    /**
+     * What a sale at {@code branchId} is measured against - the "usual price" a below-usual sale is flagged under
+     * (V107): that branch's price, or none there yet; with the switch off, the product's one price. Per stock unit.
+     */
+    @Transactional(readOnly = true)
+    public BigDecimal usualAt(Product product, UUID branchId) {
+        if (branchId == null || !isOn(product.getClientId())) {
+            return product.getUnitPrice();
+        }
+        List<BigDecimal> found = jdbc.queryForList(
+                "SELECT lp.unit_price FROM price_list_prices lp JOIN branches b ON b.price_list_id = lp.price_list_id"
+                        + " WHERE b.id = :branchId AND lp.product_id = :productId",
+                new MapSqlParameterSource().addValue("branchId", branchId).addValue("productId", product.getId()), BigDecimal.class);
+        return found.isEmpty() ? null : found.get(0);
+    }
+
     /** The main branch, for older callers that send one price: it lands at the main branch. */
     @Transactional(readOnly = true)
     public UUID mainBranch(UUID clientId) {

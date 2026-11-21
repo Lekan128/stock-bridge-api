@@ -286,16 +286,26 @@ public class SalesReportService {
             return jdbc.queryForObject(
                     """
                     WITH held AS (
-                        SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(s.quantity_on_hand), 0) AS quantity
+                        -- Prices per branch (V107): each area's stock at its branch's price; else the one price.
+                        SELECT p.id, p.cost_price,
+                               COALESCE(SUM(s.quantity_on_hand), 0) AS quantity,
+                               CASE WHEN c.branch_prices THEN SUM(s.quantity_on_hand * lp.unit_price)
+                                    ELSE COALESCE(SUM(s.quantity_on_hand), 0) * p.unit_price END AS worth,
+                               CASE WHEN c.branch_prices THEN COUNT(lp.unit_price) > 0 OR COUNT(s.area_id) = 0 AND p.unit_price IS NOT NULL
+                                    ELSE p.unit_price IS NOT NULL END AS priced
                         FROM products p
+                        JOIN clients c ON c.id = p.client_id
                         LEFT JOIN area_stock s ON s.product_id = p.id AND s.area_id IN (:scopeAreaIds)
+                        LEFT JOIN areas a ON a.id = s.area_id
+                        LEFT JOIN branches b ON b.id = a.branch_id
+                        LEFT JOIN price_list_prices lp ON lp.price_list_id = b.price_list_id AND lp.product_id = p.id
                         WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
-                        GROUP BY p.id, p.cost_price, p.unit_price)
+                        GROUP BY p.id, p.cost_price, p.unit_price, c.branch_prices)
                     SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
-                           COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
+                           COALESCE(SUM(worth) FILTER (WHERE worth IS NOT NULL), 0) AS at_price,
                            COUNT(*) AS active,
                            COUNT(*) FILTER (WHERE cost_price IS NULL) AS no_cost,
-                           COUNT(*) FILTER (WHERE unit_price IS NULL) AS no_price
+                           COUNT(*) FILTER (WHERE NOT priced) AS no_price
                     FROM held
                     """,
                     com.procurepal_services.stock_bridge_api.branch.AreaScope.bind(
@@ -313,17 +323,28 @@ public class SalesReportService {
         return jdbc.queryForObject(
                 """
                 WITH held AS (
-                    SELECT p.id, p.cost_price, p.unit_price, COALESCE(SUM(bs.quantity_on_hand), 0) AS quantity
+                    -- Prices per branch (V107): each branch's stock at that branch's price; else the one price.
+                    SELECT p.id, p.cost_price,
+                           COALESCE(SUM(bs.quantity_on_hand), 0) AS quantity,
+                           CASE WHEN c.branch_prices THEN SUM(bs.quantity_on_hand * lp.unit_price)
+                                ELSE COALESCE(SUM(bs.quantity_on_hand), 0) * p.unit_price END AS worth,
+                           CASE WHEN c.branch_prices
+                                THEN EXISTS (SELECT 1 FROM branches sb JOIN price_list_prices sp ON sp.price_list_id = sb.price_list_id
+                                             WHERE sb.id IN (:branchIds) AND sp.product_id = p.id)
+                                ELSE p.unit_price IS NOT NULL END AS priced
                     FROM products p
+                    JOIN clients c ON c.id = p.client_id
                     LEFT JOIN branch_stock bs ON bs.product_id = p.id AND bs.branch_id IN (:branchIds)
+                    LEFT JOIN branches b ON b.id = bs.branch_id
+                    LEFT JOIN price_list_prices lp ON lp.price_list_id = b.price_list_id AND lp.product_id = p.id
                     WHERE p.client_id = :clientId AND p.is_active AND NOT p.made_here
                       AND (p.for_all_branches OR EXISTS (SELECT 1 FROM product_branches pb WHERE pb.product_id = p.id AND pb.branch_id IN (:branchIds)))
-                    GROUP BY p.id, p.cost_price, p.unit_price)
+                    GROUP BY p.id, p.cost_price, p.unit_price, c.branch_prices)
                 SELECT COALESCE(SUM(quantity * cost_price) FILTER (WHERE cost_price IS NOT NULL), 0) AS at_cost,
-                       COALESCE(SUM(quantity * unit_price) FILTER (WHERE unit_price IS NOT NULL), 0) AS at_price,
+                       COALESCE(SUM(worth) FILTER (WHERE worth IS NOT NULL), 0) AS at_price,
                        COUNT(*) AS active,
                        COUNT(*) FILTER (WHERE cost_price IS NULL) AS no_cost,
-                       COUNT(*) FILTER (WHERE unit_price IS NULL) AS no_price
+                       COUNT(*) FILTER (WHERE NOT priced) AS no_price
                 FROM held
                 """,
                 new MapSqlParameterSource().addValue("clientId", clientId)

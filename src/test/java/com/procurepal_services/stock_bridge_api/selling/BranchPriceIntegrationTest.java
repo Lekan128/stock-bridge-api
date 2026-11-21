@@ -147,6 +147,40 @@ class BranchPriceIntegrationTest {
         assertThat(get(shop, "/api/products/sync/snapshot", String.class).getBody()).contains("\"branchPrices\":[{");
     }
 
+    /** Selling at the branch's price (BRANCH_PRICES_PLAN.md step 4): the usual price and stock worth are the branch's. */
+    @Test
+    void aSaleAndStockWorthAtABranchUseThatBranchsPrice() {
+        Shop shop = shop("Branch Sale Shop");
+        sellingOn(shop);
+        String main = branchIds(shop).get(0);
+        jdbcTemplate.update("UPDATE clients SET branches_enabled = true WHERE id = (SELECT client_id FROM branches WHERE id = ?)",
+                UUID.fromString(main));
+        String ikeja = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Ikeja"), Map.class).getBody().get("id");
+        ProductResponse coke = create(shop, Map.of("name", "Coke", "sku", "CK-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitOfMeasure", "PIECE", "unitPrice", 500, "allBranches", true));
+        send(shop, HttpMethod.PUT, "/api/company/selling/branch-prices", Map.of("on", true), Map.class);
+        choose(shop, ikeja, "OWN", null);
+        update(shop, coke.id(), Map.of("branchPrices", List.of(Map.of("branchId", ikeja, "price", 600))));
+        for (String branchId : List.of(main, ikeja)) {
+            assertThat(send(shop, HttpMethod.POST, "/api/products/" + coke.id() + "/stock/stock-in",
+                    Map.of("quantity", 10, "unitPrice", 300, "branchId", branchId), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        }
+
+        // A sale at Ikeja at 550: below Ikeja's 600, so it's measured against 600, not Head Office's 500.
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + coke.id() + "/stock/stock-out",
+                Map.of("quantity", 1, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 550,
+                        "paymentMethod", "CASH", "branchId", ikeja), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(jdbcTemplate.queryForObject(
+                "SELECT usual_price_at_time FROM stock_movements WHERE product_id = ? AND out_reason = 'SALE'", java.math.BigDecimal.class,
+                coke.id())).isEqualByComparingTo("600");
+
+        // Stock worth at each branch's prices: Ikeja's 9 at 600, Head Office's 10 at 500.
+        Map<?, ?> atIkeja = get(shop, "/api/analytics/stock-worth?branchId=" + ikeja, Map.class).getBody();
+        assertThat(new java.math.BigDecimal(atIkeja.get("valueAtSellingPrice").toString())).isEqualByComparingTo("5400");
+        Map<?, ?> atMain = get(shop, "/api/analytics/stock-worth?branchId=" + main, Map.class).getBody();
+        assertThat(new java.math.BigDecimal(atMain.get("valueAtSellingPrice").toString())).isEqualByComparingTo("5000");
+    }
+
     private static com.procurepal_services.stock_bridge_api.selling.BranchPriceService.ListPrice at(ProductResponse product, Object list) {
         return product.branchPrices().stream().filter(price -> price.priceListId().toString().equals(list)).findFirst().orElseThrow();
     }
