@@ -2293,6 +2293,11 @@ public class StockManagementService {
         if (request.billLine() != null) {
             stockMovementRepository.flush();
             billLineRecorder.record(tenantId, request, line.getId(), line.getSaleId(), branchId, actingUserId);
+        } else if (request.counterLine() != null) {
+            // A counter sale (V109): made in another area than the till's, it goes on that area's ticket.
+            stockMovementRepository.flush();
+            billLineRecorder.recordCounter(tenantId, request, line.getId(), line.getSaleId(), branchId,
+                    madeWithService.madeInAreaAt(product, branchId), actingUserId);
         }
         salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
         stockMovementRepository.flush();

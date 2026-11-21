@@ -214,6 +214,12 @@ public class MadeWithService {
         return uses;
     }
 
+    /** Where {@code item} is made at {@code branchId} (V109: a counter sale's ticket goes there); null when nowhere. */
+    @Transactional(readOnly = true)
+    public UUID madeInAreaAt(Product item, UUID branchId) {
+        return branchId == null ? null : areaAt(item, branchId);
+    }
+
     /** Where {@code item} is made at {@code branchId}: the area of its "Made in" name, else the one chosen there. */
     private UUID areaAt(Product item, UUID branchId) {
         if (item.getMadeInAreaName() != null) {

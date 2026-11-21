@@ -22,6 +22,36 @@ public class BillLineRecorder {
     private final NamedParameterJdbcTemplate jdbc;
     private final TicketPushes ticketPushes;
 
+    /**
+     * A counter sale's line (V109; owner 2026-11-21): kept for the kitchen with its side's meal and note, and put on the
+     * ticket of {@code madeIn} when that's another area than the till's - made to order. Made where the till is, or not
+     * made anywhere, it's handed over and sends nothing. Nothing at all where the branch has tickets off.
+     */
+    public void recordCounter(UUID clientId, StockOutRequest request, UUID movementId, UUID saleId, UUID branchId, UUID madeIn,
+            UUID userId) {
+        Boolean ticketsOn = branchId == null ? Boolean.FALSE : jdbc.queryForObject(
+                "SELECT tickets_on FROM branches WHERE id = :id", new MapSqlParameterSource("id", branchId), Boolean.class);
+        if (!Boolean.TRUE.equals(ticketsOn) || saleId == null) {
+            return;
+        }
+        StockOutRequest.CounterLine line = request.counterLine();
+        String note = line.note() == null || line.note().isBlank() ? null : line.note().trim();
+        jdbc.update("""
+                INSERT INTO counter_lines (movement_id, sale_id, client_id, line_key, with_key, note, sent_by)
+                VALUES (:movementId, :saleId, :clientId, :key, :withKey, :note, :userId)
+                ON CONFLICT DO NOTHING
+                """, new MapSqlParameterSource().addValue("movementId", movementId).addValue("saleId", saleId)
+                        .addValue("clientId", clientId).addValue("key", line.lineKey()).addValue("withKey", line.withKey())
+                        .addValue("note", note).addValue("userId", userId));
+        if (madeIn == null || madeIn.equals(request.areaId())) {
+            return;
+        }
+        UUID made = TicketService.addCounterToTicket(jdbc, clientId, saleId, branchId, madeIn, movementId, userId);
+        if (made != null) {
+            ticketPushes.announceLater(made);
+        }
+    }
+
     /** Called before the sale's payment is looked at: a bill line carries none, and its bill must still be open. */
     public void record(UUID clientId, StockOutRequest request, UUID movementId, UUID saleId, UUID branchId, UUID userId) {
         if (request.paymentMethod() == SalePaymentMethod.SPLIT) {

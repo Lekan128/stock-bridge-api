@@ -100,6 +100,29 @@ public class TicketService {
         return made.isEmpty() ? null : made.getFirst();
     }
 
+    /**
+     * A counter sale's line onto its area's ticket for that sale (V109): one ticket per area per sale, NEW. Only where
+     * the branch has tickets on. Returns the ticket when it was made just now, for its announcement.
+     */
+    static UUID addCounterToTicket(NamedParameterJdbcTemplate jdbc, UUID clientId, UUID saleId, UUID branchId, UUID areaId,
+            UUID movementId, UUID userId) {
+        MapSqlParameterSource params = new MapSqlParameterSource().addValue("clientId", clientId).addValue("saleId", saleId)
+                .addValue("branchId", branchId).addValue("areaId", areaId).addValue("userId", userId).addValue("movementId", movementId);
+        List<UUID> made = jdbc.queryForList("""
+                INSERT INTO tickets (client_id, branch_id, area_id, sale_id, send_key, kind, created_by)
+                SELECT :clientId, br.id, :areaId, :saleId, :saleId, 'NEW', :userId
+                FROM branches br WHERE br.id = :branchId AND br.client_id = :clientId AND br.tickets_on
+                ON CONFLICT (sale_id, area_id, send_key) WHERE bill_id IS NULL DO NOTHING
+                RETURNING id
+                """, params, UUID.class);
+        jdbc.update("""
+                INSERT INTO ticket_lines (ticket_id, movement_id)
+                SELECT id, :movementId FROM tickets WHERE sale_id = :saleId AND bill_id IS NULL AND area_id = :areaId
+                ON CONFLICT DO NOTHING
+                """, params);
+        return made.isEmpty() ? null : made.getFirst();
+    }
+
     // ---------------------------------------------------------------------------------------- the Tickets page
 
     /**
@@ -137,13 +160,13 @@ public class TicketService {
 
     /** A line still to be made: on the bill, not taken off. */
     private static final String LIVE = """
-            EXISTS (SELECT 1 FROM ticket_lines l JOIN bill_lines bl ON bl.movement_id = l.movement_id
+            EXISTS (SELECT 1 FROM ticket_lines l JOIN ticketed_lines bl ON bl.movement_id = l.movement_id
                     WHERE l.ticket_id = t.id AND bl.taken_off IS NULL
                       AND NOT EXISTS (SELECT 1 FROM stock_movements r WHERE r.reverses_movement_id = l.movement_id))""";
 
     /** An item taken off before it was made that nobody in the area has said OK to. */
     private static final String CHANGED = """
-            EXISTS (SELECT 1 FROM ticket_lines l JOIN bill_lines bl ON bl.movement_id = l.movement_id
+            EXISTS (SELECT 1 FROM ticket_lines l JOIN ticketed_lines bl ON bl.movement_id = l.movement_id
                     WHERE l.ticket_id = t.id AND l.cleared_at IS NULL
                       AND (bl.taken_off = 'NOT_MADE' OR (bl.taken_off IS NULL
                            AND EXISTS (SELECT 1 FROM stock_movements r WHERE r.reverses_movement_id = l.movement_id))))""";
@@ -167,7 +190,7 @@ public class TicketService {
                        """ + CHANGED + """
                  AS changed
                 FROM tickets t
-                JOIN bills b ON b.id = t.bill_id
+                LEFT JOIN bills b ON b.id = t.bill_id
                 LEFT JOIN branch_tables bt ON bt.id = b.table_id
                 LEFT JOIN users u ON u.id = t.created_by
                 LEFT JOIN users s ON s.id = t.served_by
@@ -195,13 +218,13 @@ public class TicketService {
                        CASE WHEN bl.taken_off IS NULL AND r.id IS NOT NULL THEN 'NOT_MADE' ELSE bl.taken_off END AS taken_off,
                        COALESCE(bl.taken_off_at, r.created_at) AS taken_off_at,
                        COALESCE(NULLIF(btrim(concat_ws(' ', tu.first_name, tu.last_name)), ''), tu.username) AS taken_off_name,
-                       (SELECT wp.name FROM bill_lines w
+                       (SELECT wp.name FROM ticketed_lines w
                           JOIN stock_movements wm ON wm.id = w.movement_id
                           JOIN products wp ON wp.id = wm.product_id
-                        WHERE w.bill_id = bl.bill_id AND w.line_key = bl.with_key LIMIT 1) AS with_name
+                        WHERE w.owner_id = bl.owner_id AND w.line_key = bl.with_key LIMIT 1) AS with_name
                 FROM ticket_lines tl
                 JOIN stock_movements o ON o.id = tl.movement_id
-                JOIN bill_lines bl ON bl.movement_id = o.id
+                JOIN ticketed_lines bl ON bl.movement_id = o.id
                 JOIN products p ON p.id = o.product_id
                 LEFT JOIN stock_movements r ON r.reverses_movement_id = o.id
                 LEFT JOIN users tu ON tu.id = bl.taken_off_by
@@ -243,7 +266,7 @@ public class TicketService {
         requireArea(clientId, userId, areaId);
         jdbc.update("""
                 UPDATE ticket_lines l SET cleared_at = now()
-                FROM bill_lines bl
+                FROM ticketed_lines bl
                 WHERE l.ticket_id = :id AND bl.movement_id = l.movement_id AND l.cleared_at IS NULL
                   AND (bl.taken_off IS NOT NULL OR EXISTS (SELECT 1 FROM stock_movements r WHERE r.reverses_movement_id = l.movement_id))
                 """, new MapSqlParameterSource("id", ticketId));
@@ -345,7 +368,8 @@ public class TicketService {
     }
 
     private static String label(String table, String name) {
-        return table == null ? name : table.matches("\\d+") ? "Table " + table : table;
+        // A counter sale's ticket has no bill (V109).
+        return table == null ? (name == null ? "Counter" : name) : table.matches("\\d+") ? "Table " + table : table;
     }
 
     private void requireArea(UUID clientId, UUID userId, UUID areaId) {

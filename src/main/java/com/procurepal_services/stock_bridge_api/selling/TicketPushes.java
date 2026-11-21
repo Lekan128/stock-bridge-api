@@ -75,7 +75,8 @@ public class TicketPushes {
         }
         pushService.notify(pushPrefs.wanting(List.of(sender), PushPrefs.TICKETS_READY), new PushMessage(
                 ticket.get("label") + " · " + ticket.get("area_name") + ": ready", items(ticketId),
-                "ticket-ready-" + ticketId, "/app/sell/bill?id=" + ticket.get("bill_id"), false));
+                "ticket-ready-" + ticketId,
+                ticket.get("bill_id") == null ? "/app/sell" : "/app/sell/bill?id=" + ticket.get("bill_id"), false));
     }
 
     private void announce(UUID ticketId) {
@@ -105,8 +106,8 @@ public class TicketPushes {
     private Map<String, Object> ticket(UUID ticketId) {
         return jdbc.queryForList("""
                 SELECT t.client_id, t.branch_id, t.area_id, t.bill_id, t.kind, t.created_by, t.ready_at, a.name AS area_name,
-                       CASE WHEN bt.name IS NULL THEN b.name WHEN bt.name ~ '^[0-9]+$' THEN 'Table ' || bt.name ELSE bt.name END AS label
-                FROM tickets t JOIN areas a ON a.id = t.area_id JOIN bills b ON b.id = t.bill_id
+                       CASE WHEN bt.name IS NULL THEN COALESCE(b.name, 'Counter') WHEN bt.name ~ '^[0-9]+$' THEN 'Table ' || bt.name ELSE bt.name END AS label
+                FROM tickets t JOIN areas a ON a.id = t.area_id LEFT JOIN bills b ON b.id = t.bill_id
                 LEFT JOIN branch_tables bt ON bt.id = b.table_id
                 WHERE t.id = :id
                 """, new MapSqlParameterSource("id", ticketId)).stream().findFirst().orElse(null);
@@ -117,7 +118,7 @@ public class TicketPushes {
         List<Map<String, Object>> lines = jdbc.queryForList("""
                 SELECT p.name, COALESCE(o.entered_quantity, o.quantity) AS quantity, bl.line_key, bl.with_key
                 FROM ticket_lines tl JOIN stock_movements o ON o.id = tl.movement_id
-                JOIN bill_lines bl ON bl.movement_id = o.id JOIN products p ON p.id = o.product_id
+                JOIN ticketed_lines bl ON bl.movement_id = o.id JOIN products p ON p.id = o.product_id
                 WHERE tl.ticket_id = :id AND bl.taken_off IS NULL
                 ORDER BY bl.sent_at, o.created_at
                 """, new MapSqlParameterSource("id", ticketId));

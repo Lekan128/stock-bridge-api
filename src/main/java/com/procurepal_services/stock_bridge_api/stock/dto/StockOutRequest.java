@@ -98,7 +98,11 @@ public record StockOutRequest(
         // Selling till Stage C (V99): a line sent to an open bill - the phone's key for the line, the meal a side goes
         // with, and its note for the kitchen. The sale id is the bill's. Absent on every other stock-out, and left out
         // of the idempotency hash when absent, like branchId.
-        BillLine billLine) {
+        BillLine billLine,
+        // V109: a counter sale's line as the kitchen sees it - its key, the meal a side goes with, a note - so an item
+        // made in another area goes on that area's ticket. Absent on every other stock-out (and from an older app), and
+        // left out of the idempotency hash when absent, like branchId.
+        CounterLine counterLine) {
 
     /** A bill line's place on its bill (V99). */
     /**
@@ -109,6 +113,18 @@ public record StockOutRequest(
         public BillLine(UUID lineKey, UUID withKey, String note) {
             this(lineKey, withKey, note, null);
         }
+    }
+
+    /** A counter sale's line for the kitchen (V109): the phone's key for it, the meal a side goes with, a note. */
+    public record CounterLine(@NotNull UUID lineKey, UUID withKey, @Size(max = 200) String note) {}
+
+    /** The shape before {@code counterLine} (V109). */
+    public StockOutRequest(
+            BigDecimal quantity, BigDecimal unitPrice, String note, String unit, List<Allocation> allocations,
+            OffsetDateTime occurredAt, Boolean recordedOffline, OutReason reason, UUID saleId, BigDecimal lineTotal,
+            UUID branchId, UUID areaId, SalePaymentMethod paymentMethod, UUID paymentAccountId, BillLine billLine) {
+        this(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason, saleId, lineTotal,
+                branchId, areaId, paymentMethod, paymentAccountId, billLine, null);
     }
 
     /** The shape before {@code billLine} (Stage C). */
@@ -209,13 +225,13 @@ public record StockOutRequest(
     /** This request, recorded at {@code branch} - how a caller states the branch it has resolved. */
     public StockOutRequest withBranchId(UUID branch) {
         return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
-                saleId, lineTotal, branch, areaId, paymentMethod, paymentAccountId, billLine);
+                saleId, lineTotal, branch, areaId, paymentMethod, paymentAccountId, billLine, counterLine);
     }
 
     /** This request, recorded in {@code area} - how a caller states the area it has resolved. */
     public StockOutRequest withAreaId(UUID area) {
         return new StockOutRequest(quantity, unitPrice, note, unit, allocations, occurredAt, recordedOffline, reason,
-                saleId, lineTotal, branchId, area, paymentMethod, paymentAccountId, billLine);
+                saleId, lineTotal, branchId, area, paymentMethod, paymentAccountId, billLine, counterLine);
     }
 
     /** One manually-chosen lot to draw from - see the class javadoc's "allocations" section. */

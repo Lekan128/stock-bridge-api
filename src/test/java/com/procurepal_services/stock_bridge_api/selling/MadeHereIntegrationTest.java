@@ -316,6 +316,60 @@ class MadeHereIntegrationTest {
         assertThat(get(shop, "/api/products/" + rice.id(), ProductResponse.class).getBody().forBranchIds()).contains(UUID.fromString(ikeja));
     }
 
+    /**
+     * Counter tickets (V109; owner 2026-11-21): a counter sale sends a ticket for what's made in another area - the
+     * Kitchen's plate - and nothing for what the till's own area hands over. A side goes with its meal.
+     */
+    @Test
+    void aCounterSaleSendsTheKitchenItsPlatesAndNothingForWhatTheCounterHandsOver() {
+        Shop shop = shop("Counter Ticket Shop");
+        sellingOn(shop);
+        send(shop, HttpMethod.PUT, "/api/company/selling/made-here", Map.of("on", true), String.class);
+        String main = (String) ((java.util.List<Map<String, Object>>) get(shop, "/api/branches", Map.class).getBody().get("branches"))
+                .get(0).get("id");
+        java.util.List<Map<String, Object>> areas = send(shop, HttpMethod.POST, "/api/branches/" + main + "/areas",
+                Map.of("areas", java.util.List.of(Map.of("name", "Kitchen", "keepsStock", true), Map.of("name", "Front desk", "keepsStock", true))),
+                java.util.List.class).getBody();
+        String kitchen = areas.stream().filter(a -> "Kitchen".equals(a.get("name"))).findFirst().orElseThrow().get("id").toString();
+        String frontDesk = areas.stream().filter(a -> "Front desk".equals(a.get("name"))).findFirst().orElseThrow().get("id").toString();
+        assertThat(send(shop, HttpMethod.PUT, "/api/branches/" + main + "/tickets", Map.of("on", true), Map.class).getStatusCode().is2xxSuccessful()).isTrue();
+        ProductResponse rice = productWith(shop, new java.util.HashMap<>(Map.of("name", "Rice", "sku", "RC-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitOfMeasure", "PIECE", "branchIds", java.util.List.of(main))));
+        ProductResponse plate = productWith(shop, new java.util.HashMap<>(Map.of("name", "Rice plate", "sku", "RP-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitPrice", 3000, "madeHere", true, "branchIds", java.util.List.of(main))));
+        send(shop, HttpMethod.PUT, "/api/products/" + plate.id() + "/made-with", Map.of("madeIn", "Kitchen",
+                "ingredients", java.util.List.of(Map.of("productId", rice.id().toString(), "quantity", 1))), String.class);
+        // Banana chips: portioned at the front desk ("Made in" there), a side.
+        ProductResponse chips = productWith(shop, new java.util.HashMap<>(Map.of("name", "Banana chips", "sku", "BC-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitPrice", 4000, "madeHere", true, "branchIds", java.util.List.of(main))));
+        send(shop, HttpMethod.PUT, "/api/products/" + chips.id() + "/made-with", Map.of("madeIn", "Front desk",
+                "ingredients", java.util.List.of(Map.of("productId", rice.id().toString(), "quantity", 1))), String.class);
+
+        UUID saleId = UUID.randomUUID();
+        UUID plateKey = UUID.randomUUID();
+        for (Map<String, Object> line : java.util.List.<Map<String, Object>>of(
+                Map.of("product", plate.id(), "total", 3000, "line", Map.of("lineKey", plateKey.toString())),
+                Map.of("product", chips.id(), "total", 4000, "line", Map.of("lineKey", UUID.randomUUID().toString(), "withKey", plateKey.toString())))) {
+            assertThat(send(shop, HttpMethod.POST, "/api/products/" + line.get("product") + "/stock/stock-out", Map.of(
+                    "quantity", 1, "reason", "SALE", "saleId", saleId.toString(), "lineTotal", line.get("total"), "paymentMethod", "CASH",
+                    "branchId", main, "areaId", frontDesk, "counterLine", line.get("line")), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        }
+        String kitchenTickets = get(shop, "/api/tickets?areaId=" + kitchen, String.class).getBody();
+        assertThat(kitchenTickets).contains("\"label\":\"Counter\"").contains("Rice plate").doesNotContain("Banana chips");
+        // The Front desk handed the chips over: no ticket for it.
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM tickets WHERE area_id = ?", Integer.class, UUID.fromString(frontDesk))).isZero();
+        // Sold at the Kitchen's own till: nothing to send.
+        send(shop, HttpMethod.POST, "/api/products/" + plate.id() + "/stock/stock-out", Map.of(
+                "quantity", 1, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 3000, "paymentMethod", "CASH",
+                "branchId", main, "areaId", kitchen, "counterLine", Map.of("lineKey", UUID.randomUUID().toString())), String.class);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM tickets WHERE area_id = ?", Integer.class, UUID.fromString(kitchen))).isEqualTo(1);
+        // The counter's money is the counter's: its drawer and Sales count it as a sale, not a bill.
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM bills WHERE id = ?", Integer.class, saleId)).isZero();
+        // Cancelled: the Kitchen is told not to make it.
+        send(shop, HttpMethod.POST, "/api/sales/" + saleId + "/cancel", Map.of("reason", "WRONG_ITEM"), String.class);
+        assertThat(get(shop, "/api/tickets?areaId=" + kitchen, String.class).getBody()).contains("\"changed\":true");
+    }
+
     /** Step 0 of BRANCH_PRICES_PLAN.md: wherever an item goes, its ingredients go too - for the branch, no stock. */
     @Test
     void anItemsIngredientsFollowItToEveryBranchWithoutStock() {
