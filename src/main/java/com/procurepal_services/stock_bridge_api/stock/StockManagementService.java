@@ -131,6 +131,7 @@ public class StockManagementService {
      * class for why a one-branch company's figure is still {@code Product.quantityOnHand}.
      */
     private final BranchStockService branchStockService;
+    private final com.procurepal_services.stock_bridge_api.selling.BranchPriceService branchPriceService;
     private final MoveRows moveRows;
 
     /**
@@ -522,7 +523,7 @@ public class StockManagementService {
                 // A sale sent without an id is a sale of its own; one sent with it joins its basket.
                 .saleId(sale ? (request.saleId() != null ? request.saleId() : UUID.randomUUID()) : null)
                 .saleAmount(sale ? SaleFacts.saleAmount(request) : null)
-                .usualPriceAtTime(sale ? product.getUnitPrice() : null)
+                .usualPriceAtTime(sale ? branchPriceService.usualAt(product, branchId) : null)
                 .costAmount(cost.amount())
                 .costBasis(cost.basis())
                 .build());
@@ -2267,7 +2268,7 @@ public class StockManagementService {
                 .outReason(OutReason.SALE)
                 .saleId(request.saleId() != null ? request.saleId() : UUID.randomUUID())
                 .saleAmount(SaleFacts.saleAmount(request))
-                .usualPriceAtTime(product.getUnitPrice())
+                .usualPriceAtTime(branchPriceService.usualAt(product, branchId))
                 .costAmount(cost)
                 .costBasis(cost == null ? CostBasis.UNKNOWN : CostBasis.ESTIMATE)
                 .build());
@@ -2292,6 +2293,11 @@ public class StockManagementService {
         if (request.billLine() != null) {
             stockMovementRepository.flush();
             billLineRecorder.record(tenantId, request, line.getId(), line.getSaleId(), branchId, actingUserId);
+        } else if (request.counterLine() != null) {
+            // A counter sale (V109): made in another area than the till's, it goes on that area's ticket.
+            stockMovementRepository.flush();
+            billLineRecorder.recordCounter(tenantId, request, line.getId(), line.getSaleId(), branchId,
+                    madeWithService.madeInAreaAt(product, branchId), actingUserId);
         }
         salePaymentService.recordIfAbsent(tenantId, line.getSaleId(), branchId, request.paymentMethod(), saleAccount(request, branchId), actingUserId);
         stockMovementRepository.flush();

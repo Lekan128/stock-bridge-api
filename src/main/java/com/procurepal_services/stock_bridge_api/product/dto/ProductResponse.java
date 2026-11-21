@@ -127,7 +127,19 @@ public record ProductResponse(
         BigDecimal estimatedCost,
         // V92: which branches it is for - all of them, or these. Filled where the caller knows them; absent otherwise.
         boolean forAllBranches,
-        List<UUID> forBranchIds) {
+        List<UUID> forBranchIds,
+        // V107: its own price in each set of branch prices that has one (BRANCH_PRICES_PLAN.md); absent otherwise. A
+        // branch whose set isn't here uses unitPrice, the main price.
+        List<com.procurepal_services.stock_bridge_api.selling.BranchPriceService.ListPrice> branchPrices) {
+
+    /** The same product with its own prices at branches (V107); null or empty leaves it absent. */
+    public ProductResponse withBranchPrices(List<com.procurepal_services.stock_bridge_api.selling.BranchPriceService.ListPrice> prices) {
+        return new ProductResponse(id, name, sku, barcode, description, unitPrice, costPrice, quantityOnHand, incomingQuantity,
+                expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure, packagingUnit,
+                packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt, warnings, hasMultiplePacks,
+                categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit, branchStock, areaStock, measures, usedInUnit,
+                countIn, madeHere, estimatedCost, forAllBranches, forBranchIds, prices == null || prices.isEmpty() ? null : prices);
+    }
 
     /** The same product, saying which branches it is for (V92). */
     public ProductResponse withBranches(List<UUID> branches) {
@@ -135,7 +147,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure, packagingUnit,
                 packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt, warnings, hasMultiplePacks,
                 categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit, branchStock, areaStock, measures, usedInUnit,
-                countIn, madeHere, estimatedCost, forAllBranches, branches);
+                countIn, madeHere, estimatedCost, forAllBranches, branches, branchPrices);
     }
 
     /**
@@ -208,6 +220,7 @@ public record ProductResponse(
                 product.isMadeHere(),
                 product.getEstimatedCost(),
                 product.isForAllBranches(),
+                null,
                 null);
     }
 
@@ -222,7 +235,7 @@ public record ProductResponse(
                 expected, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
+                branchStock, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds, branchPrices);
     }
 
     /**
@@ -235,7 +248,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, figure.lowStockThreshold(), brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, figure.isLowStock(), createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
+                branchStock, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds, branchPrices);
     }
 
     /** The same product with its figure at each branch the person sees (V52) - the product page only. */
@@ -245,7 +258,7 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                figures, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
+                figures, areaStock, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds, branchPrices);
     }
 
     /** The same product with its figure in each area (V60) of the branches the person sees that have areas. */
@@ -255,6 +268,6 @@ public record ProductResponse(
                 expectedQuantity, sourceProductId, preferredVendorName, lowStockThreshold, brand, unitOfMeasure,
                 packagingUnit, packagingSize, imageUrl, unitOptions, active, isLowStock, createdAt, updatedAt,
                 warnings, hasMultiplePacks, categoryId, categoryName, unitPriceEntered, unitPriceEnteredUnit,
-                branchStock, figures, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds);
+                branchStock, figures, measures, usedInUnit, countIn, madeHere, estimatedCost, forAllBranches, forBranchIds, branchPrices);
     }
 }

@@ -102,7 +102,25 @@ public record UpdateProductRequest(
         Boolean clearEstimatedCost,
         /** Which branches it is for (V92): absent leaves them; {@code allBranches} true is every branch. */
         java.util.List<UUID> branchIds,
-        Boolean allBranches) {
+        Boolean allBranches,
+        /**
+         * V107: its own price at these branches, typed per {@code unitPriceUnit}; a null price takes the branch back to
+         * the main price. Absent leaves every branch's as it is.
+         */
+        java.util.List<CreateProductRequest.BranchPriceInput> branchPrices) {
+
+    /** The shape before prices per branch (V107). */
+    public UpdateProductRequest(
+            String name, String sku, String description, BigDecimal unitPrice, Integer lowStockThreshold, Boolean active,
+            Boolean removeImage, String unitOfMeasure, String packagingUnit, BigDecimal packagingSize, UUID categoryId,
+            Boolean clearCategory, String barcode, String unitPriceUnit, Boolean clearUnitPrice,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures, String usedInUnit,
+            java.util.List<String> countIn, BigDecimal estimatedCost, Boolean clearEstimatedCost,
+            java.util.List<UUID> branchIds, Boolean allBranches) {
+        this(name, sku, description, unitPrice, lowStockThreshold, active, removeImage, unitOfMeasure, packagingUnit,
+                packagingSize, categoryId, clearCategory, barcode, unitPriceUnit, clearUnitPrice, measures, usedInUnit,
+                countIn, estimatedCost, clearEstimatedCost, branchIds, allBranches, null);
+    }
 
     /** The shape before a product's branches (V92). */
     public UpdateProductRequest(

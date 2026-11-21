@@ -31,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class BranchController {
 
     private final BranchService branchService;
+    private final com.procurepal_services.stock_bridge_api.selling.BranchPriceService branchPriceService;
 
     @GetMapping
     public BranchListResponse list(@AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
@@ -60,6 +61,19 @@ public class BranchController {
     @PreAuthorize("hasAuthority('MANAGE_BRANCHES')")
     public BranchResponse close(@PathVariable UUID id) {
         return branchService.close(id);
+    }
+
+    /** The prices a branch uses (V107, BRANCH_PRICES_PLAN.md): MAIN, OWN, or SAME_AS another branch's. */
+    public record PricesRequest(@jakarta.validation.constraints.NotNull
+            com.procurepal_services.stock_bridge_api.selling.BranchPriceService.Uses uses, UUID sameAsBranchId) {}
+
+    @PutMapping("/{id}/prices")
+    @PreAuthorize("hasAuthority('MANAGE_BRANCHES')")
+    public org.springframework.http.ResponseEntity<Void> prices(@PathVariable UUID id,
+            @jakarta.validation.Valid @org.springframework.web.bind.annotation.RequestBody PricesRequest request) {
+        branchPriceService.choose(com.procurepal_services.stock_bridge_api.tenant.TenantContext.get(), id, request.uses(),
+                request.sameAsBranchId());
+        return org.springframework.http.ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{id}/reopen")

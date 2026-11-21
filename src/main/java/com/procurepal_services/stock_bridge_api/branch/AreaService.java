@@ -248,6 +248,30 @@ public class AreaService {
         return toResponse(requireArea(areaId, clientId), null);
     }
 
+    /**
+     * Undo of an area just added ("Add a Kitchen at Ikeja", owner 2026-11-21): removed outright while nothing has been
+     * recorded in it; once something has, it stays and can be switched off instead.
+     */
+    public void removeJustAdded(UUID areaId, UUID userId) {
+        UUID clientId = requireTenantId();
+        AreaRow area = requireArea(areaId, clientId);
+        Map<String, Object> branch = requireBranch(area.branchId(), clientId, userId);
+        Boolean used = jdbc.queryForObject("""
+                SELECT EXISTS (SELECT 1 FROM stock_movements WHERE area_id = :id OR used_area_id = :id)
+                    OR EXISTS (SELECT 1 FROM area_stock WHERE area_id = :id AND quantity_on_hand <> 0)
+                    OR EXISTS (SELECT 1 FROM area_moves WHERE from_area_id = :id OR to_area_id = :id)
+                    OR EXISTS (SELECT 1 FROM stock_requests WHERE from_area_id = :id OR to_area_id = :id)
+                    OR EXISTS (SELECT 1 FROM bill_payments WHERE area_id = :id)
+                """, new MapSqlParameterSource("id", areaId), Boolean.class);
+        if (Boolean.TRUE.equals(used) || area.delivery()) {
+            throw new BranchChangeRefusedException(area.name() + " is in use at " + branch.get("name")
+                    + " now, so it stays. Switch it off under Branches → " + branch.get("name") + ".");
+        }
+        jdbc.update("DELETE FROM area_stock WHERE area_id = :id", new MapSqlParameterSource("id", areaId));
+        jdbc.update("DELETE FROM areas WHERE id = :id", new MapSqlParameterSource("id", areaId));
+        log.info("Area {} '{}' removed from branch {} (undo of adding it)", areaId, area.name(), area.branchId());
+    }
+
     /** Closes an empty area. Its history keeps its name; nothing new is recorded there. */
     public AreaResponse close(UUID areaId, UUID userId) {
         UUID clientId = requireTenantId();

@@ -54,6 +54,10 @@ public class ProductPriceChange {
     @Column(name = "product_id", nullable = false, updatable = false)
     private UUID productId;
 
+    /** Which of the branches' own prices changed (V107); null for the main price. */
+    @Column(name = "price_list_id", updatable = false)
+    private UUID priceListId;
+
     @Column(name = "old_unit_price", precision = 14, scale = 2, updatable = false)
     private BigDecimal oldUnitPrice;
 

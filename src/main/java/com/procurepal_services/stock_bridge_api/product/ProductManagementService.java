@@ -86,6 +86,8 @@ public class ProductManagementService {
     /** Where a new product's opening stock lands (V52). */
     /** Who may set a selling price (V52). */
     private final SellingPricePermission sellingPricePermission;
+    private final com.procurepal_services.stock_bridge_api.selling.BranchPriceService branchPriceService;
+    private final NeedsALookService needsALookService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
@@ -203,11 +205,14 @@ public class ProductManagementService {
         page.getContent().forEach(product -> thresholds.put(product.getId(), product.getLowStockThreshold()));
         Map<UUID, List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure>> figures =
                 branchStockService.figures(tenantId, thresholds.keySet(), branchAccessService.openViewBranchIds(userId), thresholds);
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.selling.BranchPriceService.ListPrice>> branchPrices =
+                branchPriceService.pricesOf(tenantId, thresholds.keySet(), branchAccessService.openViewBranchIds(userId));
         return withAreaStock(page.map(product -> {
             ProductResponse response = ProductResponse.from(
                             product, preferredVendorNames.get(product.getId()), null,
                             hasMultiplePacks.getOrDefault(product.getId(), false))
-                    .withExpectedQuantity(expected.get(product.getId()));
+                    .withExpectedQuantity(expected.get(product.getId()))
+                    .withBranchPrices(branchPrices.get(product.getId()));
             List<com.procurepal_services.stock_bridge_api.branch.dto.BranchFigure> rows =
                     figures == null ? null : figures.get(product.getId());
             if (rows == null) {
@@ -279,7 +284,8 @@ public class ProductManagementService {
         ProductResponse response = ProductResponse.from(product, preferredVendorName, null, hasMultiplePacks)
                 .withExpectedQuantity(
                         expectedDeliveryService.outstandingByProduct(tenantId, List.of(id)).get(id))
-                .withBranches(productBranchService.branchesOf(id));
+                .withBranches(productBranchService.branchesOf(id))
+                .withBranchPrices(branchPriceService.pricesOf(product.getClientId(), List.of(id)).get(id));
         if (userId == null) {
             return response;
         }
@@ -542,7 +548,8 @@ public class ProductManagementService {
         // After the units are set: a price typed per carton is converted by this product's own pack.
         // Without CHANGE_SELLING_PRICES (V52) the product is created without a price - "No price yet",
         // which selling already allows - rather than refused: the rest of what was typed is still wanted.
-        if (keepsSellingPrice && sellingPricePermission.allows(actingUserId)) {
+        boolean branchPricesOn = branchPriceService.isOn(tenantId);
+        if (keepsSellingPrice && sellingPricePermission.allows(actingUserId) && !branchPricesOn) {
             sellingPriceService.apply(product, request.unitPrice(), request.unitPriceUnit());
         }
 
@@ -565,6 +572,10 @@ public class ProductManagementService {
             productBranchService.set(product, false, request.branchIds());
         }
         product = productRepository.saveAndFlush(product);
+        if (keepsSellingPrice && branchPricesOn) {
+            applyBranchPrices(product, branchPricesOrOne(product, request.branchPrices(), request.unitPrice()),
+                    request.unitPriceUnit(), actingUserId);
+        }
 
         String preferredVendorName = null;
         // Its suppliers, several at once (2026-11-10): each linked with its pack and price, nothing received. The
@@ -659,7 +670,8 @@ public class ProductManagementService {
         }
 
         return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings)
-                .withBranches(productBranchService.branchesOf(product.getId()));
+                .withBranches(productBranchService.branchesOf(product.getId()))
+                .withBranchPrices(branchPriceService.pricesOf(product.getClientId(), List.of(product.getId())).get(product.getId()));
     }
 
     /** Delegates to {@link #update(UUID, UpdateProductRequest, MultipartFile, AuthenticatedUserPrincipal)} with no principal - the sku-override permission check treats that as "not permitted." */
@@ -787,13 +799,17 @@ public class ProductManagementService {
         // client still sending one silently ignored rather than applied or rejected.
         // A change of price - not the current one sent back with the rest of the form - needs
         // CHANGE_SELLING_PRICES (V52, UX section 5.14). A pack resize re-deriving it is not one.
-        boolean changesPrice = Boolean.TRUE.equals(request.clearUnitPrice())
-                || (request.unitPrice() != null
+        // Prices per branch on (V107): the one price is only a copy of the main branch's, never typed into.
+        boolean branchPricesOn = keepsSellingPrice && branchPriceService.isOn(product.getClientId());
+        boolean changesPrice = !branchPricesOn && Boolean.TRUE.equals(request.clearUnitPrice())
+                || (!branchPricesOn && request.unitPrice() != null
                         && !SellingPricePermission.isCurrent(product, request.unitPrice(), request.unitPriceUnit()));
         if (keepsSellingPrice && changesPrice) {
             sellingPricePermission.require(principal == null ? null : principal.getUserId());
         }
-        if (keepsSellingPrice) {
+        if (keepsSellingPrice && branchPricesOn) {
+            sellingPriceService.reconcile(product);
+        } else if (keepsSellingPrice) {
             if (Boolean.TRUE.equals(request.clearUnitPrice()) && !requiresSellingPrice) {
                 sellingPriceService.apply(product, null, null);
             } else if (request.unitPrice() != null) {
@@ -811,6 +827,16 @@ public class ProductManagementService {
         }
         sellingPriceService.recordIfChanged(
                 product, priceBefore, ProductPriceChange.Source.FORM, principal == null ? null : principal.getUserId());
+        if (branchPricesOn) {
+            List<com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest.BranchPriceInput> inputs =
+                    request.branchPrices() != null || request.unitPrice() == null
+                            || SellingPricePermission.isCurrent(product, request.unitPrice(), request.unitPriceUnit())
+                    ? request.branchPrices()
+                    : branchPricesOrOne(product, null, request.unitPrice());
+            applyBranchPrices(product, inputs,
+                    request.unitPriceUnit() != null ? request.unitPriceUnit() : product.getUnitPriceEnteredUnit(),
+                    principal == null ? null : principal.getUserId());
+        }
         if (Boolean.TRUE.equals(request.clearCategory())) {
             product.setCompanyCategory(null);
         } else if (request.categoryId() != null) {
@@ -861,8 +887,57 @@ public class ProductManagementService {
                 .findByClientIdAndProductIdAndIsPreferredTrue(product.getClientId(), id)
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
+        // Edited: whatever it was on the small line to be checked for has been seen (BRANCH_PRICES_PLAN.md 9.2).
+        needsALookService.edited(product.getId(), principal == null ? null : principal.getUserId());
         return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings)
-                .withBranches(productBranchService.branchesOf(product.getId()));
+                .withBranches(productBranchService.branchesOf(product.getId()))
+                .withBranchPrices(branchPriceService.pricesOf(product.getClientId(), List.of(product.getId())).get(product.getId()));
+    }
+
+    /**
+     * A product's own prices at branches (V107, BRANCH_PRICES_PLAN.md), each typed per {@code unit} like the main
+     * price. The form sends every box back: only a different price is a change, and only a change needs
+     * CHANGE_SELLING_PRICES and D3 (someone who sees every branch that price is used at).
+     */
+    private void applyBranchPrices(Product product,
+            List<com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest.BranchPriceInput> inputs,
+            String unit, UUID userId) {
+        if (inputs == null || inputs.isEmpty()) {
+            return;
+        }
+        boolean changed = false;
+        for (var input : inputs) {
+            if (branchPriceService.isCurrentAt(product, input.branchId(), input.price(), unit)) {
+                continue;
+            }
+            sellingPricePermission.require(userId);
+            branchPriceService.setAtBranch(product, input.branchId(), input.price(), unit, userId);
+            changed = true;
+        }
+        if (changed) {
+            // The entity is saved again after this: it carries the one price the branch prices now give it.
+            com.procurepal_services.stock_bridge_api.selling.SellingPriceService.Snapshot one = branchPriceService.onePrice(product.getId());
+            if (one != null) {
+                product.setUnitPrice(one.unitPrice());
+                product.setUnitPriceEntered(one.entered());
+                product.setUnitPriceEnteredUnit(one.enteredUnit());
+            }
+        }
+    }
+
+    /**
+     * An older app sends one price with the switch on (V107): it lands at the main branch, as that branch's price -
+     * the one the product's single price copies. Branch boxes sent take its place.
+     */
+    private List<com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest.BranchPriceInput> branchPricesOrOne(
+            Product product, List<com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest.BranchPriceInput> given,
+            BigDecimal one) {
+        if (given != null && !given.isEmpty()) {
+            return given;
+        }
+        UUID main = branchPriceService.mainBranch(product.getClientId());
+        return one == null || main == null ? List.of()
+                : List.of(new com.procurepal_services.stock_bridge_api.product.dto.CreateProductRequest.BranchPriceInput(main, one));
     }
 
     @Transactional

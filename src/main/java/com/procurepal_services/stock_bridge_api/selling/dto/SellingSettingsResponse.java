@@ -39,5 +39,7 @@ public record SellingSettingsResponse(
         /** How long after a close a drawer can be opened again (V98); after it, a fresh start count. */
         int cashReopenHours,
         /** V99: the categories whose products are sides (the till asks which meal each goes with). */
-        java.util.List<java.util.UUID> sideCategoryIds) {
+        java.util.List<java.util.UUID> sideCategoryIds,
+        /** V107: "Each branch can have its own prices". */
+        boolean branchPrices) {
 }

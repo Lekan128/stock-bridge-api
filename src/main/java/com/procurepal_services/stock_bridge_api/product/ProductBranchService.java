@@ -87,6 +87,9 @@ public class ProductBranchService {
     public void set(Product product, boolean allBranches, Collection<UUID> branchIds) {
         product.setForAllBranches(allBranches);
         if (allBranches) {
+            if (product.isMadeHere() && product.getId() != null) {
+                bringIngredientsEverywhere(product.getClientId(), product.getId());
+            }
             return;
         }
         Set<UUID> wanted = new LinkedHashSet<>(branchIds == null ? List.of() : branchIds);
@@ -119,6 +122,9 @@ public class ProductBranchService {
                 """,
                 new MapSqlParameterSource().addValue("productId", product.getId()).addValue("branchId", branchId)
                         .addValue("clientId", product.getClientId()));
+        if (product.isMadeHere()) {
+            bringIngredients(product.getClientId(), List.of(product.getId()), branchId);
+        }
     }
 
     /** The company's active products the branch doesn't have yet, matching {@code search}, by category then name. */
@@ -168,12 +174,102 @@ public class ProductBranchService {
             chosen = " AND p.id IN (:ids)";
             params.addValue("ids", productIds);
         }
-        return jdbc.update("""
+        int added = jdbc.update("""
                 INSERT INTO product_branches (product_id, branch_id, client_id)
                 SELECT p.id, :branchId, :clientId FROM products p
                 WHERE p.client_id = :clientId AND p.is_active AND NOT p.for_all_branches""" + chosen + "\n" + """
                 ON CONFLICT DO NOTHING
                 """, params);
+        List<UUID> items = jdbc.queryForList(
+                "SELECT p.id FROM products p WHERE p.client_id = :clientId AND p.is_active AND p.made_here" + chosen, params, UUID.class);
+        bringIngredients(clientId, items, branchId);
+        return added;
+    }
+
+    /*
+     * A made-here item's ingredients go wherever the item goes (owner, 2026-11-17 and 2026-11-21): an ingredient only
+     * has to be for the branch, never in stock. Kept here, the one place a product is made for a branch, and not in
+     * a database trigger, so the rule is in the code with its tests and the database does no work for it
+     * (BRANCH_PRICES_PLAN.md section 9.1, step 0). An ingredient for all branches is everywhere already.
+     */
+
+    /*
+     * Each ingredient added this way goes on that branch's "to check" (BRANCH_PRICES_PLAN.md section 9.2): someone
+     * there sees "Rice · added for Jollof rice" once, and taps Looks right. Only rows actually added are checked.
+     */
+    private static final String CHECK_ADDED = """
+            INSERT INTO branch_product_checks (client_id, branch_id, product_id, reason, about_product_id)
+            SELECT a.client_id, a.branch_id, a.product_id, 'ADDED_AS_INGREDIENT', %s
+            FROM added a
+            ON CONFLICT DO NOTHING
+            """;
+
+    /** The ingredients of these items, for this branch too. */
+    private void bringIngredients(UUID clientId, Collection<UUID> itemIds, UUID branchId) {
+        if (itemIds.isEmpty() || branchId == null) {
+            return;
+        }
+        jdbc.update("""
+                WITH added AS (
+                    INSERT INTO product_branches (product_id, branch_id, client_id)
+                    SELECT DISTINCT pi.ingredient_id, :branchId, :clientId
+                    FROM product_ingredients pi JOIN products ing ON ing.id = pi.ingredient_id AND NOT ing.for_all_branches
+                    WHERE pi.client_id = :clientId AND pi.product_id IN (:ids)
+                    ON CONFLICT DO NOTHING
+                    RETURNING product_id, branch_id, client_id)
+                """ + CHECK_ADDED.formatted(
+                        "(SELECT pi.product_id FROM product_ingredients pi WHERE pi.ingredient_id = a.product_id AND pi.product_id IN (:ids) LIMIT 1)"),
+                new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId).addValue("ids", itemIds));
+    }
+
+    /** An item for all branches: its ingredients at every open branch. */
+    private void bringIngredientsEverywhere(UUID clientId, UUID itemId) {
+        jdbc.update("""
+                WITH added AS (
+                    INSERT INTO product_branches (product_id, branch_id, client_id)
+                    SELECT DISTINCT pi.ingredient_id, b.id, :clientId
+                    FROM product_ingredients pi JOIN products ing ON ing.id = pi.ingredient_id AND NOT ing.for_all_branches
+                    JOIN branches b ON b.client_id = :clientId AND b.is_active
+                    WHERE pi.client_id = :clientId AND pi.product_id = :itemId
+                    ON CONFLICT DO NOTHING
+                    RETURNING product_id, branch_id, client_id)
+                """ + CHECK_ADDED.formatted("CAST(:itemId AS uuid)"),
+                new MapSqlParameterSource().addValue("clientId", clientId).addValue("itemId", itemId));
+    }
+
+    /** One ingredient of {@code item} for one more branch (MadeWithService, when the ingredients are saved). */
+    @Transactional
+    public void addIngredient(Product ingredient, UUID branchId, Product item) {
+        if (ingredient.isForAllBranches() || branchId == null) {
+            return;
+        }
+        jdbc.update("""
+                WITH added AS (
+                    INSERT INTO product_branches (product_id, branch_id, client_id) VALUES (:productId, :branchId, :clientId)
+                    ON CONFLICT DO NOTHING
+                    RETURNING product_id, branch_id, client_id)
+                """ + CHECK_ADDED.formatted("CAST(:itemId AS uuid)"),
+                new MapSqlParameterSource().addValue("productId", ingredient.getId()).addValue("branchId", branchId)
+                        .addValue("clientId", ingredient.getClientId()).addValue("itemId", item.getId()));
+    }
+
+    /** A branch added or reopened: the ingredients of every item that is for all branches. */
+    @Transactional
+    public void branchOpened(UUID clientId, UUID branchId) {
+        jdbc.update("""
+                WITH added AS (
+                    INSERT INTO product_branches (product_id, branch_id, client_id)
+                    SELECT DISTINCT pi.ingredient_id, :branchId, :clientId
+                    FROM product_ingredients pi
+                    JOIN products item ON item.id = pi.product_id AND item.for_all_branches
+                    JOIN products ing ON ing.id = pi.ingredient_id AND NOT ing.for_all_branches
+                    WHERE pi.client_id = :clientId
+                    ON CONFLICT DO NOTHING
+                    RETURNING product_id, branch_id, client_id)
+                """ + CHECK_ADDED.formatted("""
+                        (SELECT pi.product_id FROM product_ingredients pi JOIN products item ON item.id = pi.product_id
+                         WHERE pi.ingredient_id = a.product_id AND item.for_all_branches LIMIT 1)"""),
+                new MapSqlParameterSource().addValue("clientId", clientId).addValue("branchId", branchId));
     }
 
     private void requireBranch(UUID clientId, UUID branchId) {

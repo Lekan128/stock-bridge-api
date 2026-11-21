@@ -62,6 +62,18 @@ public class SellingSettingsController {
         return sellingSettingsService.updateCountsCash(request.on(), principal.getUserId());
     }
 
+    /** {@code useBranchId}: turning it off, the branch whose prices every branch then uses (the main one if absent). */
+    public record BranchPricesSettingRequest(@jakarta.validation.constraints.NotNull Boolean on, java.util.UUID useBranchId) {}
+
+    /** "Each branch can have its own prices" (V107, BRANCH_PRICES_PLAN.md): the owner's switch. */
+    @PutMapping("/branch-prices")
+    @PreAuthorize("hasAuthority('MANAGE_COMPANY_PROFILE')")
+    public SellingSettingsResponse updateBranchPrices(
+            @Valid @RequestBody BranchPricesSettingRequest request,
+            @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
+        return sellingSettingsService.updateBranchPrices(request.on(), request.useBranchId(), principal.getUserId());
+    }
+
     /** How long after a close a drawer can be opened again (V98, Step 13): the owner's choice, 1 to 24 hours. */
     @PutMapping("/cash-reopen-hours")
     @PreAuthorize("hasAuthority('MANAGE_COMPANY_PROFILE')")
