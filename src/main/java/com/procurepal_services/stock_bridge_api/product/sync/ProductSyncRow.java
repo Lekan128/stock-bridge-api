@@ -59,5 +59,7 @@ public record ProductSyncRow(
         boolean madeHere,
         // V92: which branches it is for - every branch, or these - so the phone shows it only where it belongs.
         boolean forAllBranches,
-        List<UUID> forBranchIds) {
+        List<UUID> forBranchIds,
+        // V107: its own price in each set of branch prices used at a branch the person sees; absent when none.
+        List<com.procurepal_services.stock_bridge_api.selling.BranchPriceService.ListPrice> branchPrices) {
 }

@@ -47,7 +47,7 @@ public class SellingPriceService {
             return new Snapshot(product.getUnitPrice(), product.getUnitPriceEntered(), product.getUnitPriceEnteredUnit());
         }
 
-        boolean sameAs(Snapshot other) {
+        public boolean sameAs(Snapshot other) {
             return equalMoney(unitPrice, other.unitPrice)
                     && equalMoney(entered, other.entered)
                     && Objects.equals(enteredUnit, other.enteredUnit);
@@ -86,6 +86,46 @@ public class SellingPriceService {
         product.setUnitPrice(option.toStockUnitPrice(price).setScale(2, RoundingMode.HALF_UP));
         product.setUnitPriceEntered(price.setScale(2, RoundingMode.HALF_UP));
         product.setUnitPriceEnteredUnit(option.code());
+    }
+
+    /**
+     * A price as typed, worked out the way {@link #apply} sets it on the product: per stock unit (what a sale
+     * multiplies), and as entered with its unit when typed per a pack. For a branch's own price (BRANCH_PRICES_PLAN.md).
+     */
+    public Snapshot convert(Product product, BigDecimal price, String unit) {
+        if (unit == null || unit.isBlank()) {
+            return new Snapshot(price.setScale(2, RoundingMode.HALF_UP), null, null);
+        }
+        UnitOption option = UnitOptions.resolve(UnitOptions.forProduct(product), unit)
+                .orElseThrow(() -> new InvalidUnitOfMeasureException(unit.trim(), "unit for this product's price"));
+        if (option.isStockUnit()) {
+            return new Snapshot(price.setScale(2, RoundingMode.HALF_UP), null, null);
+        }
+        return new Snapshot(option.toStockUnitPrice(price).setScale(2, RoundingMode.HALF_UP),
+                price.setScale(2, RoundingMode.HALF_UP), option.code());
+    }
+
+    /** Logs a change to one set of a branch's own prices ({@code priceListId}); nothing when it didn't change. */
+    public void recordListChange(Product product, UUID priceListId, Snapshot before, Snapshot after, UUID changedBy) {
+        Snapshot was = before == null ? new Snapshot(null, null, null) : before;
+        Snapshot now = after == null ? new Snapshot(null, null, null) : after;
+        if (was.sameAs(now)) {
+            return;
+        }
+        priceChangeRepository.save(ProductPriceChange.builder()
+                .clientId(product.getClientId())
+                .productId(product.getId())
+                .priceListId(priceListId)
+                .oldUnitPrice(was.unitPrice())
+                .newUnitPrice(now.unitPrice())
+                .oldEnteredPrice(was.entered())
+                .oldEnteredUnit(was.enteredUnit())
+                .newEnteredPrice(now.entered())
+                .newEnteredUnit(now.enteredUnit())
+                .source(ProductPriceChange.Source.FORM)
+                .changedBy(changedBy)
+                .changedAt(OffsetDateTime.now())
+                .build());
     }
 
     /**

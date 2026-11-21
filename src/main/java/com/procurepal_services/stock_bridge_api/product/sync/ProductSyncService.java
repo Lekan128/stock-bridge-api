@@ -42,6 +42,7 @@ public class ProductSyncService {
     /** Each row's figures at the person's branches (V52). */
     private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
+    private final com.procurepal_services.stock_bridge_api.selling.BranchPriceService branchPriceService;
     private final NamedParameterJdbcTemplate jdbc;
     private final ProductRepository productRepository;
     private final ProductManagementService productManagementService;
@@ -193,6 +194,8 @@ public class ProductSyncService {
                 : branchStockService.countMarks(thresholds.keySet(), carried);
 
         Map<UUID, List<UUID>> forBranches = productBranchService.branchesOf(thresholds.keySet());
+        Map<UUID, List<com.procurepal_services.stock_bridge_api.selling.BranchPriceService.ListPrice>> branchPrices =
+                branchPriceService.pricesOf(tenantId, thresholds.keySet(), visible);
 
         return products.stream()
                 .map(product -> new ProductSyncRow(
@@ -228,7 +231,8 @@ public class ProductSyncService {
                         counts.get(product.getId()),
                         product.isMadeHere(),
                         product.isForAllBranches(),
-                        forBranches.getOrDefault(product.getId(), List.of())))
+                        forBranches.getOrDefault(product.getId(), List.of()),
+                        branchPrices.get(product.getId())))
                 .toList();
     }
 

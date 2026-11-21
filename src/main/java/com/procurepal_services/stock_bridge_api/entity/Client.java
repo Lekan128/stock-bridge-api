@@ -156,6 +156,11 @@ public class Client {
     @Column(name = "sells_made_here", nullable = false)
     private boolean sellsMadeHere;
 
+    /** "Each branch can have its own prices" (V107, BRANCH_PRICES_PLAN.md). Off: one price at every branch. */
+    @Column(name = "branch_prices", nullable = false)
+    @Builder.Default
+    private boolean branchPrices = false;
+
     /** "Count cash at open and close" (V97): cashiers start and close each drawer. Off by default. */
     @Column(name = "counts_cash", nullable = false)
     @Builder.Default

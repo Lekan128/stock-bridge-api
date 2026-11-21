@@ -57,6 +57,7 @@ public class SellingSettingsService {
     private final SuperAdminRepository superAdminRepository;
     private final NotificationService notificationService;
     private final SellingPolicy sellingPolicy;
+    private final BranchPriceService branchPriceService;
     private final ProductRepository productRepository;
     private final SellingPriceService sellingPriceService;
     private final org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate jdbc;
@@ -175,6 +176,43 @@ public class SellingSettingsService {
                     .changedByUsername(actor == null ? "unknown" : actor.getUsername())
                     .changedAt(OffsetDateTime.now())
                     .build());
+        }
+        return responseFor(client);
+    }
+
+    /**
+     * "Each branch can have its own prices" (V107, BRANCH_PRICES_PLAN.md). On: every branch shares a copy of today's
+     * prices to start. Off: every branch uses {@code useBranchId}'s prices (the main branch's when absent); each
+     * branch's are kept for when it's on again.
+     */
+    @Transactional
+    public SellingSettingsResponse updateBranchPrices(boolean on, UUID useBranchId, UUID actingUserId) {
+        Client client = currentClient();
+        if (client.isBranchPrices() != on) {
+            User actor = userRepository.findById(actingUserId).orElse(null);
+            client.setBranchPrices(on);
+            clientRepository.save(client);
+            clientRepository.flush();
+            // On: every branch starts with today's prices. Off: every branch uses the chosen branch's (owner, 2026-11-21).
+            if (on) {
+                branchPriceService.switchedOn(client.getId());
+            } else {
+                branchPriceService.switchedOff(client.getId(), useBranchId);
+            }
+            changeRepository.save(ClientSettingChange.builder()
+                    .clientId(client.getId())
+                    .setting(ClientSettingChange.BRANCH_PRICES)
+                    .oldValue(Boolean.toString(!on))
+                    .newValue(Boolean.toString(on))
+                    .source(SettingChangeSource.OWNER)
+                    .changedBy(actingUserId)
+                    .changedByKind(ChangedByKind.TENANT_USER)
+                    .changedByUsername(actor == null ? "unknown" : actor.getUsername())
+                    .changedAt(OffsetDateTime.now())
+                    .build());
+            // Every product's price can change at some branch: phones fetch the catalogue's prices again.
+            jdbc.queryForList("SELECT log_product_change(client_id, id) FROM products WHERE client_id = :id AND is_active",
+                    new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", client.getId()));
         }
         return responseFor(client);
     }
@@ -319,7 +357,8 @@ public class SellingSettingsService {
                 countsCash == null ? null : changedByName(countsCash),
                 client.getCashReopenHours(),
                 jdbc.queryForList("SELECT id FROM company_categories WHERE client_id = :id AND goes_with_meal",
-                        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", client.getId()), java.util.UUID.class));
+                        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("id", client.getId()), java.util.UUID.class),
+                client.isBranchPrices());
     }
 
     // ---------------------------------------------------------------- old prices (section 4.6.3)

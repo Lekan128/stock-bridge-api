@@ -127,7 +127,27 @@ public record CreateProductRequest(
          * a one-branch company; every branch at a company with several (a caller from before branches were chosen).
          */
         java.util.List<UUID> branchIds,
-        Boolean allBranches) {
+        Boolean allBranches,
+        /** V107: its own price at branches with their own prices, typed per {@code unitPriceUnit}; blank uses the main. */
+        java.util.List<BranchPriceInput> branchPrices) {
+
+    /** One branch's own price for this product (V107, BRANCH_PRICES_PLAN.md); a null price uses the main price. */
+    public record BranchPriceInput(@jakarta.validation.constraints.NotNull UUID branchId,
+            @DecimalMin(value = "0", inclusive = true) BigDecimal price) {}
+
+    /** The shape before prices per branch (V107). */
+    public CreateProductRequest(
+            String name, String sku, String description, BigDecimal unitPrice, Integer lowStockThreshold,
+            String unitOfMeasure, String packagingUnit, BigDecimal packagingSize, InitialVendor initialVendor,
+            UUID categoryId, String barcode, String unitPriceUnit,
+            java.util.List<com.procurepal_services.stock_bridge_api.product.unit.ProductMeasure> measures,
+            String usedInUnit, java.util.List<String> countIn, java.util.List<SupplierLink> suppliers,
+            OpeningStock openingStock, Boolean madeHere, BigDecimal estimatedCost, java.util.List<UUID> branchIds,
+            Boolean allBranches) {
+        this(name, sku, description, unitPrice, lowStockThreshold, unitOfMeasure, packagingUnit, packagingSize,
+                initialVendor, categoryId, barcode, unitPriceUnit, measures, usedInUnit, countIn, suppliers, openingStock,
+                madeHere, estimatedCost, branchIds, allBranches, null);
+    }
 
     /** The shape before a product's branches (V92). */
     public CreateProductRequest(

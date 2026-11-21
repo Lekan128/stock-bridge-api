@@ -55,6 +55,8 @@ public class BranchService {
     private final AreaService areaService;
     private final AreaAccessService areaAccessService;
     private final NamedParameterJdbcTemplate jdbc;
+    private final com.procurepal_services.stock_bridge_api.product.ProductBranchService productBranchService;
+    private final com.procurepal_services.stock_bridge_api.selling.BranchPriceService branchPriceService;
 
     /** {@code pilot} until multiple branches launch; see {@link #mayAddBranch}. */
     @Value("${app.branches.rollout:pilot}")
@@ -81,6 +83,8 @@ public class BranchService {
         areaService.areasByBranch(clientId, manages).forEach((branchId, list) -> areas.put(branchId,
                 list.stream().map(area -> area.withWorksHere(limits.worksIn(branchId, area.id()))).toList()));
 
+        Map<UUID, UUID> priceLists = branchPriceService.chosenListsByBranch(clientId);
+        Map<UUID, Long> priceCounts = branchPriceService.priceCounts(clientId);
         List<BranchResponse> branches = branchRepository.findAllByClientId(clientId).stream()
                 .filter(branch -> visible.contains(branch.getId()))
                 .sorted(Comparator.comparing((Branch branch) -> !branch.isDefaultBranch())
@@ -89,7 +93,8 @@ public class BranchService {
                 .map(branch -> toResponse(branch, writable.contains(branch.getId()), totals.get(branch.getId()), manages,
                         areas.getOrDefault(branch.getId(), List.of()), accounts.getOrDefault(branch.getId(), List.of()),
                         tables.getOrDefault(branch.getId(), List.of()), charges.getOrDefault(branch.getId(), List.of()),
-                        ticketsOn.contains(branch.getId())))
+                        ticketsOn.contains(branch.getId()), priceLists.get(branch.getId()),
+                        priceLists.containsKey(branch.getId()) ? priceCounts.getOrDefault(priceLists.get(branch.getId()), 0L) : null))
                 .toList();
         boolean multiBranch = branchStockService.isMultiBranch(clientId);
         List<BranchListResponse.BranchName> sendTo = !multiBranch || !hasPermission(userId, "SEND_STOCK") ? List.of()
@@ -150,6 +155,9 @@ public class BranchService {
                 .defaultBranch(false)
                 .active(true)
                 .build());
+        branchRepository.flush();
+        productBranchService.branchOpened(clientId, branch.getId());
+        branchPriceService.branchOpened(clientId, branch.getId());
         log.info("Branch added: {} '{}' for company {}", branch.getId(), name, clientId);
         return toResponse(branch, true, null, true, null);
     }
@@ -188,6 +196,8 @@ public class BranchService {
         jdbc.update("UPDATE branches SET is_default = FALSE WHERE client_id = :clientId AND is_default AND id <> :branchId",
                 params);
         jdbc.update("UPDATE branches SET is_default = TRUE WHERE id = :branchId", params);
+        // Prices don't move (V107): only the products' one price, a copy of the main branch's, follows.
+        branchPriceService.mainChanged(clientId);
         // The entity loaded above predates both statements; say what is now true.
         branch.setDefaultBranch(true);
         return toResponse(branch, true, null, true, null);
@@ -253,6 +263,8 @@ public class BranchService {
         Branch branch = requireBranch(branchId, clientId);
         branch.setActive(true);
         branch.setClosedAt(null);
+        productBranchService.branchOpened(clientId, branchId);
+        branchPriceService.branchOpened(clientId, branchId);
         return toResponse(branch, true, null, true, null);
     }
 
@@ -380,7 +392,7 @@ public class BranchService {
     private static BranchResponse toResponse(
             Branch branch, boolean canRecord, Totals totals, boolean manages,
             List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse> areas) {
-        return toResponse(branch, canRecord, totals, manages, areas, null, null, null, false);
+        return toResponse(branch, canRecord, totals, manages, areas, null, null, null, false, null, null);
     }
 
     private static BranchResponse toResponse(
@@ -388,7 +400,8 @@ public class BranchService {
             List<com.procurepal_services.stock_bridge_api.branch.dto.AreaResponse> areas,
             List<com.procurepal_services.stock_bridge_api.selling.PaymentAccountService.PaymentAccount> accounts,
             List<com.procurepal_services.stock_bridge_api.selling.TableService.Table> tables,
-            List<com.procurepal_services.stock_bridge_api.selling.ChargeService.Charge> charges, boolean ticketsOn) {
+            List<com.procurepal_services.stock_bridge_api.selling.ChargeService.Charge> charges, boolean ticketsOn,
+            UUID priceListId, Long ownPriceCount) {
         Totals shown = manages ? (totals == null ? new Totals(0, BigDecimal.ZERO, 0) : totals) : null;
         return new BranchResponse(
                 branch.getId(),
@@ -406,7 +419,9 @@ public class BranchService {
                 accounts,
                 tables,
                 charges,
-                ticketsOn);
+                ticketsOn,
+                priceListId,
+                ownPriceCount);
     }
 
     private boolean hasPermission(UUID userId, String code) {

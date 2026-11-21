@@ -38,5 +38,12 @@ public record BranchResponse(
         /** V100: its switched-on charges and taxes, for the till to show what a sale comes to. */
         java.util.List<com.procurepal_services.stock_bridge_api.selling.ChargeService.Charge> charges,
         /** V103: items sent from a bill go as tickets to where they're made or kept. Off to start. */
-        boolean ticketsOn) {
+        boolean ticketsOn,
+        /**
+         * V107: the set of prices it uses; absent for the main prices. Branches with the same one share their prices.
+         * Given even while "Each branch can have its own prices" is off, so the branch page shows what comes back.
+         */
+        java.util.UUID priceListId,
+        /** V107: how many products have their own price in that set; absent with the main prices. */
+        Long ownPriceCount) {
 }
