@@ -147,6 +147,78 @@ class BranchPriceIntegrationTest {
         assertThat(get(shop, "/api/products/sync/snapshot", String.class).getBody()).contains("\"branchPrices\":[{");
     }
 
+    /** The small line on Products (BRANCH_PRICES_PLAN.md 9.2): to fix (no area, no price) and to check (added). */
+    @Test
+    void theLineSaysWhatToFixAndCheckAtEachBranch() {
+        Shop shop = shop("Needs A Look Shop");
+        sellingOn(shop);
+        send(shop, HttpMethod.PUT, "/api/company/selling/made-here", Map.of("on", true), String.class);
+        String main = branchIds(shop).get(0);
+        jdbcTemplate.update("UPDATE clients SET branches_enabled = true WHERE id = (SELECT client_id FROM branches WHERE id = ?)",
+                UUID.fromString(main));
+        send(shop, HttpMethod.POST, "/api/branches/" + main + "/areas",
+                Map.of("areas", List.of(Map.of("name", "Kitchen", "keepsStock", true), Map.of("name", "Bar", "keepsStock", true))), List.class);
+        ProductResponse rice = create(shop, Map.of("name", "Rice", "sku", "RC-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitOfMeasure", "PIECE", "branchIds", List.of(main)));
+        ProductResponse plate = create(shop, Map.of("name", "Jollof", "sku", "JL-" + UUID.randomUUID().toString().substring(0, 6),
+                "madeHere", true, "unitPrice", 7000, "branchIds", List.of(main)));
+        assertThat(send(shop, HttpMethod.PUT, "/api/products/" + plate.id() + "/made-with", Map.of("madeIn", "Kitchen",
+                "ingredients", List.of(Map.of("productId", rice.id().toString(), "quantity", 1))), String.class).getStatusCode())
+                .isEqualTo(HttpStatus.OK);
+
+        // Ikeja, one area: the plate goes there and brings its rice - rice is to check; one area needs no choosing.
+        String ikeja = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Ikeja"), Map.class).getBody().get("id");
+        send(shop, HttpMethod.POST, "/api/branches/" + ikeja + "/products", Map.of("productIds", List.of(plate.id().toString())), Map.class);
+        Map<?, ?> line = look(shop, ikeja);
+        assertThat(line.get("toCheck")).isEqualTo(1);
+        assertThat(line.get("toFix")).isEqualTo(0);
+        assertThat(line.toString()).contains("ADDED_AS_INGREDIENT").contains("aboutName=Jollof");
+
+        // A second area and no Kitchen: to fix. "Add a Kitchen" fixes it; its undo brings it back; choosing an area fixes it.
+        send(shop, HttpMethod.POST, "/api/branches/" + ikeja + "/areas", Map.of("areas", List.of(Map.of("name", "Bar", "keepsStock", true))), List.class);
+        assertThat(look(shop, ikeja).toString()).contains("NO_AREA").contains("madeIn=Kitchen");
+        List<Map<String, Object>> kitchen = send(shop, HttpMethod.POST, "/api/branches/" + ikeja + "/areas",
+                Map.of("areas", List.of(Map.of("name", "Kitchen", "keepsStock", true))), List.class).getBody();
+        assertThat(look(shop, ikeja).toString()).doesNotContain("NO_AREA");
+        assertThat(send(shop, HttpMethod.DELETE, "/api/areas/" + kitchen.get(0).get("id"), null, String.class).getStatusCode())
+                .isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(look(shop, ikeja).toString()).contains("NO_AREA");
+        String bar = jdbcTemplate.queryForObject("SELECT id::text FROM areas WHERE branch_id = ? AND name = 'Bar'", String.class, UUID.fromString(ikeja));
+        assertThat(send(shop, HttpMethod.PUT, "/api/products/" + plate.id() + "/made-in/" + ikeja, Map.of("areaId", bar), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(look(shop, ikeja).toString()).doesNotContain("NO_AREA");
+
+        // Looks right: the rice check is done.
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + rice.id() + "/looks-right?branchId=" + ikeja, Map.of(), String.class)
+                .getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+        assertThat(look(shop, ikeja).get("toCheck")).isEqualTo(0);
+
+        // Prices per branch: a product priced at Head Office and added to Ikeja after Ikeja took its own - no price there.
+        send(shop, HttpMethod.PUT, "/api/company/selling/branch-prices", Map.of("on", true), Map.class);
+        choose(shop, ikeja, "OWN", null);
+        ProductResponse fanta = create(shop, Map.of("name", "Fanta", "sku", "FT-" + UUID.randomUUID().toString().substring(0, 6),
+                "unitOfMeasure", "PIECE", "branchIds", List.of(main), "branchPrices", List.of(Map.of("branchId", main, "price", 600))));
+        send(shop, HttpMethod.POST, "/api/branches/" + ikeja + "/products", Map.of("productIds", List.of(fanta.id().toString())), Map.class);
+        assertThat(look(shop, ikeja).toString()).contains("NO_PRICE").contains("productName=Fanta");
+        // Rice has no price anywhere: never "no price here".
+        assertThat(look(shop, ikeja).toString()).doesNotContain("productName=Rice, branchId=" + ikeja + ", branchName=Ikeja, kind=FIX");
+        send(shop, HttpMethod.PUT, "/api/prices", Map.of("cells", List.of(Map.of("productId", fanta.id().toString(), "branchId", ikeja, "price", 650))), Map.class);
+        assertThat(look(shop, ikeja).toString()).doesNotContain("NO_PRICE");
+
+        // A one-area branch makes it there: a sale at a branch with only its Store takes the rice from the Store.
+        String lekki = (String) send(shop, HttpMethod.POST, "/api/branches", Map.of("name", "Lekki"), Map.class).getBody().get("id");
+        send(shop, HttpMethod.POST, "/api/branches/" + lekki + "/products", Map.of("productIds", List.of(plate.id().toString())), Map.class);
+        assertThat(send(shop, HttpMethod.POST, "/api/products/" + plate.id() + "/stock/stock-out",
+                Map.of("quantity", 1, "reason", "SALE", "saleId", UUID.randomUUID().toString(), "lineTotal", 7000,
+                        "paymentMethod", "CASH", "branchId", lekki), String.class).getStatusCode().is2xxSuccessful()).isTrue();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM stock_movements WHERE product_id = ? AND branch_id = ?",
+                Integer.class, rice.id(), UUID.fromString(lekki))).isEqualTo(1);
+    }
+
+    private Map<?, ?> look(Shop shop, String branchId) {
+        return get(shop, "/api/products/needs-a-look?branchId=" + branchId, Map.class).getBody();
+    }
+
     /** The price sheet (BRANCH_PRICES_PLAN.md §10): cells saved in a batch, at a branch or the one price. */
     @Test
     void thePriceSheetSavesCellsAtABranchOrTheOnePrice() {

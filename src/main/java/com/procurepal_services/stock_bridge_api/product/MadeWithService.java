@@ -182,7 +182,7 @@ public class MadeWithService {
         // Ingredients follow the item to its branches, at 0 where there is none (owner, 2026-11-17).
         for (Product ingredient : ingredients) {
             for (UUID branchId : branches) {
-                productBranchService.add(ingredient, branchId);
+                productBranchService.addIngredient(ingredient, branchId, item);
             }
         }
         return get(item);
@@ -222,11 +222,35 @@ public class MadeWithService {
                 return named;
             }
         }
-        return jdbc.queryForList("""
+        UUID chosen = jdbc.queryForList("""
                 SELECT m.area_id FROM product_made_in m JOIN areas a ON a.id = m.area_id
                 WHERE m.product_id = :productId AND m.branch_id = :branchId AND a.is_active
                 """, new MapSqlParameterSource().addValue("productId", item.getId()).addValue("branchId", branchId),
                 UUID.class).stream().findFirst().orElse(null);
+        if (chosen != null) {
+            return chosen;
+        }
+        // A branch with one area makes it there (owner, 2026-11-21): nothing to choose, so nothing is asked.
+        List<UUID> only = jdbc.queryForList("SELECT id FROM areas WHERE branch_id = :branchId AND is_active",
+                new MapSqlParameterSource("branchId", branchId), UUID.class);
+        return only.size() == 1 ? only.get(0) : null;
+    }
+
+    /**
+     * Where {@code item} is made at one branch, chosen from the small line on Products (BRANCH_PRICES_PLAN.md 9.2):
+     * one of that branch's open areas.
+     */
+    @Transactional
+    public void setAreaAt(Product item, UUID branchId, UUID areaId) {
+        if (!isOpenAreaOf(areaId, branchId)) {
+            throw new MadeWithException("Choose one of that branch's areas.");
+        }
+        jdbc.update("""
+                INSERT INTO product_made_in (product_id, branch_id, area_id, client_id)
+                VALUES (:productId, :branchId, :areaId, :clientId)
+                ON CONFLICT (product_id, branch_id) DO UPDATE SET area_id = EXCLUDED.area_id
+                """, new MapSqlParameterSource().addValue("productId", item.getId()).addValue("branchId", branchId)
+                        .addValue("areaId", areaId).addValue("clientId", item.getClientId()));
     }
 
     private List<MadeInAt> madeInAt(Product item) {

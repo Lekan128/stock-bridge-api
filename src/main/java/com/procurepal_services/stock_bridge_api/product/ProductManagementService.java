@@ -87,6 +87,7 @@ public class ProductManagementService {
     /** Who may set a selling price (V52). */
     private final SellingPricePermission sellingPricePermission;
     private final com.procurepal_services.stock_bridge_api.selling.BranchPriceService branchPriceService;
+    private final NeedsALookService needsALookService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchStockService branchStockService;
     private final com.procurepal_services.stock_bridge_api.branch.BranchAccessService branchAccessService;
     private final com.procurepal_services.stock_bridge_api.product.category.CompanyCategoryService companyCategoryService;
@@ -886,6 +887,8 @@ public class ProductManagementService {
                 .findByClientIdAndProductIdAndIsPreferredTrue(product.getClientId(), id)
                 .map(vendor -> vendor.getCompanyVendor().getName())
                 .orElse(null);
+        // Edited: whatever it was on the small line to be checked for has been seen (BRANCH_PRICES_PLAN.md 9.2).
+        needsALookService.edited(product.getId(), principal == null ? null : principal.getUserId());
         return ProductResponse.from(product, preferredVendorName, warnings.isEmpty() ? null : warnings)
                 .withBranches(productBranchService.branchesOf(product.getId()))
                 .withBranchPrices(branchPriceService.pricesOf(product.getClientId(), List.of(product.getId())).get(product.getId()));

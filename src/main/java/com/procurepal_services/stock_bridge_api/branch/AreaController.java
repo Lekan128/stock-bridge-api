@@ -47,6 +47,15 @@ public class AreaController {
         return areaService.update(id, request, principal.getUserId());
     }
 
+    /** Undo of an area just added: gone while nothing is recorded in it (BRANCH_PRICES_PLAN.md D7). */
+    @org.springframework.web.bind.annotation.DeleteMapping("/api/areas/{id}")
+    public org.springframework.http.ResponseEntity<Void> removeJustAdded(@PathVariable UUID id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal
+                    com.procurepal_services.stock_bridge_api.security.AuthenticatedUserPrincipal principal) {
+        areaService.removeJustAdded(id, principal.getUserId());
+        return org.springframework.http.ResponseEntity.noContent().build();
+    }
+
     @PostMapping("/api/areas/{id}/close")
     public AreaResponse close(@PathVariable UUID id, @AuthenticationPrincipal AuthenticatedUserPrincipal principal) {
         return areaService.close(id, principal.getUserId());
